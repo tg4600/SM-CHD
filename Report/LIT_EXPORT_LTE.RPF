@@ -1,0 +1,716 @@
+{*******************************************************************************
+*
+* Module Name   : LIT_EXPORT_LTE
+*
+* Purpose       : All export options used for data movement from cpu's
+*
+* Document Ref  : N/a
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+JOIN LIBRARY $LIB_UTILS
+
+JOIN LIBRARY LIT_AUTO_COMMIT                                         { commit some data (export)           }
+JOIN LIBRARY LIT_PACKAGER                                            { internal_move_a_package             }
+
+CONSTANT C_UPDATE_DELIVER_STATUS  = "UPDATE_DELIVERY_STATUS"         { transaction used for update         }
+CONSTANT C_EXPORT_DELIVER_VIEW    = "EXPORT_DELIVER_VIEW"            { view used for delivery of files     }
+
+CONSTANT C_MSG_NONE               = 0                                { log message levels                  }
+CONSTANT C_MSG_LOW                = 1                                { detailed verbose information        }
+CONSTANT C_MSG_MED                = 5                                { warning issues                      }
+CONSTANT C_MSG_HIGH               = 10                               { error or config issue               }
+CONSTANT C_MSG_FULL               = 11                               { highest value always writes to log  }
+
+DECLARE option_no
+option_no = "100421"
+MENU_Export_data ( option_no )
+EXIT
+
+
+{*******************************************************************************
+*                          M A I N   C O D E
+*******************************************************************************}
+
+DECLARE retval       ,
+        base_view    ,
+        status       ,
+        a_msg        ,
+        a_logfile
+
+    WDT_Export_deliver_arc_files ( 123 )
+    WDT_export_load_delivered_files ( 123 )
+    EXIT
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE prompt_object_routine (       prompt_object ,
+                                VALUE key0_count    ,
+                                VALUE operation     )
+
+
+    ARRAY prompt_object.mandatory_array
+
+    array_select_add ( prompt_object.mandatory_array, ARRAY_SELECT_EQ, "COMMIT_DESTINATION", "EXPORT" )
+    array_select_add ( prompt_object.mandatory_array, ARRAY_SELECT_EQ, "ENABLED"           ,  TRUE    )
+
+
+ENDROUTINE  { prompt_object_routine }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE validation_routine
+
+    DECLARE base_table
+
+    retval = TRUE
+
+    base_table = SELECT AUTO_COMMIT_HEADER.BASE_TABLE
+
+    IF ( base_table = "ANALYSIS" ) OR ( base_table = "VERSIONED_ANALYSIS" ) THEN
+
+        base_view = "ANALYSIS_EXP_VIEW"
+
+    ELSEIF ( base_table = "PDS_PROTO" ) THEN
+
+        base_view = "PDS_PROTO_EXP_VIEW"
+
+    ELSEIF ( base_table = "MLP_HEADER" ) THEN
+
+        base_view = "MLP_HEADER_EXP_VIEW"
+
+    ELSEIF ( base_table = "TEST_SCHED_HEADER" ) THEN
+
+        base_view = "TEST_SCHED_EXP_VIEW"
+
+    ELSEIF ( NOT BLANK ( base_table ) ) THEN
+
+        retval = FALSE
+        WriteToLog( "Export not supported for ":base_table)
+
+    ENDIF
+
+    RETURN ( retval )
+
+ENDROUTINE   { validation_routine }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE update_routine ( labtable )
+
+    ASSIGN AUTO_COMMIT_HEADER.COMMIT_SOURCE       = "ACTIVE"
+    ASSIGN AUTO_COMMIT_HEADER.COMMIT_DESTINATION  = "EXPORT"
+    ASSIGN AUTO_COMMIT_HEADER.MANUAL_BACKGROUND   = TRUE
+    ASSIGN AUTO_COMMIT_HEADER.ENABLE_RMB          = TRUE
+    ASSIGN AUTO_COMMIT_HEADER.COMMIT_VIEW         = base_view   { variable set in the validation routine }
+
+ENDROUTINE  { update_routine }
+
+{ ----------------------------------------------------------------------------- }
+
+ROUTINE prompt_BASE_table ( VALUE column     ,
+                            VALUE row        ,
+                            VALUE cell_width ,
+                                  window     ,
+                            VALUE is_display )
+
+    DECLARE old_val, val, tables, count, a_table
+
+    val     = SELECT AUTO_COMMIT_HEADER.BASE_table
+    old_val = val
+
+    IF is_display THEN
+
+        DISPLAY val ON LINE row FROM column TO column + cell_width - 1 IN WINDOW window FORMAT TEXT30
+
+    ELSE
+
+        ARRAY tables
+
+        a_table = SELECT SMP_TABLE_ARCOM.SYSTEM_TABLE WHERE EXPORT_TABLE = TRUE
+        count = 1
+
+        WHILE a_table <> EMPTY DO
+
+            tables [ count, 1 ] = a_table
+            tables [ count, 2 ] = a_table
+            count               = count + 1
+
+            NEXT SMP_TABLE_ARCOM
+            a_table = SELECT SMP_TABLE_ARCOM.SYSTEM_TABLE
+
+        ENDWHILE
+
+        tables [ count, 1 ] = ""
+        tables [ count, 2 ] = ""
+
+        PROMPT FOR val ON LINE row FROM column TO column + cell_width - 1 IN WINDOW window CHOOSE OUT_OF tables
+
+        IF val <> old_val THEN
+
+            ASSIGN AUTO_COMMIT_HEADER.BASE_TABLE  = val
+
+            IF ( val = "VERSIONED_ANALYSIS" ) OR ( val = "ANALYSIS_VIEW" ) THEN
+
+                val = "ANALYSIS"
+
+            ELSEIF ( val = "TEST_SCHED_HEADER" ) THEN
+
+                val = "TEST_SCHED"
+
+            ENDIF
+
+            ASSIGN AUTO_COMMIT_HEADER.COMMIT_VIEW = STRIP ( val ) : "_EXP_VIEW"
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { prompt_BASE_table }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE MENU_Export_data ( option_no )
+
+    DECLARE a_table   ,
+            ac_id     ,
+            ac_object ,
+            a_msg
+
+    ac_object = ""
+    a_table   = SELECT MASTER_MENU.TABLE_NAME WHERE PROCEDURE_NUM = option_no
+
+    IF ( a_table <> EMPTY ) AND ( VALID_TABLE ( a_table ) ) THEN
+
+        ac_id = SELECT AUTO_COMMIT_HEADER.IDENTITY WHERE BASE_TABLE = a_table AND REMOVEFLAG = FALSE
+
+        IF ( ac_id <> EMPTY ) THEN
+
+            WriteToLog("Object = ":ac_id)
+            interactive_commit ( ac_id, FALSE, ac_object, TRUE, TRUE )   { LIT_AUTO_COMMIT joined library }
+
+        ELSE
+
+            a_msg = internal_translate_message ( "LIT_AUTO_COMMIT_ERROR_MASTER_MENU" )  {"Invalid Master Menu/Export Setup table, export rules were not found for "}
+            WriteToLog( a_msg : a_table{, FALSE })
+
+        ENDIF
+
+    ELSE
+
+        a_msg = internal_translate_message ( "LIT_AUTO_COMMIT_ERROR_MASTER_MENU_TABLE" )   {"Invalid Master Menu, procedure must set table to export in field TABLE_NAME "}
+        WriteToLog( a_msg : option_no{, FALSE })
+
+    ENDIF
+
+ENDROUTINE   { menu_export_data }
+
+{ ---------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE WDT_Export_deliver_arc_files ( VALUE option_no )
+{WriteToLog("WDT_Export_deliver_arc_files")}
+
+    DECLARE a_id     ,
+            a_array  ,
+            a_cnt,
+            t_old
+
+    t_old      = GLOBAL ( "COMMITTED_TABLE_SET" )
+    { -------------------------------------------------------------- }
+    { Open log as very first thing done on WDT type program          }
+    { -------------------------------------------------------------- }
+
+    SET DATE FORMAT "MON-DZ-YZ"
+
+    a_logfile = STRIP ( LOGICAL ( "SMP$ARCHIVEFILES" ) ) : "\WDT_DELIVER_EXPORT_DATA_" : STRIP ( NOW ) : ".log"
+
+    RESTORE DATE FORMAT
+
+    internal_create_logfile(a_logfile)
+
+    ARRAY a_array
+
+    a_cnt = 0
+    a_id  = SELECT 'C_EXPORT_DELIVER_VIEW'.ZIP_FILE_ID WHERE DESTINATION_ADDRESS <> "" ORDER ON ORDER_NUMBER
+    WHILE ( a_id <> EMPTY ) DO
+
+            a_cnt            = a_cnt + 1
+            a_array[a_cnt,1] = a_id
+            a_array[a_cnt,2] = SELECT 'C_EXPORT_DELIVER_VIEW'.DESTINATION_ADDRESS
+            a_array[a_cnt,3] = SELECT 'C_EXPORT_DELIVER_VIEW'.IDENTITY
+            a_array[a_cnt,4] = SELECT 'C_EXPORT_DELIVER_VIEW'.ORDER_NUMBER
+            a_array[a_cnt,5] = SELECT 'C_EXPORT_DELIVER_VIEW'.DESTINATION_SYSTEM
+
+            NEXT 'C_EXPORT_DELIVER_VIEW'
+
+            a_id = SELECT 'C_EXPORT_DELIVER_VIEW'.ZIP_FILE_ID
+    ENDWHILE
+
+    { --------------------------------------------------------------------------------- }
+    { Read all in now create logfile write msgs as we process and do each one           }
+    { --------------------------------------------------------------------------------- }
+
+    IF ( a_cnt > 0 ) THEN
+
+        a_cnt = 1
+
+        WHILE ( a_array[a_cnt,1] <> EMPTY ) DO
+
+            {internal_write_logfile ( a_logfile, a_array[a_cnt,1] : a_array[a_cnt,2], C_MSG_LOW )}
+            {WriteToLog(STRIP(a_array[a_cnt,1]):"; ":STRIP(a_array[a_cnt,2]))}
+            {WriteToLog("internal_wdt_deliver_1_zip(":a_logfile:", ":GetArray(a_array):", ":a_cnt:")")}
+
+            internal_wdt_deliver_1_zip ( a_logfile, a_array, a_cnt )
+
+            a_cnt = a_cnt + 1
+
+        ENDWHILE
+
+    ENDIF  { a_cnt of something found to deliver }
+
+    { -------------------------------------------------------------- }
+    { Close logfile as very final step done in this process          }
+    { -------------------------------------------------------------- }
+
+    internal_close_logfile(a_logfile)
+
+    IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+        a_id = internal_translate_message ( "LIT_EXPORT_DATA_DELIVERY_COMPLETED" ) : a_cnt
+        WriteToLog( a_id)
+
+    ENDIF
+
+    SET GLOBAL "COMMITTED_TABLE_SET" TO t_old
+
+    RETURN
+
+ENDROUTINE   { WDT_export_deliver_arc_files }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_wdt_deliver_1_zip (       a_logfile,
+                                           a_array  ,
+                                     VALUE a_cnt    )
+
+        DECLARE status      ,
+                a_file      ,
+                a_file_only ,
+                a_dest
+
+    status      = "NOT_COPIED"
+    a_file      = STRIP ( a_array[a_cnt,1] )
+    a_file_only = internal_a_file_only ( a_file )
+    a_dest      = STRIP ( a_array[a_cnt,2] ) : "\" : a_file_only
+
+    WriteToLog(ASCII(10):"Copy   ":a_file:
+               ASCII(10):"To     ":a_dest:
+               ASCII(10))
+
+    IF ( FILE EXISTS ( a_file ) ) THEN
+
+        IF ( FILE EXISTS ( a_dest ) ) THEN
+
+            FILE DELETE a_dest, status
+
+            {internal_write_logfile ( a_logfile, "* WARNING, file existing on target, overwrite status for file ":a_dest:status, C_MSG_FULL )}
+            WriteToLog("* WARNING, file existing on target, overwrite status for file ":a_dest:status)
+
+        ENDIF
+
+        FILE COPY a_file, a_dest, status
+
+        IF status <> EMPTY THEN
+            {internal_write_logfile ( a_logfile, "** ERROR WRITING FILE ** ":a_dest:status, C_MSG_FULL )}
+            WriteToLog(ASCII(10):status)
+        ENDIF
+
+    ELSE
+
+        {internal_write_logfile ( a_logfile, "** ERROR FILE DOES NOT EXISTS ** ":a_file, C_MSG_FULL )}
+        WriteToLog("Source file don't exist: ":a_file)
+
+    ENDIF
+
+    internal_wdt_deliver_update_status ( a_logfile, a_file, a_dest, status, a_array, a_cnt )
+
+ENDROUTINE  {internal_wdt_deliver_1_zip }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_a_file_only ( a_file )
+
+    DECLARE a_byte, a_len, a_pos
+
+    a_len  = STRINGLENGTH ( a_file )
+    a_pos  = a_len
+    a_byte = GET_CHARACTER_AT ( a_file, a_pos )
+
+    WHILE ( a_byte <> "\" ) AND ( a_pos > 0 ) DO
+
+        a_pos  = a_pos - 1
+        a_byte = GET_CHARACTER_AT ( a_file, a_pos )
+
+    ENDWHILE
+
+    IF ( a_pos = 0 ) THEN
+
+        EXIT
+
+    ELSE
+
+        a_byte = STRIP ( RIGHTSTRING ( a_file, a_len - a_pos ) )
+
+    ENDIF
+
+    RETURN ( a_byte )
+
+ENDROUTINE  { internal_a_file_only }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_wdt_deliver_update_status (       a_logfile,
+                                                   a_file   ,
+                                                   a_dest   ,
+                                             VALUE a_status ,
+                                                   a_array  ,
+                                             VALUE a_cnt    )
+    DECLARE a_id, status
+
+    START WRITE TRANSACTION C_UPDATE_DELIVER_STATUS
+
+    a_msg  = "UPDATE_DESTINATION: ":ASCII(10):
+             "Source:      '":STRIP(a_array[a_cnt,1]):"';":ASCII(10):
+             "Destination: '":STRIP(a_array[a_cnt,2]):"';":ASCII(10):
+             "Entity:      '":STRIP(a_array[a_cnt,3]):"';":ASCII(10):
+             "Counter      '":STRIP(a_array[a_cnt,4]):"';":ASCII(10):
+             "Server       '":STRIP(a_array[a_cnt,5]):"'"
+    {a_msg  = "UPDATE_DESTINATION '":a_cnt:GetArray(a_array)}
+    status = ""
+    a_id   = SELECT AUTO_COMMIT_DESTINATION.DELIVERY_ATTEMPTS FOR UPDATE
+             WHERE IDENTITY           = a_array[a_cnt,3]
+             AND   ORDER_NUMBER       = a_array[a_cnt,4]
+             AND   DESTINATION_SYSTEM = a_array[a_cnt,5]
+
+    IF ( a_id <> EMPTY ) AND ( a_id <> LOCKED ) THEN
+
+        a_id = a_id + 1
+
+        IF ( a_status = EMPTY ) THEN
+
+            ASSIGN AUTO_COMMIT_DESTINATION.DATE_DELIVERED      = NOW
+            ASSIGN AUTO_COMMIT_DESTINATION.DELIVERY_SUCCESSFUL = TRUE
+
+        ENDIF
+
+        ASSIGN AUTO_COMMIT_DESTINATION.DELIVERY_ATTEMPTS = a_id
+        UPDATE AUTO_COMMIT_DESTINATION, status
+
+        IF ( status <> EMPTY ) THEN
+            {internal_write_logfile ( a_logfile, a_msg:status, C_MSG_FULL )}
+            WriteToLog(a_msg:" ":status)
+        ELSE
+            {internal_write_logfile ( a_logfile, a_msg, C_MSG_LOW )}
+            WriteToLog(a_msg)
+        ENDIF
+
+    ELSE
+
+        {internal_write_logfile ( a_logfile, a_msg:a_id, C_MSG_FULL )}
+        WriteToLog(a_msg:a_id)
+
+    ENDIF  { not empty or locked }
+
+    { ----------------------------------------------------- }
+    { No matter what save/end the transaction               }
+    { ----------------------------------------------------- }
+
+    IF ( status = EMPTY ) THEN
+        COMMIT
+    ELSE
+        ROLLBACK
+    ENDIF
+
+ENDROUTINE  {internal_wdt_deliver_update_status }
+
+{ ---------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE WDT_export_load_delivered_files ( VALUE option_no )
+
+    DECLARE a_status   ,
+            a_array    ,
+            a_cnt      ,
+            import_dir,
+            IsOkArray,
+            check_ok,
+            t_old
+
+    { -------------------------------------------------------------- }
+    { Open log as very first thing done on WDT type program          }
+    { -------------------------------------------------------------- }
+    t_old      = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    import_dir = STRIP ( LOGICAL ( "SMP$INSTALL" ) )
+
+    IF ( import_dir = "SMP$INSTALL" ) THEN
+
+        import_dir = LOGICAL ( "SMP$ROOT" ) : "\INSTALL"
+
+    ENDIF
+
+    SET DATE FORMAT "MON-DZ-YZ"
+
+        a_logfile  = import_dir : "\WDT_Deliver_Export_" : STRIP ( NOW ) : ".log"
+
+    RESTORE DATE FORMAT
+
+    internal_create_logfile(a_logfile)
+
+    { --------------------------------------------------------------------------------- }
+    { Any files found in the source dir need to be moved/expanded and table id's made   }
+    { --------------------------------------------------------------------------------- }
+
+    ARRAY a_array
+    ARRAY IsOkArray
+    a_cnt = 0
+
+    FILE FIND import_dir:"\*.arc", a_array, a_status
+
+    IF ( a_status = EMPTY ) THEN
+
+        { --------------------------------------------------------------------------------- }
+        { Read all in now create logfile write msgs as we process and do each one           }
+        { --------------------------------------------------------------------------------- }
+
+        IF ( SIZE_OF_ARRAY ( a_array ) > 0 ) THEN
+
+            a_cnt = 1
+
+            {WriteToLog("    Number of files to process: " : size_of_array(a_array))}
+
+            WHILE ( a_array[a_cnt] <> EMPTY ) DO
+
+                {internal_write_logfile ( a_logfile, a_array[a_cnt], C_MSG_LOW )}
+                {WriteToLog(a_array[a_cnt])}
+
+                IF ( internal_move_a_package ( a_array[a_cnt], "ZIP", FALSE, TRUE ) ) THEN
+
+                    {internal_write_logfile ( a_logfile, "COMPLETED_LOAD_SETUP" : a_array[a_cnt], C_MSG_LOW )}
+                    WriteToLog("COMPLETED_LOAD_SETUP: ":ASCII(10):"'":STRIP(a_array[a_cnt]):"'")
+{Changed by CONSULT-02 to remove imported files}
+                    IsOkArray[size_of_array(isOkArray) + 1] = a_array[a_cnt]
+{END Changed by CONSULT-02 to remove imported files}
+                ELSE
+
+                    {internal_write_logfile ( a_logfile, "*** ERROR_LOADING *** " : a_array[a_cnt], C_MSG_FULL )}
+                    WriteToLog("    *** ERROR_LOADING *** " : a_array[a_cnt])
+
+                ENDIF
+
+                a_cnt = a_cnt + 1
+
+            ENDWHILE
+
+
+        ENDIF  { a_cnt of something found to deliver }
+    ELSE
+
+        WriteToLog("    Could not find file. Reason: " : a_status)
+
+    ENDIF   { status from find files empty }
+
+    { -------------------------------------------------------------- }
+    { Close logfile as very final step done in this process          }
+    { -------------------------------------------------------------- }
+
+    {internal_close_logfile(a_logfile)}
+{    WriteToLog("COMPLETED":ASCII(10))}
+
+
+    IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+        IF ( a_cnt > 0 ) THEN
+
+            a_status = internal_translate_message ( "LIT_EXPORT_DATA_LOAD_COMPLETED" ) : a_cnt
+            FLASH_MESSAGES ( a_status, a_status, a_array, TRUE )
+
+        ELSE
+
+            a_status = internal_translate_message ( "LIT_EXPORT_DATA_LOAD_COMPLETED" )
+            WriteToLog( a_status)
+
+        ENDIF
+
+    ENDIF
+
+{BLOCK Changed by CONSULT-02. Loop through files to remove used.}
+    IF ( SIZE_OF_ARRAY ( IsOkArray ) > 0 ) THEN
+
+        a_cnt = 1
+
+        WHILE ( IsOkArray[a_cnt] <> EMPTY ) DO
+
+            IF FILE EXISTS (IsOkArray[a_cnt]) THEN
+                FILE DELETE IsOkArray[a_cnt], check_ok
+
+                IF ( check_ok <> EMPTY )
+                    WriteToLog( "   Could not remove file " : IsOkArray[a_cnt] : ". Message: " : check_ok)
+                ENDIF
+
+            ENDIF
+
+            a_cnt = a_cnt + 1
+
+        ENDWHILE
+
+    ENDIF
+{END BLOCK Changed by CONSULT-02. Loop through files to remove used.}
+
+SET GLOBAL "COMMITTED_TABLE_SET" TO t_old
+
+    RETURN
+
+ENDROUTINE   { WDT_export_load_delivered_files }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_create_logfile ( a_logfile )
+
+    FILE CREATE a_logfile, status
+    FILE EXTEND a_logfile, status
+
+    IF ( status = EMPTY ) THEN
+
+        internal_write_logfile ( a_logfile, NOW, C_MSG_HIGH )
+
+    ENDIF
+
+ENDROUTINE {internal_create_logfile}
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_close_logfile ( a_logfile )
+
+    a_msg = " COMPLETED | " : NOW : " | "
+
+    FILE WRITE a_logfile, a_msg, status
+
+    FILE CLOSE a_logfile, status
+
+ENDROUTINE { internal_close_logfile }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_write_logfile (       a_logfile ,
+                                 VALUE a_msg     ,
+                                 VALUE msg_level )
+
+
+    a_msg = msg_level :" | " : NOW : " | " : a_msg
+
+    FILE WRITE a_logfile, a_msg, status
+
+ENDROUTINE  { internal_write_logfile }
+
+{ ---------------------------------------------------------------------------- }
+
+ROUTINE internal_translate_message ( VALUE message )
+
+    DECLARE val        ,
+                 msg_pointer,
+                 stlen      ,
+                 save_text  ,
+                 a_amper
+
+    save_text   = GLOBAL ( "FORMAT_TEXT" )
+    message     = STRIP ( message )
+    a_amper     = INDEX ( message, "&&" )
+    stlen       = STRINGLENGTH ( message )
+
+    { --------------------------------------------------------------------------------------- }
+    { Messages can be displayed as pointers, or can be MESSAGE_PRN_###, or a specific message }
+    { --------------------------------------------------------------------------------------- }
+
+    SET FORMAT "9999"
+
+    { ------------------------------------------------------------------------------ }
+    { Message is like GET_USER_MESSAGE ( an_id, 2 )                                  }
+    { ------------------------------------------------------------------------------ }
+
+    IF ( a_amper > 1 ) THEN
+
+        msg_pointer = STRIP ( RIGHTSTRING ( message, stlen - ( a_amper + 1 ) ) )
+        message     = STRIP ( LEFTSTRING ( message, a_amper - 1 ) )
+
+        IF ( NUMTEXT ( msg_pointer ) ) THEN
+
+            msg_pointer = NUMERIC ( msg_pointer )
+
+        ELSE
+
+            msg_pointer = 1
+
+        ENDIF
+
+    ELSE
+
+        msg_pointer = 1
+
+    ENDIF
+
+    { --------------------------------------------------------- }
+    { If message is MESSAGE_PRN do one way, else the other way  }
+    { --------------------------------------------------------- }
+
+    IF ( INDEX ( message, "MESSAGE_PRN" ) > 0 ) THEN
+
+        message = ROUND ( message # "MESSAGE_PRN_" )
+
+        val = GET MESSAGE ( message, msg_pointer )
+
+    ELSE
+
+        val = GET_USER_MESSAGE ( message, msg_pointer )
+
+    ENDIF
+
+    { --------------------------------------------------------- }
+    { Any mistake then return the message pointer...            }
+    { --------------------------------------------------------- }
+
+    IF val = ERROR THEN
+
+        val = STRIP ( message )
+
+    ENDIF
+
+    SET FORMAT save_text
+
+    RETURN ( val )
+
+ENDROUTINE    { internal_translate_message }
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}
