@@ -1,0 +1,242 @@
+JOIN STANDARD_LIBRARY std_prompt
+JOIN STANDARD_LIBRARY std_flags
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $stb_glbl
+
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+
+{ ============================================================================ }
+
+CONSTANT Column_prompt_text =  2
+CONSTANT Column_prompt      = 21
+CONSTANT Prompt_text_width  = Column_prompt - Column_prompt_text - 1
+
+CONSTANT Row_prompt_study   = 1
+CONSTANT Row_prompt_printer = 2
+CONSTANT Row_prompt_copies  = 3
+
+CONSTANT Col_sample = 1
+CONSTANT Col_copies = 2
+
+CONSTANT No_sample = "         0"
+
+CONSTANT Q = ASCII(34)
+CONSTANT QC = Q : ","
+
+{ ============================================================================ }
+
+stb_pull_labels( "" )
+EXIT
+
+{ ============================================================================ }
+
+GLOBAL ROUTINE stb_pull_labels( VALUE menu_option )
+
+  DECLARE form
+  DECLARE window_msg
+  DECLARE study_id
+  DECLARE report_id
+  DECLARE printer_id
+  DECLARE pulls  ARRAY pulls  ARRAYSIZE (0,2)
+
+  SET NAME "DEFER/"
+
+  initialise( form )
+
+  form.start_prompt()
+  form.wait_prompt()
+
+  IF ( form.get_lastkey() = "DO" ) THEN
+
+    study_id   = form.prompt_objects[1].value
+    printer_id = form.prompt_objects[2].value
+
+    put_up_message(
+            GET_USER_MESSAGE( "stb_label_reading", 2 ),
+            GET_USER_MESSAGE( "stb_label_reading", 1 ),
+            window_msg
+            )
+
+    read_study( study_id, report_id )
+    read_pulls( study_id, pulls )
+
+
+    remove_message( window_msg )
+
+    print_labels( report_id, printer_id, pulls )
+
+  ENDIF
+
+  form.end_prompt()
+
+ENDROUTINE
+
+{ ============================================================================ }
+
+ROUTINE initialise( form )
+
+  DECLARE study_prompt_object
+  DECLARE printer_prompt_object
+
+  CREATE OBJECT "std_form", form
+
+  form.height = 3
+  form.width  = 50
+  form.row    = 10
+  form.column = 20
+  form.return_behaviour = FORM_RETURN_STAY
+  form.header = GET_USER_MESSAGE( "stb_label_print_pull_title", 1 )
+
+  form.add_display(
+          PAD( GET_USER_MESSAGE( "stb_label_study_prompt", 1 ), " ", Prompt_text_width ),
+          Column_prompt_text,
+          Row_prompt_study,
+          PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD
+          )
+
+  form.add_display(
+          PAD( GET_USER_MESSAGE( "stb_label_printer_prompt", 1 ), " ", Prompt_text_width ),
+          Column_prompt_text,
+          Row_prompt_printer,
+          PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD
+          )
+
+  PROMPT OBJECT study_prompt_object
+          ON LINE Row_prompt_study
+          FROM Column_prompt
+          BROWSE ON pds_study
+          WITH ( always_validate = TRUE,
+                 vgl_library = GLOBAL( "current_library" ),
+                 validation_routine = "study_validation"
+               )
+
+
+  PROMPT OBJECT printer_prompt_object
+          ON LINE Row_prompt_printer
+          FROM Column_prompt
+          BROWSE ON printer
+          WITH ( value = GLOBAL( "label_id" ),
+                 always_validate = TRUE,
+                 vgl_library = GLOBAL( "current_library" ),
+                 validation_routine = "printer_validation"
+               )
+
+  form.add_prompt( study_prompt_object)
+  form.add_prompt( printer_prompt_object)
+
+ENDROUTINE
+
+{ ============================================================================ }
+
+ROUTINE study_validation ( prompt_object )
+
+  RETURN( NOT blank( prompt_object.value ) )
+
+ENDROUTINE
+
+{ ============================================================================ }
+
+ROUTINE printer_validation ( prompt_object )
+
+  RETURN( NOT blank( prompt_object.value ) )
+
+ENDROUTINE
+
+{ ============================================================================ }
+
+GLOBAL ROUTINE read_study( VALUE study_id,
+                                 report_id
+                          )
+
+  report_id = SELECT pds_study.label_name
+              WHERE  identity = study_id
+
+  IF blank( report_id ) THEN
+    report_id = LABEL_DEFAULT_REPORT
+  ENDIF
+
+  COMMIT
+
+ENDROUTINE
+
+{ ============================================================================ }
+
+ROUTINE read_pulls( VALUE study_id,
+                          pulls
+                  )
+
+  DECLARE i
+  DECLARE sample_id
+  i = 0
+
+  sample_id = SELECT pds_study_pull.created_sample_id
+              WHERE  header = study_id
+              ORDER ON layer_factor, time_factor, c_factor, pull_num
+
+  WHILE ( sample_id <> EMPTY )
+
+    IF ( sample_id = No_sample ) THEN
+
+      { No sample for pull - ignore }
+
+    ELSE
+
+      i = i + 1
+
+      pulls[i,Col_sample] = sample_id
+      pulls[i,Col_copies] = SELECT pds_study_pull.label_number
+
+    ENDIF
+
+    NEXT pds_study_pull
+    sample_id = SELECT pds_study_pull.created_sample_id
+
+  ENDWHILE
+
+  COMMIT
+
+ENDROUTINE
+
+ROUTINE print_labels( report_id, printer_id, pulls )
+
+  DECLARE i
+  DECLARE parameter
+  DECLARE labels_printed
+
+  labels_printed = FALSE
+
+  i = 1
+
+  WHILE ( pulls[i,Col_sample] <> EMPTY ) DO
+
+    IF ( pulls[i,Col_copies] > 0 ) THEN
+
+      parameter = Q : report_id : QC :
+                  Q : pulls[i,Col_sample] : QC :
+                  Q : printer_id : QC :
+                  Q : pulls[i,Col_copies] : Q
+
+      MENUPROC MENU_OPTION_RUN_REPORT, parameter
+
+      labels_printed = TRUE
+
+    ENDIF
+
+    i = i + 1
+
+  ENDWHILE
+
+  IF ( labels_printed = FALSE )
+
+    flash_gui( GET_USER_MESSAGE( "stb_label_reading", 1 ),
+               GET_USER_MESSAGE( "stb_label_no_labels", 1 ),
+               1,
+               EMPTY
+             )
+  ENDIF
+
+ENDROUTINE
+

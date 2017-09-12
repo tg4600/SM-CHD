@@ -1,0 +1,284 @@
+{******************************************************************************
+*
+* Module Name   : $SAMPSTAT
+*
+* Purpose       : smp report for user defined code which is called when a
+*                 sample changes status
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+{------------------------------------------------------------------------------}
+{  CHG        DATE      PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{ M1748       17112006  HBe     Code from $AUX_RVP moved to $SAMPSTAT.         }
+{ M1759       19122006  HBe     Code from $SAMPSTAT moved to global routine    }
+{                               recieving_samples in report TRIGGER_ROUTINES.  }
+{                                                                              }
+{******************************************************************************}
+
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+JOIN LIBRARY $INCIDENT_LOGIN
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TRIGGER_ROUTINES
+JOIN LIBRARY TOOLBOX
+
+ROUTINE set_status_a
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->A")
+    ASSIGN sample . date_exp = NOW
+    IF (SELECT all_sample . date_first_authorised > DATE("01-JAN-1900")) THEN
+        WriteToLog("date_first_authorised was ":SELECT all_sample . date_first_authorised)
+    ELSE
+        WriteToLog("date_first_authorised = ":NOW)
+        ASSIGN sample . date_first_authorised = NOW
+    ENDIF
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_i
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->I")
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_c
+
+    DECLARE NewStatus, job, smp, count, i, SmpArr, isXML
+    DECLARE sample, Status, OldStatus, Tests
+
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->C")
+    ASSIGN sample . date_exp = NOW
+
+    sample      = STRIP(SELECT sample.id_numeric)
+    job         = SELECT all_sample.job_name
+
+    Status       = SELECT all_sample.status
+    OldStatus    = SELECT all_sample.old_status
+    Tests        = SELECT COUNT test WHERE sample = sample
+
+    IF (Tests = 0) AND ((OldStatus = " ") OR (OldStatus = "H") OR (OldStatus = "U")) THEN
+        NewStatus = "X"
+        ChangeSampleStatus(sample, NewStatus)
+    {ELSE
+        NewStatus = "C"
+        ChangeSampleStatus(sample, NewStatus)}
+    ENDIF
+
+    IF (status <> " ") THEN
+        count = SELECT COUNT sample
+                 WHERE job_name = job
+                   AND status = "V"
+        IF (count <= 1) THEN
+            ARRAY SmpArr ARRAY_SIZE(0, 1)
+
+            smp = SELECT DISTINCT all_sample.id_numeric         { *** Select all samples, still On Hold *** }
+                WHERE job_name = job AND status = "H" AND old_status = ""
+{                  AND (status = "U"
+                    OR status = "H")}
+
+            WHILE smp <> EMPTY
+                IF NUMTEXT(SMP) THEN
+                    IF (NUMERIC(SMP) <> 0) THEN
+                        IF (NUMERIC(SMP) <> sample) THEN
+                            SmpArr[size_of_array(SmpArr) + 1, 1] = SMP
+                            WriteToLog("Add ":SMP:" to SmpArr")
+                        ENDIF
+                    ENDIF
+                ENDIF
+                NEXT all_sample
+                smp = SELECT all_sample.id_numeric
+            ENDWHILE
+            WriteToLog("Array created for job: ":STRIP(job):" based on sample: ":STRIP(sample):"; ":GetArray(SmpArr))
+
+            i = 1
+            WHILE i <= size_of_array(SmpArr)                { *** Cancel all samples, not received in QC *** }
+                WriteToLog("Cancel sample ":STRIP(SmpArr[i,1]):" related to: ":STRIP(sample))
+                NewStatus = "X"
+                ChangeSampleStatus(SmpArr[i,1], NewStatus)
+                i = i + 1
+            ENDWHILE
+        ENDIF
+    ENDIF
+
+    isXML = FALSE
+
+    IF user_cluster_exists ( "MES_TRANSFER" ) THEN
+        isXML   = read_user_global ( "MES_TRANSFER", "CHANGE_STATUS" )
+    ENDIF
+
+    IF NOT isXML THEN
+        IF (status = "V") THEN
+            fm("Result entry completed on sample ": sample)
+        ENDIF
+    ENDIF
+    {handle_warnings() }
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_h
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->H")
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_r
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->R")
+    ASSIGN sample . date_exp = NOW
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_s
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->S")
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_u
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->U")
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_v
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->V")
+    IF (INDEX("UH", Status) > 0) THEN
+        sample = SELECT sample . id_numeric FOR UPDATE WHERE id_numeric = sample
+        IF sample <> EMPTY THEN
+            ASSIGN sample . recd_date = NOW
+            {ASSIGN sample . date_ideal_complete = IdealCompleted }
+        ENDIF
+    ENDIF
+    handle_warnings()
+    IU(sample)
+ENDROUTINE
+
+ROUTINE set_status_w
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->W")
+    IU(sample)
+ENDROUTINE
+
+
+ROUTINE set_status_x
+    DECLARE sample, Status
+    sample     = STRIP(SELECT sample.id_numeric)
+    Status     = SELECT all_sample.status WHERE id_numeric = sample
+    IF SUBSTRING(status, 1, 3) = "---" THEN
+        status = " "
+    ENDIF
+    WriteToLog(sample:": ":Status:"->X")
+    ASSIGN sample . date_exp = NOW
+    IU(sample)
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Update sample
+* Parameters   : sample - id_nukeric to handle
+* Return Value : N/A
+**************************************************************************}
+ROUTINE IU(VALUE sample)
+
+DECLARE Job, product, prod_ver, status
+
+    status      = select sample.old_status
+    job         = STRIP(SELECT sample.job_name)
+    product     = select sample.product_name
+    IF (product = EMPTY) OR (STRIP(product) = "") THEN
+        product = SELECT job_header.product_name WHERE job_name = job
+    IF STRIP(product) = "" THEN
+        product = INDEX(job, "/") - 1
+        product = LEFTSTRING(job, product)
+    ENDIF
+    ENDIF
+    
+    product     = SELECT max_active_mlp_ver.identity WHERE identity = product
+    
+    IF product <> EMPTY THEN
+    prod_ver    = select max_active_mlp_ver.max_version where identity = product
+    ELSE
+        prod_ver    = ""
+    ENDIF
+        
+    IF (STRIP(Status) = "") 
+        ASSIGN sample.product_version = prod_ver
+        job = SELECT job_header.job_name WHERE job_name = job AND inspection_type = "04"
+        IF (job <> EMPTY) AND (NOW - (SELECT job_header.date_created WHERE job_name = job) > INTERVAL("   0 00:05:00")) THEN
+            insert_iu("UPDATE", "JobDateResReq", Job, "")
+        ENDIF    
+    ENDIF
+
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

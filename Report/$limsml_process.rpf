@@ -1,0 +1,1248 @@
+{Compared 20140123 /DKTBG}
+{*******************************************************************************
+
+* Module Name   : $LIMSML_PROCESSOR
+
+* Purpose       : LIMSML Processor
+
+* Document Ref  : None
+
+*******************************************************************************}
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_VGL_TOOLS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $BL
+JOIN LIBRARY $BL_DATASET
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+
+{******************************************************************************}
+
+GLOBAL CONSTANT LIMSML_PROCESS	= "LIMSML_PROCESS"
+
+CONSTANT XML_RQ	= "request_"
+CONSTANT XML_RP	= "response_"
+CONSTANT XML_LOCATION	= "smp$textreports:" {Location to store xml file}
+CONSTANT XML_EXT	= ".xml"
+CONSTANT DATE_FORMAT 	= "H24MISS"{Tag to add to the file name}
+
+{The following example routines call different vgl routines, within the bl logic}
+
+{example_usage_file ( )}
+example_usage_sample_login ( )
+{example_usage_browse ( )}
+
+
+{*******************************************************************************
+*                      G L O B A L   R O U T I N E S
+*******************************************************************************}
+
+GLOBAL ROUTINE limsml_process_define_class
+
+{ This global routine is used for initialising the LIMSML_PROCESS classes.
+* This does not need to be called if the library has already been initialised
+* elsewhere.
+*
+* Parameters   : None
+* Return Value : None
+*
+*******************************************************************************}
+
+	{**********************************************************************}
+	{* LIMSML Document Class                                              *}
+	{**********************************************************************}
+
+	DEFINE CLASS LIMSML_PROCESS
+
+		{**************************************************************}
+		{* Process Class managers LIMSML requests and responses.      *}
+		{* This call is responsible for calling actions related to    *}
+		{* entities.                                                  *}
+		{**************************************************************}
+
+		INITIALISATION
+
+		PROPERTIES
+
+			"request"	, {Request transaction               }
+			"response"      , {Response transaction              }
+			"tran_error"    , {Base error to store all errors    }
+			"return_type"	, {Expected response fromat          }
+			"entity"	, {Limsml entity being processed     }
+			"action"	, {Limsml action being processed     }
+			"identity"        {Current transaction id            }
+
+
+		ACTIONS
+
+			"execute"	,  {Run relevent vgl routine          }
+			"bl_error_start",  {Clear errors from the bl          }
+			"bl_error_end"  ,  {Check errors and build xml erros  }
+			"create_data"	,  {The reponse is going to be data   }
+			"create_system" ,  {The reponse is going to be system }
+			"add_rooterror" ,  {Add a error to store bl errors    }
+			"get_rooterror" ,  {Get a error to store bl errors    }
+			"add_handle_error",{Add a error from the handler      }
+			"in_transaction",  {Process the in transaction        }
+			"check_menu"    ,  {Check user can access func        }
+			"menuproc_error",  {Process an error from an menu call}
+			"check_entity"  ,  {Validate entity and action        }
+			"return"	,  {Process one return value          }
+			"check_parameters" {Check mandatory Parameters        }
+
+	END CLASS
+
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+{*        L I M S M L    P R O C E S S       C L A S S                        *}
+{******************************************************************************}
+
+ROUTINE limsml_process_class_initialisation ( self )
+
+{ This initialisation routine is called when an object is created from the
+* LIMSML Process Class.
+*
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : None
+*
+*******************************************************************************}
+
+	CREATE OBJECT HELPER_DOCUMENT, self . request
+	self . response = EMPTY
+	self . entity = EMPTY
+	self . action = EMPTY
+	self . identity = EMPTY
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_create_data ( self )
+
+{ Set what type of response object will be created. If a data response is needed
+* lots of xml objects are not needed, as the data will be passed back in raw form
+* (ADO).  For example the response transaction will mainly contain a data item
+* with the recordset within it.
+*
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : None
+*
+*******************************************************************************}
+
+	CREATE OBJECT HELPER_DOCUMENT, self . response
+
+	self . add_rooterror ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_create_system ( self )
+
+{ Set what type of response object will be created. If a system response is needed
+* a basic xml document needs to be created before system objects can be added.
+* Also xml build routines are needed to the system objects can be created with
+* ease.
+*
+*
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : None
+*
+*******************************************************************************}
+
+	CREATE OBJECT HELPER_RICHDOCUMENT, self . response
+
+	self . add_rooterror ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_execute ( self , entity_obj )
+
+{ Lookup the command and entity and call the relevent VGL routine
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*                entity_obj,[HELPER_ENTITY]Request Entity
+* Return Value : [Boolean]All Ok
+*
+*******************************************************************************}
+
+	DECLARE action, action_obj, returnvalue, proc_num, ok, validate
+
+	returnvalue = EMPTY
+	proc_num = EMPTY
+
+	self . entity = EMPTY
+	self . action = EMPTY
+	ok = TRUE
+
+	{**********************************************************************}
+	{* Check number of actions, return warning if more than one           *}
+	{**********************************************************************}
+
+	self . entity = entity_obj . gettype()
+
+	IF entity_obj . actiontotal() = 1 THEN
+
+		action_obj = entity_obj . getaction ( 0 )
+		self . action = action_obj . getcommand()
+
+	ELSE
+
+		self . tran_error. adderrorall(
+			GET_USER_MESSAGE("LIMSML_ERROR_ACTION_SUPPORT", 2 ),
+			GET_USER_MESSAGE("LIMSML_ERROR_ACTION_SUPPORT", 2 ),
+		   	GET_USER_MESSAGE("LIMSML_ERROR_ACTION_SUPPORT", 1 ),
+			GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+			GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ))
+
+	ENDIF
+
+	{**********************************************************************}
+	{* If global is false don't check the incoming data, but still check  *}
+	{* the entity.                                                        *}
+	{**********************************************************************}
+
+	validate = GLOBAL ( "WEB_LIMSML_VALIDATE" )
+
+	IF ( NOT validate ) THEN
+
+		action = SELECT limsml_entity_action . action
+		         WHERE action = self . action
+	         	 AND   entity = self . entity
+
+	        IF ( action = EMPTY ) THEN
+
+	        	self . entity = GET_USER_MESSAGE("LIMSML_ENTITY", 1 )
+
+	        ENDIF
+
+	ELSE
+
+		ok = self . check_entity ()
+
+		IF ( ok ) THEN
+
+			ok = self . check_parameters ( action_obj )
+
+		ENDIF
+
+
+	ENDIF
+
+	IF ( ok ) THEN
+
+
+	{**********************************************************************}
+	{* Run the appropriate menu passing the entity, action and params     *}
+	{**********************************************************************}
+
+		proc_num = self . check_menu ( STRIP ( self . entity ) ,
+					       STRIP ( self . action ) )
+
+		IF ( proc_num <> EMPTY ) THEN
+
+			self . bl_error_start ()
+
+			MENUPROC proc_num PARAMETERS self,
+						     entity_obj,
+						     action_obj,
+						     self . response
+			                  RETURNING returnvalue
+			                  NO NEW TRANSACTION
+
+			IF ( returnvalue <> EMPTY ) THEN
+
+				self . return ( returnvalue , entity_obj )
+
+			ENDIF
+
+			{Check if crash has occurred in the menu proc.}
+			self . menuproc_error ()
+
+			self . bl_error_end ()
+
+		ENDIF
+
+
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_menuproc_error ( self )
+
+{ Store a menu proc crash within errors.
+* Parameters   : Self, [LIMSML_PROCESS]
+*
+* Return Value : None
+*
+*******************************************************************************}
+
+	DECLARE root_error, crash_error, file_error, filename, error_message
+
+	IF menuproc_failed ( error_message, filename ) THEN
+
+		root_error = self . get_rooterror()
+
+		crash_error = root_error . adderrorall( error_message ,
+			         	error_message ,
+			          	GET_USER_MESSAGE("LIMSML_ERROR_VGLCRASH", 1 ) ,
+			          	GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 3 ) ,
+			          	GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+		file_error = crash_error . adddumpfile ( filename, FALSE, FALSE )
+
+		IF ( NOT BLANK (file_error) ) THEN
+
+			root_error . adderrorall( file_error ,
+				GET_USER_MESSAGE("LIMSML_ERROR_VGLCRASH", 1 ) : file_error ,
+				GET_USER_MESSAGE("LIMSML_ERROR_VGLCRASH", 1 ) ,
+				GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 3 ) ,
+				GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+		ENDIF
+
+	ENDIF
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_check_entity ( self )
+
+{ Validate the entity and action.
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*
+* Return Value : [Boolean]If entity is found
+*******************************************************************************}
+
+	DECLARE action, rq_return, ok, valid_bl, action_message, entity_message,
+		response_message
+
+
+	ok = TRUE
+
+	{**********************************************************************}
+	{* Look up the action. See if its in Generic if not specific.         *}
+	{* Also check if entity type is part of the business logic.           *}
+	{**********************************************************************}
+	action = SELECT limsml_entity_action . action
+	         WHERE action = self . action
+	         AND   entity = self . entity
+
+
+	IF ( action = EMPTY ) THEN
+
+		valid_bl = ( bl_system( ) . get_type( self . entity ) <> EMPTY )
+
+		IF valid_bl <> EMPTY THEN
+
+			self . entity = GET_USER_MESSAGE("LIMSML_ENTITY", 1 )
+
+			action = SELECT limsml_entity_action . action
+		         	WHERE action = self . action
+		         	AND   entity = self . entity
+
+
+	{**********************************************************************}
+	{* Check the request has mandatory parameters                         *}
+	{**********************************************************************}
+
+
+			IF ( action = EMPTY ) THEN
+
+				message_fetch ( "LIMSML_ERROR_ACTION" , action_message )
+				message_add_parameter ( action_message, self . action )
+				message_add_parameter ( action_message, self . entity )
+
+				ok = FALSE
+				self . tran_error. adderrorall(
+					message_get_text ( action_message , 2 ) ,
+					message_get_text ( action_message , 2 ) :
+					  message_get_text ( action_message , 3 ) ,
+					message_get_text ( action_message , 1 ) ,
+					GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+					GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+			ENDIF
+
+		ELSE
+
+			message_fetch ( "LIMSML_ERROR_ENTITY" , entity_message )
+			message_add_parameter ( entity_message, self . entity )
+
+			ok = FALSE
+			self . tran_error. adderrorall(
+			 message_get_text ( entity_message , 2 ) ,
+			 message_get_text ( entity_message , 2 ) :
+			   message_get_text ( entity_message , 3 ),
+			 message_get_text ( entity_message , 1 ) ,
+			 GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ),
+			 GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+		ENDIF
+
+	ENDIF
+
+	IF ( action <> EMPTY ) THEN
+
+		rq_return = STRIP ( SELECT limsml_entity_action . return_type )
+
+		IF ( rq_return <> GET_USER_MESSAGE("LIMSML_RESPONSE", 1 ) ) THEN
+
+			IF ( rq_return <> self . return_type ) THEN
+
+				message_fetch ( "LIMSML_ERROR_RESPONSE_INTER" , response_message )
+				message_add_parameter ( response_message, rq_return )
+				message_add_parameter ( response_message, self . return_type )
+
+
+				ok = FALSE
+				self . tran_error. adderrorall(
+				    message_get_text ( response_message , 2 ) ,
+				      message_get_text ( response_message , 2 ) :
+				    message_get_text ( response_message , 3 ),
+				    message_get_text ( response_message , 1 ) ,
+				    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+				    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+			ENDIF
+
+		ENDIF
+
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_check_menu ( self ,
+				           VALUE entity_type ,
+				           VALUE action_name )
+
+{ Validate the entity and action against available menu procedure.
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*                Entity_type,[Text]Entity type
+*                Action_name,[Text]Command Name
+*
+* Return Value : [Text]Menu Procedure
+*******************************************************************************}
+
+	DECLARE proc_num, menu_message, access_message
+
+	proc_num = EMPTY
+
+	proc_num = SELECT master_menu . procedure_num
+		WHERE limsml_entity = entity_type
+		AND limsml_action = action_name
+		AND action_type = "LIMSML"
+
+
+	IF ( proc_num <> EMPTY ) THEN
+
+
+		IF ( NOT CAN_ACCESS_MENU ( proc_num ) ) THEN
+
+			proc_num = STRIP( proc_num )
+			message_fetch ( "LIMSML_ERROR_USERACCESS" , access_message )
+			message_add_parameter ( access_message, proc_num )
+
+			self . tran_error . adderrorall(
+			    message_get_text ( access_message , 2 ) ,
+			    message_get_text ( access_message , 2 ) ,
+			    message_get_text ( access_message , 1 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 5 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+			proc_num = EMPTY
+
+		ENDIF
+
+
+	ELSE
+
+		message_fetch ( "LIMSML_ERROR_MENU" , menu_message )
+		message_add_parameter ( menu_message, entity_type )
+		message_add_parameter ( menu_message, action_name )
+
+		self . tran_error . adderrorall(
+		    message_get_text ( menu_message , 2 ) ,
+		    message_get_text ( menu_message , 2 ) : message_get_text ( menu_message , 3 ),
+		    message_get_text ( menu_message , 1 ) ,
+		    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 5 ),
+		    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+	ENDIF
+
+	RETURN ( proc_num )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_check_parameters ( self ,
+						 action_obj )
+
+{ Check the request contains mandatory parameters, and invalid parameters.
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*                Entity_type,[Text]Entity type
+*                Action_name,[Text]Command Name
+*                Action_obj,[HELPER_ACTION]Current Action object
+*                Root_error,[HELPER_ERROR]Root Error Object
+*
+* Return Value : [Boolean]TRUE if all mandatory parameters are found.
+*******************************************************************************}
+
+	DECLARE param_name, param_name_db, found_params, param_obj, param_num,
+	        param_count, param_in_db
+
+	found_params = TRUE
+	param_in_db = EMPTY
+
+
+	param_num = action_obj . paramtotal()
+	param_count = 0
+
+
+	WHILE ( param_count <= param_num - 1 ) DO
+
+		param_obj = action_obj . get_param_by_index( param_count )
+		param_name = TOUPPER ( STRIP ( param_obj . getname() ) )
+
+
+	{**********************************************************************}
+	{* Check if parameter is in the database, if not flag an error.       *}
+	{**********************************************************************}
+
+		param_in_db = SELECT limsml_entity_param . parameter
+					WHERE entity = self . entity
+					AND   action = self . action
+					AND   parameter = param_name
+
+		IF ( param_in_db = EMPTY ) THEN
+			found_params = FALSE
+
+			self . tran_error . adderrorall(
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 4 ) : STRIP ( param_name  ),
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 4 ) : STRIP ( param_name  ):
+			    	GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 5 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 3 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+		ENDIF
+
+		param_count = param_count + 1
+		param_obj . reset()
+
+	ENDWHILE
+
+
+	{**********************************************************************}
+	{* Check all mandatory parameters are included within the xml         *}
+	{**********************************************************************}
+
+	param_name_db = SELECT limsml_entity_param . parameter
+			WHERE entity = self . entity
+			AND   action = self . action
+			AND   is_mandatory = TRUE
+
+
+	WHILE ( param_name_db <> EMPTY ) DO
+
+		param_obj = action_obj . get_param_by_name ( STRIP(param_name_db) )
+
+		IF ( param_obj = EMPTY ) THEN
+
+			found_params = FALSE
+
+			self . tran_error . adderrorall(
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 2 ) :
+				STRIP ( param_name_db  ),
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 2 ) :
+				STRIP ( param_name_db  ),
+			    GET_USER_MESSAGE("LIMSML_ERROR_PARAMETER", 1 ),
+			    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ),
+			    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+
+		ELSE
+			param_obj . reset()
+			param_obj = EMPTY
+
+		ENDIF
+
+
+
+		NEXT limsml_entity_param
+		param_name_db = SELECT limsml_entity_param . parameter
+
+
+	ENDWHILE
+
+
+	RETURN ( found_params )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_in_transaction ( self , VALUE xml )
+
+{ Process the in_transaction, to deserialize and set objects up.
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*                Xml,[Text]Xml String which represent the transaction request.
+* Return Value : [HELPER_TRANSACTION]Request transaction
+*
+*******************************************************************************}
+
+	DECLARE transaction_obj, error_message
+
+
+	transaction_obj = EMPTY
+
+	{**********************************************************************}
+	{* This will deserialize the string                                   *}
+	{**********************************************************************}
+
+	error_message = self . request . addtransaction ( xml )
+
+	IF ( BLANK(error_message) ) THEN
+
+		transaction_obj = self . request . gettransaction ( 0 )
+
+		self . identity = transaction_obj . get_identity ()
+
+		self . return_type = transaction_obj . get_resp_type()
+
+
+	{**********************************************************************}
+	{* Check request type.                                                *}
+	{**********************************************************************}
+
+		IF ( self . return_type = "SYSTEM" ) THEN
+
+			self . create_system ( )
+
+		ELSEIF ( self . return_type = "DATA" ) THEN
+
+			self . create_data ( )
+
+		ELSE
+
+			self . create_system ( )
+			self . add_rooterror ( )
+			self . tran_error . adderrorall(
+			    GET_USER_MESSAGE("LIMSML_ERROR_RESPONSE_TYPE", 2 ) :
+			    		self . return_type,
+			    GET_USER_MESSAGE("LIMSML_ERROR_RESPONSE_TYPE", 2 ) :
+			    		self . return_type,
+			    GET_USER_MESSAGE("LIMSML_ERROR_RESPONSE_TYPE", 1) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+			    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+		ENDIF
+
+
+
+	ELSE
+		self . create_system ( )
+		self . add_rooterror ( )
+		self . tran_error . adderrorall(
+		    error_message ,
+		    error_message ,
+		    GET_USER_MESSAGE("LIMSML_ERROR_XML", 1) ,
+		    GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 4 ) ,
+		    GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+
+	ENDIF
+
+
+
+	RETURN ( transaction_obj )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_bl_error_start ( self )
+
+{ Clear error's from business logic
+
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : None
+*
+*******************************************************************************}
+
+	bl_system ( ) . get_errors ( ) . clear ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_bl_error_end ( self )
+
+{ Transfer errors from business logic to limsml errors.
+
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : [Boolean]Problems found
+*
+*******************************************************************************}
+
+	DECLARE errors, summ, code, desc, problems, enum, curr_error, full_description,
+	        base_error, call_stack, stack_text, stack_enum, stack_frame
+
+	problems = bl_system ( ) . error_flagged ( )
+
+	IF problems THEN
+
+		errors = bl_system ( ) . get_errors ( )
+
+		enum = errors . get_enumerator( )
+
+		WHILE enum . move_next ( ) DO
+
+			curr_error = enum . get_current( )
+
+			code = curr_error. get_identity    ( )
+			summ = curr_error. get_summary     ( )
+			desc = curr_error. get_description ( )
+
+			call_stack = curr_error . get_call_stack( )
+
+			stack_text = ""
+
+			stack_enum = call_stack . get_enumerator( )
+			WHILE stack_enum . move_next( ) DO
+
+				stack_frame = stack_enum . get_current( )
+
+				stack_text = stack_text :
+				             stack_frame . get_library_id( ) : ". " :
+				             stack_frame . get_routine( ) : " (" :
+				             STRIP( stack_frame . get_line_number( ) ) : ")" : ASCII( 13 )
+
+			ENDWHILE
+
+			full_description = self . entity : "/" : self . action : ": " : ASCII( 13 ) :
+			                   desc : ". " : ASCII( 13 ) :
+			                   GET_USER_MESSAGE("LIMSML_ERROR_STACK", 1 ) : stack_text
+
+			base_error = self . get_rooterror ( )
+
+			base_error . adderrorall( summ ,
+			                          full_description ,
+			                          code ,
+			                          GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 5 ) ,
+			                          GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ) )
+
+		ENDWHILE
+
+		errors . clear ( )
+
+	ENDIF
+
+	RETURN ( NOT problems )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_add_rooterror ( self )
+
+{ Add a root error to the response, so all business logic errors are stored
+  under the same error.
+
+
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : None
+*
+*******************************************************************************}
+
+	DECLARE error_message, error_text, tran_id
+
+	self . tran_error = EMPTY
+
+	tran_id = self . identity
+
+	IF (  tran_id = EMPTY ) THEN
+
+		tran_id = GET_USER_MESSAGE("LIMSML_ERROR_TRANSACTION", 3 )
+
+	ENDIF
+
+	message_fetch ( "LIMSML_ERROR_TRANSACTION" , error_message )
+
+	message_add_parameter ( error_message, tran_id )
+
+	error_text = message_get_text ( error_message , 2 )
+
+	self . tran_error = self . response . adderrorall(
+				error_text ,
+				error_text ,
+				GET_USER_MESSAGE("LIMSML_ERROR_TRANSACTION", 1 ),
+				GET_USER_MESSAGE("LIMSML_ERROR_SEVERITY", 5 ),
+				GET_USER_MESSAGE("LIMSML_ERROR_PROCESSOR_LAYER", 1 ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_get_rooterror ( self )
+
+{ Get root error
+
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : [HELPER_ERROR]Object
+*
+*******************************************************************************}
+
+	RETURN ( self . tran_error )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_set_rooterror ( self )
+
+{ Set the trans_error ref.
+
+
+* Parameters   : Self, [LIMSML_PROCESS]
+* Return Value : [HELPER_ERROR]Object
+*
+*******************************************************************************}
+
+	self . trans_error = self . response . geterror ( 0 )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_add_handle_error ( self , VALUE error_message_id )
+
+{ Raise an error from an vgl handler routine.
+
+
+* Parameters   : Self, [LIMSML_PROCESS]
+*                error_message_id , [Text]message identity of error
+* Return Value : [BL_ERROR] newly created error object
+*
+*******************************************************************************}
+
+	RETURN( bl_system( ) . error_flag( error_message_id ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limsml_process_action_return ( self , VALUE return_value , entity_obj )
+
+{ Sometimes a user just wants to return one value.  But as a response needs
+  to be a valid xml response return, what the request was plus a RETURN field.
+  This is done, to keep any id fields with the request.  Note any response
+  created before this will be cleared.
+
+*
+* Parameters   : Self, [LIMSML_PROCESS]
+*                Return_value , [Text]Value to return
+*                Entity_obj , [HELPER_ENTITY]Entity to add to the response
+* Return Value : None
+*
+*******************************************************************************}
+
+
+	DECLARE xmlstring, resp_entity
+
+	{**********************************************************************}
+	{* Clear any response, to create return value, then create a rich doc *}
+	{**********************************************************************}
+
+	self . response . reset()
+	self . response = EMPTY
+
+	self . create_system ( )
+
+	xmlstring = entity_obj . returnxml()
+
+	IF ( xmlstring <> "" ) THEN
+
+		resp_entity = self . response . addentityxml( xmlstring )
+
+		resp_entity . field_inout ( "RETURN" , return_value )
+
+	ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+{*                     G L O B A L   R O U T I N E S                          *}
+{******************************************************************************}
+
+GLOBAL ROUTINE process_transaction ( VALUE in_transaction  ,
+                                           out_transaction ,
+                                           out_errors      )
+
+{ Process the limsml transaction
+
+* Parameters   : in_transaction  , [Text] Serialized transaction request to process.
+*                out_transaction , [Text] Serialized transaction response from process.
+*                out_errors      , [Text] Serialized collection of errors.
+* Return Value : [Boolean]Always set to TRUE from VGL, used and set by COM+ layer.
+*
+*******************************************************************************}
+
+	DECLARE process_obj, response_tran, entity_obj, trans_obj,
+		entity_num, entity_count, save, filename, datestamp
+
+	out_transaction = ""
+	out_errors = ""
+
+	SET DATE FORMAT DATE_FORMAT
+	datestamp = NOW
+	filename = datestamp : "_" : GLOBAL ( "PROCESS_ID" )
+	RESTORE DATE FORMAT
+
+	save = GLOBAL ( "WEB_LIMSML_SAVE" )
+	IF (save) THEN
+		save_file( XML_LOCATION	: filename : XML_RQ : XML_EXT, in_transaction )
+	ENDIF
+
+	limsml_process_define_class()
+	limsml_helper_define_class()
+
+	IF NOT transaction_is_write() THEN
+		START WRITE TRANSACTION "LIMSML"
+		CREATE OBJECT LIMSML_PROCESS, process_obj
+		trans_obj = process_obj . in_transaction( in_transaction )
+	ELSE
+	
+		trans_obj = EMPTY
+	
+	ENDIF
+	
+
+
+	IF ( trans_obj <> EMPTY ) THEN
+
+		entity_num = trans_obj . entitytotal()
+
+		IF ( entity_num > 0 )THEN
+
+			entity_count = 0
+
+			WHILE ( entity_count <= entity_num - 1 ) DO
+
+				entity_obj = trans_obj . getentity( entity_count )
+				process_obj . execute ( entity_obj )
+
+				entity_count = entity_count + 1
+				entity_obj . reset()
+
+			ENDWHILE
+
+		ENDIF
+
+		trans_obj . reset()
+
+	ENDIF
+
+	IF ( process_obj. tran_error . childtotal() > 0 ) THEN
+
+		{If we have error do not save any information.}
+		ROLLBACK
+		out_errors = process_obj. tran_error . returnxml()
+		out_transaction = ""
+
+	ELSE
+
+		IF ( process_obj . response . transactiontotal() > 0 ) THEN
+
+			response_tran = process_obj . response . gettransaction ( 0 )
+			out_transaction = response_tran . returnxml()
+
+		ENDIF
+
+		COMMIT
+
+	ENDIF
+
+	IF (save) THEN
+
+		IF ( NOT BLANK(out_transaction) ) THEN
+			save_file( XML_LOCATION	: filename : XML_RP : XML_EXT, out_transaction )
+		ELSE
+			save_file( XML_LOCATION	: filename : XML_RP : XML_EXT, out_errors )
+		ENDIF
+
+	ENDIF
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE check_components ( VALUE in_transaction  ,
+                                        out_transaction ,
+                                        out_errors      )
+
+{ Process the limsml transaction
+
+* Parameters   : in_transaction  , [Text] Ignored
+*                out_transaction , [Text] List of good components
+*                out_errors      , [Text] List of missing component
+* Return Value : [Boolean]Always set to TRUE from VGL, used and set by COM+ layer.
+*
+*******************************************************************************}
+
+	DECLARE object, status
+
+	out_transaction = ""
+	out_errors = ""
+
+	CREATE OBJECT "STD_NET_SERVER", object
+	status = object . create ( HELPER_ASSEMBLY, "Thermo.SM.LIMSML.Helper.High.Document" )
+
+	IF ( status = EMPTY ) THEN
+
+		out_transaction = out_transaction : HELPER_ASSEMBLY : ". "
+
+	ELSE
+
+		out_errors = out_errors : HELPER_ASSEMBLY : ":" : status : ". "
+
+	ENDIF
+
+	status = EMPTY
+
+	CREATE OBJECT "STD_NET_SERVER", object
+	status = object . create ( BUILDER_ASSEMBLY, "Thermo.SM.BL.Data.DataSetBuilder" )
+
+	IF ( status = EMPTY ) THEN
+
+		out_transaction = out_transaction : BUILDER_ASSEMBLY : ". "
+
+	ELSE
+
+		out_errors = out_errors : BUILDER_ASSEMBLY : ":" : status : ". "
+
+	ENDIF
+
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE save_file( VALUE filename, VALUE xmlstring )
+
+{ Save xml as a file
+
+* Parameters   : Filename  , [Text] File name and path
+*                Xmlstring , [Text] Xml
+*
+* Return Value : N/A
+*
+*******************************************************************************}
+
+	DECLARE status
+
+	FILE CREATE filename , status
+
+	IF status = EMPTY THEN
+
+		FILE WRITE filename, xmlstring, status
+		FILE CLOSE filename
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{*                     E X A M P L E S   O F   U S E                          *}
+{******************************************************************************}
+
+
+ROUTINE example_usage_file
+
+{ Write from a file, process the xml and write to a file
+
+* Parameters   : None
+* Return Value : None
+
+*******************************************************************************}
+
+	DECLARE filname, transactionstr, ok, response, error_str
+
+	limsml_helper_define_class()
+
+
+	filname = "C:\tranlogout.xml"
+	file open filname
+	file read filname, transactionstr
+	file close filname
+
+	ok = process_transaction ( transactionstr ,response, error_str )
+
+
+	IF ( ok ) THEN
+
+		filname = "C:\tstr.xml"
+
+
+		file create filname
+
+		IF ( BLANK( response ) ) THEN
+
+			file write filname, error_str
+
+		ELSE
+
+			file write filname, response
+
+		ENDIF
+
+		file close filname
+
+	ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE example_usage_sample_login
+
+{ Example of usage
+
+* Parameters   : None
+* Return Value : None
+
+*******************************************************************************}
+
+	DECLARE limsml, sample, test, bytempl_action, transaction,
+		transactionstr, ok , response, error_str
+
+
+	limsml_helper_define_class()
+	CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+
+	limsml . addheader ( "headername", "header val" )
+
+	CREATE OBJECT HELPER_ENTITY, sample
+
+	sample  = limsml . addentity ("SAMPLE")
+	sample . fieldout ("ID_TEXT")
+
+	CREATE OBJECT HELPER_ENTITY, test
+
+	test = sample . addchild ("TEST")
+	test . fieldin ("ANALYSIS","HP")
+	test . fieldout ("TEST_NUMBER")
+
+	CREATE OBJECT HELPER_ENTITY, bytempl_action
+
+	bytempl_action = sample . addaction ("CREATE_BY_TEMPLATE")
+	bytempl_action . addparameter ("TEMPLATE", "BLANK")
+	bytempl_action . addparameter ("REPLICATES", "2")
+
+
+	transaction = limsml .gettransaction ( 0 )
+
+
+	transactionstr = transaction . returnxml()
+
+	ok = process_transaction ( transactionstr, response, error_str )
+
+	IF ( ok ) THEN
+		flash_message ( response , TRUE )
+	ENDIF
+
+	IF ( ok ) THEN
+		flash_message ( error_str, TRUE )
+	ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE example_usage_browse
+
+{ Example of usage
+
+* Parameters   : None
+* Return Value : None
+
+*******************************************************************************}
+
+
+	DECLARE limsml, entity, action, transaction, transactionstr,
+		response, error_str, ok
+
+
+	limsml_helper_define_class()
+
+	CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+
+	limsml . setresponse ( "DATA" )
+	entity = limsml . addentity ("VGL_LIBRARY")
+
+
+	action = entity . addaction ("FIND")
+	action . add_parameter ( "PAGE", 2   )
+	action . add_parameter ( "PAGESIZE", 100)
+	action . add_parameter ( "SCHEMA"  , TRUE )
+
+	transaction = limsml . gettransaction ( 0 )
+	transactionstr = transaction . returnxml ()
+
+	ok = process_transaction ( transactionstr, response, error_str)
+
+	IF ( ok ) THEN
+		flash_message ( response, TRUE )
+	ENDIF
+
+	IF ( ok ) THEN
+		flash_message ( error_str, TRUE )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

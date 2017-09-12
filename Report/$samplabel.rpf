@@ -1,0 +1,436 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $SAMPLABEL.RPF
+*
+* Purpose       : Print sample label with barcode
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+* --------------- The report has been written such that it ------------  
+* --------------- may be called from sample login, off the ------------  
+* --------------- menu or run directly by $GRL.            ------------  
+*
+* Notes on paramaters passed in.
+* =============================
+* Check to see if any parameters have been passed to the routine.
+*
+* Parameter 1 - Sample id, either numeric or text.
+* Parameter 2 - Printer id, since when called from sample login there will
+*	        always be two parameters.
+*
+* If there is one parameter the assumption made is that the reports output is 
+* to be directed to the default label printer.
+*
+* No parameters and the destination box is called.
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY std_utils
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN LIBRARY $lib_utils
+
+ENABLE WINDOWS
+
+SET FORMAT "9999999999"
+SET PRINTERCODES TRUE
+SET COMPILE_OPTION DECLARE
+
+{***************************** Main Program Body *****************************}
+
+DECLARE passed_wks_name , wks_name , printer_id
+DECLARE strAll, trueword, falseword, Location, IBSTemplate, GotTemplate
+DECLARE option, TestNum, i, choices_array, LK
+{ See if a sample parameter has been passed in }
+
+	{Set defult values}
+	{Location	= SELECT PERSONNEL . LOCATION_ID WHERE IDENTITY = GLOBAL("OPERATOR")}
+	Location 	= SELECT SAMPLE . LOCATION_ID
+	IBSTemplate 	= SELECT LOCATION . IBS_TEMPLATE WHERE IDENTITY = Location
+
+	IF NOT BLANK(IBSTemplate) THEN
+		GotTemplate = TRUE
+	ELSE
+		GotTemplate = FALSE
+	ENDIF
+
+	IF GLOBAL ( "PARAM_ACTIVE" ) THEN
+
+  		PROMPT FOR passed_wks_name
+  		wks_name = passed_wks_name
+  		
+  		IF NUMTEXT ( wks_name ) THEN
+
+    			wks_name = RIGHTSTRING ( PAD ( " " , " " , 10 ) : 
+						STRIP ( wks_name ) , 10 )
+
+    			wks_name = SELECT sample . id_numeric
+               				WHERE id_numeric = wks_name
+		ELSE
+
+    			wks_name = SELECT sample . id_numeric
+               				WHERE id_text = wks_name
+  		ENDIF
+
+		{ See if a printer parameter has been passed in }
+		IF GLOBAL ("PARAM_ACTIVE") THEN
+
+			PROMPT FOR printer_id
+
+			IF printer_id = " " THEN
+				SET NAME "DEFAULT_LABEL/"
+				printer_id = GLOBAL ( "LABEL_ID" )
+			ELSE
+				SET NAME "PRINTER/" : STRIP ( printer_id )
+			ENDIF
+
+		ELSE
+
+			IF ( wks_name = EMPTY ) THEN
+				wks_name = " "
+			ENDIF
+
+			SET NAME "DEFAULT_LABEL/"
+			printer_id = GLOBAL ( "LABEL_ID" )
+
+		ENDIF
+		
+	ELSE
+		wks_name = ""
+		printer_id = ""
+		passed_wks_name = ""
+
+	ENDIF
+	
+	IF GotTemplate THEN
+	
+		strAll		= "ALL"
+		trueword	= TRUE
+		falseword	= FALSE
+		NumOfRows	= SELECT COUNT LABLABELS_VIEW
+					WHERE  SAMPLE_ID = wks_name
+					AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+		
+		NumOfNotPrinted = SELECT COUNT LABLABELS_VIEW
+					WHERE  SAMPLE_ID = wks_name
+					AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")	
+					AND (LABEL_PRINTED = FALSE)
+		IF NumOfRows > 0 THEN
+			IF NumOfNotPrinted > 0 THEN
+
+fm("PrintLabelForSample ": wks_name)
+				CALL_ROUTINE "PrintLabelForSample" 
+					USING wks_name, strAll, falseword, trueword
+					IN LIBRARY "IBS_LABELS"
+			ELSE
+
+				ARRAY choices_array ARRAYSIZE (0,2)
+
+				TestNum = SELECT LABLABELS_VIEW . TEST_NUMBER
+						WHERE SAMPLE_ID = wks_name
+
+				WHILE TestNum <> EMPTY DO
+					i = SIZE_OF_ARRAY(choices_array) + 1
+					choices_array [i,1] = SELECT LABLABELS_VIEW . ANALYSIS
+					choices_array [i,2] = TestNum
+
+					NEXT LABLABELS_VIEW
+					TestNum = SELECT LABLABELS_VIEW . TEST_NUMBER
+				ENDWHILE
+
+				CREATE OBJECT PROMPT_CLASS_FORM,form
+				form . height = 3
+				form . width = 25
+				form . row = 2
+				form . column = 3
+				form . border = TRUE
+				form . header = "Select test"
+				form . footer = "Press <Exit> to quit"
+
+				PROMPT OBJECT testnumber
+					CHOOSE OUTOF choices_array
+					ON LINE 2 FROM 8
+
+				form . add_prompt(testnumber)
+				form . add_display("Analysis: ", 2, 2, PROMPT_RENDITION_BOLD)
+				form . start_prompt()
+
+				form . wait_prompt()
+
+				form . end_prompt()
+
+				LK = FORM . get_last_key ( )
+				option = FORM . PROMPT_OBJECTS[1] . VALUE	
+
+
+				IF LK = "DO" THEN
+					CALL_ROUTINE "PrintLabelForSample" 
+						USING wks_name, option, trueword, trueword
+						IN LIBRARY "IBS_LABELS"	
+				ENDIF		
+			ENDIF	
+		ELSE
+			FM("No components to print on sample")
+		ENDIF
+
+	ELSE
+		{ If the printer is blank then after all that stuff, just prompt for it }	
+		IF ( printer_id = "" ) THEN
+			SET NAME "DEFER/"
+		ENDIF
+
+		sample_label ( passed_wks_name , wks_name , printer_id )
+
+	ENDIF
+
+	EXIT { main program }
+
+{******************************************************************************}
+
+ROUTINE sample_label ( VALUE passed_wks_name	,
+		       VALUE wks_name		,
+		       VALUE printer_id 	)
+
+	{ Analyse the sample name given.  If none provided then prompt the user.
+  	  If it could not be found tell the user and teminate, otherwise print
+  	  the label as requested }
+
+{******************************************************************************}
+	
+DECLARE job_id , form
+
+	initialise_screen ( form , wks_name , printer_id )
+
+	IF ( wks_name = " " ) THEN
+
+  		IF get_sample_id ( wks_name , form ) THEN
+
+    			IF get_job_id ( wks_name , job_id ) THEN
+
+      				print_label ( wks_name , job_id )
+
+    			ENDIF
+
+  		ENDIF
+
+	ELSEIF ( wks_name <> EMPTY ) THEN
+
+  		IF get_job_id ( wks_name , job_id ) THEN
+
+    			print_label ( wks_name , job_id )
+
+		ENDIF
+
+	ELSE
+
+		flash_message ( GET_USER_MESSAGE ( "SAMPLABEL_DISPLAY_1" , 1 ) :
+				STRIP ( passed_wks_name ) :
+          		   	GET_USER_MESSAGE ( "SAMPLABEL_DISPLAY_2" , 1 ) ,
+				TRUE )
+
+	ENDIF
+
+	{ Send the label to the printer }
+
+	FLUSH_LITERAL
+
+	form . end_prompt ()
+
+ENDROUTINE { sample_label }
+
+
+{******************************************************************************}
+
+ROUTINE initialise_screen ( form		,
+			    VALUE wks_name	,
+			    VALUE printer_id 	)
+
+	{ Routine to set up windows }
+{******************************************************************************}
+
+DECLARE id_prompt , prompt_col , prompt_1 , prompt_2 , prompt_3 , separator , 
+	prompt_len , form_height
+
+	IF ( printer_id = "" ) THEN
+		form_height = 3
+	ELSE
+		form_height = 4
+	ENDIF
+
+	PROMPT OBJECT form
+		CLASS PROMPT_CLASS_FORM
+		WITH  ( column       = 21,
+			row          = 10,
+			height       = form_height,
+			width        = 42 ,
+			border       = TRUE,
+			proportional = TRUE,
+                	help_context = "$SAMPLABEL_SCREEN",
+			header 	     = GET_USER_MESSAGE ("SAMPLABEL_DISPLAY_3"
+							 ,1 ) )
+
+	form . add_frame ( "" , 1 , 1 , form_height , 42 )
+
+	prompt_1 = GET_USER_MESSAGE ( "SAMPLABEL_DISPLAY_4" , 1 )
+	prompt_2 = GET_USER_MESSAGE ( "SAMPLABEL_DISPLAY_5" , 1 )
+	prompt_3 = GET_USER_MESSAGE ( "SAMPLABEL_DISPLAY_6" , 1 )
+
+	{ Get the max length of all the prompts }
+
+	prompt_len = find_max_number ( LENGTH ( prompt_1 ) ,
+				       find_max_number( LENGTH ( prompt_2 ),
+							LENGTH ( prompt_3 ) ) )
+	separator = ""
+
+	{ Put colon separators on the character cell to make the prompts
+	  look nice. }
+
+	IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+		separator = " :"
+	ENDIF
+
+	prompt_1 = PAD ( prompt_1 , " " , prompt_len ) : separator
+	prompt_2 = PAD ( prompt_2 , " " , prompt_len ) : separator
+	prompt_3 = PAD ( prompt_3 , " " , prompt_len ) : separator
+
+	prompt_col = prompt_len + STRINGLENGTH ( separator ) + 2
+
+	form . add_display ( prompt_1 ,
+			     2 , 1 ,
+			     PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+
+	form . add_display ( prompt_2 ,
+			     2 , 2 ,
+			     PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+                                    
+	IF ( wks_name = " " ) THEN
+
+		PROMPT OBJECT id_prompt
+ 			ON LINE 1 FROM prompt_col TO prompt_col + 30
+			BROWSE ON sample
+
+		form . add_prompt ( id_prompt )
+
+	ELSE
+		form . add_display ( PAD( wks_name , " " , 30 ) ,
+			     	     prompt_col , 1 ,
+			     	     PROMPT_RENDITION_LOWERED )
+	ENDIF
+
+	form . add_display ( PAD ( GLOBAL ( "CURRENT_LIBRARY" ) , " " , 20 ) ,
+			     prompt_col , 2 ,
+			     PROMPT_RENDITION_LOWERED )
+
+	{ If a printer has been specified then display it on the form }
+
+	IF ( printer_id <> "" ) THEN
+
+		form . add_display ( PAD( printer_id , " " , 10 ) ,
+			     	     prompt_col , 3 ,
+			     	     PROMPT_RENDITION_LOWERED )
+
+		form . add_display ( prompt_3 ,
+				     2 , 3 ,
+				     PROMPT_RENDITION_RAISED +
+							PROMPT_RENDITION_BOLD )
+	ENDIF
+
+	form . start_prompt ()
+
+ENDROUTINE { initialise_screen }
+
+{******************************************************************************}
+
+ROUTINE get_sample_id ( wks_name , form )
+
+	{ Get the sample to print a label for }
+
+	REPEAT
+
+		form . wait_prompt ()
+
+		wks_name = form . prompt_objects [ 1 ] . value
+
+	UNTIL ( ( wks_name <> " " ) OR
+		( form . get_lastkey () = "EXIT" ) )
+
+	RETURN ( form . get_lastkey () <> "EXIT" )
+
+ENDROUTINE  { get_sample_id }
+
+
+{******************************************************************************}
+
+ROUTINE get_job_id ( VALUE wks_name 	,
+		     	   job_id 	)
+
+	{ Get the job_id for the current sample }
+
+	job_id = SELECT sample . job_name
+                   	WHERE id_numeric = wks_name
+
+	job_id = STRIP ( job_id )
+
+	RETURN ( job_id <> EMPTY )
+
+ENDROUTINE { get_job_id }
+
+
+{******************************************************************************}
+
+ROUTINE print_label ( VALUE wks_name , VALUE job_id )
+
+DECLARE sample_text , sampled_date , barcode , hazardous
+DECLARE tab_1 , tab_2 , tab_3 , tab_4 , tab_5
+
+	{ Get other information for the sample. }
+
+	sample_text  = SELECT sample . id_text
+	sampled_date = STRIP ( SUBSTRING ( SELECT sample . sampled_date,1,17 ) )
+	barcode      = STRIP ( wks_name )
+	wks_name     = STRIP ( wks_name )
+	hazardous    = SELECT sample . hazard
+
+	{ Output the actual label }
+
+	{ The following code outputs assorted bits & pieces to the
+	  output device.  This may be customised for individual use. }
+
+     	tab_1 = STRIP(GET_USER_MESSAGE ( "SAMPLABEL_TAB_1" , 1 ) ) :
+							" " : wks_name
+     	tab_2 = STRIP(GET_USER_MESSAGE ( "SAMPLABEL_TAB_2" , 1 ) ) :
+							" " : sample_text
+     	tab_3 = STRIP(GET_USER_MESSAGE ( "SAMPLABEL_TAB_3" , 1 ) ) :
+							" " : job_id
+     	tab_4 = STRIP(GET_USER_MESSAGE ( "SAMPLABEL_TAB_4" , 1 ) ) :
+							" " : sampled_date
+LITERAL
+
+$tab_1_________________________________________________________________________
+$tab_2_________________________________________________________________________
+
+$barcode
+$barcode
+
+$tab_3__________________________________________________________________
+$tab_4__________________________________________________________________
+$ENDLITERAL
+
+	IF ( hazardous <> " " ) THEN
+
+      		tab_5 = STRIP ( GET_USER_MESSAGE ( "SAMPLABEL_TAB_5" , 1 ) ) :
+								" " : hazardous
+
+LITERAL
+$tab_5____________________________________________________________________
+$ENDLITERAL
+
+	ENDIF
+
+ENDROUTINE  { print_label }
+                                                                               

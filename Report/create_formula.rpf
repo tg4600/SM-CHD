@@ -1,0 +1,447 @@
+SET COMPILE_OPTION DECLARE
+SET NAME "DISPLAY"
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN LIBRARY $PROMPT_FOR_TEXT
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+DECLARE a, inArray,  strError, ana, arrError, arrVerify, ana_array
+ARRAY ana_array
+ARRAY arrVerify
+ARRAY arrError
+strError = ""
+
+ana = ""
+
+IF NOT (prompt_for_text_with_default ("Select analysis to upgrade..", "Enter exact identity: ", 30, ana)) THEN
+    EXIT
+ENDIF
+
+ana = TOUPPER(SUBSTITUTE(ana, "*", "%"))
+
+Analysis(ana)
+
+IF SIZE_OF_ARRAY(ana_array) = 1 THEN
+    fm("Formula converted for ":STRIP(ana_array[1,1]):", version ":STRIP(ana_array[1,2]):ASCII(10):ASCII(10):
+       "As the formula has constant(s), extra testing is needed") 
+ELSE
+    fm("Completed modification of ":STRIP(ROUND(SIZE_OF_ARRAY(ana_array))):" analysis":ASCII(10):
+       "Check CREATE_FORMULA.log, for detailed results.")
+
+    WriteToLog(ASCII(10):ASCII(10):
+              "================================================================================"
+              :ASCII(10):ASCII(10):"String of errors:":ASCII(10):
+               strError)
+
+    WriteToLog(ASCII(10):ASCII(10):
+              "================================================================================"
+              :ASCII(10):ASCII(10):"Array of analysis with errors:":ASCII(10):
+               GetArray(arrError))
+
+    WriteToLog(ASCII(10):ASCII(10):
+              "================================================================================"
+              :ASCII(10):ASCII(10):"Randomly selected analysis to validate:":ASCII(10):
+               GetArray(arrVerify):
+               ASCII(10):ASCII(10):
+              "================================================================================":
+               ASCII(10):ASCII(10))
+ENDIF
+
+EXIT
+
+{***************************************************************}
+
+ROUTINE Analysis(ana)
+DECLARE  i, cformula, removed, pct, pcx, verify
+
+IF ana = "%" THEN
+    ana = SELECT max_analysis_version.identity WHERE identity <> "$"
+ELSE
+    ana = SELECT max_analysis_version.identity WHERE identity LIKE ana
+ENDIF
+
+WHILE ana <> EMPTY DO
+    ana_array[SIZE_OF_ARRAY(ana_array) + 1, 1] = ana
+    IF (SIZE_OF_ARRAY(ana_array)/100 = TRUNC(SIZE_OF_ARRAY(ana_array)/100)) THEN
+        window_set_status("Counting analysis: ":STRIP(SIZE_OF_ARRAY(ana_array)))
+    ENDIF
+NEXT max_analysis_version
+    ana = SELECT max_analysis_version.identity
+ENDWHILE
+
+window_set_status("Counting analysis: ":STRIP(SIZE_OF_ARRAY(ana_array)))
+
+i = 1
+pcx = EMPTY
+WHILE i <= SIZE_OF_ARRAY(ana_array) DO
+    IF SIZE_OF_ARRAY(ana_array) = 1 THEN
+        ana_array[i,2] = SELECT max versioned_analysis.analysis_version WHERE identity = ana_array[i,1] and approval_status = "V"
+        IF ana_array[i,2] = EMPTY THEN
+            fm("No available version of ":STRIP(ana_array[i,1]):" was found":ASCII(10):ASCII(10):
+               "Create a new version, and run procedure again")
+            EXIT
+        ENDIF
+    ELSE
+        ana_array[i,2] = SELECT max_analysis_version.max_version WHERE identity = ana_array[i,1]
+    ENDIF
+    removed = SELECT versioned_analysis.removeflag WHERE identity = ana_array[i,1] and analysis_version = ana_array[i,2]
+    cformula = SELECT COUNT versioned_component
+               WHERE analysis = ana_array[i,1]
+                 AND analysis_version = ana_array[i,2]
+                 AND calculation = "FORMULA"
+                 AND (row_name <> "F" or row_name = NULL)
+    IF (cformula = 0) or removed THEN
+        array_remove_slice(ana_array, 1, i)
+    ELSE
+        i = i + 1
+        pct = TRUNC((i - 1) / SIZE_OF_ARRAY(ana_array) * 100)
+        IF (pcx <> pct) THEN
+            pcx = pct
+            window_set_status("Searching FORMULA ": ROUND(pct) :"%,    Found ":ROUND(NUMERIC(i) - 1) :" formula.")
+        ENDIF
+    ENDIF
+ENDWHILE
+i = i - 1
+window_set_status("Searching FORMULA        100%,    Found ":ROUND(NUMERIC(i) - 1) :" formula.")
+
+{Randomly suggest approx. 2% of the analysis for validation}
+i = 1
+verify = i + TRUNC(RANDOM(0)*100)
+WHILE i <= SIZE_OF_ARRAY(ana_array) DO
+    window_set_status("Processing ":ana_array[i,1])
+    HandleAnalysis(ana_array[i,1], ana_array[i,2])
+    IF i = verify THEN
+        IF i > 1 THEN
+            arrVerify[SIZE_OF_ARRAY(arrVerify)+1] = ana_array[i,1]
+        ENDIF
+        verify = i + ROUND(RANDOM(0)*100)
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+window_set_status("")
+
+ENDROUTINE
+
+
+{***************************************************************}
+
+ROUTINE HandleAnalysis(VALUE ana, VALUE v)
+DECLARE a_arr, com, c_arr, par, p_arr, f, cfor, status, NewFormula, unit,
+        p, p1, p2, num
+ARRAY a_arr
+ARRAY c_arr
+
+ARRAY c_arr
+com = SELECT versioned_component.order_number
+      WHERE analysis         = ana
+      AND   analysis_version = v
+      AND   calculation      = "FORMULA"
+      AND   (row_name       <> "F"
+          OR row_name        = NULL)
+      ORDER ON order_number
+WHILE com <> EMPTY DO
+    c_arr[SIZE_OF_ARRAY(c_arr) + 1 ,1] = ana
+    c_arr[SIZE_OF_ARRAY(c_arr)     ,2] = v
+    c_arr[SIZE_OF_ARRAY(c_arr)     ,3] = com
+NEXT versioned_component
+    com = SELECT versioned_component.order_number
+ENDWHILE
+
+f = 1
+WHILE f <= SIZE_OF_ARRAY(c_arr) DO
+    c_arr[f, 4] = SELECT versioned_component.formula
+                  WHERE analysis         = ana
+                  AND   analysis_version = v
+                  AND   order_number     = c_arr[f, 3]
+    f = f + 1
+ENDWHILE
+
+ARRAY p_arr
+par = SELECT parm_setup.order_num
+      WHERE  identity           = ana
+      AND    identity_version   = v
+      AND    parm_type          = "A"
+      AND    parm_id            = "FORMULA"
+      ORDER ON order_num
+WHILE par <> EMPTY DO
+    p_arr[SIZE_OF_ARRAY(p_arr) + 1 ,1] = ana
+    p_arr[SIZE_OF_ARRAY(p_arr)     ,2] = v
+    p_arr[SIZE_OF_ARRAY(p_arr)     ,3] = par
+NEXT parm_setup
+    par = SELECT parm_setup.order_num
+ENDWHILE
+
+f = 1
+num = FALSE
+WHILE f <= SIZE_OF_ARRAY(p_arr) DO
+    par = SELECT parm_setup.val1
+          WHERE identity         = ana
+          AND   identity_version = v
+          AND   order_num        = p_arr[f, 3]
+    par = STRIP(par)
+    p_arr[f, 4] = par
+    p = 1
+    p1 = 0
+    p2 = 0
+    p_arr[SIZE_OF_ARRAY(p_arr)     ,5] = FALSE
+    WHILE p <= LENGTH(par) DO
+        IF (p1>0) AND ((INDEX("+-*/()",SUBSTRING(par, p, 1))>0) OR(p = LENGTH(par)))THEN
+            p2 = p - p1
+            IF (NUMTEXT(SUBSTRING(par, p1, p2))) AND (STRIP(SUBSTRING(par, p1, p2)) <> "") THEN
+                IF SIZE_OF_ARRAY(ana_array) > 1 THEN
+                    num = TRUE
+                    p_arr[SIZE_OF_ARRAY(p_arr), 5] = TRUE
+                    {WriteToLog(ana:": Formula contains constant(s): (":par:")")}
+                    strError = strError:(ana:": Formula contains constant(s): (":par:")"):ASCII(10)
+                    inArray = FALSE
+                    a = 1
+                    WHILE a <= SIZE_OF_ARRAY(arrError) DO
+                        IF arrError[SIZE_OF_ARRAY(arrError)] = ana THEN
+                            inArray = TRUE
+                        ENDIF
+                        a = a + 1
+                    ENDWHILE
+                    IF NOT inArray then
+                        arrError[SIZE_OF_ARRAY(arrError)+1] = ana
+                    ENDIF
+                    p = LENGTH(par)
+                ENDIF
+            ENDIF
+        ENDIF
+        IF (p1 = 0) AND (NUMTEXT(SUBSTRING(par, p, 1))) THEN
+            p1 = p
+        ENDIF
+        p = p + 1
+    ENDWHILE
+f = f + 1
+ENDWHILE
+
+
+IF num THEN
+    {WriteToLog(ana:": Must be handled manually!")}
+    {strError = strError:(ana:": Must be handled manually!"):ASCII(10)}
+ELSEIF (p_arr[SIZE_OF_ARRAY(p_arr), 5] = FALSE) THEN
+    f = 1
+    WHILE f <= SIZE_OF_ARRAY(c_arr) DO
+        cfor = STRIP(c_arr[f, 4])
+        par = STRIP(p_arr[f, 4])
+        IF (cfor = "") AND (par <> "") THEN
+            NewFormula = formula(par, ana, v)
+
+            IF NewFormula = "ERROR" THEN
+                {WriteToLog(ana:": ERROR in parameter formula '":par:"'")}
+                {strError = strError:(ana:": In formula: ":par):ASCII(10)}
+                inArray = FALSE
+                a = 1
+                WHILE a <= SIZE_OF_ARRAY(arrError) DO
+                    IF arrError[SIZE_OF_ARRAY(arrError)] = ana THEN
+                        inArray = TRUE
+                    ENDIF
+                    a = a + 1
+                ENDWHILE
+                IF NOT inArray then
+                    arrError[SIZE_OF_ARRAY(arrError)+1] = ana
+                ENDIF
+            ELSEIF (NewFormula <> EMPTY) AND (LEFTSTRING(NewFormula, 3)  <> "---") THEN
+                status = SELECT versioned_component.order_number
+                         FOR UPDATE
+                         WHERE analysis          = ana
+                         AND   analysis_version  = v
+                         AND   order_number      = c_arr[f, 3]
+                unit   = ASCII(34):STRIP(SELECT versioned_component.units):ASCII(34)
+                NewFormula = "UNITS(":NewFormula:", ":unit:")"
+                WriteToLog(ana:": ":par:" -> ":NewFormula)
+
+                IF status = c_arr[f, 3] THEN
+                    START WRITE TRANSACTION "New Formula"
+                    ASSIGN versioned_component.formula  = NewFormula
+                    ASSIGN versioned_component.row_name = "P.F"
+                    IF NOT num THEN
+                        ASSIGN versioned_component.calculation = "          "
+                    ENDIF
+                    UPDATE versioned_component
+                    COMMIT
+                ENDIF
+            ELSEIF LEFTSTRING(NewFormula, 3) = "---" THEN
+                WriteToLog(ana:": ":"MISSING paramter setup, removing 'FORMULA'":" <- ":cfor)
+                status = SELECT versioned_component.order_number
+                         FOR UPDATE
+                         WHERE analysis          = ana
+                         AND   analysis_version  = v
+                         AND   order_number      = c_arr[f, 3]
+                IF status = c_arr[f, 3] THEN
+                    START WRITE TRANSACTION "New Formula"
+                    ASSIGN versioned_component.row_name = "C.F"
+                    ASSIGN versioned_component.calculation = "          "
+                    UPDATE versioned_component
+                    COMMIT
+                ENDIF
+            ENDIF
+        ENDIF
+        f = f + 1
+    ENDWHILE
+ENDIF
+
+ENDROUTINE
+
+ROUTINE Formula(VALUE parm, VALUE ana, VALUE ana_ver)
+{****************************************************************************
+ Create formula from parm-formula
+ Input:  Formula from paramters (Val1), Analysis ID, Analysis Version
+ Output: Formula formatted for use in versioned_component. formula
+ ****************************************************************************}
+DECLARE pre, post, p1, p2, var, cvar, str, l
+
+    pre     = ""
+    var     = ""
+    post    = ""
+    p1      = 0
+    p2      = 0
+
+    p1 = INDEX(parm,"[")
+
+    WHILE (p1 > 0) DO
+        p2   = INDEX(parm,"]")
+        IF p2 = 0 THEN
+            p2 = LENGTH(parm)
+        ENDIF
+        pre  = SUBSTRING(parm, 1, p1 - 1)
+        var  = STRIP(SUBSTRING(parm, p1 + 1, p2 - p1 - 1))
+        post = SUBSTRING(parm, p2 + 1, LENGTH(parm))
+
+        cvar    = SELECT COUNT versioned_component
+                  WHERE analysis = ana
+                  AND   analysis_version = ana_ver
+                  AND   rep_control = var
+
+        IF cvar = 0 THEN
+            window_set_status("Processing ":ana:" Found no components matching [":var:"]")
+            {WriteToLog("       ":ana:": ERROR - Found no components matching [":var:"]")}
+            strError = strError:ana:": Found no components matching [":var:"] in formula: ":parm:ASCII(10)
+            inArray = FALSE
+            a = 1
+            WHILE a <= SIZE_OF_ARRAY(arrError) DO
+                IF arrError[SIZE_OF_ARRAY(arrError)] = ana THEN
+                    inArray = TRUE
+                ENDIF
+                a = a + 1
+            ENDWHILE
+            IF NOT inArray then
+                arrError[SIZE_OF_ARRAY(arrError)+1] = ana
+            ENDIF
+            RETURN ("ERROR")
+        ELSEIF cvar > 1
+            window_set_status("Processing ":ana:" Found multiple components matching [":var:"]")
+            {WriteToLog("       ":ana:": ERROR - Found multiple components matching [":var:"]")}
+            strError = strError:ana:": Found multiple components matching [":var:"] in formula: ":parm:ASCII(10)
+            inArray = FALSE
+            a = 1
+            WHILE a <= SIZE_OF_ARRAY(arrError) DO
+                IF arrError[SIZE_OF_ARRAY(arrError)] = ana THEN
+                    inArray = TRUE
+                ENDIF
+                a = a + 1
+            ENDWHILE
+            IF NOT inArray then
+                arrError[SIZE_OF_ARRAY(arrError)+1] = ana
+            ENDIF
+            RETURN ("ERROR")
+        ENDIF
+
+        var     = SELECT versioned_component.name
+                  WHERE analysis = ana
+                  AND   analysis_version = ana_ver
+                  AND   rep_control = var
+        IF var = EMPTY THEN
+            var = "MISSING"
+        ENDIF
+        var     = ASCII(34):STRIP(var):ASCII(34)
+        parm = STRIP(pre:var:post)
+        p1 = INDEX(parm,"[")
+    ENDWHILE
+
+    str = "1A("
+    l   = LENGTH(str)
+    p1  = INDEX(parm, str)
+
+    WHILE (p1 > 0) DO
+        pre  = SUBSTRING(parm, 1, p1 - 1)
+        var  = "ABS("
+        post = SUBSTRING(parm, p1 + l, LENGTH(parm))
+        var  = STRIP(var)
+        parm = STRIP(pre:var:post)
+        p1 = INDEX(parm, str)
+    ENDWHILE
+
+    str = "1L("
+    l   = LENGTH(str)
+    p1  = INDEX(parm, str)
+
+    WHILE (p1 > 0) DO
+        pre  = SUBSTRING(parm, 1, p1 - 1)
+        var  = "LOG("
+        post = SUBSTRING(parm, p1 + l, LENGTH(parm))
+        var  = STRIP(var)
+        parm = STRIP(pre:var:post)
+        p1 = INDEX(parm, str)
+    ENDWHILE
+
+    str = "1A"
+    l   = LENGTH(str)
+    p1  = INDEX(parm, str)
+
+    WHILE (p1 > 0) DO
+        pre  = SUBSTRING(parm, 1, p1 - 1)
+        var  = "ABS("
+        post = SUBSTRING(parm, p1 + l, LENGTH(parm))
+        var  = STRIP(var)
+        parm = STRIP(pre:var:post):")"
+        p1 = INDEX(parm, str)
+    ENDWHILE
+
+    str = "1L"
+    l   = LENGTH(str)
+    p1  = INDEX(parm, str)
+
+    WHILE (p1 > 0) DO
+        pre  = SUBSTRING(parm, 1, p1 - 1)
+        var  = "LOG("
+        post = SUBSTRING(parm, p1 + l, LENGTH(parm))
+        var  = STRIP(var)
+        parm = STRIP(pre:var:post):")"
+        p1 = INDEX(parm, str)
+    ENDWHILE
+
+    RETURN(parm)
+
+ENDROUTINE
+
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    IF INDEX(TOUPPER(msg),"NO UPDATE") = 0 THEN
+        IF user_global_exists("Logfile", "JobName") THEN
+            WriteLog(Msg, STRIP(read_user_global("Logfile", "JobName")))
+            delete_user_global("Logfile", "JobName")
+        ELSE
+        ENDIF
+    ENDIF
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

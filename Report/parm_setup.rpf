@@ -1,0 +1,1417 @@
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY TOOLBOX
+
+DECLARE keys
+ARRAY empty_arr
+
+from_ext  = FALSE
+parm_mode = "MODIFY"
+
+init()
+parm_type = EMPTY
+WHILE prompt_user("parm_types", "Enter Parameter Type", EMPTY,
+                   TRUE, "Enter Parameter Type:", empty_arr,
+                   parm_type, the_key) DO
+   handle_parm_type ( parm_type )
+ENDWHILE
+
+SET FORMAT current_format
+
+
+ROUTINE  init
+
+   ARRAY browse_sel_arr
+   ARRAY parm_values
+   ARRAY sub_key_arr
+
+   values = 10
+   sub_key_count = 0
+
+   browse_sel_arr[ 1, 1] = ARRAY_SELECT_EQ
+   browse_sel_arr[ 1, 2] = "PARM_TYPE"
+
+   IF   GLOBAL("TERMTYPE") = "GUI"
+   THEN gui = TRUE
+   ELSE gui = FALSE
+   ENDIF
+
+   id_format = "9999999999"
+
+   current_format = GLOBAL ("FORMAT_TEXT")
+   SET FORMAT id_format
+
+   aut_lev = select personnel . authority
+             where  identity = OPERATOR
+             and    removeflag = FALSE
+   IF     (BLANK(aut_lev)) OR (aut_lev=EMPTY)
+   THEN   flash_message("User ":strip(OPERATOR):" not known",TRUE)
+          aut_lev = 1
+   ELSEIF NOT NUMTEXT(aut_lev)
+   THEN   flash_message("Warning: Authority level not numeric. ":
+                        "Lowest authority level set",TRUE)
+          aut_lev = 1
+   ELSE   aut_lev_str = strip(aut_lev)
+          aut_lev = NUMERIC( aut_lev )
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  load_parm_def ( VALUE parm_type )
+
+   ARRAY parm_def
+   ARRAY table_fields
+
+   parm_defs = 0
+   parm_id = select parm_def_fields . parm_id
+             where  parm_type = parm_type
+             order  on parm_id, order_num
+   WHILE parm_id <> EMPTY DO
+      parm_defs = parm_defs + 1
+      parm_def[ parm_defs, 1] = parm_id
+      parm_def[ parm_defs, 2] = select parm_def_fields.field_type
+      parm_def[ parm_defs, 3] = select parm_def_fields.browse_object
+      parm_def[ parm_defs, 4] = strip(select parm_def_fields.description)
+
+      parm_aut = strip(select parm_def_fields.authority)
+
+      IF  (BLANK(parm_aut)) OR (parm_aut=EMPTY) OR (NOT NUMTEXT(parm_aut))
+      THEN parm_aut = 1
+      ELSE parm_aut = NUMERIC( parm_aut )
+      ENDIF
+      parm_def[ parm_defs, 5] = parm_aut
+{***AS1226 HBe 15-9-99}
+      parm_def[ parm_defs, 6] = select parm_def_fields.browse_field
+{***AE1226}
+      NEXT parm_def_fields
+      parm_id = select parm_def_fields . parm_id
+   ENDWHILE
+
+   increment_fld = "PARAMETER_ID"
+   increment_tab = "PARM_SETUP_HEADER"
+
+ENDROUTINE
+
+
+ROUTINE        expand_key_setup ( VALUE tab_name, keys, the_key, VALUE sub_key, sub_key_arr, sub_key_count )
+
+ARRAY  tab_key_arr
+
+   get_table_details 'tab_name',"KEY0_FIELD",tab_key_arr
+   if	size_of_array(tab_key_arr) <> keys
+   then	keys = size_of_array(tab_key_arr)
+	the_sub_key = select 'tab_name'.'tab_key_arr[2]' where 'tab_key_arr[1]' = the_key
+	WHILE the_sub_key <> EMPTY DO
+	    sub_key_count = sub_key_count + 1
+	    sub_key_arr[sub_key_count,1] = the_sub_key
+	    sub_key_arr[sub_key_count,2] = EMPTY
+	    NEXT 'tab_name'
+	    the_sub_key = select 'tab_name'.'tab_key_arr[2]'
+	ENDWHILE
+   else	sub_key_count = 1
+	sub_key_arr[1,1] = strip(sub_key)
+	sub_key_arr[1,2] = EMPTY
+   endif
+
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE  ext_parm_setup ( VALUE parm_type ,
+                          VALUE id_key,     VALUE sub_key,
+                          VALUE old_id_key, VALUE old_sub_key,
+                          VALUE operation )
+
+   DECLARE  file_desc
+   ARRAY    copy_keys
+
+   from_ext = TRUE
+   parm_mode= operation
+   field_val = id_key
+
+   tab_name = select parm_types.table_name where parm_type = parm_type
+
+   IF (operation = "MODIFY") AND (sub_key <> EMPTY) THEN
+        found_sub_key = FALSE
+        n = 0
+        WHILE n < sub_key_count DO
+                n = n+1
+                if sub_key_arr[n,1] = sub_key
+                then found_sub_key = TRUE
+                endif
+        ENDWHILE
+         if not found_sub_key then
+                sub_key_count = sub_key_count+1
+                sub_key_arr[sub_key_count,1] = strip(sub_key)
+                sub_key_arr[sub_key_count,2] = EMPTY
+         endif
+   ENDIF
+
+   IF (operation = "READ_FOR_MODIFY")  OR
+      (operation = "READ_FOR_DISPLAY") OR
+      (operation = "ADD"             ) OR
+      (operation = "COPY"          )
+   THEN
+
+      init()
+      load_parm_def ( parm_type )
+      table_fields[1] = id_key
+
+      IF   sub_key <> EMPTY
+      THEN table_fields[2] = sub_key
+           keys = 2
+           sub_key_arr[1,1] = strip(sub_key)
+      ELSE keys = 1
+      ENDIF
+
+      sub_key_count = 0
+
+      parms = 0
+      parm_id = EMPTY
+
+      IF	operation = "COPY"
+      THEN	expand_key_setup ( tab_name, keys, old_id_key, old_sub_key, sub_key_arr, sub_key_count )
+      ELSE	expand_key_setup ( tab_name, keys, id_key, sub_key, sub_key_arr, sub_key_count )
+      ENDIF
+
+       next_sub_key = 0
+      WHILE next_sub_key < sub_key_count DO
+         next_sub_key = next_sub_key+1
+         IF     operation = "COPY"
+         THEN	copy_keys[1] = old_id_key
+	    copy_keys[2] = sub_key_arr[next_sub_key,1]
+	    if (old_sub_key <> EMPTY) AND (sub_key <> EMPTY)
+	    then save_sub_key = strip(sub_key)
+	    else save_sub_key = sub_key_arr[next_sub_key,1]
+	    endif
+	    IF   get_parm_id ( parm_type, keys, copy_keys, copy_parm_id )
+	    THEN load_parm_values ( copy_parm_id, parms, parm_values, save_sub_key )
+	    ENDIF
+	    if (next_sub_key = 1) and (old_sub_key <> EMPTY) and (sub_key <> EMPTY) and (sub_key <> old_sub_key)
+	    then sub_key_arr[1,1] = strip(sub_key)
+	    endif
+         ELSEIF (operation <> "ADD")
+         THEN	table_fields[2] = sub_key_arr[next_sub_key,1]
+	    IF   get_parm_id ( parm_type, keys, table_fields, parm_id )
+	    THEN load_parm_values ( parm_id, parms, parm_values, sub_key_arr[next_sub_key,1] )
+	               sub_key_arr[next_sub_key,2] = parm_id
+	    ENDIF
+         ENDIF
+
+      ENDWHILE
+   ENDIF
+
+   IF (operation="MODIFY" ) OR
+          (operation="DISPLAY")
+   THEN
+
+      table_fields[2] = sub_key
+      handle_parm_values ( parm_id, keys, table_fields )
+
+   ELSEIF operation = "SAVE"
+   THEN   save_parm_setup( parms, parm_id )
+
+   ELSEIF operation = "QUIT"
+   THEN   SET FORMAT current_format
+   ENDIF
+
+ENDROUTINE	{ Ext Parm Setup }
+
+
+ROUTINE	unpack_key_fields ( VALUE key_string, VALUE tab_name, key_id, sub_key )
+
+   ARRAY key_fields
+
+   key_id = EMPTY
+   sub_key = EMPTY
+
+   IF key_string = EMPTY
+   THEN return ( TRUE )
+   ENDIF
+
+   get_table_details 'tab_name', "KEY0_FIELD", key_fields
+
+   keys = size_of_array ( key_fields )
+   if keys > 2 then
+	flash_message("ERROR: Can not handle more than 2 key fields",TRUE)
+	return ( FALSE )
+   endif
+
+   key_len = LENGTH( key_string )
+   used_len = 0
+
+   key = 0
+   WHILE (key < keys) AND (key >= 0) DO
+      key = key + 1
+      field_name = key_fields[key]
+     get_field_details 'tab_name'.'field_name', "FIELD_SIZE", f_size
+    if key = 1
+    then key_id   = strip(substring( key_string, used_len+1, f_size ))
+    else sub_key = strip(substring( key_string, used_len+1, f_size ))
+    endif
+     used_len = used_len+f_size
+     if used_len > key_len
+     then flash_message("ERROR: Length of Key String is to short",TRUE)
+               return ( FALSE )
+    endif
+   ENDWHILE
+
+   if used_len <> key_len
+   then flash_message("ERROR: Used Key Length:":strip(used_len):" is different from the Actual Key Length:":strip(key_len),TRUE)
+             return ( FALSE )
+   endif
+
+   return ( TRUE )
+
+ENDROUTINE	{ Unpack Key Fields }
+
+
+GLOBAL
+ROUTINE	ext_parm_setup_anal( VALUE anal_key, VALUE old_anal_key, VALUE operation )
+IF unpack_key_fields( anal_key, "VERSIONED_ANALYSIS", the_key, the_sub_key)	AND
+      unpack_key_fields( old_anal_key, "VERSIONED_ANALYSIS", the_old_key, the_old_sub_key)
+THEN	ext_parm_setup( "A", the_key, the_sub_key, the_old_key, the_old_sub_key, operation )
+ENDIF
+
+ENDROUTINE	{ Ext Parm Setup Anal }
+
+
+GLOBAL
+ROUTINE	ext_parm_setup_std( VALUE std_key, VALUE old_std_key, VALUE operation )
+old_sub_key =	select max standard_versions . version
+	where identity = old_std_key
+ext_parm_setup( "S", std_key, "         1", old_std_key, old_sub_key, operation )
+
+ENDROUTINE	{ Ext Parm Setup Std }
+
+
+GLOBAL
+ROUTINE	ext_parm_setup_std_ver( VALUE std_key, VALUE old_std_key, VALUE operation )
+IF unpack_key_fields( std_key, "STANDARD_VERSIONS", the_key, the_sub_key)	AND
+      unpack_key_fields( old_std_key, "STANDARD_VERSIONS", the_old_key, the_old_sub_key)
+THEN	ext_parm_setup( "S", the_key, the_sub_key, the_old_key, the_old_sub_key, operation )
+
+{**AS 1271 JDy 31/8/2000 Copy MLP Parameter Setup as well	}
+	ARRAY  mlp_keys
+	if	(operation = "SAVE") AND (old_std_key <> EMPTY) then
+		mlp_keys[1] = the_key
+		mlp_keys[2] = the_sub_key
+		if not get_parm_id("M",2,mlp_keys,mlp_parm_id)
+		then mlp_keys[2] = the_old_sub_key
+		     if   get_parm_id("M",2,mlp_keys,mlp_parm_id)
+		     then ext_parm_setup( "M", the_key, the_sub_key, the_old_key, the_old_sub_key, "COPY" )
+		          ext_parm_setup( "M", the_key, the_sub_key, the_old_key, the_old_sub_key, "SAVE" )
+		     endif
+		endif
+	endif
+{**AE 1271 JDy 31/8/2000	}
+ENDIF
+
+ENDROUTINE	{ Ext Parm Setup Std Ver }
+
+
+GLOBAL
+ROUTINE	ext_parm_setup_mlp( VALUE mlp_key, VALUE old_mlp_key, VALUE operation )
+
+{**AS 2003R1}
+IF unpack_key_fields( mlp_key, "MLP_HEADER", the_key, the_sub_key)	AND
+      unpack_key_fields( old_mlp_key, "MLP_HEADER", the_old_key, the_old_sub_key)
+{*AE 2003R1}
+{**DS 2003R1
+the_key = mlp_key
+the_sub_key = EMPTY
+the_old_key = old_mlp_key
+the_old_sub_key = EMPTY
+** DE 2003R1}
+
+THEN
+   ext_parm_setup( "M", the_key, the_sub_key, the_old_key, the_old_sub_key, operation )
+ELSE
+   FLASH_MESSAGE("Error unpacking key information", TRUE)
+ENDIF
+
+ENDROUTINE	{ Ext Parm Setup Mlp }
+
+
+ROUTINE  handle_parm_type ( VALUE parm_type )
+
+   load_parm_def ( parm_type )
+
+   WHILE get_identifier ( parm_type, fields, table_fields ) DO
+
+      sub_key_count = 1
+      sub_key_arr[1,1] = strip(table_fields[2])
+      handle_parm_id ( parm_type, fields, table_fields )
+
+   ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE  get_identifier ( VALUE parm_type, keys, table_fields )
+
+   ARRAY key_fields
+
+   tab_name = select parm_types . table_name
+              where  parm_type = parm_type
+   tab_desc = strip(select parm_types . description)
+
+   get_table_details 'tab_name', "KEY0_FIELD", key_fields
+
+   keys = size_of_array ( key_fields )
+
+   key = 0
+   WHILE (key < keys) AND (key >= 0) DO
+      key = key + 1
+      field_name = key_fields[key]
+      field_val = EMPTY
+
+      IF   key = 1
+      THEN rc = prompt_user( tab_name, "Enter ":tab_desc:" Identifier", EMPTY,
+                             TRUE, "Enter ":field_name:":", empty_arr,
+                             field_val, the_key)
+      ELSE
+
+         CREATE   OBJECT PROMPT_CLASS_FORM, get_subkey
+
+         ch =  5
+         wh = 10
+         ww = 60
+         wr =  5
+         wc = 10
+
+         key_row = 2
+         key_pr  = "Enter ":field_name:":"
+         key_off = 5
+
+         get_subkey . height   =  ch
+         get_subkey . width    =  ww
+         get_subkey . row      =  wr+ch
+         get_subkey . column   =  wc
+         get_subkey . border   =  TRUE
+         get_subkey . header   =  "Enter ":tab_desc:" Identifier - Subkey"
+         get_subkey . footer   =  "Press DO to accept subkey / Exit to quit"
+
+         PROMPT   OBJECT get_subkey . prompt_objects [ 1 ]
+                  ON    LINE key_row FROM LENGTH(key_pr)+key_off+1
+                  IN    WINDOW get_subkey . window
+                  FORMAT   'tab_name' . 'field_name'
+                  WITH  (  browse_routine          = "get_sub_keys",
+                           validation_routine      = "check_sub_key",
+                           always_validate         = TRUE  )
+
+         get_subkey . add_display (  key_pr,
+                                     key_off,
+                                     key_row,
+                                     PROMPT_RENDITION_BOLD)
+
+         get_subkey . start_prompt()
+
+         get_subkey . wait_prompt()
+
+         IF   get_subkey . get_lastkey () <> "EXIT"
+         THEN rc = TRUE
+              field_val = get_subkey.prompt_objects[1].text
+
+         ELSE rc = FALSE
+         ENDIF
+
+         get_subkey . end_prompt()
+
+      ENDIF
+
+      IF   NOT ( rc )
+      THEN key = key - 2
+      ELSE IF (field_val <> EMPTY) AND (NOT BLANK(field_val))
+           THEN table_fields[ key ] = field_val
+           ELSE key = key - 1
+           ENDIF
+      ENDIF
+
+   ENDWHILE
+
+   IF   (key = keys) AND (keys > 0)
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  get_sub_keys ( self )
+
+   ARRAY key_array ARRAYSIZE(0,2)
+
+   IF select_sub_keys ( tab_name, key_array, sub_keys ) THEN
+
+      browse_on_array(80, self . text, key_array)
+      self . repaste ()
+
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  select_sub_keys ( VALUE tab_name, key_array, rows )
+
+   ARRAY select_arr
+
+   block_name = "Select Sub Keys"
+
+   rc = block_row_initialise ( block_name, tab_name )
+   IF   rc <> EMPTY
+   THEN flash_message("Error in block initialisation - ":rc,TRUE)
+        return ( FALSE )
+   ENDIF
+
+   k = 0
+   WHILE (k < key-1) DO
+      k = k + 1
+      select_arr[k,1] = ARRAY_SELECT_EQ
+      select_arr[k,2] = key_fields[k]
+      select_arr[k,3] = table_fields[k]
+   ENDWHILE
+
+   rc = block_row_select ( block_name, select_arr, FALSE )
+   rows = block_row_size ( block_name )
+
+   IF   rows > 0
+   THEN rc = block_row_first ( block_name )
+        k = 0
+        REPEAT
+          k = k + 1
+          key_array[ k, 1] = block_row_field_select( block_name, field_name )
+          key_array[ k, 2] = ""
+        UNTIL ( NOT( block_row_next ( block_name ) ) )
+   ELSE flash_message("Sorry - No sub keys",TRUE)
+   ENDIF
+
+   rc = block_row_release ( block_name )
+
+   RETURN ( TRUE )
+
+ENDROUTINE
+
+
+ROUTINE  check_sub_key ( self )
+
+   ARRAY key_array
+
+   val = self.text
+
+   IF    (val = EMPTY) OR ( BLANK(val))
+   THEN   return( FALSE )
+   ELSEIF select_sub_keys ( tab_name, key_array, sub_keys )
+   THEN   k = 0
+          WHILE k < sub_keys DO
+             k = k + 1
+             IF val = key_array[k,1] THEN
+                return ( TRUE )
+             ENDIF
+          ENDWHILE
+          flash_message("This sub key does not exist",TRUE)
+          self . repaste ()
+          return ( FALSE )
+   ELSE   flash_message("Unexpected situation when checking sub key",TRUE)
+          return ( FALSE )
+   ENDIF
+
+   RETURN ( TRUE )
+
+ENDROUTINE
+
+ROUTINE  handle_parm_id ( VALUE parm_type, keys, key_array )
+
+   parms = 0
+
+   IF   get_parm_id ( parm_type, keys, table_fields, parm_id )
+   THEN load_parm_values ( parm_id, parms, parm_values, EMPTY )
+                  sub_key_arr[1,2] = parm_id
+   ENDIF
+
+   handle_parm_values ( parm_id, keys, key_array )
+
+ENDROUTINE
+
+
+ROUTINE  create_parm_id ( VALUE keys, table_fields, parm_id )
+
+{     START WRITE TRANSACTION "Add Parm Id"     }
+      err_mes = EMPTY
+
+      ok = FALSE
+      REPEAT
+         parm_id = INCREMENT( increment_tab, increment_fld )
+         get_field_details parm_setup_headers.identity, "FIELD_SIZE", f_size
+         parm_id = rightstring(parm_id,f_size)
+         id_exist = select parm_setup_headers.identity
+                    where  identity = parm_id
+         IF id_exist = EMPTY THEN
+            ok = TRUE
+         ENDIF
+      UNTIL (ok)
+
+      block_header = "Insert Header"
+      block_fields = "Insert Fields"
+      IF   block_init ( block_header, "PARM_SETUP_HEADERS"     ) AND
+           block_init ( block_fields, "PARM_SETUP_LINK_FIELDS" )
+      THEN key_str = parm_id
+           IF   block_row_create_last( block_header, key_str )
+           THEN rc = block_row_last ( block_header )
+                rc = block_row_field_assign(block_header,"PARM_TYPE",parm_type)
+                key_str = PAD(key_str," ",f_size)
+                k = 0
+                WHILE k < keys DO
+                   k = k +1
+                   f_key_str = key_str : strip(k)
+                   IF   block_row_create_last( block_fields, f_key_str )
+                   THEN rc = block_row_last ( block_fields )
+                        rc = block_row_field_assign ( block_fields,
+                                                      "PARM_TYPE", parm_type )
+                        rc = block_row_field_assign ( block_fields,
+                                                      "FIELD_NAME",
+                                                      strip(table_fields[k] ))
+                   ELSE err_mes = "Error: Could not insert link field"
+                   ENDIF
+                ENDWHILE
+           ELSE err_mes = "Error: Could not insert parameter header"
+           ENDIF
+      ELSE err_mes = "Error: Could not create new parameter"
+      ENDIF
+
+      IF   err_mes = EMPTY
+      THEN block_row_update ( block_header )
+           block_row_update ( block_fields )
+      ELSE flash_message( err_mes, TRUE )
+           ROLLBACK
+           return ( FALSE )
+      ENDIF
+
+      rc = block_row_release ( block_header )
+      rc = block_row_release ( block_fields )
+
+      return ( TRUE )
+
+ENDROUTINE
+
+
+ROUTINE handle_parm_values ( VALUE parm_id, VALUE keys, key_arr )
+
+   SET FORMAT "999999.99999"
+
+   browse_sel_arr[ 1, 3] = parm_type
+
+   CREATE OBJECT PROMPT_CLASS_GRID , parm_grid
+
+   ARRAY parm_grid . user_info
+
+   k = 1
+   hdr_str = strip(key_arr[1])
+   WHILE k < keys DO
+      k = k+1
+      hdr_str = hdr_str : "/" : strip(key_arr[k])
+   ENDWHILE
+
+   parm_grid . title_size_top = 1
+   parm_grid . title_text_top [ 1,  1 ] = "Parameter"
+   parm_grid . column_size [ 1 ] = 10
+
+   v = 0
+   WHILE v < values DO
+      v = v + 1
+      parm_grid . title_text_top [ v+1, 1 ] = "Value":strip(v)
+      parm_grid . column_size [ v+1 ] = 10
+   ENDWHILE
+
+   parm_grid . title_separator_top = GRID_SEPARATOR_BOTH
+
+   CREATE   OBJECT PROMPT_CLASS_FORM, get_parms
+
+   wh = 15
+   wr =  5
+   wc =  4
+
+   get_parms . height = wh
+
+   get_parms . column   =  wc
+   get_parms . width    =  GLOBAL("SCREEN_WIDTH")*1.5 {Modified for 2003R1}
+   get_parms . row      =  wr
+   get_parms . border   =  TRUE
+   get_parms . header   =  hdr_str : " Parameter Values"
+   get_parms . footer   =  "Press Insert/Remove Row / DO to accept " :
+                         "/ Exit to quit"
+   get_parms . button_style = FORM_BUTTON_NONE
+
+   parm_grid . height  = get_parms . height
+   parm_grid . column  = 1
+   parm_grid . cell_columns = 1 + values
+   parm_grid . enabled = TRUE
+   parm_grid . display_cell_routine = "display_parm"
+   parm_grid . prompt_cell_routine  = "prompt_parm"
+   parm_grid . remove_routine = "delete_parm_row"
+   parm_grid . insert_routine = "insert_parm_row"
+{  parm_grid . check_move_routine = "check_parm_row"    }
+   parm_grid . width = get_parms . width
+   parm_grid . fixed_columns_left = 1
+   parm_grid . current_column = 1
+   parm_grid . current_row    = 1
+
+   r = 0
+   pr = 0
+   WHILE pr < parms DO
+      pr = pr+1
+      IF ((parm_values[pr,values+2] = EMPTY) OR (key_arr[2] = parm_values[pr,values+2])) AND (parm_values[pr,values+3]) THEN
+	      c = 0
+	      r = r+1
+	      WHILE c < values + 1 DO
+	         c = c+1
+	         parm_grid . user_info [ r, c ] = parm_values [ pr, c ]
+	      ENDWHILE
+      ENDIF
+   ENDWHILE
+
+   IF   r = 0
+   THEN parm_grid . cell_rows = 1
+   ELSE parm_grid . cell_rows = r
+   ENDIF
+
+   get_parms . add_prompt ( parm_grid )
+
+   IF gui THEN
+      gui_adjustments(get_parms,4)
+      add_button(get_parms,"INSERT",3,4,"insert_parm_row","PARM_SETUP","Insert")
+      add_button(get_parms,"REMOVE",4,4,"delete_parm_row","PARM_SETUP","Remove")
+   ENDIF
+
+   get_parms . add_frame ( "" , 1 , 1 , wh, get_parms . width )
+
+   get_parms . start_prompt()
+
+   REPEAT
+
+      get_parms . wait_prompt()
+
+   UNTIL ( get_parms . get_lastkey () = "EXIT" ) OR
+         ( get_parms . get_lastkey () = "DO"   )
+
+{  Save parameter setup }
+   IF get_parms . get_lastkey() = "DO" THEN
+
+      p = 0
+     WHILE p < parms DO
+           p = p+1
+           IF parm_values[p,values+2] = key_arr[2]
+           THEN parm_values[p,values+3] = FALSE
+           ENDIF
+     ENDWHILE
+
+      p = 0
+{    parms = 0	.........}
+      WHILE p < parm_grid . cell_rows DO
+         p = p +1
+         IF (parm_grid . user_info [ p, 1 ] <> EMPTY) AND
+            (NOT BLANK(parm_grid . user_info [ p, 1 ])) THEN
+             parms = parms+1
+             parm_values [ parms, 1 ] = parm_grid . user_info [ p, 1 ]
+             parm_values [ parms, values+2 ] = key_arr[2]
+             parm_values [ parms, values+3 ] = TRUE
+             c = 1
+             WHILE c < parm_grid.cell_columns DO
+                c = c + 1
+                IF parm_grid.user_info[p,c] <> EMPTY THEN
+                   parm_values [ parms, c ] = parm_grid . user_info[p,c]
+                ENDIF
+             ENDWHILE
+         ENDIF
+      ENDWHILE
+
+      IF (NOT from_ext) THEN
+         IF NOT save_parm_setup ( parms, parm_id ) THEN
+            return ( FALSE )
+         ENDIF
+      ENDIF
+
+   ENDIF          {  End Save }
+
+   SET FORMAT id_format
+
+   get_parms . end_prompt()
+
+ENDROUTINE
+
+ROUTINE  load_parm_values ( VALUE load_parm_id, parms, parm_values, VALUE sub_key )
+
+   p_id = select parm_setup_values . parm_id
+          where  identity = load_parm_id
+          order  on order_num
+
+   SET FORMAT "999999.99999"
+
+{    parms = 0 }
+   WHILE p_id <> EMPTY DO
+      parms = parms + 1
+      parm_values [ parms, 1 ] = p_id
+      v = 0
+      WHILE v < values DO
+         v = v + 1
+         fld = "VAL" : strip(v)
+         parm_values [ parms, v+1 ] = select parm_setup_values . 'fld'
+      ENDWHILE
+       parm_values[parms,values+2] = sub_key
+       parm_values[parms,values+3] = TRUE
+      NEXT parm_setup_values
+      p_id = select parm_setup_values . parm_id
+   ENDWHILE
+
+   SET FORMAT id_format
+
+ENDROUTINE
+
+ROUTINE  save_parm_setup ( VALUE parm_count, VALUE dummy_parm_id )
+
+   ARRAY sel_arr
+
+      IF NOT from_ext THEN
+         START WRITE TRANSACTION "Save Setup"
+      ENDIF
+
+  sub_key_no = 0
+  WHILE sub_key_no < sub_key_count DO
+      sub_key_no = sub_key_no+1
+      parm_id = sub_key_arr[sub_key_no,2]
+
+      IF parm_id = EMPTY THEN
+          table_fields[2] = sub_key_arr[sub_key_no,1]
+         IF   NOT create_parm_id ( keys, table_fields, parm_id )
+         THEN return ( FALSE )
+         ELSE sub_key_arr[sub_key_no,2] = parm_id
+         ENDIF
+      ENDIF
+
+{     Delete current Value Setup for this Parameter Id }
+      block_del_v = "Delete Values"
+
+      IF NOT block_init( block_del_v, "PARM_SETUP_VALUES" ) THEN
+         ROLLBACK       {  Out of WRITE TRANSACTION mode        }
+         return ( FALSE )
+      ENDIF
+
+      sel_arr[1,1] = ARRAY_SELECT_EQ
+      sel_arr[1,2] = "IDENTITY"
+      sel_arr[1,3] = parm_id
+      delete_block ( block_del_v, sel_arr )
+      rc = block_row_update ( block_del_v )
+      rc = block_row_release( block_del_v )
+
+{     Store new setup   }
+      block_values = "Insert Values"
+
+      IF NOT block_init( block_values, "PARM_SETUP_VALUES" ) THEN
+         ROLLBACK       {  Out of WRITE TRANSACTION mode        }
+         flash_message("Error: Could not initiate Values table",TRUE)
+         return ( FALSE )
+      ENDIF
+
+      SET FORMAT "999999.99999"
+
+   get_field_details parm_setup_values.identity, "FIELD_SIZE", f_size
+   key_str = PAD(parm_id," ",f_size)
+   p = 0
+   pv = 0
+  WHILE pv < parm_count DO
+      pv = pv +1
+      IF (parm_values[pv,values+3]) AND (parm_values[pv,values+2] = strip(sub_key_arr[sub_key_no,1]))  THEN
+         p = p+1
+         f_key_str = key_str : strip(p)
+         IF   block_row_create_last( block_values, f_key_str )
+         THEN rc = block_row_last ( block_values )
+              rc = block_row_field_assign ( block_values,
+                                           "PARM_ID",
+                                            parm_values[pv,1] )
+              c = 1
+              WHILE c <= values DO
+                    c = c + 1
+                    IF parm_values[pv,c] <> EMPTY THEN
+                       rc = block_row_field_assign( block_values,
+                                                   "VAL":strip(c-1),
+                                                    parm_values[pv,c] )
+                    ENDIF
+              ENDWHILE
+         ELSE flash_message("Error: Could not create parameter",TRUE)
+              rc = block_row_release ( block_values )
+              ROLLBACK
+              return ( FALSE )
+         ENDIF
+
+      ENDIF
+
+    ENDWHILE	{ Parameter Count }
+
+     rc = block_row_update  ( block_values )
+     rc = block_row_release ( block_values )
+
+  ENDWHILE		{ Sub Key Count }
+
+      SET FORMAT id_format
+
+      IF (NOT from_ext) THEN
+         COMMIT
+      ENDIF
+
+      return ( TRUE )
+
+ENDROUTINE  { Save Setup }
+
+
+
+ROUTINE  display_parm( self, VALUE cell_col, VALUE cell_row, window,
+                       VALUE col, VALUE row, VALUE cell_w, VALUE cell_h )
+   generic_display ( self, cell_col, cell_row, window, col,
+                     row, cell_w, cell_h, FALSE )
+
+ENDROUTINE
+
+ROUTINE  generic_display ( self, VALUE cell_col, VALUE cell_row, window,
+                           VALUE col, VALUE row, VALUE cell_w, VALUE cell_h,
+                           VALUE bold_on )
+
+   val = self . user_info [ cell_row, cell_col ]
+   IF   (val = EMPTY) OR (BLANK(val))
+   THEN val = pad( "", " ", cell_w )
+   ELSE IF NUMTEXT(val) AND (NOT(GUI)) THEN
+           val = strip(val)
+           cut_decimals( val, TRUE )
+           IF length(val) < cell_w THEN
+              val = pad("", " ", cell_w-length(val)):val
+           ENDIF
+        ENDIF
+        val = substring( val, 1, cell_w )
+   ENDIF
+
+   DISPLAY  val
+            AT col, row
+            BOLD = bold_on
+            INVERSE = FALSE
+            IN WINDOW window
+
+ENDROUTINE
+
+
+ROUTINE  prompt_parm ( self, VALUE cell_col, VALUE cell_row, window,
+                       VALUE col, VALUE row, VALUE cell_w, VALUE cell_h )
+
+   ARRAY opt_list
+{***AS1226 HBe 15-9-99}
+   ARRAY relevant_fields
+{***AS1226}
+   generic_display ( self, cell_col, cell_row, window, col,
+                           row, cell_w, cell_h, TRUE  )
+
+   old_parm = self . user_info [ cell_row, 1 ]
+   parm_aut = TRUE
+   IF   (old_parm <> EMPTY) AND (NOT BLANK(old_parm))
+   THEN parm_lev = select parm_def_headers . authority
+                   where  parm_type = parm_type
+                   and    parm_id   = old_parm
+        head_desc = select parm_def_headers . description
+        IF   (parm_lev <> EMPTY) AND (NOT BLANK(parm_lev))
+        THEN IF   NUMTEXT(parm_lev)
+             THEN IF   NUMERIC(parm_lev) > aut_lev
+                  THEN parm_aut = FALSE
+                  ENDIF
+             ENDIF
+        ENDIF
+   ELSE head_desc = EMPTY
+   ENDIF
+   IF     parm_mode = "DISPLAY"
+   THEN
+
+{****AS1207 HBe 23-11-99}
+      IF cell_col = 1
+      THEN
+         show_desc ( head_desc )
+      ENDIF
+
+      IF cell_col > 1
+      THEN
+         IF get_parm_def( self.user_info[cell_row,1], cell_col-1, def_row )
+         THEN
+            val_desc = parm_def[ def_row, 4 ]
+         ELSE
+            val_desc = " "
+         ENDIF
+         show_desc ( val_desc )
+
+      ENDIF
+{****AE1207}
+
+      no_prompt()
+
+{****AS1207 HBe 23-11-99}
+      unshow_desc()
+{****AE1207}
+
+
+   ELSEIF NOT parm_aut
+   THEN   no_prompt()
+   ELSEIF cell_col = 1
+   THEN   new_parm = old_parm
+          show_desc ( head_desc )
+          aut_lev_le = aut_lev - 1
+          browse_sel_arr[ 2, 1] = ARRAY_SELECT_PUSH
+          browse_sel_arr[ 3, 1] = ARRAY_SELECT_EQ
+          browse_sel_arr[ 3, 2] = "AUTHORITY"
+          browse_sel_arr[ 3, 3] = "NULL"
+          browse_sel_arr[ 4, 1] = ARRAY_SELECT_OR
+          browse_sel_arr[ 5, 1] = ARRAY_SELECT_LE
+          browse_sel_arr[ 5, 2] = "AUTHORITY"
+          browse_sel_arr[ 5, 3] = STRIP(aut_lev_le)
+          browse_sel_arr[ 6, 1] = ARRAY_SELECT_OR
+          browse_sel_arr[ 7, 1] = ARRAY_SELECT_EQ
+          browse_sel_arr[ 7, 2] = "AUTHORITY"
+          browse_sel_arr[ 7, 3] = aut_lev_str
+          browse_sel_arr[ 8, 1] = ARRAY_SELECT_POP
+          prompt for new_parm
+                 AT col, row
+                 IN WINDOW window
+                 TO col + cell_w - 1
+                 BOLD = TRUE
+                 BROWSE ON PARM_DEF_HEADERS
+                 WITH ( select_array = browse_sel_arr )
+          IF    (BLANK(old_parm)) OR (old_parm = EMPTY)
+          THEN   self . user_info [ cell_row, cell_col ] = new_parm
+          ELSEIF (new_parm = EMPTY) OR (BLANK(new_parm))
+          THEN   new_parm = old_parm
+          ELSEIF old_parm <> new_parm
+          THEN   self . user_info [ cell_row, cell_col ] = new_parm
+                 v = 1
+                 WHILE v < values DO
+                    v = v + 1
+                    self . user_info [ cell_row, v ] = EMPTY
+                 ENDWHILE
+                 self . redisplay_row ( cell_row )
+          ENDIF
+
+          unshow_desc()
+
+   ELSEIF get_parm_def( self.user_info[cell_row,1], cell_col-1, def_row )
+   THEN   val_type = parm_def[ def_row, 2 ]
+          val_desc = parm_def[ def_row, 4 ]
+          val_auth = parm_def[ def_row, 5 ]
+
+          show_desc ( val_desc )
+
+          IF     val_auth > aut_lev
+          THEN   no_prompt()
+          ELSEIF NOT parm_aut
+          THEN   no_prompt()
+          ELSEIF val_type = "B"
+          THEN
+{***AS1226 HBe 15-9-99}
+            IF NOT ((parm_def[ def_row, 6 ] = "" ) OR (parm_def[ def_row, 6 ] = EMPTY) OR
+               BLANK(parm_def[ def_row, 6 ]))
+            THEN
+                browse_table = parm_def[ def_row, 3 ]
+                select_field = parm_def[ def_row, 6 ]
+
+                selected_rows_only (browse_table, select_field, relevant_fields, keys, key_arr)
+
+                IF  SIZE_OF_ARRAY (relevant_fields) = 0
+                THEN
+                   FLASH_MESSAGE("Nothing to choose from!",TRUE)
+                   no_prompt()
+                ELSE
+                   prompt for self.user_info[ cell_row, cell_col ]
+                      AT col, row
+                      IN WINDOW window
+                      TO col + cell_w - 1
+                      BOLD = TRUE
+                      CHOOSE OUTOF relevant_fields
+                ENDIF
+            ELSE
+{***AE1226}
+{***AS1271 JDy 31/8/00 Check Browse setup }
+	      IF  (parm_def[ def_row, 3 ] = EMPTY) OR (BLANK(parm_def[ def_row, 3 ]))
+              THEN flash_message("Error in Parameter Definition. No table to browse on",TRUE)
+		   no_prompt()
+	      ELSE
+{***AE1271}
+               prompt for self.user_info[ cell_row, cell_col ]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    BROWSE ON 'parm_def[ def_row, 3 ]'
+{***AS1271}
+	      ENDIF
+{***AE1271}
+{***AS1226 HBe 15-9-99}
+            ENDIF
+{***AE1226}
+          ELSEIF val_type = "O"
+          THEN
+             opt = select phrase . phrase_id
+                   WHERE  phrase_type = parm_def[ def_row, 3 ]
+                   order  on order_num
+             opts = 0
+             WHILE opt <> EMPTY DO
+                opts = opts + 1
+                txt = select phrase . phrase_text
+                opt_list [ opts, 1 ] = opt
+                opt_list [ opts, 2 ] = txt
+                opt_list [ opts, 3 ] = opt
+                NEXT phrase
+                opt = select phrase . phrase_id
+             ENDWHILE
+
+             opt = self . user_info [ cell_row, cell_col ]
+             option_switch ( opts, opt_list, 1, 2, opt )
+
+             prompt for opt
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    CHOOSE OUTOF opt_list
+
+             option_switch ( opts, opt_list, 2, 1, opt )
+
+             self . user_info [ cell_row, cell_col ] = opt
+
+          ELSEIF val_type = "N"
+          THEN
+
+             prompt for self.user_info[ cell_row, cell_col ]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    FORMAT REAL
+
+          ELSEIF val_type = "T"
+          THEN
+             prompt for self.user_info[ cell_row, cell_col ]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    FORMAT TEXT
+          ELSEIF val_type = "L"
+          THEN
+             prompt for self.user_info[ cell_row, cell_col ]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    FORMAT BOOLEAN
+          ELSEIF val_type = "D"
+          THEN
+
+             IF (self.user_info[ cell_row, cell_col ] = EMPTY) OR
+                (BLANK(self.user_info[ cell_row, cell_col ]))  THEN
+                self.user_info[ cell_row, cell_col ] = TODAY
+             ENDIF
+{**MS2003R1: Removing date format to make it work!
+ ***M1253 31/1-00 HBE Date format changed from "DD/MM/YY" to "DD/MM/YYYY"
+             SET DATE FORMAT "DD/MM/YYYY"}
+             self.user_info[ cell_row, cell_col ] =
+                STRIP(substring(self.user_info[ cell_row, cell_col ],1,11))
+
+             prompt for self.user_info[ cell_row, cell_col ]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    FORMAT DATE
+{**ME2003R1         RESTORE DATE FORMAT}
+
+          ELSE flash_message("Type of value:":val_type:" unknown",TRUE)
+          ENDIF
+
+          unshow_desc()
+
+   ELSE { self . set_position ( cell_row, 1 ) }
+          no_prompt()
+   ENDIF
+
+   generic_display ( self, cell_col, cell_row, window, col,
+                     row, cell_w, cell_h, FALSE )
+
+ENDROUTINE
+
+
+{**MS2003R1: Versions on analysis}
+{***AS1226 HBe 15-9-99}
+
+ROUTINE  selected_rows_only (VALUE browse_table, VALUE select_field, relevant_fields, VALUE keys, key_arr )
+
+ARRAY all_field_names
+
+GET_FIELD_NAMES (browse_table, all_field_names)
+total_browse_fields = SIZE_OF_ARRAY (all_field_names)
+
+browse_field = 1
+one_found = FALSE
+two_found = FALSE
+
+IF keys = 1 THEN
+
+   WHILE ((browse_field <= total_browse_fields) AND (NOT one_found)) DO
+
+      GET_FIELD_DETAILS 'browse_table'.'all_field_names[browse_field,1]', "LINK_TABLE", master_table
+
+      IF (master_table = tab_name)
+      THEN
+         one_found = TRUE
+         relevant_field_count = 0
+
+            link_detail = select  'browse_table' . 'select_field'
+                          WHERE 'all_field_names[browse_field,1]' = key_arr[1]
+                          order on  'all_field_names[browse_field,1]'
+
+         WHILE ((link_detail <> EMPTY) AND (NOT BLANK(link_detail))) DO
+            relevant_field_count = relevant_field_count + 1
+            relevant_fields[relevant_field_count,1] = strip(link_detail)
+            relevant_fields[relevant_field_count,2] = strip(link_detail)
+            NEXT 'browse_table'
+            link_detail = select  'browse_table' . 'select_field'
+         ENDWHILE
+      ENDIF
+   browse_field = browse_field + 1
+   ENDWHILE
+
+
+ELSEIF keys = 2 THEN
+
+   field_one = EMPTY
+
+   WHILE (browse_field <= total_browse_fields) AND  NOT( (one_found) AND ( two_found)) DO
+
+      GET_FIELD_DETAILS 'browse_table'.'all_field_names[browse_field,1]', "LINK_TABLE",  master_table
+      GET_FIELD_DETAILS 'browse_table'.'all_field_names[browse_field,1]', "LINK_FIELD" , master_field
+      GET_FIELD_DETAILS 'browse_table'.'all_field_names[browse_field,1]', "KEY0_FIELD" , is_key
+
+      IF (master_table = tab_name) AND is_key AND (NOT one_found)
+      THEN
+         one_found = TRUE
+         field_one = master_field
+         key1_record = browse_field
+      ENDIF
+
+      IF (master_table = tab_name) AND is_key AND (master_field <> field_one)
+      THEN
+         two_found = TRUE
+         key2_record = browse_field
+      ENDIF
+
+      IF (one_found) AND (two_found) THEN
+         relevant_field_count = 0
+         link_detail = select  'browse_table' . 'select_field'
+                       WHERE 'all_field_names[key1_record,1]' = key_arr[1]
+                       AND   'all_field_names[key2_record,1]' = key_arr[2]
+                       order on  'all_field_names[browse_field,1]'
+
+         WHILE ((link_detail <> EMPTY) AND (NOT BLANK(link_detail))) DO
+            relevant_field_count = relevant_field_count + 1
+            relevant_fields[relevant_field_count,1] = strip(link_detail)
+            relevant_fields[relevant_field_count,2] = strip(link_detail)
+            NEXT 'browse_table'
+            link_detail = select  'browse_table' . 'select_field'
+         ENDWHILE
+      ENDIF
+   browse_field = browse_field + 1
+   ENDWHILE
+
+ELSE
+   FLASH_MESSAGE("Too many keys: " : keys : " , more than 2 keys is not supported", TRUE)
+   RETURN(FALSE)
+ENDIF
+
+ENDROUTINE
+{***AE1226}
+{**ME2003R1}
+
+{**MS HBe 30-5-00
+ROUTINE  unshow_desc
+   IF NOT gui THEN
+      UNPASTE TEXT WINDOW val_win
+   ENDIF
+ENDROUTINE
+}
+
+ROUTINE  unshow_desc
+   UNPASTE TEXT WINDOW val_win
+ENDROUTINE
+
+{**ME HBe 30-5-00}
+
+{**MS HBe 30-5-00
+ROUTINE  show_desc ( VALUE val_desc )
+
+   IF gui THEN
+      return
+   ENDIF
+
+   IF   val_desc = EMPTY
+   THEN val_l = 1
+   ELSE val_l = length( val_desc ) + 1
+   ENDIF
+
+   val_win = "VAL_DESC"
+   create text window val_win
+          HEIGHT 1 WIDTH val_l
+   PASTE TEXT WINDOW val_win AT wc, wr-2
+   IF val_desc <> EMPTY THEN
+      DISPLAY val_desc ON LINE 1 FROM 1 TO val_l IN WINDOW val_win
+   ENDIF
+
+ENDROUTINE
+}
+
+ROUTINE  show_desc ( VALUE val_desc )
+
+   IF   val_desc = EMPTY
+   THEN val_l = 1
+   ELSE val_l = length( val_desc ) + 1
+   ENDIF
+
+   val_win = "VAL_DESC"
+   create text window val_win
+          HEIGHT 1 WIDTH val_l
+   PASTE TEXT WINDOW val_win AT wc, wr-2
+   IF val_desc <> EMPTY THEN
+      DISPLAY val_desc ON LINE 1 FROM 1 TO val_l IN WINDOW val_win
+   ENDIF
+ENDROUTINE
+
+{**ME HBe 30-5-00}
+
+
+ROUTINE  get_parm_def ( VALUE parm_id, VALUE parm_no, the_row )
+
+   r = 0
+   the_row   = 0
+   dont_stop = TRUE
+   WHILE (r < parm_defs) AND (the_row=0) AND (dont_stop) DO
+      r = r + 1
+      IF parm_def [ r, 1 ] = parm_id THEN
+         dont_stop = FALSE
+         IF (r+parm_no-1 <= parm_defs) AND
+            (parm_def[r+parm_no-1,1] = parm_id) THEN
+            the_row = r+parm_no-1
+         ENDIF
+      ENDIF
+   ENDWHILE
+
+   IF   the_row > 0
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  insert_parm_row ( self )
+
+   DECLARE  r, c
+
+   IF   parm_mode = "DISPLAY"
+   THEN return
+   ENDIF
+
+   r = parm_grid . cell_rows
+   WHILE r > parm_grid.current_row DO
+      c = 0
+      WHILE c < parm_grid.cell_columns DO
+         c = c + 1
+         parm_grid . user_info [ r+1, c ] = parm_grid . user_info [ r, c ]
+      ENDWHILE
+      r = r - 1
+   ENDWHILE
+
+   c = 0
+   WHILE c < parm_grid . cell_columns DO
+      c = c + 1
+{..   self . user_info [ self.current_row+1, c ] = EMPTY ..}
+      parm_grid . user_info [ parm_grid.current_row+1, c ] = " "
+   ENDWHILE
+
+   parm_grid.insert_row( parm_grid.current_row, 1, GRID_SEPARATOR_NONE )
+   parm_grid.redisplay_row ( parm_grid.current_row )
+
+ENDROUTINE
+
+
+ROUTINE  delete_parm_row ( self )
+
+   DECLARE  r, c
+
+   IF   parm_mode = "DISPLAY"
+   THEN return
+   ENDIF
+
+   IF   parm_grid . cell_rows > 1
+   THEN
+      r = parm_grid . current_row
+      WHILE r < parm_grid . cell_rows DO
+         c = 0
+         WHILE c < parm_grid.cell_columns DO
+            c = c + 1
+            parm_grid . user_info [ r, c ] = parm_grid . user_info [ r+1, c ]
+         ENDWHILE
+         r = r + 1
+      ENDWHILE
+   ELSE c = 0
+        WHILE c < parm_grid.cell_columns DO
+           c = c + 1
+           parm_grid . user_info [ 1, c ] = ""
+        ENDWHILE
+   ENDIF
+
+   IF parm_grid.current_row > 0 THEN
+      parm_grid.remove_row( parm_grid.current_row )
+   ENDIF
+
+   IF parm_grid.cell_rows = 0 THEN
+      parm_grid . insert_row( parm_grid.current_row, 1, GRID_SEPARATOR_NONE )
+      parm_grid . current_row = 1
+   ENDIF
+
+   parm_grid.redisplay_row ( parm_grid.current_row )
+
+ENDROUTINE
+
+
+ROUTINE  no_prompt
+   IF   NOT(gui)
+   THEN getkey
+   ELSE PROMPT IN WINDOW window ON LINE cell_row FROM cell_col
+   ENDIF
+ENDROUTINE
+
+ROUTINE	copy_sub_key ( VALUE old_key, VALUE new_key )
+
+   if	(old_key <> EMPTY)	AND
+	(new_key <> EMPTY)
+   then  pv = 0
+              while pv < parms do
+	pv = pv+1
+	if (parm_values[pv,values+3]) AND (parm_values[pv,values+2]=strip(old_key)) then
+		parms = parms+1
+		c=0
+		while c<=values do
+			c = c+1
+			parm_values[parms,c] = parm_values[pv,c]
+		endwhile
+		parm_values[parms,values+3] = TRUE
+		parm_values[parms,values+2] = strip(new_key)
+	endif
+              endwhile
+   endif
+
+ENDROUTINE

@@ -1,0 +1,226 @@
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY $LIB_UTILS
+
+GLOBAL ROUTINE MEAN_POP_CALC ( current_sample,
+             current_test_number,
+             current_component_name)
+DECLARE analysis, analysis_ver, comp, i, result, dilution_factor, sum_vol, agar, test_n, comp_count,
+  result_a, analysis_type, dil, weight, vol, sum_res, res, max_dilution, num, res_check, flag, j
+           
+analysis      = select test.analysis where test_number = current_test_number
+analysis_ver  = select test.analysis_version where test_number = current_test_number
+analysis_type = select versioned_analysis.analysis_type where identity = analysis and analysis_version = analysis_ver
+dil           = leftstring (select versioned_component. rep_control where (analysis = analysis) and (analysis_version = analysis_ver) and (rep_control like "Ws%"),1)
+comp_count    = select count versioned_component where (analysis = analysis) and (analysis_version = analysis_ver) and (name like strip (current_component_name) : " %")
+num = leftstring(rightstring (strip(current_component_name),2),1)
+
+IF NOT numtext (num) THEN
+  num = ""
+ENDIF 
+
+weight        = select result. value where (test_number = current_test_number) and (rep_control like "Ws":num)
+vol           = select result. value where (test_number = current_test_number) and (rep_control like "Wd":num)
+
+IF (dil = "W") and ((weight = EMPTY) or (vol = EMPTY)) THEN
+  flash_message ("Missing Weight or Dilution",true)
+  EXIT
+ENDIF 
+
+comp          = select result . name where (test_number = current_test_number) and (name like strip (current_component_name) : " %")
+i             = 0
+j             = 0
+sum_res       = 0
+sum_vol       = 0
+res           = 0
+max_dilution  = 0
+
+WHILE comp <> EMPTY DO
+  push_file_descriptor ("RESULT", result_a)
+  j = j + 1
+  result = select result . text where (test_number = current_test_number) and (name = comp)
+  dilution_factor = numeric (select versioned_component . dilution_factor where (analysis = analysis) and (analysis_version=analysis_ver) and (name = comp))
+  IF (GET_CHARACTER_AT (result,1) <> "<") and (GET_CHARACTER_AT (result,1) <> ">") and (GET_CHARACTER_AT (result,1) <> "+") and (GET_CHARACTER_AT (result,1) <> " ") and (GET_CHARACTER_AT (result,1) <> "-") and (numtext (result) = TRUE) THEN
+    result = numeric (result)
+    i = i + 1
+    sum_res = sum_res + result
+    sum_vol = sum_vol + dilution_factor
+    IF dilution_factor > max_dilution THEN
+      max_dilution = dilution_factor
+    ENDIF 
+  ENDIF 
+
+  pop_file_descriptor (result_a)
+  next result
+  comp        = select result . name
+ENDWHILE
+
+IF j < comp_count THEN
+  flash_message ("Missing Results"true)
+  RETURN
+ELSE  
+
+  IF i = 0 THEN 
+    test_n = NEW_TEST (current_sample, analysis)
+    res = "NEW_TEST"
+  ELSE  
+
+    IF dil = "W" THEN
+      result = (sum_res / sum_vol) * vol / weight 
+    ELSE
+      result = sum_res / sum_vol
+    ENDIF 
+
+    IF i >= 0 THEN
+      IF sum_res >= 1 THEN
+        res = result
+  ELSE
+      res = "<":(1 / max_dilution)
+  ENDIF 
+    ELSE
+  RETURN
+    ENDIF 
+
+    IF analysis_type = "POPULATION" THEN
+  chi_test (current_sample, current_test_number, current_component_name, analysis, analysis_ver, dil, res)
+    ENDIF
+{
+    agar          = select result . text where (test_number = current_test_number) and (name like "Control of agar" : "%")
+    flag          = select versioned_component. rep_control where (analysis = analysis) and (analysis_version = analysis_ver) and (name like "Control of agar" : "%")
+}
+    agar          = select result . text where (test_number = current_test_number) and (calculation = "AGAR")
+    flag          = select versioned_component. rep_control where (analysis = analysis) and (analysis_version = analysis_ver) and (calculation = "AGAR")
+
+    IF (agar = "Impure") and (flag <> "NNT") THEN
+  res_check   = select result.text where test_number = current_test_number and name =current_component_name
+  IF res_check <> "NEW_TEST" THEN
+    test_n = NEW_TEST (current_sample, analysis)
+  ENDIF
+  res = "NEW_TEST"
+    ENDIF 
+
+  ENDIF
+
+ENDIF
+
+return (res )
+
+ENDROUTINE
+
+{*********************************************************************}
+
+ROUTINE CHI_TEST  (current_sample,
+       current_test_number,
+       current_component_name,
+       analysis,
+       analysis_ver,
+       dil,
+       res)
+             
+Declare comp, chi_check, result_a, i, j, test_n, res_check, chi_sum, result, dif, chi, sum_res, sum_vol, C_V, Vol, e
+
+CONSTANT CHI_1  =  3.841     
+CONSTANT CHI_2  =  5.991     
+CONSTANT CHI_3  =  7.815     
+CONSTANT CHI_4  =  9.488     
+CONSTANT CHI_5  = 11.070     
+CONSTANT CHI_6  = 12.592     
+CONSTANT CHI_7  = 14.067     
+CONSTANT CHI_8  = 15.507     
+CONSTANT CHI_9  = 16.919     
+CONSTANT CHI_10 = 18.307     
+CONSTANT CHI_11 = 19.675     
+CONSTANT CHI_12 = 21.026     
+CONSTANT CHI_13 = 22.362     
+CONSTANT CHI_14 = 23.685     
+CONSTANT CHI_15 = 24.996     
+CONSTANT CHI_16 = 26.296     
+CONSTANT CHI_17 = 27.587     
+CONSTANT CHI_18 = 28.869     
+CONSTANT CHI_19 = 30.144     
+CONSTANT CHI_20 = 31.410     
+      
+i       = 0
+j = 0
+chi_sum = 0     
+sum_res = 0
+sum_vol = 0
+
+{*********************************************
+*                                            *
+* Expected(i) = Volume(i) * C(total)         *
+*               --------------------         *
+*                  Volume(total)             *
+*                                            *
+* First calculate: C_V = C(total) / V(total) *
+*                                            *
+*********************************************}
+
+comp = select result . name where (test_number = current_test_number) and (name like strip (current_component_name) : " %")
+
+  WHILE comp <> EMPTY DO    
+    push_file_descriptor ("RESULT", result_a) 
+    result = select result . text where (test_number = current_test_number) and (name = comp) 
+    vol = numeric (select versioned_component . dilution_factor where (analysis = analysis) and (analysis_version=analysis_ver) and (name = comp))
+    IF (GET_CHARACTER_AT (result,1) <> "<") and (GET_CHARACTER_AT (result,1) <> ">") and (GET_CHARACTER_AT (result,1) <> "+") and (GET_CHARACTER_AT (result,1) <> " ") and (GET_CHARACTER_AT (result,1) <> "-") and (numtext (result) = TRUE) THEN
+      result = numeric (result)
+      sum_res = sum_res + result
+      sum_vol = sum_vol + vol
+      j = j + 1
+    ENDIF 
+    pop_file_descriptor (result_a)  
+    next result 
+    comp = select result . name 
+  ENDWHILE    
+C_V = sum_res / sum_vol
+
+IF (sum_res = 0) or (j <= 1) THEN
+  RETURN
+ENDIF 
+
+{*********************************************
+*                                            *
+* chi_sum = sum [(o-e)^2                     *
+*               -------                      *
+*                  e   ]                     *
+*                                            *
+* Where o = observed cellcount (Result)      *
+*       e = used volume (Vol) * C_V          *
+*                                            *
+*       Vol ~ Dilution_factor                *
+*                                            *
+*********************************************}
+
+comp = select result . name where (test_number = current_test_number) and (name like strip (current_component_name) : " %")
+      
+  WHILE comp <> EMPTY DO    
+    push_file_descriptor ("RESULT", result_a) 
+    result = select result . text where (test_number = current_test_number) and (name = comp) 
+    Vol = numeric (select versioned_component . dilution_factor where (analysis = analysis) and (analysis_version=analysis_ver) and (name = comp))
+    IF (GET_CHARACTER_AT (result,1) <> "<") and (GET_CHARACTER_AT (result,1) <> ">") and (GET_CHARACTER_AT (result,1) <> "+") and (GET_CHARACTER_AT (result,1) <> " ") and (GET_CHARACTER_AT (result,1) <> "-") and (numtext (result) = TRUE) THEN
+      result = numeric (result)
+      i = i + 1
+      e = Vol * C_V
+      dif = result - e
+      chi = (dif * dif)/e
+      chi_sum = chi_sum + chi
+    ENDIF 
+    pop_file_descriptor (result_a)  
+    next result 
+    comp = select result . name 
+  ENDWHILE    
+      
+  chi_check = GET CONSTANT ("CHI_": strip (i-1))    
+      
+  IF chi_sum > chi_check THEN   
+    res_check = select result.text where test_number = current_test_number and name =current_component_name
+    IF res_check <> "NEW_TEST" THEN 
+      test_n = NEW_TEST (current_sample, analysis)
+      flash_message ("New Test ID ":test_n,true)
+    ENDIF 
+    res = "NEW_TEST"  
+  ENDIF   
+  
+ENDROUTINE  
+

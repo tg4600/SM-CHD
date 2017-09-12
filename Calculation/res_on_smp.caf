@@ -1,0 +1,233 @@
+
+{ This definition is required at the top of all calculations }
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_UTILS 
+
+GLOBAL ROUTINE calculation ( current_sample, current_test_number, current_component_name )
+
+DECLARE min, max, avg, dev, cv
+DECLARE sql, c, res, i, ThisSample, ThisTest, ThisName, ThisJob, lt, gt, calc, add, j, syntax, sum, n, square
+DECLARE res_array, ana_list, dsp_array, {num_array, txt_array,} index_array
+ARRAY ana_list 
+
+lt   = 0
+gt   = 0
+calc = "ERROR"
+
+ThisSample  = current_sample
+ThisTest    = current_test_number
+ThisJob     = SELECT sample.job_name WHERE id_numeric = ThisSample
+
+IF (INDEX(TOUPPER(current_component_name), "SUM: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "MIN: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "MAX: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "AVE: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "AVG: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "STDEV: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "DEV: ") = 1) 
+OR (INDEX(TOUPPER(current_component_name), "CV":ASCII(37):": ") = 1) THEN
+    i        = INDEX(current_component_name, ":")
+    syntax   = LEFTSTRING(current_component_name, i - 1)
+    ThisName = STRIP(SUBSTRING(current_component_name, i + 2, LENGTH(current_component_name)))
+ELSE
+    fm("Invalid syntax!":ASCII(10):ASCII(10):
+       "Component name must be preceded with":ASCII(10):
+       "'Min: ', 'Max: ', 'Avg: ', 'Ave: ', 'Dev: ', 'StDev' or 'CV":ASCII(37):": ' ":ASCII(10):ASCII(10):
+       "Returning: '":current_component_name:"' '":calc:"'")
+     EXIT  
+ENDIF   
+
+CREATE OBJECT "STD_DYNAMIC_SQL" , sql
+
+    sql.add_to_sql_statement("SELECT COUNT(DISTINCT t.TEST_NUMBER) FROM SAMPLE s ")
+    sql.add_to_sql_statement("INNER JOIN TEST t on s.ID_NUMERIC = t.SAMPLE and t.STATUS in ('A','C') ")
+    sql.add_to_sql_statement("INNER JOIN RESULT r on t.TEST_NUMBER = r.TEST_NUMBER ")
+    sql.add_to_sql_statement("WHERE s.ID_NUMERIC = '":ThisSample:"' ")
+    sql.add_to_sql_statement("  and t.TEST_NUMBER <> '":ThisTest:"' ")
+    sql.add_to_sql_statement("  and r.NAME = '":ThisName:"' ")
+    sql.add_select_integer  ()
+    sql.execute             ()
+    c = sql.select(1)
+    
+    IF c > 0 THEN
+        ARRAY res_array ARRAY_SIZE(c,6)
+        ARRAY index_array ARRAY_SIZE(1)
+
+        CREATE OBJECT "STD_DYNAMIC_SQL" , sql
+        sql.add_to_sql_statement("SELECT distinct s.SAMPLING_POINT, t.ANALYSIS, t.TEST_COUNT, r.TEXT, r.VALUE FROM SAMPLE s ")
+        sql.add_to_sql_statement("INNER JOIN TEST t on s.ID_NUMERIC = t.SAMPLE and t.STATUS in ('A','C') ")
+        sql.add_to_sql_statement("INNER JOIN RESULT r on t.TEST_NUMBER = r.TEST_NUMBER ")
+        sql.add_to_sql_statement("WHERE s.ID_NUMERIC = '":ThisSample:"' ")
+        sql.add_to_sql_statement("  and t.TEST_NUMBER <> '":ThisTest:"' ")
+        sql.add_to_sql_statement("  and r.NAME = '":ThisName:"' ")
+        sql.add_select_field    ("SAMPLE", "SAMPLING_POINT")
+        sql.add_select_field    ("TEST", "ANALYSIS")
+        sql.add_select_field    ("TEST", "TEST_COUNT")
+        sql.add_select_field    ("RESULT", "TEXT")
+        sql.add_select_field    ("RESULT", "VALUE")
+        sql.execute             ()
+        res = sql.select(2) 
+
+        i = 0
+        WHILE res <> EMPTY
+            i = i + 1
+            res_array[i,1] = sql.select(1)                                  {SAMPLING_POINT }
+            res_array[i,2] = sql.select(2)                                  {ANALYSIS       }
+            res_array[i,3] = sql.select(3)                                  {TEST_COUNT     }
+            res_array[i,4] = sql.select(4)                                  {TEXT           }
+            res_array[i,5] = sql.select(5)                                  {VALUE          }
+            IF NUMTEXT(res_array[i,4]) THEN
+                res_array[i,6] = NUMERIC(res_array[i,4])                    {NUMERIC(TEXT)  }
+            ENDIF
+            IF INDEX(res_array[i,4], "<") > 0 THEN
+                lt = lt + 1
+            ENDIF
+            IF INDEX(res_array[i,4], ">") > 0 THEN
+                gt = gt + 1
+            ENDIF
+            sql.next()
+            res = sql.select(2) 
+        ENDWHILE
+
+        i = 1
+        WHILE i <= size_of_array(res_array)
+            IF size_of_array(ana_list) = 0 THEN
+                ana_list[1] = res_array[i,2]
+            ELSE
+                add = TRUE
+                j   = 1
+                WHILE j <= size_of_array(ana_list)
+                    IF ana_list[j] = res_array[i,2] THEN
+                        add = FALSE
+                    ENDIF
+                    j = j + 1
+                ENDWHILE
+                IF add THEN
+                    ana_list[size_of_array(ana_list) + 1] = res_array[i,2]
+                ENDIF
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        i = size_of_array(res_array)
+        
+        IF size_of_array(ana_list) > 1 THEN
+            fm("Multiple analysis id found with":ASCII(10):
+               "component name: ":ThisName:ASCII(10):ASCII(10):
+               GetArray(ana_list):ASCII(10):ASCII(10):
+               "A valid calculation can not be performed":ASCII(10):ASCII(10):
+               "Returning: '":current_component_name:"' '":calc:"'")
+            EXIT
+        ENDIF
+
+        IF size_of_array(res_array) > 0 THEN
+
+        { ***** Get Minimum from result.text ***** }
+                index_array[1] = 6
+                array_complex_sort(res_array, index_array, ARRAY_SORT_ASCENDING)
+                min = STRIP(res_array[1,4])
+        { ***** Get Maximum from result.text ***** }
+                array_complex_sort(res_array, index_array, ARRAY_SORT_DESCENDING)
+                max = STRIP(res_array[1,4])
+        { ***** Get Average from result.text ***** }
+                n = 0
+                sum = 0
+                i = size_of_array(res_array)
+                ARRAY dsp_array ARRAY_SIZE(c, 1)
+                WHILE (i >= 1) 
+                    IF (INDEX(res_array[i,4], "<") = 0) AND 
+                       (INDEX(res_array[i,4], ">") = 0) AND
+                       (NUMTEXT(res_array[i,4])) THEN
+                        dsp_array[i, 1] = "Incl.: ":PAD(STRIP(res_array[i,4]), " ", 15):" from ":PAD(STRIP(res_array[i,2]):"/":STRIP(res_array[i,3]), " ", 15):" in ":res_array[i,1]
+                        sum = sum + res_array[i, 5]
+                        n = n + 1
+                    ELSE
+                        dsp_array[i, 1] = "Excl.: ":PAD(STRIP(res_array[i,4]), " ", 15):" from ":PAD(STRIP(res_array[i,2]):"/":STRIP(res_array[i,3]), " ", 15):" in ":res_array[i,1]
+                    ENDIF
+                    i = i - 1
+                ENDWHILE
+                IF n > 0 THEN
+                    avg = NUMERIC(sum/n)
+                ELSE
+                    avg = "ERROR"
+                ENDIF
+        { ***** Get Standard Deviation from result.text ***** }
+                IF (n > 1) AND (NUMTEXT(avg)) THEN
+                    square = 0
+                    i = size_of_array(res_array)
+                    WHILE (i >= 1) 
+                        IF (INDEX(res_array[i,4], "<") = 0) AND 
+                           (INDEX(res_array[i,4], ">") = 0) AND
+                           (NUMTEXT(res_array[i,4])) THEN
+                            square = square + (res_array[i, 5] - avg)^2
+                        ENDIF
+                        i = i - 1
+                    ENDWHILE
+                    dev = NUMERIC(SQRT(square / (n - 1)))
+        { ***** Get Relative Standard Deviation from result.text ***** }
+                    IF (NUMTEXT(dev)) AND (NUMTEXT(avg)) THEN
+                        cv = NUMERIC((dev/avg)*100)
+                    ELSE
+                        cv = "ERROR"
+                    ENDIF
+                ENDIF
+    
+        { ***** Get the relevant result as output ***** }
+            IF (lt > 0) AND (gt > 0) THEN
+                i = 1
+                ARRAY dsp_array ARRAY_SIZE(c,1)
+                WHILE i <= size_of_array(res_array)
+                    dsp_array[i,1] = PAD(STRIP(res_array[i,4]), " ", 15):" from ":PAD(STRIP(res_array[i,2]):"/":STRIP(res_array[i,3]), " ", 15):" in ":res_array[i,1]
+                    i = i + 1
+                ENDWHILE
+                fm("Unable to evaluate '":ThisName:"'":ASCII(10):
+                   "for: '":ThisJob:"'":ASCII(10):ASCII(10):
+                   GetArray(dsp_array):ASCII(10):ASCII(10):
+                   "A valid calculation can not be performed":ASCII(10):ASCII(10):
+                   "Returning: '":current_component_name:"' '":calc:"'")
+            ELSEIF (TOUPPER(syntax) = "SUM")
+                calc = sum
+            ELSEIF (TOUPPER(syntax) = "MIN")
+                calc = min
+            ELSEIF (TOUPPER(syntax) = "MAX")
+                calc = max
+            ELSEIF (TOUPPER(syntax) = "AVE") OR (TOUPPER(syntax) = "AVG")
+                calc = avg
+                IF (n < size_of_array(res_array)) AND (n > 0) THEN
+                    fm("Some results are excluded from calculation of avereage":ASCII(10):ASCII(10):
+                       GetArray(dsp_array):ASCII(10):ASCII(10):
+                       "Returning: '":current_component_name:"' '":calc:"'")
+                ELSEIF (n = 0)
+                    fm("No results are valid for calculation of avereage":ASCII(10):ASCII(10):
+                       GetArray(dsp_array):ASCII(10):ASCII(10):
+                       "Returning: '":current_component_name:"' '":calc:"'")
+                ENDIF
+            ELSEIF (TOUPPER(syntax) = "STDEV") OR (TOUPPER(syntax) = "DEV")
+                calc = "± ":STRIP(dev)
+                calc = dev
+                IF (n < size_of_array(res_array)) AND (n > 1) THEN
+                    fm("Some results are excluded from calculation of standard deviation":ASCII(10):ASCII(10):
+                       GetArray(dsp_array):ASCII(10):ASCII(10):
+                       "Returning: '":current_component_name:"' '":calc:"'")
+                ELSEIF (n <= 1)
+                    fm("Insufficient results for calculation of standard deviation":ASCII(10):ASCII(10):
+                       GetArray(dsp_array):ASCII(10):ASCII(10):
+                       "Returning: '":current_component_name:"' '":calc:"'")
+                ENDIF
+            ELSEIF (TOUPPER(syntax) = "CV":ASCII(37):"")
+                calc = cv
+            ELSE    
+                fm("Invalid syntax":ASCII(10):ASCII(10):
+                   "Returning: '":current_component_name:"' '":calc:"'")
+            ENDIF
+        ENDIF
+    ENDIF
+
+    RETURN(calc)
+
+ENDROUTINE

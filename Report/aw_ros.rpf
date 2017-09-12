@@ -1,0 +1,423 @@
+{******************************************************************************
+* Module Name   : AW_ROS.RPF
+* Purpose       : Extract Aw raw data from files, and entering result to Aw Tests
+* Specification : Filename has to match test_number.csv
+*                 Extract Chamber No, Serial No and first %RH, when Stable = 1
+*                 The serial no is used to select instrument ID, and instrument_used
+*                 is updated on the result record.
+*
+* Modification History
+* Version   Date        Author              Modify Details
+******************************************************************************
+* 1.0       2015-05-21  Tommy Bøgeskov      Created
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+HandleFiles()
+
+EXIT
+
+{*************************************************************************
+* Purpose      : Loop through csv files in 'smp$userfiles:Aw'
+*                
+* Parameters   : N/A
+* Return Value : N/A
+**************************************************************************}
+GLOBAL ROUTINE HandleFiles
+
+DECLARE source, files, err_mes, i, l, t_number, results, analysis, version, component, c, status
+ARRAY files    
+
+
+source = "smp$userfiles:Aw\*.csv"
+
+    FILE FIND source, files, err_mes
+
+    IF err_mes <> EMPTY THEN
+        WriteToLog(err_mes)
+        RETURN(EMPTY)
+    ENDIF
+
+    IF SIZE_OF_ARRAY(files) = 0 THEN
+        {WriteToLog("No files found in ":source) }
+        RETURN(EMPTY)
+    ENDIF
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(files) DO
+        window_set_status("Processing ":files[i])
+        l = LENGTH(files[i]) - 1
+        WHILE (SUBSTRING(files[i], l, 1) <> "\") and (l > 0) DO
+            l = l - 1
+        ENDWHILE
+        l = l + 1
+        t_number = RIGHTSTRING("          ":SUBSTRING(files[i], l, LENGTH(files[i]) - l - 3),10)
+        IF NOT(ValidTestNumber(t_number)) THEN
+                Rename(files[i], "INVALID")
+        ELSE
+            IF FILE EXISTS (files[i]) THEN
+                ARRAY results
+                results [1,1] = "NAME"
+                results [1,2] = "TEXT"
+                results [1,3] = "INSTRUMENT_USED"
+                analysis = SELECT test.analysis WHERE test_number = t_number
+                version  = SELECT test.analysis_version
+                c = 1
+                component = SELECT versioned_component.name 
+                            WHERE analysis = analysis
+                              AND analysis_version = version
+                              AND result_type <> "K"
+                            ORDER ON order_number
+                WHILE component <> EMPTY
+                    c = c + 1
+                    results[c,1] = component
+                NEXT versioned_component
+                    component = SELECT versioned_component.name 
+                ENDWHILE
+
+                IF (Extract(files[i], results, t_number)) THEN
+                    c = size_of_array(results)
+                    WHILE c > 1 
+                        IF results[c,3] = EMPTY THEN
+                            array_remove_slice(results, 1, c)
+                        ENDIF
+                        c = c - 1
+                    ENDWHILE
+
+                    c = size_of_array(results)
+                    IF size_of_array(results) > 1 THEN 
+
+                        ARRAY status
+                        PUT_TEST_RESULTS t_number, results, status
+
+                        component = SELECT versioned_component.name 
+                                    WHERE analysis = analysis
+                                      AND analysis_version = version
+                                      AND result_type = "K"
+                                    ORDER ON order_number
+
+                        WHILE component <> EMPTY
+                            c = c + 1
+                            results[c,1] = component
+                        NEXT versioned_component
+                            component = SELECT versioned_component.name 
+                        ENDWHILE 
+
+                        c = 1
+                        WHILE c <= size_of_array(results)
+                            IF status[c] = EMPTY THEN
+                                results[c,4] = ""
+                            ELSE
+                                results[c,4] = status[c]
+                            ENDIF
+                            c = c + 1
+                        ENDWHILE
+
+                        ARRAY status
+                        PUT_TEST_RESULTS t_number, results, status
+
+                        WriteToLog(t_number:ASCII(10):GetArray(results))
+                        MoveFile(Rename(files[i], "OK"), "RETURNED")
+                    ELSE
+                        FILE CLOSE files[i], status
+                        Rename(files[i], "ERROR")
+                    ENDIF
+                ELSE
+                    FILE CLOSE files[i], status
+                    Rename(files[i], "ERROR")
+                ENDIF
+            ENDIF
+        ENDIF
+    i = i + 1
+    ENDWHILE
+    window_set_status("Completed")
+
+ENDROUTINE
+
+
+{*************************************************************************
+* Purpose      : Rename file in same folder, to new extenstion
+*                
+* Parameters   : filename, extenstion
+* Return Value : N/A
+**************************************************************************}
+ROUTINE Rename(FileName, VALUE Extension) 
+    
+    DECLARE l, status 
+
+    l = LENGTH(filename) - 1
+    WHILE (SUBSTRING(filename, l , 1) <> ".") and (l > 1)
+        l = l - 1
+    ENDWHILE
+
+    IF (FILE EXISTS (SUBSTRING(filename, 1 , l - 1):".":Extension)) THEN
+        FILE DELETE SUBSTRING(filename, 1 , l - 1):".":Extension, status
+    ENDIF
+    FILE COPY filename, SUBSTRING(filename, 1 , l - 1):".":Extension, status
+    IF status = EMPTY THEN
+        FILE DELETE filename, status
+        RETURN(SUBSTRING(filename, 1 , l - 1):".":Extension)
+        IF status <> EMPTY THEN
+            WriteToLog(STRIP(status))
+        ENDIF
+    ELSE
+        WriteToLog(status)
+    ENDIF
+    
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Move file to sub-folder
+*                
+* Parameters   : filename, sub-folder
+* Return Value : N/A
+**************************************************************************}
+ROUTINE MoveFile(VALUE FileName, VALUE subfolder) 
+    
+    DECLARE l, path, status 
+
+    l = LENGTH(filename) - 1
+    WHILE (SUBSTRING(filename, l , 1) <> "\") and (l > 1)
+        l = l - 1
+    ENDWHILE
+
+    path = LEFTSTRING(filename, l)
+    filename = STRIP(SUBSTRING(filename, l + 1, LENGTH(filename)))
+    
+    FILE COPY path:filename, path:subfolder:"\":filename, status
+    IF status = EMPTY THEN
+        FILE DELETE path:filename, status
+        IF status <> EMPTY THEN
+            WriteToLog("COPY ":path:filename:", ":path:subfolder:"\":filename:": ":STRIP(status))
+        ENDIF
+    ELSE
+        WriteToLog("DELETE ":path:filename:": ":status)
+    ENDIF
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Extract desired data into results array
+*                
+* Parameters   : filename, results (ARRAY)
+* Return Value : N/A
+**************************************************************************}
+ROUTINE Extract(filename, results, t_number) 
+
+DECLARE status, line, l, i, instr,  field1, field2, value1, value2
+
+    FILE OPEN filename, status
+    FILE READ filename, line, status
+    l = 1
+    instr = EMPTY
+
+    WHILE status = EMPTY
+        window_set_status("Reading line: '":line:"'")
+        IF INDEX(line, ASCII(34):"Chamber Name":ASCII(34)) > 0 THEN
+            field1 = GetFieldPosition(line, ASCII(34):"Chamber Name":ASCII(34))
+            field2 = GetFieldPosition(line, "Serialnumber")
+            FILE READ filename, line, status
+            value1 = GetFieldValue(line, field1)
+            value2 = GetFieldValue(line, field2)
+            IF INDEX(value1, " - ") > 0 THEN
+                value1 = STRIP(SUBSTRING(value1, 1, INDEX(value1, " - ")))
+            ENDIF
+            instr  = SELECT instrument.identity WHERE instrument_template = "AW" and serial_no = value2 
+            i = AddResult("Probe", Value1, results)
+            results[i,3] = instr 
+        ENDIF
+
+        IF (INDEX(line, ASCII(34):"Hum [%RH]":ASCII(34)) > 0) AND
+           (INDEX(line, "Stable") > 0) THEN
+            IF instr = EMPTY THEN
+                RETURN(FALSE)
+            ENDIF
+            field1 = GetFieldPosition(line, ASCII(34):"Hum [%RH]":ASCII(34))
+            field2 = GetFieldPosition(line, "Stable")
+            value2 = 0
+            WHILE (value2 = 0) AND (status = EMPTY)
+                FILE READ filename, line, status
+                window_set_status("Reading line: '":line:"'")
+                IF status = EMPTY THEN
+                    value1 = SUBSTITUTE(GetDataValue(line, field1), ",", ".")
+                    value2 = GetDataValue(line, field2)
+                ENDIF
+            ENDWHILE
+            i = AddResult(ASCII(37):"RH", Value1, results)
+            results[i,3] = instr 
+        ENDIF
+
+        FILE READ filename, line, status
+        l = l + 1        
+    ENDWHILE
+    FILE CLOSE filename, status
+    
+    RETURN(TRUE)
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Find field position in comma seperated text string
+*                
+* Parameters   : line, field
+* Return Value : N/A
+**************************************************************************}
+ROUTINE GetFieldPosition(VALUE line, VALUE field)
+DECLARE c, i
+
+    c = 0
+    
+    WHILE INDEX(line, field) > 0 
+        c = c + 1
+        i = INDEX(line, ",") + 1
+        line = SUBSTRING(line, i, LENGTH(line))
+    ENDWHILE
+    
+    RETURN (c)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Find field value in comma seperated text string
+*                
+* Parameters   : line, field
+* Return Value : N/A
+**************************************************************************}
+ROUTINE GetFieldValue(VALUE line, VALUE field)
+
+DECLARE i, val
+
+{
+    i = INDEX(line , ASCII(34):",")
+    WHILE (i > 0)
+        line = SUBSTRING(line, 1, i - 1):";":SUBSTRING(line, i + 2, LENGTH(line))
+        i = INDEX(line , ASCII(34):",")
+    ENDWHILE
+    line = SUBSTITUTE(line, ASCII(34), "")
+ }
+    i = 1
+    WHILE i < field
+        line = SUBSTRING(line, INDEX(line, ",") + 1, LENGTH(line))
+        i = i + 1
+    ENDWHILE
+
+    val = SUBSTRING(line, 1, INDEX(line, ",") - 1) 
+    val = SUBSTITUTE(val, ASCII(34), "")
+    val = STRIP(val) 
+
+    RETURN (val)
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Find field value in comma seperated, and quoted text string
+*                
+* Parameters   : line, field
+* Return Value : N/A
+**************************************************************************}
+ROUTINE GetDataValue(VALUE line, VALUE field)
+
+DECLARE i, val
+
+{
+    i = INDEX(line , ASCII(34):",")
+    WHILE (i > 0)
+        line = SUBSTRING(line, 1, i - 1):";":SUBSTRING(line, i + 2, LENGTH(line))
+        i = INDEX(line , ASCII(34):",")
+    ENDWHILE
+    line = SUBSTITUTE(line, ASCII(34), "")
+ }
+    i = 1
+    WHILE i < field
+        line = SUBSTRING(line, INDEX(line, ASCII(34):",") + 2, LENGTH(line))
+        i = i + 1
+    ENDWHILE
+
+    val = SUBSTRING(line, 1, INDEX(line, ASCII(34):",") - 1) 
+    val = SUBSTITUTE(val, ASCII(34), "")
+    val = STRIP(val) 
+
+    RETURN (val)
+    
+ENDROUTINE
+{*************************************************************************
+* Purpose      : Verify the test_number
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE ValidTestNumber(VALUE t_number)
+
+    IF NUMTEXT(t_number) THEN
+        IF t_number < 9999999999 THEN
+            IF INDEX(TOUPPER(SELECT test.analysis WHERE test_number = t_number), "AW") > 0 THEN
+                RETURN(TRUE)
+            ENDIF
+        ENDIF
+    ENDIF    
+    
+    RETURN (FALSE)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Add the result "Name" to the array
+*                When the Name matches component name,
+*                but component does not contain 'sample', '1', '2' or '3'
+* Parameters   : Name, Result value, result array
+* Return Value : N/A
+**************************************************************************}
+ROUTINE AddResult(VALUE Name, VALUE Value1, results)
+
+DECLARE c
+
+    c = size_of_array(results) 
+    WHILE c > 0
+        IF (INDEX(TOUPPER(results[c,1]), TOUPPER(Name)) > 0) AND
+           (INDEX(TOUPPER(results[c,1]), "SAMPLE")      = 0) AND
+           (INDEX(TOUPPER(results[c,1]), "1")           = 0) AND
+           (INDEX(TOUPPER(results[c,1]), "2")           = 0) AND
+           (INDEX(TOUPPER(results[c,1]), "3")           = 0) THEN
+            results[c,2] = Value1
+            RETURN (c)
+        ENDIF
+        c = c - 1
+    ENDWHILE
+    
+    RETURN (0)
+
+ENDROUTINE
+
+ROUTINE SQL(VALUE SQL_string)
+{*************************************************************************
+* Purpose      : Execute oracle SQL string
+* Parameters   : SQL string
+* Return Value : None
+**************************************************************************}
+        WriteToLog(SQL_string)
+        execute_sql(SQL_string)
+        execute_sql("commit")
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

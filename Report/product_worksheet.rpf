@@ -1,0 +1,756 @@
+{**M1590 HBe 12-11-04: Handling multiple test schedules at level 2. (More than 2 levels not handled - could be made by recursive calls)}
+
+{**1353: HBe 24-9-01: Standard Description made longer. 
+ Analysis programme now allows 10 lines instead of 5 lines
+ The print of analysis programme is junky - should be made generic, so the necessary 
+ number of lines is generated through a while statement....
+ (The current setup was made by external consultants....)
+}
+
+JOIN LIBRARY $lib_utils
+
+SET PRINTERCODES TRUE
+ 
+
+set printercodes true 
+
+set width 200
+set length 63
+
+set name "DEFER/"
+
+set format "9999"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+
+
+DECLARE mlp_id, mlp_ver, plant, the_last_key, sp
+ARRAY empty_arr
+ARRAY version_arr
+mlp_id       = EMPTY
+mlp_ver      = EMPTY
+the_last_key = EMPTY
+plant        = GLOBAL("DEFAULT_GROUP")
+
+initialiser()
+
+
+IF      prompt_user("GROUP_HEADER",
+                  "Please enter plant code generate Product Worksheet for", "identity",
+                   FALSE, "Plant Code:", empty_arr,
+                   plant, the_last_key) THEN 
+
+
+   IF      prompt_user("MLP_HEADER",
+                  "Select Product ID to generate Product Worksheet for", "identity",
+                   TRUE, "Product ID:", empty_arr,
+                   mlp_id, the_last_key) THEN 
+
+
+{**AS 2003R1: Only browse on approved versions}
+   version_arr[1,1] = ARRAY_SELECT_EQ
+   version_arr[1,2] = "IDENTITY"
+   version_arr[1,3] = mlp_id
+
+   version_arr[2,1] = ARRAY_SELECT_EQ
+   version_arr[2,2] = "APPROVAL_STATUS"
+   version_arr[2,3] = "A"
+{**AE 2003R1}
+
+
+   mlp_ver = SELECT MAX mlp_header.product_version
+             where identity = mlp_id
+             AND   approval_status = "A"
+
+{**M 2003R1: Below now browsing on MLP_HEADER instead of on MLP_VERSIONS}
+
+      IF      prompt_user("MLP_HEADER",
+                  "Select Version to generate Product Worksheet for:", "PRODUCT_VERSION",
+                   TRUE, "Product Version:", version_arr,
+                   mlp_ver, the_last_key) THEN
+
+
+         handle_mlp_information(mlp_id, mlp_ver)
+
+         handle_standard_information(mlp_id, mlp_ver, plant)
+
+         sp = EMPTY
+
+         handle_test_information(mlp_id, mlp_ver, plant, sp)
+
+         IF sp = EMPTY THEN
+            FLASH_MESSAGE("Not generating Analysis Programme", TRUE)
+            print_end_message()
+         ELSE
+            print_buttom()
+         ENDIF
+      ENDIF   
+
+   ENDIF   
+ENDIF
+  
+
+ROUTINE handle_mlp_information (VALUE mlp_id, VALUE mlp_ver)
+
+   amt_sets = EMPTY
+   amt_err_mes = EMPTY
+   ARRAY amt_arr
+   ARRAY amt_plant_arr
+
+{   DECLARE part_description, sample_type, prod_w_1, part_no, disp_resp }
+
+   part_no = STRIP(mlp_id)
+
+{**MS 2003R1
+   part_description = STRIP(select mlp_header.description
+                      where identity = mlp_id )
+}
+   part_description = STRIP(select mlp_header.description
+                      WHERE identity = mlp_id 
+                      AND product_version = mlp_ver)
+{**ME 2003R1}
+   sample_type    = STRIP(select mlp_header.sample_type)
+   prod_w_1_code  = STRIP(select mlp_header.amount_01)
+   disp_resp_code = STRIP(select mlp_header.disp_resp)
+   disp_resp      = STRIP(SELECT phrase.phrase_text
+                    where phrase_type = "DISP_RESP"
+                    and phrase_id = disp_resp_code)
+   prod_w_1       = STRIP(SELECT phrase.phrase_text
+                    where phrase_type = "AMOUNT_01"
+                    and phrase_id = prod_w_1_code)
+
+
+   IF NOT mlp_analysis_parameters("M", "AMOUNT_ONE", 4, mlp_id, mlp_ver,
+                               amt_arr, amt_sets, amt_err_mes  )
+   THEN
+      FLASH_MESSAGE("Unable to find parameter setup of 'AMOUNT_ONE' for product ":STRIP(mlp_id):".", TRUE)
+   ENDIF
+
+
+{Filtering out the AMOUNT_ONE parameter setups not matching the chosen plant code}
+
+   amt_counter = 0
+   amt_match = 0
+   WHILE amt_counter < amt_sets
+   amt_counter = amt_counter + 1
+      IF STRIP(amt_arr [amt_counter, 1]) = plant THEN
+         amt_match = amt_match + 1
+         amt_plant_arr[amt_match,1] = amt_arr[amt_counter,1]
+         amt_plant_arr[amt_match,2] = amt_arr[amt_counter,2]
+         amt_plant_arr[amt_match,3] = amt_arr[amt_counter,3]
+         amt_plant_arr[amt_match,4] = amt_arr[amt_counter,4]
+      ENDIF
+   ENDWHILE
+   IF amt_match <1 THEN
+     FLASH_MESSAGE("No 'Amount First Dilution' setup exist for the plant code entered!",TRUE)
+   ENDIF
+{End of filter}
+
+
+   print_mlp()
+
+   counter = 0
+   WHILE counter < amt_match
+      counter = counter + 1
+      handle_amt(amt_plant_arr[counter,2], amt_plant_arr[counter,3], amt_plant_arr[counter,4])
+   ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE handle_amt (VALUE anal_type, VALUE unfreeze, VALUE amount_one)
+
+   anal_type = strip(anal_type)
+
+   amount_one = NUMBER_TO_TEXT(amount_one, "999.99"):" gram"
+   IF unfreeze
+      THEN usage = "Thawed"
+      ELSE usage = "Frozen"
+   ENDIF
+
+   print_amount_one(anal_type, usage, amount_one)
+
+ENDROUTINE
+
+
+ROUTINE   handle_standard_information (VALUE mlp_id, VALUE mlp_ver, value PLANT)
+
+
+   ARRAY   parm_arr
+   ARRAY   plant_arr
+   ARRAY   empty_arr
+   DECLARE no_sets, err_mes
+   DECLARE counter, match
+
+   no_sets = EMPTY
+   err_mes = EMPTY
+
+   IF NOT mlp_analysis_parameters("M", "STD_INOC", 4, mlp_id, mlp_ver,
+                               parm_arr, no_sets, err_mes  )
+   THEN
+      FLASH_MESSAGE("Error getting parameter setup of 'STD_INOC' for product ":STRIP(mlp_id):".", TRUE)
+   ENDIF
+
+
+{Filtering out the parameter setups not matching the chosen plant code}
+   counter = 0
+   match = 0
+   WHILE counter < no_sets
+   counter = counter + 1
+      IF STRIP(parm_arr [counter, 4]) = plant THEN
+         match = match + 1
+         plant_arr[match,1] = parm_arr[counter,1]  {Analysis name}
+         plant_arr[match,2] = parm_arr[counter,2]  {Control Standard Item No.}
+         plant_arr[match,3] = parm_arr[counter,3]  {Control Standard Name}
+         plant_arr[match,4] = parm_arr[counter,4]  {Plant Code}
+
+      ENDIF
+   ENDWHILE
+   IF match <1 THEN
+     FLASH_MESSAGE("No Standard Parameter setup exist for the plant code entered!",TRUE)
+   ENDIF
+
+{End of filter}
+
+   counter = 0
+   WHILE counter < match
+      counter = counter + 1
+{**MS1566 HBe 12-5-2004}      
+      IF (STRIP(plant_arr[counter,1]) <> EMPTY) AND (NOT BLANK(STRIP(plant_arr[counter,1]))) 
+      AND (STRIP(plant_arr[counter,2]) <> EMPTY) AND (NOT BLANK(STRIP(plant_arr[counter,2]))) THEN   
+         handle_standard(plant_arr[counter,1], plant_arr[counter,2])
+      ELSE
+         flash_message("Missing information on standard setup for STD_INOC for plant: " : STRIP(plant), TRUE)
+      ENDIF
+   ENDWHILE
+{**ME1566}
+ENDROUTINE
+
+
+ROUTINE handle_standard(analysis, standard)
+
+   std_anal = STRIP(analysis)
+   std_id   = STRIP(standard)
+
+{   DECLARE std_descr, std_amt, std_type, std_amt_code}
+
+
+   std_descr    = STRIP(select standard.description
+                  where identity = std_id)
+{**AS 2003R1}
+   std_ver      = SELECT max_active_mlp_ver.max_version
+                  WHERE identity = std_id
+
+   std_type     = STRIP(SELECT mlp_header.sample_type
+                  WHERE identity = std_id
+                  AND product_version = std_ver)
+{**AE 2003R1}
+
+{**DS 2003R1
+   std_type     = STRIP(select mlp_header.sample_type
+                  where identity = std_id)
+ **DE 2003R1}
+
+   print_std()
+
+
+{Handle the inoculation of standards}
+
+ARRAY std_plant_arr
+ARRAY std_arr
+
+
+   std_ver     = select max_active_mlp_ver.max_version
+                 where identity = std_id
+
+   IF mlp_analysis_parameters("M", "AMOUNT_ONE", 4, std_id, std_ver,
+                               std_arr, std_sets, std_err_mes  )
+   THEN
+      {Filtering out the AMOUNT_ONE standard parameter setups not matching the chosen plant code}
+
+      std_counter = 0
+      std_match = 0
+      WHILE std_counter < std_sets
+      std_counter = std_counter + 1
+         IF STRIP(std_arr [std_counter, 1]) = plant THEN
+            std_match = std_match + 1
+            std_plant_arr[std_match,1] = std_arr[std_counter,1]
+            std_plant_arr[std_match,2] = std_arr[std_counter,2]
+            std_plant_arr[std_match,3] = std_arr[std_counter,3]
+            std_plant_arr[std_match,4] = std_arr[std_counter,4]
+         ENDIF
+      ENDWHILE
+
+   {End of filter}
+
+      IF std_match > 0 THEN
+      print_counter = 0
+         WHILE print_counter < std_match DO
+            print_counter = print_counter + 1
+            std_anal_type = std_plant_arr[print_counter,2]
+            std_treat     = std_plant_arr[print_counter,3]
+            IF std_treat
+               THEN usage = "Thawed"
+               ELSE usage = "Frozen"
+            ENDIF
+
+            IF NUMTEXT(std_plant_arr[print_counter,4]) 
+               THEN std_amt = NUMBER_TO_TEXT(std_plant_arr[print_counter,4], "999.99"):" gram"
+               ELSE std_amt = "N.A."  
+            ENDIF
+
+            print_std_inoc (std_anal_type, usage, std_amt)
+
+          ENDWHILE
+      ELSE
+         FLASH_MESSAGE("No 'Amount First Dilution' setup  on standard ":STRIP(std_id):" exist for the plant code entered.",TRUE)
+      ENDIF
+   ELSE
+      FLASH_MESSAGE("Unable to find parameter setup of 'AMOUNT_ONE' for standard ":STRIP(std_id):" Ver. ":std_ver:".", TRUE)
+   ENDIF
+
+
+ENDROUTINE
+
+
+ROUTINE handle_test_information (VALUE mlp_id, VALUE mlp_ver, VALUE plant, sp)
+
+DECLARE  test_sched_1, test_sched_2
+ARRAY sp_arr
+
+sp = EMPTY
+
+   sp_arr[1,1] = ARRAY_SELECT_EQ
+   sp_arr[1,2] = "GROUP_ID"
+   sp_arr[1,3] = plant
+
+   sp_arr[2,1] = ARRAY_SELECT_AND
+   sp_arr[2,2] = EMPTY
+   sp_arr[2,3] = EMPTY
+
+   sp_arr[3,1] = ARRAY_SELECT_EQ
+   sp_arr[3,2] = "PRODUCT_NAME"
+   sp_arr[3,3] = mlp_id
+
+
+IF    prompt_user("PROD_SCHED",
+                  "Please Select Sample Point to generate Product Worksheet for", "sampling_point",
+                   TRUE, "Sample Point:", sp_arr,
+                   sp, the_last_key) THEN
+   ARRAY test_arr
+   DECLARE no_anal, sched_entry, anal_id, subsched_exists, primary_count
+   sched_entry = 0
+   no_anal    = 0
+   subsched_exists = 0
+
+samp_point=sp
+foerst=1
+
+{**M 2003R1: mlp_ver included in SELECT statement below}
+
+   test_sched_1 = SELECT prod_sched.test_schedule
+                  where product_name = mlp_id
+                  AND product_version = mlp_ver
+                  and group_id = plant
+                  and sampling_point = sp
+
+   anal_id      = SELECT test_sched_entry.analysis_id
+                  where identity = STRIP(test_sched_1)
+                  and std_test = TRUE
+                  and is_analysis = TRUE
+                  ORDER ON order_num
+
+
+   WHILE anal_id <> EMPTY 
+      sched_entry = sched_entry + 1
+      test_arr[sched_entry,1] = anal_id
+      test_arr[sched_entry,2] = SELECT test_sched_entry.is_analysis
+      NEXT test_sched_entry
+      anal_id = SELECT test_sched_entry.analysis_id
+   ENDWHILE
+
+   
+   sched_id      = SELECT test_sched_entry.analysis_id
+                   where identity = STRIP(test_sched_1)
+                   and std_test = TRUE
+                   and is_analysis = FALSE
+                   ORDER ON order_num
+
+   WHILE sched_id <> EMPTY   
+      handle_subsched (sched_id, test_arr, sched_entry)
+      NEXT test_sched_entry
+      sched_id = SELECT test_sched_entry.analysis_id
+   ENDWHILE
+
+
+{Getting information into test_arr from versioned_analysis table.
+The array content is:
+
+   Column 1: identity
+   Column 2: is_analysis (Record is not included on output if = FALSE)
+   Column 3: Analysis_version (Always higest version available)
+   Column 4: analysis_type
+   Column 5: inoc_temp
+   Column 6: expected_time
+   Column 7: condtions
+   Column 8: media_01
+   Column 9: description
+   }
+
+   DECLARE fill_count, information
+
+   fill_count = 0
+
+   WHILE fill_count < sched_entry
+
+      fill_count = fill_count + 1
+ 
+      IF test_arr[fill_count,2] THEN
+
+          test_arr[fill_count,3] = STRIP (select analysis_view.analysis_version
+             WHERE identity = test_arr[fill_count,1])
+          test_arr[fill_count,4] = STRIP(select analysis_view.analysis_type)
+          test_arr[fill_count,5] = STRIP(select analysis_view.inoc_temp):"°C "
+          test_arr[fill_count,6] = STRIP(SUBSTRING(select analysis_view.expected_time,1,10))
+          test_arr[fill_count,7] = STRIP(SELECT phrase.phrase_text
+                                   where phrase_type = "CONDI_01"
+                                   and phrase_id = STRIP(select analysis_view.conditions))
+          test_arr[fill_count,8] = STRIP(SELECT phrase.phrase_text
+                                   where phrase_type = "MEDIA_01"
+                                   and phrase_id = STRIP(select analysis_view.media_01))
+          test_arr[fill_count,9] = STRIP(select analysis_view.description)  
+
+        print_test()
+
+      ENDIF   
+
+   ENDWHILE
+
+ENDIF
+
+
+ENDROUTINE
+
+
+
+
+
+{******************************************************************************}
+{ Initialises lines.                                                          }
+{******************************************************************************}
+
+Routine initialiser
+
+set header "      "
+
+h1="+"
+lr="|"
+l=lr
+
+topp_linie=h1:"------------":
+           h1:"----------":
+           h1:"---------------------":
+           h1:"------------":
+           h1:"------------":
+           h1
+
+text_linie=lr:"Analyse type":
+           lr:"Analysis  ":
+           lr:"Time/Temp/Description":
+           lr:"Conditions  ":
+           lr:" Media Type ":
+           lr
+
+midt_linie = topp_linie 
+bund_linie = topp_linie
+endroutine
+
+{******************************************************************************}
+{ Print mlp-information.                                                       }
+{******************************************************************************}
+
+Routine print_mlp
+
+literal
+                         PRODUCT WORKSHEET for plant $plant___
+
+                                                    Sample ID: _____________________
+
+		Partnumber:   $part_no_____________________
+		Description:  $part_description____________
+		Sample type:  $sample_type_________________
+		Responsible:  $disp_resp_____________________________________________
+$endliteral
+
+
+endroutine
+
+{******************************************************************************}
+{ Print last line without any table.                                                    }
+{******************************************************************************}
+
+routine print_end_message
+
+literal
+
+       --- No tests have been generated since no sampling point was chosen ---
+$endliteral
+
+endroutine
+
+
+{******************************************************************************}
+{ Print last line in table.                                                    }
+{******************************************************************************}
+
+routine print_buttom
+
+literal
+   $bund_linie___________________________________________________________________
+$endliteral
+
+endroutine
+
+
+{******************************************************************************}
+{ Print an inoculation amount for the product                                  }
+{******************************************************************************}
+
+routine print_amount_one (VALUE anal_type, VALUE usage, VALUE amount_one)
+
+literal
+                1. Weight:    $anal_type $usage $amount_one____
+$endliteral
+
+endroutine
+
+
+
+{******************************************************************************}
+{ Print a standard.                                                            }
+{******************************************************************************}
+
+routine print_std
+
+literal
+
+   Analysis:    $std_anal____________________________
+   Standard ID: $std_id______________________________
+   Std. descr.: $std_descr_____________________________________________________
+   Std. Type:   $std_type____________________________
+$endliteral
+
+endroutine
+
+{******************************************************************************}
+{ Print standard inoculation                                                   }
+{******************************************************************************}
+
+routine print_std_inoc (VALUE type, VALUE usage, VALUE std_amt)
+
+literal
+   1. Weight:       $type_____ $usage $std_amt______
+$endliteral
+
+endroutine
+
+
+{******************************************************************************}
+{ Print sample point                                                           }
+{******************************************************************************}
+
+routine print_sample_point
+
+literal
+
+
+   Analysis Program for Sample Point: $samp_point_______________________________________ 
+$endliteral
+
+endroutine
+
+
+{******************************************************************************}
+{ Print header.                                                                }
+{******************************************************************************}
+
+routine print_overskrift
+
+literal
+
+   $topp_linie_________________________________________________________________
+   $text_linie_________________________________________________________________
+$endliteral
+
+endroutine
+
+
+
+
+
+{*****************************************************************************+}
+{ Print a test.                                                                }
+{******************************************************************************}
+
+routine print_test
+
+if foerst=1 then
+   print_sample_point()
+   print_overskrift()
+   foerst=0
+endif
+
+
+lf=linesleft
+if lf < 8 then
+   print_buttom()
+   new page
+   print_overskrift()
+endif
+
+ana_type=test_arr[fill_count,4]
+analysis1=STRIP(test_arr[fill_count,1])
+analysis2="/": test_arr[fill_count,3]
+
+
+time    =test_arr[fill_count,6]:" / "
+        :test_arr[fill_count,5]:" / "
+        :test_arr[fill_count,9]
+        :"                     "
+        :"                     "
+        :"                     "
+        :"                     "
+        :"                     "                                                                                     
+
+condit=test_arr[fill_count,7]
+{condit="condition"}
+milk    =test_arr[fill_count,8]
+
+
+time1 =substring(time,1  ,21)
+time2 =substring(time,22 ,21)
+time3 =substring(time,43 ,21)
+time4 =substring(time,64 ,21)
+time5 =substring(time,85 ,21)
+time6 =substring(time,106,21)
+time7 =substring(time,127,21)
+time8 =substring(time,148,21)
+time9 =substring(time,169,21)
+time10=substring(time,190,21)
+
+cond1 =substring(condit,1, 12)
+cond2 =substring(condit,13 ,12)
+cond3 =substring(condit,25 ,12)
+cond4 =substring(condit,37 ,12)
+cond5 =substring(condit,49 ,12)
+cond6 =substring(condit,61 ,12)
+cond7 =substring(condit,73 ,12)
+cond8 =substring(condit,85 ,12)
+cond9 =substring(condit,97 ,12)
+cond10=substring(condit,109,12)
+
+milk1 =substring(milk,1  ,12)
+milk2 =substring(milk,13 ,12)
+milk3 =substring(milk,25 ,12)
+milk4 =substring(milk,37 ,12)
+milk5 =substring(milk,49 ,12)
+milk6 =substring(milk,61 ,12)
+milk7 =substring(milk,73 ,12)
+milk8 =substring(milk,85 ,12)
+milk9 =substring(milk,97 ,12)
+milk10=substring(milk,109,12)
+
+
+literal
+   $midt_linie____________________________________________________________________
+   |$ana_type___|$Analysis1|$Time1_______________|$cond1______|$milk1______|
+   |            |$Analysis2|$Time2_______________|$cond2______|$milk2______|
+$endliteral
+
+
+if ((time3  <> " ") or (cond3 <> " ") or (milk3 <> " " )) then 
+literal
+   |            |          |$Time3_______________|$cond3______|$milk3______|
+$endliteral
+
+endif
+
+if ((time4  <> " ") or (cond4 <> " ") or (milk4 <> " ")) then 
+literal
+   |            |          |$Time4_______________|$cond4______|$milk4______|
+$endliteral
+endif
+
+if ((time5  <> " ") or (cond5 <> " ") or (milk5 <> " ")) then 
+literal
+   |            |          |$Time5_______________|$cond5______|$milk5______|
+$endliteral
+endif
+
+if ((time6  <> " ") or (cond6 <> " ") or (milk6 <> " ")) then 
+literal
+   |            |          |$Time6_______________|$cond6______|$milk6______|
+$endliteral
+endif
+
+if ((time7  <> " ") or (cond7 <> " ") or (milk7 <> " ")) then 
+literal
+   |            |          |$Time7_______________|$cond7______|$milk7______|
+$endliteral
+endif
+
+if ((time8  <> " ") or (cond8 <> " ") or (milk8 <> " ")) then 
+literal
+   |            |          |$Time8_______________|$cond8______|$milk8______|
+$endliteral
+endif
+
+if ((time9  <> " ") or (cond9 <> " ") or (milk9 <> " ")) then 
+literal
+   |            |          |$Time9_______________|$cond9______|$milk9______|
+$endliteral
+endif
+
+if ((time10 <> " ") or (cond10 <> " ") or (milk10 <> " ")) then 
+literal
+   |            |          |$Time10______________|$cond10_____|$milk10_____|
+$endliteral
+endif
+
+endroutine
+
+{------------------------------------------------- HANDLE_SCHED ---------------------------------------------------------}
+
+ROUTINE handle_subsched (sched_id, test_arr, sched_entry)
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+
+DECLARE anal_id, context
+
+
+push_file_descriptor ("test_sched_entry", context)
+
+
+   anal_id = SELECT test_sched_entry.analysis_id
+             WHERE identity = STRIP(sched_id)
+             AND std_test = TRUE
+             AND is_analysis = TRUE
+             ORDER ON order_num
+   WHILE anal_id <> EMPTY 
+      sched_entry = sched_entry + 1
+      test_arr[sched_entry,1] = anal_id
+      test_arr[sched_entry,2] = SELECT test_sched_entry.is_analysis
+      NEXT test_sched_entry
+      anal_id = SELECT test_sched_entry.analysis_id
+   ENDWHILE
+
+
+pop_file_descriptor(context)
+
+
+ENDROUTINE

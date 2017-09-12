@@ -1,0 +1,1117 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_INVENTORY
+*
+* Purpose       : Inventory Management
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_VGL
+
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_DB
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_initialise
+{
+* Defines the inventory item class. An inventory item object is used to define
+* the attributes required for a new item to be added. It is an abstraction of
+* the inventory_item table structure
+*
+*******************************************************************************}
+
+	DEFINE CLASS "INVENTORY_ITEM"
+
+		INITIALISATION
+		
+		PROPERTIES
+			"inventory_id"      ,
+			"item_id"           ,
+			"quantity"          ,
+			"unit"              ,
+			"item_code"         ,
+			"last_tested_on"    ,
+			"last_tested_by"    ,
+			"expiry_date"       ,
+			"location"          ,
+			"description"
+
+	END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_item_class_initialisation( self )
+{
+* Initialises new inventory item objects
+*
+* Parameters : self , Inventory Item Object
+*
+*******************************************************************************}
+
+	self . inventory_id      = EMPTY
+	self . item_id           = EMPTY
+	self . quantity          = EMPTY
+	self . unit              = EMPTY
+	self . item_code         = EMPTY
+	self . last_tested_on    = EMPTY
+	self . last_tested_by    = EMPTY
+	self . expiry_date       = EMPTY
+	self . location          = EMPTY
+	self . description       = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+{ Globals                                                                      }
+{******************************************************************************}
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_get_unit( VALUE inventory_id )
+{
+* Returns the unit defined at the inventory header level or EMPTY 
+* 
+* Parameters : inventory_id , Inventory identity
+*
+*******************************************************************************}
+	
+	DECLARE unit, context
+	
+	push_file_descriptor( "INVENTORY_HEADER", context )
+	
+	unit = SELECT inventory_header . base_unit
+	           WHERE identity = inventory_id
+	           
+	pop_file_descriptor( context )
+	
+	RETURN( unit )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_get_unit( VALUE inventory_id, VALUE item_id )
+{
+* Returns the unit that was used when the inventory item was added. This is not
+* necessarily the same unit the item's quantity is expressed in.
+* Returns Empty if not found
+* 
+* Parameters : inventory_id , Inventory identity
+*              item_id      , Item id
+*
+*******************************************************************************}
+	
+	DECLARE unit, context
+	
+	push_file_descriptor( "INVENTORY_ITEM", context )
+	
+	unit = SELECT inventory_item . base_unit
+	            WHERE inventory_id = inventory_id
+	            AND   item_id      = item_id
+	           
+	pop_file_descriptor( context )
+	
+	RETURN( unit )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_get_quantity_total( VALUE inventory_id )
+{
+* Returns the total quantity of allocated and unallocated stock for the passed
+* inventory id. The quantity is expressed in the unit specified on the header.
+* 
+* Parameters : inventory_id , Inventory identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "TOTAL", select_array )
+
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_get_quantity_allocated( VALUE inventory_id )
+{
+* Returns the total quantity of allocated stock for the passed inventory id.
+* The quantity is expressed in the unit specified on the header
+*
+* Parameters : inventory_id , Inventory identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "ALLOCATED", select_array )
+	
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_get_quantity_unallocated( VALUE inventory_id )
+{
+* Returns the total quantity of unallocated stock for the passed inventory id
+* The quantity is expressed in the unit specified on the header.
+*
+* Parameters : inventory_id , Inventory identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "UNALLOCATED", select_array )
+
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_get_quantity_total( VALUE inventory_id, VALUE item_id )
+{
+* Returns the total quantity of allocated and unallocated stock for the passed
+* inventory item. The quantity is expressed in the unit specified on the
+* header.
+* 
+* Parameters : inventory_id , Inventory identity
+*              item_id      , Item Identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ITEM_ID"     , item_id      )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "TOTAL", select_array )
+
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_get_quantity_allocated( VALUE inventory_id, VALUE item_id )
+{
+* Returns the total quantity of allocated stock for the passed inventory
+* item. The quantity is expressed in the unit specified on the header.
+*
+* Parameters : inventory_id , Inventory identity
+*              item_id     , Item Identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ITEM_ID"     , item_id      )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "ALLOCATED", select_array )
+
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_get_quantity_unallocated( VALUE inventory_id, VALUE item_id )
+{
+* Returns the total quantity of unallocated stock for the passed inventory
+* item. The quantity is expressed in the unit specified on the header.
+*
+* Parameters : inventory_id , Inventory identity
+*              item_id     , Item Identity
+*
+*******************************************************************************}
+
+	DECLARE select_array, total
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ITEM_ID"     , item_id      )
+
+	total = ARRAY_SELECT_SUM( "INVENTORY_ITEM_SUMMARY_VIEW", "UNALLOCATED", select_array )
+
+	IF total = EMPTY THEN
+		total = 0
+	ENDIF
+
+	RETURN( total )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_add_object( new_item )
+{
+* Adds an item to the inventory. If an error occured a string is returned
+* containing a description of problem. Otherwise EMPTY is returned
+*
+* Parameters : new_item , Inventory Item object
+*
+*******************************************************************************}
+
+	DECLARE inventory_id, errors, key_array, padded_key, header_unit
+	DECLARE own_transaction, error_message, converted_qty
+
+	errors = EMPTY
+
+
+	{* Check mandatory fields *}
+	IF errors = EMPTY THEN
+		
+		IF ( new_item . quantity     = EMPTY ) OR
+		   ( new_item . unit         = EMPTY ) OR
+		   ( new_item . inventory_id = EMPTY ) OR
+		   ( new_item . item_id      = EMPTY ) THEN
+		
+			errors = "Not all mandatory fields have values"
+		   
+		ENDIF
+	
+	ENDIF
+
+
+	{* Lock header to ensure header unit can't be changed whilst adding *}
+	
+	IF errors = EMPTY THEN
+	
+		inventory_id = SELECT inventory_header . identity
+		                  FOR UPDATE
+		                  WHERE identity = new_item . inventory_id
+
+		IF ( inventory_id = EMPTY ) OR
+		   ( inventory_id = ERROR ) THEN
+	
+			errors = "Could not lock inventory header record"
+	
+		ENDIF
+	
+	ENDIF
+	
+	{* convert to header unit *}
+	
+	IF errors = EMPTY THEN
+	
+		header_unit = SELECT inventory_header . base_unit
+	
+		converted_qty = unit_convert ( new_item . quantity ,
+		                               new_item . unit     ,
+		                               header_unit         ,
+	                                   error_message       )
+		IF error_message <> EMPTY THEN
+	
+			errors = message_get_text( error_message, 1 )
+			
+		ENDIF
+		
+	ENDIF
+	
+	{* reserve item record *}
+	
+	IF errors = EMPTY THEN
+	
+		ARRAY key_array
+		key_array[1] = new_item . inventory_id
+		key_array[2] = new_item . item_id
+
+		padded_key = lib_db_array_to_padded( "INVENTORY_ITEM", key_array )
+
+		RESERVE ENTRY inventory_item, padded_key, errors
+
+	ENDIF
+	
+	{* assign fields and commit *}
+	
+	IF errors = EMPTY THEN
+	
+		{* store quantity in header unit but keep note of entered unit *}
+		ASSIGN inventory_item . quantity   = converted_qty 
+		ASSIGN inventory_item . base_unit  = new_item . unit
+		ASSIGN inventory_item . entered_on = NOW
+		ASSIGN inventory_item . entered_by = OPERATOR
+
+		IF new_item . item_code <> EMPTY THEN
+			ASSIGN inventory_item . item_code = new_item . item_code
+		ENDIF
+
+		IF new_item . last_tested_on <> EMPTY THEN
+			ASSIGN inventory_item . last_tested_on = new_item . last_tested_on
+		ENDIF
+		
+		IF new_item . last_tested_by <> EMPTY THEN
+			ASSIGN inventory_item . last_tested_by = new_item . last_tested_by
+		ENDIF
+		
+		IF new_item . expiry_date <> EMPTY THEN
+			ASSIGN inventory_item . expiry_date = new_item . expiry_date
+		ENDIF
+		
+		IF new_item . location <> EMPTY THEN
+			ASSIGN inventory_item . location = new_item . location
+		ENDIF
+		
+		IF new_item . description <> EMPTY THEN
+			ASSIGN inventory_item . description = new_item . description
+		ENDIF
+
+		own_transaction = NOT transaction_is_write( )
+		
+		IF own_transaction THEN
+		
+			START WRITE TRANSACTION "Inventory: Add item"
+
+		ENDIF
+
+		UPDATE inventory_item
+
+		IF own_transaction THEN
+		
+			COMMIT
+			
+		ENDIF
+	
+	ELSE
+	
+		ROLLBACK
+
+	ENDIF
+
+	RETURN( errors )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_add( VALUE inventory_id ,
+                            VALUE item_id      ,
+                            VALUE quantity     ,
+                            VALUE unit         )
+{
+* Adds an item to the inventory. If an error occured a string is returned
+* containing a description of problem. Otherwise EMPTY is returned
+*
+* Parameters : inventory_id , Inventory identity
+*              item_id      , New item identity
+*              quantity     , Quantity to add (real number)
+*              unit         , the unit the quantity is expressed in
+*
+*******************************************************************************}
+
+	DECLARE new_item
+	
+	inventory_initialise( )
+	
+	CREATE OBJECT "INVENTORY_ITEM", new_item
+	new_item . inventory_id = inventory_id
+	new_item . item_id      = item_id
+	new_item . quantity     = quantity
+	new_item . unit         = unit
+
+	RETURN( inventory_item_add_object( new_item ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_allocate( VALUE inventory_id  ,
+                                 VALUE item_id       ,
+                                 VALUE quantity      ,
+                                 VALUE unit          ,
+                                 VALUE purpose       )
+{
+* Allocates a quantity of the passed item.
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id  , Inventory identity
+*              item_id       , Item identity
+*              quantity      , Quantity to allocate (real number)
+*              unit          , the unit the quantity is expressed in
+*              purpose       , A description of what the stock is for
+*
+*******************************************************************************}
+
+	DECLARE allocation_id
+
+	allocation_id = inventory_allocation_next_id( inventory_id )
+
+	RETURN( inventory_item_allocate_id( inventory_id  ,
+	                                    item_id       ,
+	                                    allocation_id ,
+	                                    quantity      ,
+	                                    unit          ,
+	                                    purpose       ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_item_allocate_id( VALUE inventory_id  ,
+                                    VALUE item_id       ,
+                                    VALUE allocation_id ,
+                                    VALUE quantity      ,
+                                    VALUE unit          ,
+                                    VALUE purpose       )
+{
+* Allocates a quantity of the passed item.
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id  , Inventory identity
+*              item_id       , Item identity
+*              allocation_id , id to use for this allocation
+*              quantity      , Quantity to allocate (real number)
+*              unit          , the unit the quantity is expressed in
+*              purpose       , A description of what the stock is for
+*
+*******************************************************************************}
+
+	DECLARE errors, allocation_candidates, select_array
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", allocation_candidates
+	allocation_candidates . initialise( "INVENTORY_ITEM_SUMMARY_VIEW" )
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ITEM_ID"     , item_id      )
+	
+	allocation_candidates . select( select_array )
+
+	errors = inventory_allocate_id( inventory_id          ,
+	                                allocation_id         ,
+	                                quantity              ,
+	                                unit                  ,
+	                                purpose               ,
+	                                allocation_candidates )
+
+	RETURN( errors )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE allocation_start( VALUE inventory_id  ,
+                          VALUE allocation_id ,
+                          VALUE purpose       )
+{
+*
+* Begins an allocation. Must be called from within a transaction
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id   , Inventory identity
+*              allocation_id  , allocation id
+*              purpose        , A description of what the stock is for
+*
+*******************************************************************************}
+
+	DECLARE errors, key_array, padded_key
+
+	errors = EMPTY
+
+	{* Lock header to ensure header's unit can't be changed during allocation *}
+
+	inventory_id = SELECT inventory_header . identity
+	                  FOR UPDATE
+	                  WHERE identity = inventory_id
+
+	IF ( inventory_id = EMPTY ) OR
+	   ( inventory_id = ERROR ) THEN
+	
+		errors = "Could not lock header record"
+	
+	ENDIF
+
+	IF errors = EMPTY THEN
+	
+		ARRAY key_array
+		key_array[1] = inventory_id
+		key_array[2] = allocation_id
+
+		padded_key = lib_db_array_to_padded( "INVENTORY_ALLOCATION", key_array )
+
+		RESERVE ENTRY inventory_allocation, padded_key, errors
+
+		IF errors <> EMPTY THEN
+			errors = errors : " (INVENTORY_ALLOCATION: " : STRIP( padded_key ) : ")"
+		ENDIF
+
+	ENDIF
+	
+	IF errors = EMPTY THEN
+
+		ASSIGN inventory_allocation . allocated_on    = NOW
+		ASSIGN inventory_allocation . allocated_by    = OPERATOR
+		ASSIGN inventory_allocation . purpose         = purpose
+	
+	ENDIF
+	
+	RETURN( errors )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE allocation_add_item( VALUE inventory_id  ,
+                             VALUE allocation_id ,
+                             VALUE item_id       ,
+                             VALUE quantity      ,
+                             VALUE unit          )
+{
+* Allocates a quantity of the passed item. Must be called from within a
+* transaction
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id   , Inventory identity
+*              allocation_id  , allocation id
+*              item_id        , the item id
+*              quantity       , the quantity of this item to allocate
+*              unit           , the unit the quantity is expresed in
+*
+*******************************************************************************}
+
+	DECLARE errors, key_array, padded_key, header_unit, converted_qty
+	DECLARE unallocated, error_message
+	
+	errors = EMPTY
+	
+	header_unit = inventory_get_unit( inventory_id )
+		
+	converted_qty = unit_convert ( quantity       ,
+	                               unit           ,
+	                               header_unit    ,
+	                               error_message  )
+	
+	IF error_message <> EMPTY THEN
+
+		errors = message_get_text( error_message, 1 )
+
+	ENDIF
+	
+	IF errors = EMPTY THEN
+	
+		unallocated = inventory_item_get_quantity_unallocated( inventory_id, item_id )
+	
+		IF converted_qty > unallocated THEN
+		
+			errors = "There is not enough of this item to perform allocation"
+			
+		ENDIF
+	
+	ENDIF
+	
+	IF errors = EMPTY THEN
+
+		ARRAY key_array
+		key_array[1] = inventory_id
+		key_array[2] = allocation_id
+		key_array[3] = item_id
+
+		padded_key = lib_db_array_to_padded( "INVENTORY_ALLOC_ITEM", key_array )
+
+		RESERVE ENTRY inventory_alloc_item, padded_key, errors
+
+		IF errors <> EMPTY THEN
+			errors = errors : " (INVENTORY_ALLOC_ITEM: " : STRIP( padded_key ) : ")"
+		ENDIF
+		
+	ENDIF
+
+	IF errors = EMPTY THEN
+	
+		{* store quantity in header unit but keep note of entered unit *}
+	
+		ASSIGN inventory_alloc_item . quantity  = converted_qty
+		ASSIGN inventory_alloc_item . base_unit = unit
+	
+	ENDIF
+	
+	RETURN( errors )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_allocate( VALUE inventory_id          ,
+                            VALUE quantity              ,
+                            VALUE unit                  ,
+                            VALUE purpose               ,
+                                  allocation_candidates )
+{
+* Allocates a quantity of the passed item.
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id          , Inventory identity
+*                                      inventory_allocation_next_id
+*              quantity              , Quantity to allocate (real number)
+*              unit                  , the unit the quantity is expressed in
+*              purpose               , A description of what the stock is for
+*              allocation_candidates , object database containing items to consider
+
+*
+*******************************************************************************}
+
+	DECLARE allocation_id
+
+	allocation_id = inventory_allocation_next_id( inventory_id )
+
+	RETURN( inventory_allocate_id( inventory_id          ,
+	                               allocation_id         ,
+	                               quantity              ,
+	                               unit                  ,
+	                               purpose               ,
+	                               allocation_candidates ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_allocate_id( VALUE inventory_id          ,
+                               VALUE allocation_id         ,
+                               VALUE quantity              ,
+                               VALUE unit                  ,
+                               VALUE purpose               ,
+                                     allocation_candidates )
+{
+* Allocates a quantity of the passed item.
+* If an error occured a string is returned containing a description of problem.
+* Otherwise EMPTY is returned
+*
+* Parameters : inventory_id          , Inventory identity
+*              allocation_id         , id of allocation. can be obtained by calling
+*                                      inventory_allocation_next_id
+*              quantity              , Quantity to allocate (real number)
+*              unit                  , the unit the quantity is expressed in
+*              purpose               , A description of what the stock is for
+*              allocation_candidates , object database containing items to consider
+*
+*******************************************************************************}
+
+	DECLARE errors, header_unit, qty_still_required, item_unallocated, item_id
+	DECLARE item_required, error_message, do_commit
+
+	errors = EMPTY
+
+	IF NOT transaction_is_write( ) THEN
+		START WRITE TRANSACTION "Inventory: Allocate"
+
+		do_commit = TRUE
+		
+	ELSE
+	
+		do_commit = FALSE
+	ENDIF
+
+	errors = allocation_start( inventory_id  ,
+                               allocation_id ,
+                               purpose       )
+
+	IF errors = EMPTY THEN
+
+		UPDATE inventory_allocation
+
+		header_unit = inventory_get_unit( inventory_id )
+	
+		qty_still_required = unit_convert ( quantity      ,
+		                                    unit          ,
+		                                    header_unit   ,
+		                                    error_message )
+
+		IF error_message <> EMPTY THEN
+
+			errors = message_get_text( error_message, 1 )
+
+		ENDIF
+
+	ENDIF
+
+	IF errors = EMPTY THEN
+
+		allocation_candidates . set_first( )
+
+		WHILE ( allocation_candidates . current <> EMPTY ) AND
+			  ( qty_still_required > 0                   ) AND
+			  ( errors = EMPTY                           ) DO
+
+			item_unallocated = SELECT inventory_item_summary_view . unallocated
+			                     IN OBJECT allocation_candidates . current
+
+			IF item_unallocated > 0 THEN
+			
+				item_id = SELECT inventory_item_summary_view . item_id
+			                     IN OBJECT allocation_candidates . current
+
+				item_required = find_min_number( item_unallocated, qty_still_required )
+
+				errors = allocation_add_item( inventory_id   ,
+				                              allocation_id  ,
+				                              item_id        ,
+				                              item_required  ,
+				                              header_unit    )
+			
+				IF errors = EMPTY THEN
+			
+					UPDATE inventory_alloc_item
+			
+					qty_still_required = qty_still_required - item_unallocated
+				
+				ENDIF
+
+			ENDIF
+
+			allocation_candidates . set_next( )
+
+		ENDWHILE
+
+		IF qty_still_required > 0 THEN
+
+			errors = "There is not enough unallocated stock available to complete this allocation"
+
+		ENDIF
+
+	ENDIF
+
+	IF do_commit THEN
+
+		IF errors = EMPTY THEN
+		
+			COMMIT
+
+		ELSE
+	
+			ROLLBACK
+		
+		ENDIF
+
+	ENDIF
+	
+	IF errors = EMPTY THEN
+	
+		post_allocate_event( inventory_id )
+	
+	ENDIF
+	
+	RETURN( errors )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE post_allocate_event( VALUE inventory_id )
+{
+* Called after a succesful allocation takes place
+*
+* Parameters : inventory_id , Inventory Id
+*
+*******************************************************************************}
+
+	DECLARE unallocated, low_unallocated_level, lib, rout
+
+	unallocated = inventory_get_quantity_unallocated( inventory_id )
+		
+	low_unallocated_level = SELECT inventory_header . low_unallocated_level
+	                            WHERE identity = inventory_id
+
+	IF low_unallocated_level <> EMPTY THEN
+
+		IF unallocated <= low_unallocated_level THEN
+
+			lib  = SELECT inventory_header . callback_library
+			rout = SELECT inventory_header . low_unallocated_routine
+
+			IF NOT BLANK( lib ) AND NOT BLANK( rout ) THEN
+			
+				IF vgl_validate_routine( lib, rout ) THEN
+			
+					CALL_ROUTINE rout
+						USING inventory_id, unallocated
+						IN LIBRARY lib
+
+				ENDIF
+			
+			ENDIF
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_allocation_next_id( VALUE inventory_id )
+{
+* Returns a new unused allocation identity for the passed inventory id
+*
+* Parameters : inventory_id , Inventory Id
+*
+*******************************************************************************}
+
+	DECLARE max_num, new_id
+
+	new_id = 1
+
+	max_num = SELECT MAX inventory_allocation . entry_number
+	              WHERE inventory_id = inventory_id
+
+	IF max_num <> EMPTY THEN
+	
+		new_id = TRUNC( max_num + 1 )
+		
+	ENDIF
+
+	RETURN( new_id )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_items_soon_to_expire( VALUE inventory_id )
+{
+* Returns an ordered object database containing items in the order they are
+* going to expire starting from the one with the least time left
+*
+* Parameters : inventory_id , Inventory id allocation is for
+*
+*******************************************************************************}
+
+	DECLARE allocation_candidates, select_array
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", allocation_candidates
+	allocation_candidates . initialise( "INVENTORY_ITEM_SUMMARY_VIEW" )
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ   , "INVENTORY_ID" , inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_PUSH , EMPTY , EMPTY )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_GT   , "EXPIRY_DATE"  , TODAY )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_OR   , EMPTY          , EMPTY )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ   , "EXPIRY_DATE" , NULL  )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_POP  , EMPTY , EMPTY )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_ORDER, "EXPIRY_DATE"  , ARRAY_SELECT_ASCENDING )
+
+	allocation_candidates . select( select_array )
+
+	RETURN( allocation_candidates )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_items_earliest_entry_first( VALUE inventory_id )
+{
+* Returns an ordered object database containing items in the order they were
+* entered to the database
+*
+* Parameters : inventory_id , Inventory id the allocation is for
+*
+*******************************************************************************}
+
+	DECLARE allocation_candidates, select_array
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", allocation_candidates
+	allocation_candidates . initialise( "INVENTORY_ITEM_SUMMARY_VIEW" )
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ   , "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_ORDER, "ENTERED_ON"  , ARRAY_SELECT_ASCENDING )
+
+	allocation_candidates . select( select_array )
+
+	RETURN( allocation_candidates )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_items_smallest_first( VALUE inventory_id )
+{
+* Returns an ordered object database containing items in the order they were
+* entered to the database
+*
+* Parameters : inventory_id , Inventory id the allocation is for
+*
+*******************************************************************************}
+
+
+	DECLARE allocation_candidates, select_array
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", allocation_candidates
+	allocation_candidates . initialise( "INVENTORY_ITEM_SUMMARY_VIEW" )
+
+	ARRAY select_array
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ   , "INVENTORY_ID", inventory_id )
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_ORDER, "UNALLOCATED" , ARRAY_SELECT_ASCENDING )
+	
+	allocation_candidates . select( select_array )
+
+	RETURN( allocation_candidates )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE inventory_explorer_icon ( self, row )
+
+{
+* Return back an icon for the passed inventory row
+*
+* Parameters : self , 
+*              row  , inventory_view row object
+*
+*******************************************************************************}
+
+	DECLARE inventory_id, total, unallocated, percent_unallocated, icon_id
+	DECLARE low_unallocated_level
+
+	inventory_id = SELECT inventory_view . identity IN OBJECT row
+
+	total       = inventory_get_quantity_total( inventory_id )
+	unallocated = inventory_get_quantity_unallocated( inventory_id )
+
+	IF total = 0 THEN
+	
+		percent_unallocated = 0
+	
+	ELSE
+	
+		percent_unallocated = ( unallocated * 100 ) / total 
+		
+	ENDIF
+
+	IF percent_unallocated = 0 THEN
+		
+		icon_id = "INT_JAR_000_FULL"
+		
+	ELSE
+	
+		IF ( percent_unallocated > 75 ) AND ( percent_unallocated <= 100 ) THEN
+
+			icon_id = "INT_JAR_100_FULL"
+
+		ELSEIF ( percent_unallocated > 50 ) AND ( percent_unallocated <= 75 ) THEN
+
+			icon_id = "INT_JAR_075_FULL"
+
+		ELSEIF ( percent_unallocated > 25 ) AND ( percent_unallocated <= 50 ) THEN
+
+			icon_id = "INT_JAR_050_FULL"
+
+		ELSEIF ( percent_unallocated > 0 ) AND ( percent_unallocated <= 25 ) THEN
+
+			icon_id = "INT_JAR_025_FULL"
+
+		ENDIF
+		
+		low_unallocated_level = SELECT inventory_view . low_unallocated_level
+		                            IN OBJECT row
+		
+		IF unallocated <= low_unallocated_level THEN
+		
+			icon_id = icon_id : "_RED"
+			
+		ELSE
+		
+			icon_id = icon_id : "_BLUE"
+			
+		ENDIF
+	
+	ENDIF
+	
+	RETURN ( client_icon_id_to_number ( icon_id ) )
+ 
+ENDROUTINE

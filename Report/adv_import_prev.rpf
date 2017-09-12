@@ -1,0 +1,1508 @@
+{  ********************************************************************************** }
+{                                                                                     }
+{  Module Name : ADV_IMPORT_PREV.RPF                                                       }
+{                                                                                     }
+{  Purpose     : Copy results to a job from a parent job.                             }
+{                                                                                     }
+{  Requirements: The two jobs must be linked in table batch_trace.                    }
+{                Only results for identical analysis types are copied.                }
+{                Only results for identical incubation temperatures are copied        }
+{                Component names are copied, whenever they are identical.             }
+{                MLP parameter version selected as highest version on the sample      }
+{                Timeseries data is included in the transfer                          }
+{                                                                                     }
+{  Author      : Henrik Behrndt / 9-AUG-04                                            }
+{                                                                                     }
+{  ********************************************************************************** }
+{  Modification history:                                                              }
+{                                                                                     }
+{  1609 HBe 21-01-2005: Match of uppercase(units) required for transfer               }
+{                       Ignore componentname letter-case for match                    }
+{                                                                                     }
+{  1658 HBe 15-11-2005: Ignore if component names start with "Cell count"             }
+{                       for match. (REDUCE_STRING_LEFT commands)                      }
+{                                                                                     }
+{  1670 HBe 15-12-2005: Do not allow transfer of tests having status R (Rejected).    }
+{  1696 HBe  5-04-2006: Include a timestamp in the component name giving trace info.  }
+{  1700 HBe 22-06-2006: Show analysis date if date is more than 4 months old instead  }
+{                       of 6 months old.                                              }
+{  1764 HBe 05-01-2007: Include functionality for multible child samples using the    }
+{                       parameter IMPORTMORE.                                         }
+{                                                                                     }
+{  ********************************************************************************** }
+
+ENABLE WINDOWS
+SET NAME "DISPLAY/"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+
+SET COMPILE_OPTION DECLARE
+
+DECLARE m_job, m_product, m_batch, c_product, c_batch, plant,
+m_samplepoint, c_samplepoints_array, child_active, group_checking, c_samp_point, option_number, m_sample_id
+
+DECLARE user_arr_counter, user_arr, c_sample_arr, c_sample_count, m_prod_version
+DECLARE c_counter, c_sample_id, c_org_sample, c_re_sample, c_date_auth
+
+ARRAY user_arr
+ARRAY c_sample_arr
+ARRAY c_samplepoints_array
+
+CONSTANT clean_string = "+- _°"
+CONSTANT ignore_string = "Cellcount"
+c_sample_count = 0
+user_arr_counter = 0
+
+m_job = EMPTY
+c_samp_point = EMPTY
+
+where_to_transfer_to (m_job, m_product, m_batch)
+
+IF m_job = EMPTY THEN
+   EXIT
+ENDIF
+
+group_checking = global ( "CHECK_GROUPS" )
+SET SECURITY FALSE
+
+
+select_child_batch (m_job, c_batch, c_product, m_product, m_batch)
+
+IF c_batch = EMPTY THEN
+   EXIT
+ENDIF
+
+
+SET MODE ACTIVE
+
+m_prod_version = SELECT MAX sample . product_version
+WHERE job_name = m_job
+
+IF  NOT (m_prod_version <> EMPTY) AND (NOT BLANK(m_prod_version)) THEN
+   FLASH_MESSAGE("Problem identifying master product version, exiting.",TRUE)
+   EXIT
+ENDIF
+
+plant = STRIP(SELECT sample . group_id
+        WHERE job_name = m_job
+        AND product_version = m_prod_version)
+
+get_the_parameters (m_product, m_prod_version, m_samplepoint, plant, c_samplepoints_array )
+{WriteToLog("get_the_parameters (m_product, m_prod_version, m_samplepoint, plant, c_samplepoints_array )")
+WriteToLog("get_the_parameters (":STRIP(m_product):", ":STRIP(m_prod_version):", ":STRIP(m_samplepoint):", ":STRIP(plant):", c_samplepoints_array )")
+WriteToLog("c_samplepoints_array: ":GetArray(c_samplepoints_array))}
+
+
+find_sample_ids (m_product, m_batch, c_product, c_batch, c_samplepoints_array, m_samplepoint, m_sample_id, c_sample_count)
+{WriteToLog("find_sample_ids (m_product, m_batch, c_product, c_batch, c_samplepoints_array, m_samplepoint, m_sample_id, c_sample_count)")
+WriteToLog("find_sample_ids (":STRIP(m_product):", ":STRIP(m_batch):", ":STRIP(c_product):", ":STRIP(c_batch):", c_samplepoints_array, ":STRIP(m_samplepoint):", ":STRIP(m_sample_id):", ":STRIP(c_sample_count):")")
+WriteToLog("c_samplepoints_array: ":GetArray(c_samplepoints_array))}
+
+c_counter = 0
+WHILE c_counter < c_sample_count
+   c_counter = c_counter + 1
+   c_sample_id  = c_sample_arr [c_counter , 2]
+   c_samp_point = c_sample_arr [c_counter , 3]
+   c_org_sample = c_sample_arr [c_counter , 4]
+   c_re_sample  = c_sample_arr [c_counter , 5]
+   c_date_auth  = c_sample_arr [c_counter , 6]
+   find_tests  (m_sample_id, c_sample_id, user_arr_counter, c_org_sample, c_re_Sample, c_samp_point, c_date_auth)
+ENDWHILE
+
+user_selection (user_arr_counter, m_samplepoint, m_sample_id)
+
+
+SET SECURITY group_checking
+
+
+option_number = MENUNUMBER("TSR")
+MENUPROC option_number USING m_sample_id, "$EXIT"
+
+
+
+{------------------------------------------ WHERE_TO_TRANSFER_TO -------------------------------------------------}
+
+ROUTINE where_to_transfer_to (m_job, m_product, m_batch)
+
+DECLARE empty_arr, l_k_m
+ARRAY empty_arr
+
+IF prompt_user ( "transferable_jobs_view", "Transfer of data from parent job",
+                               EMPTY,
+                               TRUE, "Enter Job Name to Transfer Data to:",
+                               empty_arr, m_job, l_k_m )
+THEN
+   IF NOT ((STRIP(m_job) <> EMPTY) AND (STRIP(m_job) <> "")) THEN
+     FLASH_MESSAGE("No job name was selected.",TRUE)
+     EXIT
+   ENDIF
+ENDIF
+m_product = select transferable_jobs_view . product_name
+          where job_name = m_job
+m_batch   = select transferable_jobs_view . batch_name
+
+ENDROUTINE
+
+{------------------------------------------- SELECT_CHILD_BATCH --------------------------------------------------}
+
+ROUTINE select_child_batch ( VALUE m_job, c_batch, c_product, VALUE m_product, VALUE m_batch )
+
+DECLARE child_job_select_arr
+ARRAY child_job_select_arr
+DECLARE child_status, l_k_c, use_ref, ref_active, ref_order, ref_job
+c_batch = EMPTY
+
+
+      child_job_select_arr[1,1] = ARRAY_SELECT_EQ
+      child_job_select_arr[1,2] = "BATCH_NAME_MASTER"
+      child_job_select_arr[1,3] = m_batch
+      child_job_select_arr[2,1] = ARRAY_SELECT_EQ
+      child_job_select_arr[2,2] = "PRODUCT_NAME_MASTER"
+      child_job_select_arr[2,3] = m_product
+
+
+IF prompt_user ( "batch_trace_view", "Input selection", "batch_name_child", TRUE,
+                              "Enter batch name for child batch.",
+                              child_job_select_arr, c_batch, l_k_c )
+
+THEN
+   IF NOT ((STRIP(c_batch) <> EMPTY) AND (STRIP(c_batch) <> "")) THEN
+      FLASH_MESSAGE("No batch was selected.",TRUE)
+      EXIT
+   ENDIF
+   c_product = SELECT batch_trace_view . product_name_child
+     WHERE batch_name_child = c_batch
+     AND product_name_master = m_product
+     AND batch_name_master = m_batch
+ELSE
+   FLASH_MESSAGE("Problem selecting child batch.",TRUE)
+   EXIT
+ENDIF
+
+
+where_to_find_child (c_batch, c_product)
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+
+use_ref    = EMPTY
+ref_active = EMPTY
+
+            ref_order = SELECT job_header.reference_order
+            WHERE job_name   = STRIP(c_product):"/":STRIP(c_batch)
+
+IF (ref_order <> EMPTY) AND (NOT BLANK(ref_order))
+THEN
+
+   where_to_find_reference (ref_order, ref_active)
+
+   IF ref_active = FALSE THEN
+      SET MODE COMMITTED
+   ELSE
+      SET MODE ACTIVE
+   ENDIF
+
+   ref_job = SELECT job_header.job_name
+             WHERE process_order = ref_order
+
+
+   IF (ref_job <> EMPTY) AND (NOT BLANK(ref_job))
+   THEN
+      confirm_ref_order (ref_order, use_ref, ref_job)
+      IF use_ref
+      THEN
+         child_active = ref_active
+         c_batch   = SELECT job_header.batch_name
+         c_product = SELECT job_header.product_name
+      ENDIF
+   ELSE
+
+      FLASH_MESSAGE("Warning: A reference to an order was found, but no job exists for this order.", TRUE)
+
+   ENDIF
+ENDIF
+
+
+child_status = SELECT job_header.job_status
+   where job_name = STRIP(c_product):"/":STRIP(c_batch)
+
+
+IF ((child_status = EMPTY) OR (BLANK(child_status)))
+THEN
+   FLASH_MESSAGE("The chosen child job ":STRIP(c_product):"/":STRIP(c_batch):" does not exist!", TRUE)
+   EXIT
+ENDIF
+
+IF strip(child_status) <> "A" THEN
+  FLASH_MESSAGE("The child job ":STRIP(c_product):"/":STRIP(c_batch):" has not been authorized!",TRUE)
+  EXIT
+ENDIF
+
+ENDROUTINE
+
+
+{------------------------------------------- GET_THE_PARAMETERS --------------------------------------------------}
+
+ROUTINE get_the_parameters (VALUE mlp_id, VALUE mlp_version, m_samplepoint, plant, c_samplepoints_array)
+
+
+DECLARE parm_array, plant_array, no_sets, err_mes
+
+array parm_array
+array plant_array
+
+declare counter
+declare match
+
+IF NOT mlp_analysis_parameters("M", "IMPORTPREV", 4, mlp_id, mlp_version, parm_array, no_sets, err_mes  ) THEN
+  FLASH_MESSAGE("Error in parameter setup or no setup for this product.",TRUE)
+  EXIT
+ENDIF
+WriteToLog("parm_array:")
+WriteToLog(GetArray(parm_array))
+counter = 0
+match = 0
+WHILE counter < no_sets
+counter = counter + 1
+   IF STRIP(parm_array [counter, 4]) = plant THEN
+      match = match + 1
+      plant_array[1,1] = parm_array[counter,1]
+      plant_array[1,2] = parm_array[counter,2]
+      plant_array[1,3] = parm_array[counter,3]
+      plant_array[1,4] = parm_array[counter,4]
+   ENDIF
+ENDWHILE
+WriteToLog("plant_array:")
+WriteToLog(GetArray(plant_array))
+IF match <1 THEN
+  FLASH_MESSAGE("Parameter setup does not exist for the plant assigned to the master product.",TRUE)
+  EXIT
+ENDIF
+
+
+IF match > 1 THEN
+  FLASH_MESSAGE("More than one parameter setup of IMPORTPREV for this product/plant combination. Please reduce to one set. Consider using the IMPORTMORE parameter.",TRUE)
+  EXIT
+ENDIF
+
+IF plant_array[1,1] <> "TRUE" THEN
+  FLASH_MESSAGE("Parameter setup does not allow transfer for this product.",TRUE)
+  EXIT
+ENDIF
+
+
+IF err_mes <> EMPTY THEN
+  FLASH_MESSAGE("Some error in parameter setup. ":strip(err_mes),TRUE)
+  EXIT
+ENDIF
+
+c_samplepoints_array[1] = plant_array[1,2]
+m_samplepoint           = plant_array[1,3]
+
+IF c_samplepoints_array[1]= EMPTY  THEN
+  FLASH_MESSAGE("Child sample has not been defined in the IMPORTPREV parameter.",TRUE)
+ENDIF
+
+IF m_samplepoint = EMPTY  THEN
+  FLASH_MESSAGE("Master sample has not been defined in the IMPORTPREV parameter.",TRUE)
+ENDIF
+
+
+{**AS: Find extra child sample points}
+
+DECLARE more_parm_array, more_no_sets, more_err_mes , more_counter, more_match
+ARRAY more_parm_array
+
+IF mlp_analysis_parameters("M", "IMPORTMORE", 2, mlp_id, mlp_version, more_parm_array, more_no_sets, more_err_mes  ) THEN
+   WriteToLog("more_parm_array ":GetArray(more_parm_array))
+   more_counter = 0
+   more_match = 0
+   WHILE more_counter < more_no_sets
+      more_counter = more_counter + 1
+      IF STRIP(more_parm_array [more_counter, 2]) = plant THEN
+         more_match = more_match + 1
+         c_samplepoints_array[more_match+1] = more_parm_array[counter,1]
+      ENDIF
+   ENDWHILE
+ENDIF
+{**AE}
+
+ENDROUTINE
+
+{------------------------------------------- FIND_SAMPLE_IDS --------------------------------------------------}
+
+ROUTINE find_sample_ids
+(VALUE m_product, VALUE m_batch, VALUE c_product, VALUE c_batch,
+ c_samplepoints_array, VALUE m_samplepoint, m_sample_id, c_sample_count)
+
+
+SET MODE ACTIVE
+
+DECLARE resample_from, mx_sample_id, mx_sample_count, org_c_sample, auth_date
+DECLARE master_sample_selection
+DECLARE c_spoints_counter, current_sampling_point
+
+DECLARE m_sample_arr
+ARRAY m_sample_arr
+
+resample_from = " "
+
+mx_sample_id = select sample.id_numeric
+   where product = m_product and
+   batch_name = m_batch and
+   sampling_point = m_samplepoint
+
+m_sample_id = mx_sample_id
+
+mx_sample_count = 0
+
+WHILE (mx_sample_id <> EMPTY) DO
+
+   mx_sample_count = mx_sample_count + 1
+
+   m_sample_arr[mx_sample_count , 1] = SELECT sample.id_text
+   m_sample_arr[mx_sample_count , 2] = SELECT sample.id_numeric
+
+   NEXT sample
+
+   mx_sample_id = SELECT sample.id_numeric
+
+ENDWHILE
+WriteToLog(GetArray(m_sample_arr))
+
+IF mx_sample_count <= 1
+THEN
+   IF (m_sample_id = EMPTY) OR (BLANK(m_sample_id))
+   THEN
+      FLASH_MESSAGE("The Master Sample Is Non Existing!",TRUE)
+      EXIT
+   ENDIF
+ELSE
+
+   CREATE TEXT WINDOW master_sample_selection
+      HEIGHT  10
+      WIDTH   75
+      BORDER
+      HEADER = "Multiple ":strip(m_samplepoint):" Master Samples Exists. ":
+               "Please Select Master Sample."
+      FOOTER = "Press DO to continue"
+
+   PASTE TEXT WINDOW master_sample_selection ON LINE 4 FROM 5
+
+      PROMPT FOR m_sample_id USING
+         "PRESS FIND to Select:  "
+                  ON LINE 6 FROM 6
+                  IN WINDOW master_sample_selection
+                  CHOOSE OUTOF m_sample_arr
+
+
+   UNPASTE TEXT WINDOW master_sample_selection
+
+ENDIF
+
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+c_spoints_counter = 0
+current_sampling_point = c_samplepoints_array[1]
+
+WHILE current_sampling_point <> EMPTY
+   c_spoints_counter = c_spoints_counter + 1
+   current_sampling_point = c_samplepoints_array[c_spoints_counter]
+
+
+   c_sample_id = select sample.id_numeric
+      where product = c_product and
+      batch_name = c_batch and
+      sampling_point LIKE "%":TO_UPPER(STRIP(current_sampling_point)):"%" and
+      status = "A"
+      ORDER ON login_date
+
+   WHILE (c_sample_id <> EMPTY) DO
+      c_sample_count = c_sample_count + 1
+
+      c_sample_arr[c_sample_count , 1] = SELECT sample.id_text
+      c_sample_arr[c_sample_count , 2] = SELECT sample.id_numeric
+      c_sample_arr[c_sample_count , 3] = SELECT sample.sampling_point
+         org_c_sample = SELECT sample.original_sample
+      c_sample_arr[c_sample_count , 4] = org_c_sample
+         IF org_c_sample = "         0" THEN resample_from = " " ELSE resample_from = org_c_sample
+         ENDIF
+      c_sample_arr[c_sample_count , 5] = resample_from
+      {Only showing child sample authorisation date, if it was authorised more than 6 months ago}
+      auth_date = SELECT sample.date_authorised
+
+      IF (NOW - auth_date < INTERVAL(122)) THEN
+         auth_date = ""
+      ELSE
+         auth_date = SUBSTRING(auth_date, 1, 11)
+      ENDIF
+      c_sample_arr[c_sample_count , 6] = auth_date
+
+      NEXT sample
+
+      c_sample_id = SELECT sample.id_numeric
+
+   ENDWHILE
+   WriteToLog("current_sampling_point: ":current_sampling_point)
+   WriteToLog("child_sample_array:     ":GetArray(c_sample_arr))
+ENDWHILE
+
+IF (c_sample_count < 1)
+THEN
+   FLASH_MESSAGE("No Child Sample could be found!",TRUE)
+   EXIT
+ENDIF
+
+
+IF m_sample_id = EMPTY  THEN
+  FLASH_MESSAGE("Sample ":strip(m_samplepoint):" for batch ":strip(m_batch):
+" does not exist.",TRUE)
+  EXIT
+ENDIF
+
+
+SET MODE ACTIVE
+
+ENDROUTINE
+
+{------------------------------------------- FIND_TESTS --------------------------------------------------}
+
+ROUTINE find_tests (m_sample_id, c_sample_id, user_arr_counter,
+                    VALUE c_org_sample, VALUE c_re_Sample, c_samp_point, VALUE c_date_auth)
+
+
+DECLARE  loop_m_tests, loop_c_tests, anal_detail, analysis_type, inoc_temp, allow_res_import, result_exist, m_res_found, m_timeser_found
+DECLARE count_m_test, any_result, timeser_exist, any_m_result, count_c_test, c_timeser_found, timeseries_table, any_timeser
+
+DECLARE master_test_arr, child_test_arr
+ARRAY master_test_arr
+ARRAY child_test_arr
+
+START READ TRANSACTION "find master tests"
+count_m_test = 1
+
+   master_test_arr[count_m_test,1] = SELECT test.test_number        {Test number for the master test}
+   where sample = m_sample_id
+   AND (status <> "X") AND (status <> "R") AND (status <> "A")      {Change 1670: Status "R" not allowed}
+
+   IF master_test_arr[count_m_test,1] = EMPTY THEN
+      FLASH_MESSAGE("There are no master test results",TRUE)
+      EXIT
+   ENDIF
+
+WHILE (master_test_arr[count_m_test,1] <> EMPTY) AND (count_m_test < 200 )
+  master_test_arr[count_m_test,2] = SELECT test.analysis        {Analysis for the master test}
+  master_test_arr[count_m_test,3] = SELECT test.test_count      {Test Count for the master test}
+  master_test_arr[count_m_test,4] = SELECT test.analysis_version    {Analysis version for the master test}
+
+  push_file_descriptor ("versioned_analysis", anal_detail)
+
+  analysis_type    = SELECT versioned_analysis.analysis_type
+         WHERE identity         = master_test_arr[count_m_test,2]
+         AND   analysis_version = master_test_arr[count_m_test,4]
+  inoc_temp        = SELECT versioned_analysis.inoc_temp
+  allow_res_import = SELECT versioned_analysis.allow_res_import
+  pop_file_descriptor(anal_detail)
+
+
+  master_test_arr[count_m_test,5] = analysis_type           {Analysis Time for the master test}
+  master_test_arr[count_m_test,6] = inoc_temp               {Temperature for the master test}
+
+  {Determine, if master test already contains some result}
+  m_res_found = FALSE
+  push_file_descriptor("result", result_exist)
+    any_result = SELECT result.text
+     WHERE test_number = master_test_arr[count_m_test,1]
+  pop_file_descriptor(result_exist)
+  IF (any_result = EMPTY) OR BLANK(any_result) THEN
+     m_res_found = FALSE
+  ELSE
+     m_res_found = TRUE
+  ENDIF
+  master_test_arr[count_m_test,7] = m_res_found             {Results exist for the master test}
+
+  {Determine if there is timeseries data for the master test}
+
+  m_timeser_found = FALSE
+  push_file_descriptor("timeseries", timeser_exist)
+    any_m_result = SELECT timeseries.test_number
+     WHERE test_number = master_test_arr[count_m_test,1]
+  pop_file_descriptor(timeser_exist)
+  IF (any_m_result = EMPTY) OR BLANK(any_m_result) THEN
+     m_timeser_found = FALSE
+  ELSE
+     m_timeser_found = TRUE
+  ENDIF
+
+  master_test_arr[count_m_test,8] = m_timeser_found         {Timeseries data exist for the the master test}
+  master_test_arr[count_m_test,9] = allow_res_import            {Allow result import to the master test}
+
+  count_m_test = count_m_test + 1
+  NEXT test
+  master_test_arr[count_m_test,1] = SELECT test.test_number
+ENDWHILE
+
+START READ TRANSACTION "find child tests"
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+count_c_test = 1
+
+child_test_arr[count_c_test,1]  = SELECT test.test_number       {Test number for the child test}
+   where ((sample = c_sample_id) AND (status = "A"))
+
+IF child_test_arr[count_c_test,1]  = EMPTY THEN
+   FLASH_MESSAGE("There are no child test results",TRUE)
+   EXIT
+ENDIF
+
+
+WHILE (child_test_arr[count_c_test,1] <> EMPTY) AND (count_c_test < 200)
+  child_test_arr[count_c_test,2] = SELECT test.analysis         {Analysis for the child test}
+  child_test_arr[count_c_test,3] = SELECT test.test_count       {Test Count for the child test}
+  child_test_arr[count_c_test,4] = SELECT test.analysis_version     {Analysis Version for the child test}
+
+  push_file_descriptor ("versioned_analysis", anal_detail)
+
+     analysis_type = SELECT versioned_analysis.analysis_type
+        WHERE identity         = child_test_arr[count_c_test,2]
+        AND   analysis_version = child_test_arr[count_c_test,4]
+     inoc_temp        = SELECT versioned_analysis.inoc_temp
+  pop_file_descriptor(anal_detail)
+
+  child_test_arr[count_c_test,5] = analysis_type            {Analysis Type for the child test}
+  child_test_arr[count_c_test,6] = inoc_temp                {Inoculation temperature for the child test}
+{Checking, if there are any timeseries results attached to the child result}
+  c_timeser_found = FALSE
+  push_file_descriptor ("timeseries", timeseries_table)
+     any_timeser = SELECT timeseries.component_name
+       WHERE test_number = child_test_arr[count_c_test,1]
+  pop_file_descriptor(timeseries_table)
+    IF (any_timeser = EMPTY) OR BLANK(any_timeser) THEN
+       c_timeser_found = FALSE
+    ELSE
+       c_timeser_found = TRUE
+    ENDIF
+    child_test_arr[count_c_test,7] = c_timeser_found                   {Timeseries data exist for the child test}
+
+  NEXT test
+  count_c_test = count_c_test + 1
+  child_test_arr[count_c_test,1] = SELECT test.test_number
+ENDWHILE
+
+
+SET MODE ACTIVE
+
+loop_m_tests = 1
+
+WHILE (loop_m_tests < count_m_test ) DO
+loop_c_tests = 1
+
+{Analysis type and temperature must match, export flag must be true, result import must be allowed}
+   WHILE loop_c_tests < count_c_test DO
+      IF (master_test_arr[loop_m_tests,5] = child_test_arr[loop_c_tests,5]) AND
+         (master_test_arr[loop_m_tests,6] = child_test_arr[loop_c_tests,6]) AND
+          master_test_arr[loop_m_tests,9]THEN
+
+         IF matching_components (loop_m_tests, loop_c_tests, master_test_arr, child_test_arr) THEN
+         {Build the array for user presentation}
+
+            user_arr_counter = user_arr_counter + 1
+
+            user_arr[user_arr_counter,  1] =  c_sample_id                    {child sample id_num}
+            user_arr[user_arr_counter,  2] =  c_samp_point                   {child sample point}
+            user_arr[user_arr_counter,  3] =  child_test_arr[loop_c_tests,1] {child test number}
+            user_arr[user_arr_counter,  4] =  child_test_arr[loop_c_tests,2] {child analysis}
+            user_arr[user_arr_counter,  5] =  child_test_arr[loop_c_tests,3] {child test count}
+            user_arr[user_arr_counter,  6] =  child_test_arr[loop_c_tests,4] {child analysis version}
+            user_arr[user_arr_counter,  7] =  child_test_arr[loop_c_tests,5] {child analysis type}
+            user_arr[user_arr_counter,  8] =  child_test_arr[loop_c_tests,6] {child inoc. temp}
+            user_arr[user_arr_counter,  9] =  c_org_sample                   {child original sample ID_num}
+            user_arr[user_arr_counter, 10] =  c_re_Sample                    {child re-sample}
+            user_arr[user_arr_counter, 11] =  child_test_arr[loop_c_tests,7] {child timeseries exist}
+
+
+            user_arr[user_arr_counter, 12] = master_test_arr[loop_m_tests,1] {master test number}
+            user_arr[user_arr_counter, 13] = master_test_arr[loop_m_tests,2] {master analysis}
+            user_arr[user_arr_counter, 14] = master_test_arr[loop_m_tests,3] {master test count}
+            user_arr[user_arr_counter, 15] = master_test_arr[loop_m_tests,4] {master analyis version}
+            user_arr[user_arr_counter, 16] = master_test_arr[loop_m_tests,5] {master analysis type}
+            user_arr[user_arr_counter, 17] = master_test_arr[loop_m_tests,6] {master inoc. temp}
+            user_arr[user_arr_counter, 18] = master_test_arr[loop_m_tests,7] {master contains results}
+            user_arr[user_arr_counter, 19] = master_test_arr[loop_m_tests,8] {master contains timeseries data}
+            user_arr[user_arr_counter, 20] = FALSE                           {Transfer decision, default value}
+            user_arr[user_arr_counter, 21] = c_date_auth                     {child sample authorisation date}
+
+
+         ENDIF
+
+      ENDIF
+      loop_c_tests = loop_c_tests + 1
+
+   ENDWHILE
+
+loop_m_tests = loop_m_tests + 1
+ENDWHILE
+
+
+ENDROUTINE
+{------------------------------------------- MATCHING_COMPONENTS --------------------------------------------------}
+
+ROUTINE matching_components (VALUE loop_m_tests, VALUE loop_c_tests, master_test_arr, child_test_arr)
+
+
+   DECLARE master_count, child_count, master_comp_arr, child_comp_arr, int_count, ext_count
+   DECLARE cleaned_master, cleaned_child, half_cleaned_master, half_cleaned_child
+   ARRAY master_comp_arr
+   ARRAY child_comp_arr
+
+   cleaned_master = ""
+   cleaned_child = ""
+   half_cleaned_master = ""
+   half_cleaned_child = ""
+
+   master_count = 0
+   GET_COMPONENTS (master_test_arr[loop_m_tests,1], master_comp_arr, master_count)
+   IF master_count < 1 THEN
+      FLASH_MESSAGE("Error obtaining master component information, found components: ":strip(master_count),TRUE)
+      EXIT
+   ENDIF
+
+
+   IF child_active = FALSE THEN
+      SET MODE COMMITTED
+   ELSE
+      SET MODE ACTIVE
+   ENDIF
+   child_count = 0
+   GET_COMPONENTS (child_test_arr[loop_c_tests,1], child_comp_arr, child_count)
+   IF child_count < 1 THEN
+      FLASH_MESSAGE("Error obtaining child component information, found components: ":strip(child_count),TRUE)
+      EXIT
+   ENDIF
+   SET MODE ACTIVE
+
+
+   ext_count  = 1
+   WHILE ext_count <= child_count
+      int_count  = 1
+      WHILE int_count <= master_count
+         {Uppercase of Component Name and Units on the analysis must match
+          for at least one component that is not text type, and where the recieving component is not calculated
+          If the matching component name contains AGAR, the match is not accepted - to
+          avoid matches based on Control Agar}
+          STRIP_STRING( child_comp_arr[ext_count, 1], clean_string, half_cleaned_child )
+          REDUCE_STRING_LEFT (half_cleaned_child, ignore_string, cleaned_child)
+          STRIP_STRING( master_comp_arr[int_count, 1], clean_string, half_cleaned_master )
+          REDUCE_STRING_LEFT (half_cleaned_master, ignore_string, cleaned_master)
+         IF  (TOUPPER(cleaned_child) =  TOUPPER(cleaned_master))
+         AND (INDEX(TOUPPER(master_comp_arr[int_count, 1]), "AGAR") = 0)
+         AND (child_comp_arr[ext_count, 2] <> "T")
+         AND (master_comp_arr[int_count, 2] <> "K")
+         AND (TOUPPER(child_comp_arr[ext_count, 3]) =  TOUPPER(master_comp_arr[int_count, 3])) THEN
+            RETURN (TRUE)
+         ENDIF
+         int_count = int_count + 1
+      ENDWHILE
+      ext_count= ext_count + 1
+   ENDWHILE
+
+   RETURN(FALSE)
+
+ENDROUTINE
+{------------------------------------------- PREPARE_TRANSFER --------------------------------------------------}
+
+ROUTINE prepare_transfer (VALUE m_test, VALUE c_test, VALUE c_anal_w_rep, VALUE c_timeseries_exists, VALUE m_timeseries_exists, VALUE c_sample_id)
+
+DECLARE master_count, chd_count, int_count, ext_count, res_count, err_mess
+
+DECLARE temp_child_res_arr, child_res_arr, master_comp_arr, master_res_arr, put_ok
+DECLARE master_analysis_arr, master_analysis_count
+DECLARE cleaned_master, cleaned_child
+DECLARE half_cleaned_master, half_cleaned_child
+ARRAY temp_child_res_arr
+ARRAY child_res_arr
+ARRAY master_comp_arr
+ARRAY master_res_arr
+ARRAY put_ok
+ARRAY master_analysis_arr
+
+cleaned_master = ""
+cleaned_child = ""
+half_cleaned_master = ""
+half_cleaned_child = ""
+
+child_res_arr[1,1] = "COMPONENT_NAME"
+child_res_arr[1,2] = "RESULT_TYPE"
+child_res_arr[1,3] = "TEXT"
+
+child_res_arr[2,1] = " Import from Sample - Test (" : STRIP(SUBSTRING(NOW,1,6)) : " " : STRIP(SUBSTRING(NOW,13,5)) : ")"
+child_res_arr[2,2] = "T"
+child_res_arr[2,3] = STRIP(c_sample_id):" - ":c_anal_w_rep
+
+master_res_arr[1,1] = "TEXT"
+
+               IF child_active = FALSE THEN
+                  SET MODE COMMITTED
+               ELSE
+                  SET MODE ACTIVE
+               ENDIF
+
+            chd_count = 0
+            master_count = 0
+
+
+            {Using get_test_Results instead of toolbox routine find_results in order to include adhoc remark and comment results}
+
+            temp_child_res_arr[1,1] = "NAME"
+            temp_child_res_arr[1,2] = "RESULT_TYPE"
+            temp_child_res_arr[1,3] = "UNITS"
+            temp_child_res_arr[1,4] = "ORDER_NUMBER"
+            temp_child_res_arr[1,5] = "TEXT"
+
+            err_mess = EMPTY
+
+            GET_TEST_RESULTS c_test, temp_child_res_arr, err_mess
+            chd_count = size_of_array(temp_child_res_arr) - 1
+
+
+
+            IF (err_mess <> EMPTY) OR (chd_count < 1) THEN
+               FLASH_MESSAGE("Error obtaining the child results, found: ":strip(chd_count):". Error message: " : err_mess,TRUE)
+               EXIT
+            ELSE
+            SET MODE ACTIVE
+               GET_COMPONENTS (m_test, master_comp_arr, master_count)
+               IF master_count < 1 THEN
+                  FLASH_MESSAGE("Error obtaining master component information, found components: ":strip(master_count),TRUE)
+                  EXIT
+               ELSE
+
+                  ext_count  = 2 {First row contains column information}
+                  res_count  = 2 {First result is the information of where the result was transferred from}
+
+{Include transfer any comments or remarks of type 'T' or 'O'}
+{Don't transfer into calculated values}
+{Always transfer any text or option result comment from the bulk - component names like Remark and Comment}
+{Uppercase/lowercase diffrences are allowed}
+{Check that the units are the same}
+
+                  WHILE ext_count <= chd_count + 1
+                     int_count  = 1
+                     WHILE int_count <= master_count
+                        STRIP_STRING (master_comp_arr[int_count, 1], clean_string, half_cleaned_master)
+                        REDUCE_STRING_LEFT (half_cleaned_master, ignore_string, cleaned_master)
+                        STRIP_STRING (temp_child_res_arr[ext_count, 1], clean_string, half_cleaned_child)
+                        REDUCE_STRING_LEFT (half_cleaned_child, ignore_string, cleaned_child)
+                        IF  ((TOUPPER(cleaned_child) =  TOUPPER(cleaned_master))
+                              AND (TOUPPER(temp_child_res_arr[ext_count, 3]) =  TOUPPER(master_comp_arr[int_count, 3]))
+                              AND (master_comp_arr[int_count, 2] <> "K") )
+                           OR  (((TOUPPER(SUBSTRING(temp_child_res_arr[ext_count, 1],1,5)) = "REMAR") OR (TOUPPER(SUBSTRING(temp_child_res_arr[ext_count, 1],1,7)) = "COMMENT")
+                              AND ((temp_child_res_arr[ext_count, 2] = "T")  OR (temp_child_res_arr[ext_count, 2] = "O")))
+                              )
+                        THEN
+                           res_count = res_count + 1
+                           child_res_arr [res_count, 1] = temp_child_res_arr[ext_count, 1]
+                           child_res_arr [res_count, 2] = temp_child_res_arr[ext_count, 2]
+                           child_res_arr [res_count, 3] = temp_child_res_arr[ext_count, 5]
+                        ENDIF
+                        int_count = int_count + 1
+                     ENDWHILE
+                  ext_count= ext_count + 1
+                  ENDWHILE
+               ENDIF
+            ENDIF
+
+
+{**AS1611 HBe 1-2-2005: Get the correct result type and lettercase for the master test and update the child_res_arr before saving results}
+           ext_count = 0
+           GET_COMPONENTS (m_test, master_analysis_arr, master_analysis_count)
+           WHILE ext_count < master_analysis_count
+              ext_count = ext_count + 1
+              int_count = 1
+              WHILE int_count < res_count
+                 int_count = int_count + 1
+                 STRIP_STRING(master_analysis_arr[ext_count,1], clean_string, half_cleaned_master)
+                 REDUCE_STRING_LEFT (half_cleaned_master, ignore_string, cleaned_master)
+                 STRIP_STRING(child_res_arr [int_count, 1], clean_string, half_cleaned_child)
+                 REDUCE_STRING_LEFT(half_cleaned_child, ignore_string, cleaned_child)
+                 IF (TOUPPER(cleaned_child) = TOUPPER(cleaned_master))
+                    AND
+                       ((child_res_arr [int_count, 2] <> master_analysis_arr[ext_count,2])
+                       OR  (child_res_arr [int_count, 1] <> master_analysis_arr[ext_count,1]))
+                 THEN
+                    child_res_arr [int_count, 1] = master_analysis_arr[ext_count,1]
+                    child_res_arr [int_count, 2] = master_analysis_arr[ext_count,2]
+                 ENDIF
+              ENDWHILE
+           ENDWHILE
+{**AE1611}
+
+            IF (res_count > 2) THEN
+               SET MODE ACTIVE
+               transfer_results (c_timeseries_exists, m_timeseries_exists, m_test, c_test, child_res_arr)
+            ENDIF
+
+
+ENDROUTINE
+
+{------------------------------------------- WHERE_TO_FIND_CHILD --------------------------------------------------}
+
+ROUTINE where_to_find_child (VALUE c_batch, VALUE c_product)
+declare found_active, found_passive
+
+found_active = SELECT job_header.job_status
+   where job_name = STRIP(c_product):"/":STRIP(c_batch)
+
+IF found_active <> EMPTY
+THEN
+   child_active = TRUE
+   RETURN
+ENDIF
+
+found_passive = SELECT c_job_header.job_status
+   where batch_name = c_batch AND product_name = c_product
+
+IF found_passive <> EMPTY
+THEN
+   child_active = FALSE
+   RETURN
+ENDIF
+IF ( ( NOT (found_active <> EMPTY) ) and ( NOT (found_passive <> EMPTY) ) )
+THEN
+   FLASHMESSAGE("The child job was not found in active or in passive job_header tables!",TRUE)
+   EXIT
+ENDIF
+
+ENDROUTINE
+
+{------------------------------------------- CONFIRM_REF_ORDER --------------------------------------------------}
+
+ROUTINE confirm_ref_order (VALUE ref_order, use_ref, VALUE ref_job)
+
+
+DECLARE ref_order_confirmation, lk3
+
+CREATE OBJECT "STD_FORM", ref_order_confirmation
+
+{setup defaults}
+
+
+ref_order_confirmation. header  = "Reference Order Specified"
+ref_order_confirmation. footer = "Escape to cancel"
+ref_order_confirmation. row =  7
+ref_order_confirmation. column  =  4
+ref_order_confirmation. width   = 60
+ref_order_confirmation. height  =  3
+ref_order_confirmation. return_behaviour = FORM_RETURN_STAY
+
+
+ref_order_confirmation. add_display ("Attempt to import from job ":STRIP(ref_job):"    (On order ":
+                        STRIP(ref_order):").",
+                        8, 2, prompt_rendition_bold )
+
+ref_order_confirmation. add_display ("instead of the selected child ":STRIP(c_product):"/":STRIP(c_batch):"?",
+                        8, 3, prompt_rendition_bold )
+
+
+ref_order_confirmation . start_prompt ()
+ref_order_confirmation . wait_prompt ()
+ref_order_confirmation . end_prompt ()
+
+lk3 = ref_order_confirmation . get_lastkey ()
+
+IF lk3 = "EXIT" THEN
+   use_ref = FALSE
+ELSEIF lk3 = "ENTER" THEN
+   use_ref = TRUE
+ELSEIF lk3 = "DO" THEN
+   use_ref = TRUE
+ELSE
+   use_ref = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk3),TRUE) ENDIF
+
+
+ENDROUTINE
+
+{------------------------------------------- WHERE_TO_FIND_REFERENCE --------------------------------------------------}
+
+ROUTINE where_to_find_reference (VALUE ref_order, ref_active)
+declare found_active, found_passive
+
+SET MODE ACTIVE
+
+found_active = SELECT job_header.job_status
+   where process_order = ref_order
+
+IF found_active <> EMPTY
+THEN
+   ref_active = TRUE
+   RETURN
+ENDIF
+
+found_passive = SELECT c_job_header.job_status
+   where process_order = ref_order
+IF found_passive <> EMPTY
+THEN
+   ref_active = FALSE
+   RETURN
+ENDIF
+IF ( ( NOT (found_active <> EMPTY) ) and ( NOT (found_passive <> EMPTY) ) )
+THEN
+
+   FLASHMESSAGE("The reference process order ":ref_order: " on the selected child record was not found in active or in passive job_header tables!" :
+                " Please correct the problem with the child job!" ,TRUE)
+   RETURN
+ENDIF
+
+ENDROUTINE
+
+{-------------------------------------------HANDLE_TIMESERIES_TRANSFER----------------------------------------------}
+
+ROUTINE handle_timeseries_transfer (VALUE c_test, VALUE m_test)
+
+
+   DECLARE source_test, target_test, line_count, test_size, timestamp
+
+   DECLARE target_array
+   ARRAY target_array
+
+   source_test = c_test
+   target_test = m_test
+
+   timestamp = SELECT timeseries.component_name
+               WHERE test_number = c_test
+
+   GET_FIELD_DETAILS timeseries.test_number, "FIELD_SIZE", test_size
+
+   line_count = 0
+
+   WHILE (line_count <= 1000) AND (timestamp <> EMPTY) AND (NOT BLANK(timestamp))
+      line_count = line_count + 1
+
+      target_array[line_count , 1] = PAD(STRIP(target_test), " ", test_size)
+      target_array[line_count , 2] = SELECT timeseries . component_name
+      target_array[line_count , 3] = SELECT timeseries . timestamp
+      target_array[line_count , 4] = SELECT timeseries . result_value
+
+      NEXT timeseries
+      timestamp = SELECT timeseries.component_name
+   ENDWHILE
+
+   save_timeseries_to_database ( target_array, line_count, source_test)
+
+
+ENDROUTINE
+
+{---------------------------------------DELETE_EXISTING_M_TIMESERIES-----------------------------------------------}
+
+ROUTINE delete_existing_m_timeseries ( VALUE m_test)
+
+
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN LIBRARY TOOLBOX
+
+DECLARE block_head, the_table, rc1, rc2, rc3, time_delete_array, check_ok
+
+block_head = "del_time"
+the_table = "TIMESERIES"
+
+START WRITE TRANSACTION "Delete Timeseries"
+
+IF NOT block_init ( block_head, the_table ) THEN
+   ROLLBACK {Out of write transaction mode}
+   RETURN (false)
+ENDIF
+
+ARRAY time_delete_array
+   time_delete_array[1,1] = ARRAY_SELECT_EQ
+   time_delete_array[1,2] = "TEST_NUMBER"
+   time_delete_array[1,3] = m_test
+
+check_ok = block_row_select ( block_head, time_delete_array, TRUE)
+
+IF check_ok <> TRUE THEN
+   FLASH_MESSAGE("Unable to Select Existing Timeseries Data for Target Test", TRUE)
+   ROLLBACK {Out of write transaction mode}
+   RETURN (FALSE)
+ENDIF
+
+
+rc1 = delete_block ( block_head, time_delete_array )
+
+rc2 = block_row_update ( block_head )
+rc3 = block_row_release ( block_head )
+
+IF (rc1 <> EMPTY) OR (rc2 <> EMPTY) OR (rc3 <> EMPTY) THEN
+   FLASH_MESSAGE("Unable Deleting Existing Timeseries Data for Target Test":STRIP(rc1):STRIP(rc2):STRIP(rc3), TRUE)
+   ROLLBACK {Out of write transaction mode}
+   RETURN (FALSE)
+ENDIF
+
+
+COMMIT
+
+RETURN(TRUE)
+
+
+
+ENDROUTINE
+
+{----------------------------------------SAVE_TIMESERIES_TO_DATABASE---------------------------------------------}
+
+
+ROUTINE save_timeseries_to_database ( target_array, VALUE line_count, VALUE test) {Saving timeseries transfers}
+
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN LIBRARY TOOLBOX
+
+DECLARE block_head, the_table, put_counter, rc1, rc2, rc3, rc4, rc5, rc6, key_string
+
+
+           block_head = "Insert timeseries"
+           the_table = "TIMESERIES"
+
+           START WRITE TRANSACTION "Put Timeseries"
+
+           IF NOT block_init ( block_head, the_table ) THEN
+              ROLLBACK {Out of write transaction mode}
+              FLASH_MESSAGE("Unable to initialize block row", TRUE)
+              RETURN (false)
+           ENDIF
+                put_counter = 0
+                IF line_count >= 1000 THEN
+                   FLASH_MESSAGE("Long data series holding " : STRIP(line_count) : "records. Only transferring first 1000 lines", TRUE)
+                ENDIF
+                WHILE (put_counter < line_count) AND (put_counter < 1000)
+
+
+                   put_counter = put_counter + 1
+
+
+                   key_string = target_array[put_counter,1] : target_array[put_counter,2] : target_array[put_counter,3]
+
+                   rc1 = block_row_create_last( block_head, key_string )
+
+                   IF rc1
+
+                   THEN rc2 = block_row_last ( block_head )
+                        IF rc2 <> EMPTY THEN
+               FLASHMESSAGE("rc2: ": rc2, TRUE)
+            ENDIF
+
+                        rc3 = block_row_field_assign(block_head,"RESULT_VALUE", NUMERIC(target_array[put_counter,4]))
+                    IF rc3 <> EMPTY THEN
+                       FLASHMESSAGE("rc3: ": rc3, TRUE)
+                        ENDIF
+
+
+                   ELSE
+                 FLASH_MESSAGE("Could not save data. Unable to create new data row for master timeseries, error message: " : STRIP(rc1): ". String wit trouble: " : key_string, TRUE)
+                         rc4 = block_row_release (block_head)
+                         ROLLBACK
+                         IF rc4 <> EMPTY THEN
+                FLASHMESSAGE("rc4: ": rc4, TRUE)
+             ENDIF
+                         RETURN (false)
+                   ENDIF
+
+                ENDWHILE
+
+
+                rc5 = block_row_update ( block_head )
+                IF rc5 <> EMPTY THEN
+                   FLASHMESSAGE("rc5: ": rc5, TRUE)
+                ENDIF
+
+                rc6 = block_row_release ( block_head )
+                IF rc6 <> EMPTY THEN
+                   FLASHMESSAGE("rc6: ": rc6, TRUE)
+                ENDIF
+
+                COMMIT
+
+                RETURN(TRUE)
+ENDROUTINE
+
+{------------------------------------------- TRANSFER_RESULTS --------------------------------------------------}
+
+ROUTINE transfer_results (VALUE c_timeseries_exists, VALUE m_timeseries_exists, VALUE m_test, VALUE c_test, child_res_arr)
+
+
+               DECLARE put_ok, size_err_array, counter, back_counter, back_found
+
+               PUT_TEST_RESULTS m_test, child_res_arr, put_ok
+
+               size_err_array = SIZE_OF_ARRAY(put_ok)
+
+               counter = 1
+
+               WHILE (counter  <= size_err_array ) DO
+                  IF (put_ok[counter] <> EMPTY) THEN
+                     IF counter = 1 THEN
+                        {FLASH_MESSAGE(put_ok[counter],TRUE)}
+                     ENDIF
+                     IF (counter > 1) THEN
+                        back_counter = 1
+                        back_found = FALSE
+                        WHILE back_counter < counter DO
+                           IF put_ok[counter] = put_ok[back_counter] THEN
+                              back_found = TRUE
+                           ENDIF
+                           back_counter = back_counter + 1
+                        ENDWHILE
+
+                        IF back_found = FALSE THEN
+                           FLASH_MESSAGE(put_ok[counter],TRUE)
+                        ENDIF
+
+                     ENDIF
+                  ENDIF
+                  counter=counter + 1
+               ENDWHILE
+
+               IF m_timeseries_exists THEN
+                  delete_existing_m_timeseries (m_test)
+               ENDIF
+
+               IF c_timeseries_exists THEN
+                  handle_timeseries_transfer (c_test, m_test)
+               ENDIF
+
+ENDROUTINE
+
+
+{Inspiration from external_component_names}
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE user_selection (max_tran, m_sample, m_sample_id)
+
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+
+DECLARE the_form                {form objects}
+DECLARE component_grid              {grid object}
+declare row_idx
+DECLARE int_count, ext_count, max_count, transfer_selected, c_anal_w_rep, c_timeseries_exist, m_timeseries_exist
+DECLARE working_form, m_test, c_test
+
+
+SET DISPLAY FALSE
+
+
+CREATE OBJECT "STD_FORM", the_form
+
+{setup defaults}
+the_form . header   =  "Select results to transfer"
+the_form . footer = "Press DO to exit"
+the_form . row  =  1
+the_form . column   =   2
+the_form . width    = 140
+the_form . height   =  20
+
+the_form . return_behaviour = FORM_RETURN_STAY
+
+
+the_form . add_display ( "Sample Recieving Results: ": STRIP(m_sample_id), 8,1, prompt_rendition_bold )
+the_form . add_display ( "Sample Point: " : STRIP(m_sample),    8,2, prompt_rendition_bold )
+
+
+CREATE OBJECT "STD_GRID_EDITOR" , component_grid
+
+ARRAY component_grid . user_info ARRAYSIZE ( 0, 12 ) = ""
+
+component_grid . row        = 4
+component_grid . column     = 8
+component_grid . height     = 17
+component_grid . width      = 130
+component_grid . cell_rows  = 0
+component_grid . cell_columns   =10
+component_grid . column_size [ 1 ]  = 10
+component_grid . column_size [ 2 ]  = 15
+component_grid . column_size [ 3 ]  = 12
+component_grid . column_size [ 4 ]  = 10
+component_grid . column_size [ 5 ]  = 14
+component_grid . column_size [ 6 ]  = 10
+component_grid . column_size [ 7 ]  = 14
+component_grid . column_size [ 8 ]  = 12
+component_grid . column_size [ 9 ]  = 12
+component_grid . column_size [10 ]  = 10
+component_grid . title_size_top = 2
+component_grid . title_rendition_top = PROMPT_RENDITION_BOLD
+
+
+
+component_grid . title_text_top [ 1 , 1 ] = "From"
+component_grid . title_text_top [ 2 , 1 ] = "Date Authorised"
+component_grid . title_text_top [ 3 , 1 ] = "From"
+component_grid . title_text_top [ 4 , 1 ] = "From"
+component_grid . title_text_top [ 5 , 1 ] = "From"
+component_grid . title_text_top [ 6 , 1 ] = "Timeseries"
+component_grid . title_text_top [ 7 , 1 ] = "To"
+component_grid . title_text_top [ 8 , 1 ] = "Overwriting"
+component_grid . title_text_top [ 9 , 1 ] = "Delete existing"
+component_grid . title_text_top [10 , 1 ] = "Mark for"
+
+component_grid . title_text_top [ 1 , 2 ] = "Sample ID"
+component_grid . title_text_top [ 2 , 2 ] = "if > 4 month old"
+component_grid . title_text_top [ 3 , 2 ] = "Sample Point"
+component_grid . title_text_top [ 4 , 2 ] = "Resample of"
+component_grid . title_text_top [ 5 , 2 ] = "Analysis"
+component_grid . title_text_top [ 6 , 2 ] = "to Transfer"
+component_grid . title_text_top [ 7 , 2 ] = "Analysis"
+component_grid . title_text_top [ 8 , 2 ] = "Existing Result"
+component_grid . title_text_top [ 9 , 2 ] = "Timeseries"
+component_grid . title_text_top [10 , 2 ] = "Transfer"
+
+component_grid . title_separator_top = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 1 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 2 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 3 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 4 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 5 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 6 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 7 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 8 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 9 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [10 ] = GRID_SEPARATOR_BOTH
+component_grid . display_cell_routine   = "DISPLAY_GRID_CELL"
+component_grid . prompt_cell_routine    = "PROMPT_GRID_CELL"
+component_grid . check_move_routine     = "CHECK_MOVE"
+component_grid . fixed_columns_left     = 1
+
+the_form . add_prompt (component_grid)
+
+row_idx = 1
+
+   WHILE  (row_idx <= max_tran) DO
+
+      component_grid . user_info [ row_idx, 1 ] = user_arr [row_idx, 1]                                             {child id_numeric}
+      component_grid . user_info [ row_idx, 2 ] = user_arr [row_idx,21]                                             {child sample authorisation date}
+      component_grid . user_info [ row_idx, 3 ] = user_arr [row_idx, 2]                                             {child sampling point}
+      component_grid . user_info [ row_idx, 4 ] = user_arr [row_idx,10]                                             {child resample of sample id}
+      component_grid . user_info [ row_idx, 5 ] = STRIP(user_arr [row_idx, 4]) : "/" : STRIP(user_arr [row_idx, 5]) {child analysis/child test count}
+      component_grid . user_info [ row_idx, 6 ] = user_arr [row_idx,11]                                             {child timeseries exists}
+      component_grid . user_info [ row_idx, 7 ] = STRIP(user_arr [row_idx,13]) : "/" : STRIP(user_arr [row_idx,14]) {master analysis/master test count}
+      component_grid . user_info [ row_idx, 8 ] = user_arr [row_idx,18]                                             {master test contains results}
+      component_grid . user_info [ row_idx, 9 ] = user_arr [row_idx,19]                                             {master test timeseries data exist}
+      component_grid . user_info [ row_idx,10 ] = user_arr [row_idx,20]                                             {do transfer}
+      component_grid . user_info [ row_idx,11 ] = user_arr [row_idx, 3]                                             {Not shown: Child Test No.}
+      component_grid . user_info [ row_idx,12 ] = user_arr [row_idx,12]                                             {Not shown: Master Test No.}
+      row_idx = row_idx + 1
+
+   ENDWHILE
+
+   component_grid . cell_rows = row_idx - 1
+
+the_form . start_prompt ()
+
+
+REPEAT
+    the_form . wait_prompt ()
+UNTIL ((the_form . get_lastkey () = "EXIT") OR ((the_form . get_lastkey () = "DO")) AND (check_doubles (row_idx, component_grid)))
+
+the_form . end_prompt ()
+
+IF the_form . get_lastkey () = "EXIT" THEN
+   EXIT
+ENDIF
+
+
+
+{Prepare for transfer of selected rows in component_grid}
+
+
+max_count = size_of_array (component_grid . user_info)
+ext_count = 1
+int_count = 0
+
+CREATE OBJECT "STD_FORM", working_form
+
+{setup defaults}
+working_form . header           =  "Now Handling Transfer No. " : STRIP(int_count)
+working_form . row          =   5
+working_form . column           =  10
+working_form . width            =  60
+working_form . height           =   4
+working_form . button_style     = FORM_BUTTON_NONE
+working_form . return_behaviour = FORM_RETURN_STAY
+
+
+working_form . add_display ( "Please Wait - Work Transferring Results is in Progress", 4,2, prompt_rendition_bold )
+working_form . start_prompt ()
+
+
+transfer_selected = component_grid . user_info [ ext_count, 10 ]
+WHILE (transfer_selected <> EMPTY) AND (ext_count < max_count) AND NOT BLANK(transfer_selected)
+   IF transfer_selected THEN
+      int_count = int_count + 1
+      working_form . change_header ("Now Handling Transfer No. " : STRIP(int_count))
+      m_test             = component_grid . user_info [ ext_count,12 ]
+      c_test             = component_grid . user_info [ ext_count,11 ]
+      c_anal_w_rep       = component_grid . user_info [ ext_count, 5 ]
+      c_timeseries_exist = component_grid . user_info [ ext_count, 6 ]
+      m_timeseries_exist = component_grid . user_info [ ext_count, 9 ]
+      c_sample_id        = component_grid . user_info [ ext_count, 1 ]
+
+      prepare_transfer (m_test, c_test,c_anal_w_rep, c_timeseries_exist, m_timeseries_exist, c_sample_id)
+   ENDIF
+   ext_count = ext_count + 1
+   transfer_selected = component_grid . user_info [ ext_count, 10 ]
+ENDWHILE
+
+working_form . end_prompt ()
+
+IF int_count < 1 THEN
+   FLASH_MESSAGE ("No analyses selected for transfer, aborting", TRUE)
+   EXIT
+ELSE
+   {FLASH_MESSAGE ("Results for " : STRIP(int_count) : " Selected Tests Have Been Transferred", TRUE)}
+ENDIF
+
+
+ENDROUTINE {user_selection}
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE check_move  (self           ,
+            VALUE old_column,
+            VALUE old_row   ,
+                  new_column,
+                  new_row   )
+
+IF  new_column  <10 THEN
+    new_column = 10
+ENDIF
+
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE display_grid_cell (     self,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                    window,
+                    VALUE column,
+                    VALUE row,
+                    VALUE cell_width,
+                    VALUE cell_height )
+
+DECLARE val
+
+val = self . user_info [ cell_row, cell_column ]
+IF cell_column <> 10 THEN
+   IF   val = EMPTY
+   THEN val = pad( "", " ", cell_width )
+   ELSEIF val = FALSE
+   THEN val = " "
+   ELSEIF val = TRUE
+   THEN val = "Yes"
+   ELSE val = substring( val, 1, cell_width )
+   ENDIF
+
+   DISPLAY val
+      AT column, row
+      IN WINDOW window
+      to column + cell_width - 1
+
+ELSE
+   DISPLAY val
+      AT column, row
+      IN WINDOW window
+      to column + cell_width - 1
+      FORMAT boolean with (is_check = TRUE)
+
+
+ENDIF
+
+
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE prompt_grid_cell    ( self,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                    window,
+                    VALUE column,
+                    VALUE row,
+                    VALUE cell_width,
+                    VALUE cell_height )
+
+IF cell_column = 10 THEN
+   PROMPT FOR self . user_info [ cell_row, cell_column ]
+    AT column, row
+    IN WINDOW window
+    TO column + cell_width - 1
+        BROWSE ON boolean
+    with ( DISPLAY_ONLY = false , IS_CHECK = TRUE,
+    ZAP_ON_FIRST = false )
+
+ENDIF
+
+ENDROUTINE
+
+
+{ ----------------------------------------- CHECK_DOUBLES --------------------------------------------------- }
+
+ROUTINE check_doubles (VALUE row_idx, component_grid)
+
+{Checking if user specified duplicate transfer of child test numbers
+ if the same master test is recieving results from more than one child test}
+
+DECLARE check_count, this_test, previous_count
+
+check_count = 2 {Start checking on second selected record}
+WHILE (check_count <= row_idx)
+   this_test = component_grid . user_info [ check_count,12 ]
+   previous_count = 1
+   WHILE (previous_count < check_count)
+      IF (this_test = component_grid . user_info [ previous_count,12 ])
+         AND (component_grid . user_info [ previous_count,10 ])
+         AND (component_grid . user_info [ check_count,10 ])
+      THEN
+         FLASH_MESSAGE("The same test can not recieve results from two different bulk tests", TRUE)
+         RETURN(FALSE)
+      ENDIF
+      previous_count = previous_count + 1
+   ENDWHILE
+   check_count = check_count + 1
+ENDWHILE
+RETURN(TRUE)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

@@ -1,0 +1,2401 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_XCHROM.RPF
+*
+* Purpose       : Contains the classes supporting the batch <-> xchrom link
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_DDE
+
+JOIN LIBRARY $BATCH_ATLAS
+JOIN LIBRARY $BATCH_UTILS
+JOIN LIBRARY $BATCH_USER
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LIB_UTILS
+
+{------------------------------------------------------------------------------
+Dollar commands are found in the results file.  The first 9 characters have to
+match one of the following constants to be processed
+-------------------------------------------------------------------------------}
+
+CONSTANT dollar_id_mode           = "$IDNTMODE"
+CONSTANT dollar_test_number       = "$TESTNUMB"
+CONSTANT dollar_sample_id         = "$SAMPLEID"
+CONSTANT dollar_analysis          = "$ANALYSIS"
+CONSTANT dollar_replicate_num     = "$REPLNUMB"
+CONSTANT dollar_analysis_date     = "$ANALDATE"
+CONSTANT dollar_sm_status         = "$SMSTATUS"
+CONSTANT dollar_instrument        = "$INSTRMNT"
+CONSTANT dollar_operator          = "$OPERATOR"
+CONSTANT dollar_analyst_name      = "$ANALYSTN"
+CONSTANT dollar_create_new_sample = "$NEWSAMPL"
+CONSTANT dollar_source_number     = "$SOURCE_N"
+CONSTANT dollar_source_1          = "$SOURCE_1"
+CONSTANT dollar_source_2          = "$SOURCE_2"
+CONSTANT dollar_source_3          = "$SOURCE_3"
+CONSTANT dollar_source_4          = "$SOURCE_4"
+CONSTANT dollar_source_5          = "$SOURCE_5"
+CONSTANT dollar_source_6          = "$SOURCE_6"
+CONSTANT dollar_source_7          = "$SOURCE_7"
+CONSTANT dollar_sample_field      = "$SAMP_FLD"
+CONSTANT dollar_test_field        = "$TEST_FLD"
+
+
+{-----------------------------------------------------------------------------
+Information in a result file either identifies a test or a sample.
+The id_mode is set up from the doller_id_mode field, and is referenced
+with one of the following constants
+------------------------------------------------------------------------------}
+
+CONSTANT ID_MODE_NONE   = " "
+CONSTANT ID_MODE_SAMPLE = "S"
+CONSTANT ID_MODE_TEST   = "T"
+
+DECLARE batch_xchrom_lookup_table
+
+update_xchrom_phrases ( " " )
+
+{******************************************************************************}
+
+GLOBAL ROUTINE batch_xchrom_initialise
+
+{
+*
+*
+*******************************************************************************}
+
+        IF NOT global ( "LIBRARY_INITIALISED" ) THEN
+
+                batch_xchrom_define_classes ()
+                batch_xchrom_define_lookup  ()
+
+                SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_xchrom_define_classes
+
+{
+*
+*
+*******************************************************************************}
+
+        DEFINE CLASS STD_BATCH_XCHROM_ANALYSIS
+
+                INITIALISATION
+
+                PROPERTIES "DEVICE_NAME"             ,
+                           "PROJECT_NAME"            ,
+                           "PROJECT_PATH"            ,
+                           "ANALYSIS_NAME"           ,
+                           "CHANNEL_NUMBER"          ,
+                           "INSTRUMENT"              ,
+                           "DOWNLOAD_FILE_NAME"      ,
+                           "CHROM_PATH"              ,
+                           "FILE_PREFIX"             ,
+                           "SAMPLES"                 ,
+                           "REPEAT"                  ,
+                           "XSAMPLE_ID"              ,
+                           "PREVIOUS_SAMPLE"         ,
+                           "USER_INFO"               ,
+				           "APPEND_ANALYSIS"         ,
+				           "METHOD_NAME"
+
+                ACTIONS    "DOWNLOAD_HEADER"         ,
+                           "DOWNLOAD_SAMPLE"         ,
+                           "FINISH_DOWNLOAD"         ,
+                           "CHECK_MODANA_SUCCESS"    ,
+                           "RUN_XCHROM_ANALYSIS"     ,
+                           "SET_ANALYSIS"            ,
+                           "READ_ANALYSIS"           ,
+                           "CHECK_XCGETINJ_COMPLETE" ,
+                           "READ_SAMPLES"            ,
+                           "SAMPLE_SIZE"             ,
+                           "GET_ENTRY"               ,
+                           "GET_SAMPLE"              ,
+                           "GET_TEST"                ,
+                           "GET_RESULT"              ,
+                           "GET_NUMBER_OF_SAMPLES"   ,
+                           "ASSIGN"
+
+        END CLASS
+
+        DEFINE CLASS STD_BATCH_XCHROM_SAMPLE
+
+                PROPERTIES "FILE_NAME"         ,
+                           "ID_MODE"           ,
+                           "SAMPLE_NUMBER"     ,
+                           "INJECTION_NUMBER"  ,
+                           "SAMPLE_NAME"       ,
+                           "LIMS_NAME"         ,
+                           "SAMPLE_TYPE"       ,
+                           "BAD_INJECTION"     ,
+                           "PEAKS"             ,
+                           "USER_INFO"
+
+                ACTIONS    "READ_SAMPLE"          ,
+                           "PROCESS_SAMPLE"       ,
+                           "PROCESS_DOLLAR_FIELD" ,
+                           "GET_PEAK"             ,
+                           "READ_PEAK"            ,
+                           "NEXT_DATA_ITEM"       ,
+                           "GET_RESULT"           ,
+                           "GET_BATCH_CLASS"      ,
+                           "IS_BATCH_CLASS"       ,
+                           "SET_TEST"             ,
+                           "GET_TEST"             ,
+                           "GET_SAMPLE"           ,
+                           "ASSIGN"
+
+        END CLASS
+
+        DEFINE CLASS STD_BATCH_XCHROM_PEAK
+
+                PROPERTIES "COMPONENT_NAME"    ,
+                           "PEAK_NAME"         ,
+                           "AMOUNT"            ,
+                           "TYPE"              ,
+                           "UNIT"              ,
+                           "DETECTED"          ,
+                           "USER_INFO"
+
+        END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_xchrom_define_lookup
+
+{
+*
+*
+*******************************************************************************}
+
+        DECLARE count
+
+        ARRAY batch_xchrom_lookup_table ARRAY_SIZE ( 0 , 2 )
+
+
+        batch_xchrom_lookup_table [ 1, 1] = BATCH_ENTRY_SAMPLE
+        batch_xchrom_lookup_table [ 1, 2] = "SA"
+
+        batch_xchrom_lookup_table [ 2, 1] = BATCH_ENTRY_BLANK
+        batch_xchrom_lookup_table [ 2, 2] = "BL"
+
+        batch_xchrom_lookup_table [ 3, 1] = BATCH_ENTRY_CONTROL
+        batch_xchrom_lookup_table [ 3, 2] = "CO"
+
+        batch_xchrom_lookup_table [ 4, 1] = BATCH_ENTRY_STANDARD
+        batch_xchrom_lookup_table [ 4, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 5, 1] = BATCH_ENTRY_MS
+        batch_xchrom_lookup_table [ 5, 2] = "SA"
+
+        batch_xchrom_lookup_table [ 6, 1] = BATCH_ENTRY_MSD
+        batch_xchrom_lookup_table [ 6, 2] = "SA"
+
+        batch_xchrom_lookup_table [ 7, 1] = BATCH_ENTRY_CAL_STD
+        batch_xchrom_lookup_table [ 7, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 8, 1] = BATCH_ENTRY_CAL_BLANK
+        batch_xchrom_lookup_table [ 8, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 9, 1] = BATCH_ENTRY_BLANK_CHK
+        batch_xchrom_lookup_table [ 9, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 10, 1] = BATCH_ENTRY_METH_BLANK
+        batch_xchrom_lookup_table [ 10, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 11, 1] = BATCH_ENTRY_CAL_CHK
+        batch_xchrom_lookup_table [ 11, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 12, 1] = BATCH_ENTRY_INDEP_CHK
+        batch_xchrom_lookup_table [ 12, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 13, 1] = BATCH_ENTRY_INTERF_CHK
+        batch_xchrom_lookup_table [ 13, 2] = "ST"
+
+        batch_xchrom_lookup_table [ 14, 1] = BATCH_ENTRY_DUPLICATE
+        batch_xchrom_lookup_table [ 14, 2] = "SA"
+
+        batch_xchrom_lookup_table [ 15, 1] = BATCH_ENTRY_WASH
+        batch_xchrom_lookup_table [ 15, 2] = "SA"
+
+        count = 1
+
+        WHILE count <= size_of_array ( batch_xchrom_lookup_table ) DO
+
+                batch_xchrom_lookup_table [ count , 1 ] =
+                        substitute ( batch_xchrom_lookup_table [ count , 1 ] ,
+                                     "_" , "" )
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_xchrom_lookup_type ( VALUE type )
+
+{
+*
+*
+*******************************************************************************}
+
+        DECLARE count
+
+        count =1
+
+        WHILE count <= size_of_array ( batch_xchrom_lookup_table ) DO
+
+                IF batch_xchrom_look_up_table [ count , 1 ] = type THEN
+
+                        RETURN ( batch_xchrom_lookup_table [ count , 2 ])
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+        RETURN ( "SA" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE batch_xchrom_error_to_text ( VALUE status )
+
+{
+*
+*
+******************************************************************************}
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_class_initialisation ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+        self . previous_sample = 0
+        self . xsample_id      = 1
+        self . repeat          = 1
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE transfer_file (       platform    ,
+                              server_file ,
+                              client_file ,
+                        VALUE XChrom_path )
+{
+*
+*
+******************************************************************************}
+
+DECLARE result_logical, success
+
+        IF platform = "VMS" THEN
+
+                result_logical = "SMP$RESULTFILES:"
+
+        ELSE
+
+                result_logical = "$SMP_RESULTFILES/"
+
+        ENDIF
+
+        success = TRANSFER_BINARY_TO_SERVER ( XChrom_path    : client_file ,
+                                              result_logical : server_file )
+
+        server_file = result_logical : server_file
+
+        RETURN ( success )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE process_file_for_server ( VALUE server_file )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE temp           ,
+        status         ,
+        concatted_line ,
+        line_feed      ,
+        carr_ret       ,
+        lf_pos         ,
+        cr_pos         ,
+        pos            ,
+        other
+
+	status = EMPTY
+	line_feed = ASCII ( 10 )
+	carr_ret  = ASCII ( 13 )
+
+	FILE OPEN server_file , status
+
+	IF ( status = EMPTY ) THEN
+
+		concatted_line = ""
+
+		FILE READ server_file , temp , status
+
+		WHILE ( status = EMPTY ) DO
+
+			lf_pos = INDEX ( temp, line_feed )
+			cr_pos = INDEX ( temp, carr_ret  )
+
+			IF ( lf_pos + cr_pos = 0 ) THEN
+
+				temp = temp : line_feed
+
+			ENDIF
+
+			concatted_line = concatted_line : temp
+			FILE READ server_file , temp , status
+
+		ENDWHILE
+
+		status = EMPTY
+
+		FILE CLOSE server_file
+		FILE DELETE server_file , status
+
+		FILE CREATE server_file , status
+
+		lf_pos = INDEX ( concatted_line, line_feed )
+		cr_pos = INDEX ( concatted_line, carr_ret  )
+
+		temp = ""
+
+		{ While either of the two positions is greater than zero }
+
+		IF ( lf_pos + cr_pos = 0 ) THEN
+
+			FILE WRITE server_file , concatted_line
+
+		ELSE WHILE ( lf_pos + cr_pos <> 0 ) DO
+
+			{ Set left and right positions }
+
+			IF ( lf_pos < cr_pos ) THEN
+
+				IF ( lf_pos <> 0 ) THEN
+
+					pos   = lf_pos
+					other = cr_pos
+
+				ELSE
+
+					pos   = cr_pos
+					other = lf_pos
+
+				ENDIF
+
+			ELSE
+
+				IF ( cr_pos <> 0 ) THEN
+
+					pos   = cr_pos
+					other = lf_pos
+
+				ELSE
+
+					pos   = lf_pos
+					other = cr_pos
+
+				ENDIF
+
+			ENDIF
+
+			temp = LEFTSTRING ( concatted_line, pos-1 )
+			FILE WRITE server_file , temp
+
+			IF pos = other - 1 THEN
+
+				temp = LEFTSTRING ( concatted_line, other )
+
+			ELSE
+
+				temp = LEFTSTRING ( concatted_line, pos )
+
+			ENDIF
+
+			concatted_line = concatted_line # temp
+
+			lf_pos = INDEX ( concatted_line , line_feed )
+			cr_pos = INDEX ( concatted_line , carr_ret  )
+
+		ENDWHILE ENDIF
+
+		FILE CLOSE server_file
+
+	ELSE
+
+		flash_message ( status, true )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_finish_download ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE end_of_file  ,
+        user_logical ,
+        xchrom_path  ,
+        xcmodana     ,
+        waiting      ,
+        log_file     ,
+        input        ,
+        output       ,
+        status
+
+        XChrom_path = CLIENT_GET_XCHROM_PATH ( )
+
+        XChrom_path  = XChrom_path : "\lims\"
+
+        { Tack a file name onto the end }
+
+        end_of_file = ""
+        end_of_file = PAD ( end_of_file , "*" , 79 )
+
+        IF GLOBAL ( "PLATFORM" ) = "VMS" THEN
+
+                user_logical = "smp$userfiles:"
+
+        ELSE
+
+                user_logical = "$smp_userfiles/"
+
+        ENDIF
+
+        FILE WRITE user_logical : self . download_file_name , end_of_file
+
+        FILE CLOSE user_logical : self . download_file_name
+
+        { Transfer file to the client }
+
+        TRANSFER_FROM_SERVER ( user_logical : self . download_file_name ,
+                               XChrom_path  : self . download_file_name )
+
+        log_file = "limslink.log"
+
+        { Call XChrom's analysis modifier : xcmodana.exe }
+
+        xcmodana = ASCII (34) : XChrom_path : "\xcmodana.exe" : ASCII (34) 
+        input    = "-input="  : XChrom_path : self . download_file_name
+        output   = "-output=" : XChrom_path : log_file
+
+	IF self . append_analysis THEN
+
+	        dde_winexec ( xcmodana : " " : input : " " : output ,
+        	              "SW_HIDE"                             ,
+                	      status                                )
+
+	ELSE
+
+	        dde_winexec ( xcmodana : " " : input : " " :
+					output : " initialise" ,
+	                      "SW_HIDE"                        ,
+        	              status                           )
+
+	ENDIF
+
+        IF status <> EMPTY THEN
+
+                        { Attempting XCmodana : }
+                status = GET_USER_MESSAGE ( "STD_XCHROM_ATT_XCMODANA", 1 ) :
+                         status
+
+        ELSE
+
+                waiting = 1
+
+                REPEAT
+
+                        status = self . check_modana_success ( XChrom_path ,
+                                                               log_file    )
+
+                        waiting = waiting + 1
+
+                        SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+                        IF waiting > 10 THEN
+
+                                status = GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL" , 1 )
+
+                        ENDIF
+
+                                { Attempt to read past end of file }
+                UNTIL ( status <> GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL", 1 ))
+                OR    ( waiting > 10                                       )
+
+                IF status <> EMPTY THEN
+
+                                { XCmodana : }
+                        status = GET_USER_MESSAGE ( "STD_XCHROM_XCMODANA",1 ) :
+                                 status
+
+                ELSE
+
+                        status = self . run_xchrom_analysis ( XChrom_path )
+
+                        IF status <> EMPTY THEN
+
+                                        { XChrom : }
+                                status = GET_USER_MESSAGE (
+                                                "STD_XCHROM_XCHROM", 1 ) :
+                                         status
+
+                        ENDIF
+
+                ENDIF
+
+                CLIENT_DELETE_FILE ( XChrom_path : self . download_file_name )
+
+                CLIENT_DELETE_FILE ( XChrom_path : log_file )
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_run_xchrom_analysis (
+                                                                self        ,
+                                                          VALUE XChrom_path )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE path      ,
+        proj      ,
+        inst      ,
+        anal      ,
+        anal_file ,
+        command   ,
+        status
+
+        status = EMPTY
+
+        IF  ( GLOBAL ( "CHROMATOGRAPHY_SOFTWARE" ) = "XCHROMV21" )
+        AND ( confirm_with_message ( "STD_XCHROM_EXE_XCHROM" )   ) THEN
+
+                IF self . project_path <> EMPTY THEN
+
+                        path = STRIP ( self . project_path  )
+
+                ELSE
+
+                        path = " "
+
+                ENDIF
+
+                proj = TOLOWER ( STRIP ( self . project_name  ) )
+                inst = TOLOWER ( STRIP ( self . instrument    ) )
+                anal = TOLOWER ( STRIP ( self . analysis_name ) )
+
+                IF ( BLANK ( path ) ) THEN
+
+                        anal_file = XChrom_path
+
+                ELSE
+
+                        anal_file = path
+
+                ENDIF
+
+                anal_file = anal_file : "\" : proj : "\" : inst : "\" : anal
+                anal_file = anal_file : ".dir\" : anal : ".ana"
+
+                command = ( XChrom_path # "\lims\" ) : "xc.exe "
+                command = command : anal_file
+
+                dde_winexec ( command , "SW_SHOW", status )
+
+                IF status <> EMPTY THEN
+
+                                { Attempting XChrom : }
+                        status = GET_USER_MESSAGE (
+                                        "STD_XCHROM_ATT_XCHROM", 1 ) : status
+
+                ENDIF
+
+        ELSE
+
+                flash_message ( GET_USER_MESSAGE ( "STD_XCHROM_DOWN_SUCCESS", 1 ) , FALSE )
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_check_modana_success ( self       ,
+                                                                chrom_path ,
+                                                                log_file   )
+{ Returns an empty message if successful
+*
+*
+******************************************************************************}
+
+DECLARE message     ,
+        log_list    ,
+        platform    ,
+        server_file ,
+        line_buffer ,
+        waiting     ,
+        status
+
+        ARRAY log_list
+
+        message = EMPTY
+
+        { xcmodana produces logfile called limslink.log when finished }
+
+        waiting = 1
+
+        REPEAT
+
+                CLIENT_GET_FILE_NAMES ( chrom_path : log_file ,
+                                        log_list              )
+
+                waiting = waiting + 1
+
+                SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+        UNTIL ( size_of_array ( log_list ) <> 0  )
+        OR    ( waiting > 10                     )
+
+        IF size_of_array ( log_list ) <> 0 THEN
+
+                { Transfer file across to server }
+
+                platform = GLOBAL ( "PLATFORM" )
+
+                server_file = log_file
+
+				transfer_file ( platform    ,
+				                server_file ,
+				                server_file ,
+				                chrom_path  )
+
+                IF global ( "PLATFORM" ) <> "NT" THEN
+
+                        process_file_for_server ( server_file )
+
+                ENDIF
+
+                FILE OPEN server_file, status
+
+                IF status <> EMPTY
+
+                        message = status
+
+                ELSE
+
+                        FILE READ server_file, line_buffer, status
+
+                        IF status = EMPTY THEN
+
+                                line_buffer = STRIP ( line_buffer )
+
+                                IF INDEX ( line_buffer , "code 8" ) <> 0 THEN
+
+                                        FILE READ server_file, line_buffer,status
+
+                                        IF status = EMPTY THEN
+
+                                                line_buffer = STRIP ( line_buffer )
+
+                                        ELSE
+
+                                                message = status
+
+                                        ENDIF
+
+                                ENDIF
+
+                                IF  ( INDEX ( line_buffer , "successfully" ) <> 0 )
+                                AND ( NOT BLANK ( message )                       ) THEN
+
+                                ELSE
+
+                                        message = line_buffer
+
+                                ENDIF
+
+                        ELSE
+
+                                message = status
+
+                        ENDIF
+
+                ENDIF
+
+                FILE CLOSE ( server_file )
+
+                FILE DELETE ( server_file )
+
+        ELSE
+
+                status = GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL", 1 )
+
+        ENDIF
+
+        RETURN ( message )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_set_analysis (  self         ,
+                                                        batch_header )
+
+{
+*
+*
+******************************************************************************}
+
+        self . project_name   = batch_header . get_batch_field
+                                                        ( "CDS_PROJECT" )
+        self . analysis_name  = batch_header . get_batch_field
+                                                        ( "CDS_ANALYSIS_NAME" )
+
+        IF blank ( self . analysis_name ) THEN
+
+                self . analysis_name  = batch_header . get_batch_field
+                                                        ( "IDENTITY"    )
+
+        ENDIF
+		
+		self . method_name = batch_header . get_batch_field ( "CDS_METHOD_NAME" )
+
+	    self . append_analysis = batch_header . get_batch_field
+							( "CDS_APPEND_ANALYSIS")
+
+        self . channel_number = batch_header . get_batch_field
+                                                        ( "CDS_CHANNEL_NUMBER")
+
+        self . instrument = batch_header . get_batch_field
+                                                        ( "CDS_INSTRUMENT" )
+
+        IF BLANK ( self . instrument ) THEN
+
+                self . instrument = batch_header . get_batch_field
+                                                        ( "INSTRUMENT" )
+
+        ENDIF
+
+        self . project_path = SELECT phrase . phrase_text
+                WHERE phrase_type = "MCPROJECT"
+                AND   phrase_id   = TOLOWER ( STRIP ( self . project_name ) )
+
+        IF self . project_path <> EMPTY THEN
+
+                self . project_path = STRIP ( self . project_path )
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_read_analysis (       self         ,
+                                                               entries      ,
+                                                         VALUE read_samples )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE file_list  ,
+                message    ,
+                xcgetinj   ,
+                count      ,
+                status     ,
+                samp_num   ,
+                command    ,
+                data_id    ,
+                output     ,
+                SMW_path   ,
+                xcsmsync   ,
+                sync_comm  ,
+                success    ,
+		        temp_file  ,
+		        message_ptr
+
+        ARRAY file_list
+
+        message = EMPTY
+
+        self . chrom_path = CLIENT_GET_XCHROM_PATH ( )
+
+        IF ( self . chrom_path <> EMPTY ) THEN
+
+                self . chrom_path = self . chrom_path : "lims\"
+
+                self . file_prefix = STRIP ( self . project_name  ) : "-" :
+                                     STRIP ( self . instrument    ) : "-" :
+                                     STRIP ( self . analysis_name )
+
+                self . file_prefix = TOLOWER ( self . file_prefix )
+
+                CLIENT_GET_FILE_NAMES ( self . chrom_path        :
+                                        GLOBAL ( "PROCESS_ID" )  :
+                                        "-" : self . file_prefix :
+                                        "*.dat"                  ,
+                                        file_list                )
+
+                count = 1
+
+                WHILE ( count <= size_of_array ( file_list ) )  DO
+
+                        CLIENT_DELETE_FILE ( self . chrom_path :
+                                                        file_list [ count ] )
+
+                        count = count + 1
+
+                ENDWHILE
+
+                { Call XChrom's xcgetinj.exe for each sample }
+
+                xcgetinj = self . chrom_path : "xcgetinj.exe "
+
+                data_id = STRIP ( self . project_name  ) : "," :
+                          STRIP ( self . instrument    ) : "." :
+                          STRIP ( self . analysis_name ) : ","
+
+                data_id = TOLOWER ( data_id )
+
+                output = "-output=" : self . chrom_path :
+                        GLOBAL ( "PROCESS_ID" ) : "-" : self . file_prefix
+
+                count  = 1
+                status = EMPTY
+
+		SMW_path = CLIENT_GET_CLIENT_PATH ()
+
+		temp_file = CLIENT_TEMPORARY_FILE ()
+
+                xcsmsync = SMW_path : "\xcsmsync.exe"
+                sync_comm = xcsmsync : " " : temp_file : " " : self . chrom_path : "\ "
+
+                WHILE ( count <= entries )
+                AND   ( status = EMPTY   ) DO
+
+                        samp_num = STRIP ( count )
+                        command = xcgetinj : ASCII(34) : data_id : samp_num : ",1,1 " : ASCII(34)
+                        command = command : output : "-" : samp_num : "-1.dat"
+
+                        sync_comm = sync_comm : GLOBAL ( "PROCESS_ID" ) : "-" :
+                                self . file_prefix : "-" : samp_num : "-1.dat "
+
+                        dde_winexec ( command, "SW_HIDE", status )
+
+                        count = count + 1
+
+			SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+                ENDWHILE
+
+                dde_winexec ( sync_comm, "SW_HIDE", status )
+
+                self . check_xcgetinj_complete ( count - 1 ,
+						 temp_file )
+
+		CLIENT_DELETE_FILE ( temp_file )
+
+                ARRAY file_list
+
+                IF status = EMPTY THEN
+
+                        success = CLIENT_GET_FILE_NAMES (
+                                                  self . chrom_path      :
+                                                  GLOBAL ( "PROCESS_ID") :
+                                                  "*.dat"                ,
+                                                  file_list              )
+
+                        IF ( success ) THEN
+
+                                self . read_samples ( file_list ,
+                                                      entries   ,
+                                                      TRUE      )
+
+                        ELSE
+
+                                { No Xchrom data to Upload }
+                                message = GET_USER_MESSAGE ( "STD_XCHROM_NO_DATA",1 )
+
+                        ENDIF
+
+                ELSE
+
+                        message = GET_USER_MESSAGE ( "STD_XCHROM_ATT_XCGETINJ", 1 )
+
+                        message = message : " : " : status
+
+                ENDIF
+
+        ELSE
+				
+			message_fetch ( "STD_XCHROM_FAILED_LOCATE" ,
+			                message_ptr                )
+				
+			message_add_parameter ( message_ptr ,
+			                        "XChrom"    )
+					
+			message = message_get_text ( message_ptr , 1 )
+
+        ENDIF
+
+        RETURN (message )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_check_xcgetinj_complete ( self          ,
+                                                                   VALUE exports   ,
+                                                                   VALUE last_file )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE file_list   ,
+                count
+
+        ARRAY file_list
+
+        count = 1
+
+        REPEAT
+
+                CLIENT_GET_FILE_NAMES ( last_file ,
+                                        file_list )
+
+                SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+                count = count + 1
+
+        UNTIL ( size_of_array ( file_list ) <> 0              )
+        OR    ( count > ( GLOBAL ( "XC_TIMEOUT" ) * exports ) )
+
+	IF size_of_array ( file_list ) <> 0  THEN
+
+		CLIENT_DELETE_FILE ( last_file )
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_read_samples (       self       ,
+                                                              file_list  ,
+                                                              entries    ,
+                                                        VALUE read_peaks )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE file_count    ,
+        file_suffix   ,
+        sample_object ,
+        sample_count  ,
+        server_file   ,
+        platform      ,
+        sample_number ,
+        pid           ,
+        file_order    ,
+        file_pos
+
+
+        ARRAY self . samples
+        ARRAY file_order
+
+        file_count   = 1
+        sample_count = 1
+
+        { Sort the file list }
+
+        WHILE ( file_count <= entries )
+
+                file_suffix = file_list [ file_count ] #
+                                ( self . file_prefix : "-" )
+
+                pid = LEFTSTRING ( file_suffix                     ,
+                                   INDEX ( file_suffix , "-" ) - 1 )
+
+                file_suffix = file_suffix # ( pid : "-" )
+
+                sample_number = LEFTSTRING ( file_suffix                     ,
+                                             INDEX ( file_suffix , "-" ) - 1 )
+
+                file_order [ sample_number ] = file_count
+
+                file_count = file_count + 1
+
+        ENDWHILE
+
+        { Process the files }
+
+        pid = GLOBAL ( "PROCESS_ID" )
+
+        file_count = 1
+
+        WHILE ( file_count <= entries ) DO
+
+                IF file_order [ file_count ] = EMPTY THEN
+
+                ELSEIF ( INDEX ( file_list [ file_order [ file_count ] ] ,
+                             pid : "-" : self . file_prefix          ) > 0 ) THEN
+
+                        CREATE OBJECT STD_BATCH_XCHROM_SAMPLE , sample_object
+
+                        sample_number = file_order [ file_count ]
+
+                        file_suffix = file_list [ sample_number ] #
+                                                ( self . file_prefix : "-" )
+
+                        sample_object . sample_number = LEFTSTRING (
+                                        file_suffix ,
+                                        INDEX ( file_suffix , "-" ) - 1 )
+
+                        sample_object . injection_number = file_suffix #
+                                        ( sample_object . sample_number : "-" )
+
+                        sample_object . injection_number = sample_object .
+                                                     injection_number # ".dat"
+
+                        sample_object . sample_number = NUMERIC (
+                                        sample_object . sample_number )
+                        sample_object . injection_number = NUMERIC (
+                                        sample_object . injection_number )
+
+                        sample_object . lims_name = EMPTY
+
+                        server_file = file_list [ sample_number ]
+
+                        platform = GLOBAL ( "PLATFORM" )
+
+                        transfer_file ( platform           ,
+			                      server_file        ,
+                                        server_file        ,
+                                        self . chrom_path )
+
+                        sample_object . file_name = server_file
+
+                        IF ( platform = "VMS" ) THEN
+
+                                file_pos = "smp$resultfiles:"
+
+                        ELSE
+
+                                file_pos = "$smp_resultfiles/"
+
+                        ENDIF
+
+				IF platform <> "NT" THEN
+
+                        	process_file_for_server ( sample_object . file_name )
+
+				ENDIF
+
+                        sample_object . read_sample ( read_peaks )
+
+                        self . samples [ sample_count ] = sample_object
+
+                        sample_count = sample_count + 1
+
+                        CLIENT_DELETE_FILE ( self . chrom_path :
+                                                file_list [ sample_number ] )
+
+                        FILE DELETE file_pos : file_list [ sample_number ]
+
+                ENDIF
+
+                file_count = file_count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_download_sample (       self          ,
+                                                                 batch_entry   ,
+                                                           VALUE sample_number ,
+                                                           VALUE user_logical  )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE sample_name       ,
+                lims_id           ,
+                sample_type       ,
+                class_name        ,
+                temp              ,
+                output_string
+
+        SET FORMAT "999"
+
+        IF global ( "SAMP_BROWSE" ) = "T" THEN
+
+                sample_name = strip ( batch_entry . get_samp_test_field (
+                                                                "ID_TEXT" ))  :
+                              "/"                                             :
+                              strip ( batch_entry . get_samp_test_field (
+                                                                "TEST_COUNT"))
+
+        ELSE
+
+                sample_name = strip ( batch_entry . get_samp_test_field (
+                                                              "ID_NUMERIC" )) :
+                              "/"                                             :
+                              strip ( batch_entry . get_samp_test_field (
+                                                              "TEST_COUNT"))
+
+
+        ENDIF
+
+        lims_id     = batch_entry . get_test ()
+
+        IF lims_id  = EMPTY THEN
+
+                sample_name = ""
+                lims_id     = ""
+
+        ENDIF
+
+        class_name  = batch_entry . database_name ()
+
+        sample_type = batch_xchrom_lookup_type ( class_name )
+
+        IF ( sample_number > 1 ) THEN
+
+                IF ( sample_name = self . previous_sample ) THEN
+
+                        self . repeat = self . repeat + 1
+
+                ELSE
+
+                        self . repeat = 1
+                        self . xsample_id = self . xsample_id + 1
+
+                ENDIF
+
+        ENDIF
+
+        temp = PAD ( sample_name , " ", 40 )
+
+        output_string = "?" : temp : "?  "
+
+        SET FORMAT "99"
+
+        temp = PAD ( self . xsample_id , " " , 8 )
+
+        output_string = output_string : temp : "  ?" : sample_type : "?"
+        output_string = output_string : "1" : "?" : "0" : "?" : "0" : "?" : "  "
+
+        temp = "0"
+        temp = PAD ( temp, " ", 10 )
+        output_string = output_string : "?" : temp : "?" :
+                        JUSTIFY ( batch_entry . test_number , "LEFT" )
+
+        FILE WRITE user_logical : self . download_file_name , output_string
+
+        self . previous_sample = sample_name
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_download_header ( self        ,
+                                                          batch_header ,
+                                                          user_logical )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE analysis_file        ,
+                project_name         ,
+                method_file          ,
+                calibration_file     ,
+                run_sequence_file    ,
+                subtract_analysis    ,
+                subtract_sample      ,
+                subtract_injection   ,
+                rvs_calibration      ,
+                control_name         ,
+                instrument_name      ,
+                calibration_sequence ,
+                lims_analysis        ,
+                analyst_name         ,
+                comment              ,
+                status
+
+        analysis_file  = batch_header . get_batch_field ( "CDS_ANALYSIS_NAME" )
+
+        IF blank ( analysis_file ) THEN
+
+                analysis_file  = batch_header . get_batch_field ( "IDENTITY" )
+
+        ENDIF
+
+        project_name         = batch_header . get_batch_field ( "CDS_PROJECT"  )
+        method_file          = batch_header . get_batch_field ( "CDS_METHOD_NAME" )
+        calibration_file     = batch_header . get_batch_field ( "CDS_CALIBRATION_NAME" )
+        run_sequence_file    = batch_header . get_batch_field ( "CDS_RSF_NAME" )
+        subtract_analysis    = batch_header . get_batch_field ( "CDS_SUBTRACT_NAME" )
+        subtract_sample      = batch_header . get_batch_field ( "CDS_SUBTRACT_SAMPLE" )
+        subtract_injection   = batch_header . get_batch_field ( "CDS_SUBTRACT_INJECTION" )
+        rvs_calibration      = batch_header . get_batch_field ( "CDS_RVS_CALIBRATION_NAME" )
+        control_name         = batch_header . get_batch_field ( "CDS_CONTROL_NAME" )
+        instrument_name      = batch_header . get_batch_field ( "CDS_INSTRUMENT" )
+
+        IF BLANK ( instrument_name ) THEN
+
+                instrument_name = batch_header . get_batch_field ( "INSTRUMENT")
+
+        ENDIF
+
+        calibration_sequence = "SE"
+        lims_analysis        = batch_header . get_analysis ()
+        analyst_name         = operator
+        comment              = batch_header . get_batch_field ( "DESCRIPTION" )
+
+        self . download_file_name = STRIP ( lims_analysis ) :
+                                                        GLOBAL ( "PROCESS_ID" )
+
+        IF ( FILE EXISTS ( user_logical : self . download_file_name ) ) THEN
+
+                FILE DELETE user_logical : self . download_file_name
+
+        ENDIF
+
+        FILE CREATE user_logical : self . download_file_name , status
+
+        IF ( status = EMPTY ) THEN
+
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$PROJECT =" : STRIP ( project_name )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$INSTRMNT=" : STRIP ( instrument_name )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$RSF_NAME=" : STRIP (run_sequence_file )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$COMMENT =" : STRIP ( comment )
+                FILE WRITE user_logical : self . download_file_name
+                                        "$RSF_TMPL="
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$ANALYSIS=" : STRIP ( analysis_file )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$METHOD  =" : STRIP ( method_file )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$CONTROL =" : STRIP ( control_name )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$CALIB   =" : STRIP ( calibration_file )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$CAL_SEQ =" : STRIP ( calibration_sequence )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$SUBTRACT=" : STRIP ( subtract_analysis )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$SUB_SAMP=" : STRIP ( subtract_sample )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$SUB_INJ =" : STRIP ( subtract_injection )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$RVSCALIB=" : STRIP ( rvs_calibration )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$OPERATOR=" : STRIP ( analyst_name )
+                FILE WRITE user_logical : self . download_file_name ,
+                                        "$LIMSANAL=" : STRIP ( lims_analysis )
+
+        ELSE
+
+                self . download_file_name = EMPTY
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_sample_size ( self )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( size_of_array ( self . samples ))
+
+ENDROUTINE
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_get_entry (       self       ,
+                                                    VALUE sample_num )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( self . samples [ sample_num ])
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_get_sample (       self       ,
+                                                     VALUE sample_num )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( self . samples [ sample_num ] . sample_name )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_get_test   (       self       ,
+                                                     VALUE sample_num )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( self . samples [ sample_num ] . lims_name )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_get_number_of_samples ( self )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( size_of_array ( self . samples ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_get_result (       self        ,
+                                                     VALUE sample_num  ,
+                                                     VALUE result_name ,
+                                                           result      ,
+                                                           detected    )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE sample_object
+
+        sample_object = self . samples [ sample_num ]
+
+        sample_object . get_result ( result_name ,
+                                     result      ,
+                                     detected    )
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_analysis_action_assign (       self        ,
+                                                        entry       ,
+                                                  VALUE sample_num  ,
+                                                  VALUE result_name )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE sample_object
+
+        sample_object = self . samples [ sample_num ]
+
+        sample_object . assign ( entry       ,
+                                 result_name )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_read_sample (       self      ,
+                                                    VALUE read_peaks )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE peak_count, line_buffer, status, first_char
+
+        peak_count = 0
+
+        IF read_peaks THEN
+
+                ARRAY self . peaks
+
+        ENDIF
+
+        FILE OPEN self . file_name, status
+
+        IF status = EMPTY THEN
+
+                REPEAT
+
+                        FILE READ  self . file_name, line_buffer, status
+
+                        IF status = EMPTY THEN
+
+                                line_buffer = STRIP ( line_buffer )
+
+                                first_char  = SUBSTRING ( line_buffer, 1, 1 )
+
+                                IF first_char = "$" THEN
+
+                                        self . process_sample ( line_buffer )
+
+                                ELSEIF first_char = "?" THEN
+
+                                        IF read_peaks THEN
+
+                                                self . get_peak ( line_buffer ,
+                                                                  peak_count  )
+
+                                        ENDIF
+
+                                ENDIF
+
+                        ELSE
+
+                                { failed to read xchrom file - show status }
+
+                        ENDIF
+
+                UNTIL ( line_buffer = EMPTY )
+
+	        FILE CLOSE self . file_name
+
+        ELSE
+
+                { failed to open xchrom file - show status }
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_process_sample ( self        ,
+                                                        line_buffer )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE dollar_command, dollar_value, pos
+
+        dollar_command = SUBSTRING ( line_buffer, 1, 9 )
+        dollar_command = TOUPPER ( dollar_command )
+
+        pos = INDEX ( line_buffer, "=" )
+
+        IF pos > 0 THEN
+
+                dollar_value = STRIP ( SUBSTRING (
+                                        line_buffer ,
+                                        pos + 1     ,
+                                        LENGTH ( line_buffer ) - pos ) )
+
+                dollar_value = TOUPPER ( dollar_value )
+
+                self . process_dollar_field ( dollar_command ,
+                                              dollar_value   )
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_process_dollar_field (       self      ,
+                                                              VALUE d_command ,
+                                                              VALUE d_value   )
+
+{ Based on the process_dollar_fields routine in $XCL_ACQ
+*
+*
+******************************************************************************}
+DECLARE temp_var
+
+
+        IF ( d_command = DOLLAR_ID_MODE ) THEN
+
+                IF ( d_value = ID_MODE_TEST ) THEN
+
+                        self . id_mode = "T"
+
+                ELSE
+
+                        self . id_mode = "S"
+
+                ENDIF
+
+        ELSEIF ( d_command = DOLLAR_TEST_NUMBER ) THEN
+
+                IF d_value <> "" THEN
+
+                        self . lims_name   = d_value
+
+                        temp_var = PACKED_DECIMAL ( d_value )
+
+                        self . sample_name = SELECT samp_test_view . id_numeric
+                                WHERE test_number = temp_var
+
+                        self . sample_name = STRIP ( self . sample_name )
+
+                ELSE
+
+                        self . lims_name   = EMPTY
+                        self . sample_name = EMPTY
+
+                ENDIF
+
+        ELSEIF ( d_command = DOLLAR_SAMPLE_ID ) THEN
+
+        ELSEIF ( d_command = DOLLAR_ANALYSIS ) THEN
+
+        ELSEIF ( d_command = DOLLAR_REPLICATE_NUM ) THEN
+
+        ELSEIF ( d_command = DOLLAR_ANALYSIS_DATE ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SM_STATUS ) THEN
+
+        ELSEIF ( d_command = DOLLAR_INSTRUMENT ) THEN
+
+        ELSEIF ( d_command = DOLLAR_OPERATOR ) THEN
+
+        ELSEIF ( d_command = DOLLAR_ANALYST_NAME ) THEN
+
+        ELSEIF ( d_command = DOLLAR_CREATE_NEW_SAMPLE ) THEN
+
+                IF STRIP( d_value) = "TRUE" THEN
+
+                ELSE
+
+                ENDIF
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_NUMBER ) THEN
+
+        { d_value holds the number of sources which follow in file }
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_1 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_2 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_3 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_4 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_5 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_6 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SOURCE_7 ) THEN
+
+        ELSEIF ( d_command = DOLLAR_SAMPLE_FIELD ) THEN
+
+        ELSEIF ( d_command = DOLLAR_TEST_FIELD) THEN
+
+        ELSE
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_get_peak ( self        ,
+                                                  line_buffer ,
+                                                  peak_count  )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE success, peak_object, peak_name, amount, type, unit
+
+
+        IF self . id_mode = "S" THEN
+
+                success = self . read_peak ( line_buffer    ,
+                                             peak_name      ,
+                                             amount         ,
+                                             type           ,
+                                             unit           )
+
+                IF success THEN
+
+                        CREATE OBJECT STD_BATCH_XCHROM_PEAK, peak_object
+
+                        peak_object . component_name = peak_name
+                        peak_object . peak_name      = peak_name
+                        peak_object . amount         = amount
+                        peak_object . detected       = TRUE
+                        peak_object . type           = type
+                        peak_object . unit           = unit
+
+                        batch_user_xchrom_peak ( peak_object    ,
+                                                 peak_count + 1 )
+
+                        IF NOT BLANK ( peak_object . component_name ) THEN
+
+                                peak_count = peak_count + 1
+
+                                self . peaks [ peak_count ] = peak_object
+
+                        ENDIF
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_read_peak ( self        ,
+
+                                                   line_buffer ,
+                                                   peak_name   ,
+                                                   amount      ,
+                                                   type        ,
+                                                   unit        )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE success
+
+        { The result line is made up of
+
+                ? name ? result type ? value ? units
+        or
+                ? name ? result type ? value
+        }
+
+        success = TRUE
+
+        line_buffer = line_buffer # "?"
+
+        peak_name = STRIP ( self . next_data_item ( line_buffer ) )
+
+        IF ( peak_name = EMPTY )
+        OR ( peak_name = ""    ) THEN
+
+                success = FALSE
+
+        ENDIF
+
+        type = STRIP ( self . next_data_item ( line_buffer ) )
+
+        amount = STRIP ( self . next_data_item ( line_buffer ) )
+
+        IF ( amount = EMPTY )
+        OR ( amount = ""    ) THEN
+
+                success = FALSE
+
+        ENDIF
+
+        unit = STRIP ( self . next_data_item ( line_buffer ) )
+
+        RETURN ( success )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_next_data_item ( self        ,
+                                                        line_buffer )
+
+{
+*
+*
+******************************************************************************}
+
+    { Look for a data_line separator.  If one is found take the
+      next data item from the data line and return it.
+      So  ABC?DEF becomes DEF, with ABC returned }
+
+DECLARE quote, data_item
+
+        quote = INDEX( line_buffer, "?")
+
+        IF quote > 0 THEN
+
+                data_item = STRIP ( LEFTSTRING ( line_buffer, quote - 1 ) )
+
+                line_buffer = SUBSTRING ( line_buffer                    ,
+                                          quote + 1                      ,
+                                          LENGTH ( line_buffer ) - quote )
+
+        ELSE
+
+                data_item = line_buffer
+                line_buffer = " "
+
+        ENDIF
+
+        RETURN (data_item)
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_get_result (       self     ,
+                                                    VALUE name     ,
+                                                          result   ,
+                                                          detected )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE count       ,
+                temp        ,
+                peak_object
+
+        result   = EMPTY
+        detected = FALSE
+
+        name  = STRIP ( name )
+
+        count = 1
+
+        WHILE count <= size_of_array ( self . peaks ) DO
+
+                peak_object = self . peaks [ count ]
+
+                IF strip ( peak_object . component_name ) = name THEN
+
+                        result   = peak_object . amount
+                        detected = peak_object . detected
+
+                        count = size_of_array ( self . peaks )
+
+                ELSE
+
+                        temp = lib_comp_get_base (peak_object . component_name )
+
+                        IF STRIP ( temp ) = name THEN
+
+                                result   = peak_object . amount
+                                detected = peak_object . detected
+
+                        ENDIF
+
+                ENDIF
+
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_assign (       self  ,
+                                                      entry ,
+                                                VALUE name  )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE count         ,
+                temp          ,
+                peak_object   ,
+                results       ,
+                result_object ,
+                reselected
+
+        name  = strip ( name )
+
+        results       = entry   . get_results ( TRUE )
+        result_object = results . get_result  ( EMPTY                     ,
+                                                lib_comp_add_replicate (
+                                                                name , 1 ))
+
+        count = 1
+
+        WHILE count <= size_of_array ( self . peaks ) DO
+
+                peak_object = self . peaks [ count ]
+
+                temp = lib_comp_get_base (peak_object . component_name )
+
+                IF ( STRIP ( peak_object . component_name ) = name )
+                OR ( STRIP ( temp                         ) = name ) THEN
+
+                        IF result_object = EMPTY THEN
+
+                        ELSEIF result_object . upgrade_lock ( reselected ) THEN
+
+                                IF NOT peak_object . detected THEN
+
+                                        result_object . set_field (
+                                                        "LESS_THAN_PQL" ,
+                                                        TRUE            ,
+                                                        results         )
+
+
+                                ELSE
+
+                                        result_object . set_field (
+                                                        "TEXT"               ,
+                                                        peak_object . amount ,
+                                                        results              )
+
+                                ENDIF
+
+                        ENDIF
+
+                        count = size_of_array ( self . peaks )
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_get_batch_class ( self )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( "STDBATCHENTRYSAMPLE" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_is_batch_class (       self        ,
+                                                       VALUE batch_class )
+
+{
+*
+*
+******************************************************************************}
+
+        DECLARE sample_type
+
+        sample_type = batch_xchrom_lookup_type ( batch_class )
+
+        RETURN ( sample_type = self . sample_type )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_set_test (       self        ,
+                                                 VALUE test_number )
+
+{
+*
+*
+******************************************************************************}
+
+        self . lims_name = test_number
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_get_test ( self )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( self . lims_name )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_xchrom_sample_action_get_sample ( self )
+
+{
+*
+*
+******************************************************************************}
+
+        RETURN ( self . sample_name )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE update_xchrom_phrases ( VALUE option )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE Smw_path    ,
+        chrom_path ,
+        xcsmload    ,
+        status      ,
+        proj        ,
+        inst        ,
+        smdata      ,
+        output_file ,
+		message_ptr ,
+		chrom_type  ,
+		chrom_name
+		
+	chrom_type = GLOBAL ( "CHROMATOGRAPHY_SOFTWARE" )
+
+	IF ( chrom_type = "ATLAS" )
+		
+		chrom_path = client_get_app_path ( "Atlas.exe" )
+		chrom_name = GET_USER_MESSAGE ( "STD_XCHROM_ATLAS" , 2 )
+			
+	ELSEIF ( chrom_type = "MULTICHROM" )
+		
+		flash_message ( GET_USER_MESSAGE ( "STD_MULTICHROM_UPDATE_NOT_SUPPORTED" , 1 ) , TRUE )
+		
+		RETURN
+			
+	ELSE
+		
+		chrom_path = CLIENT_GET_XCHROM_PATH ()
+		chrom_name = GET_USER_MESSAGE ( "STD_XCHROM_XCHROM" , 2 )
+			
+	ENDIF
+		
+	IF chrom_path <> EMPTY THEN
+
+		status = EMPTY
+
+		proj = SELECT phrase_header . identity
+		       WHERE identity    = "MCPROJECT"
+		       AND   removeflag <> "TRUE"
+
+		inst = SELECT phrase_header . identity
+		       WHERE identity    = "MCINST"
+		       AND   removeflag <> "TRUE"
+
+		IF ( proj = EMPTY )
+		OR ( inst = EMPTY ) THEN
+
+			status = GET_USER_MESSAGE ( "STD_XCHROM_NO_HEAD" , 1 )
+
+		ENDIF
+
+		IF ( status = EMPTY ) THEN
+
+			smw_path = CLIENT_GET_CLIENT_PATH ()
+
+			IF ( smw_path <> EMPTY ) THEN
+
+				output_file = CLIENT_TEMPORARY_FILE ()
+
+				IF ( output_file <> EMPTY ) THEN
+
+					xcsmload = ASCII (34) : SMW_path : "\xcsmload.exe" : ASCII (34) : " " : output_file
+
+					dde_winexec ( xcsmload  ,
+					              "SW_HIDE" ,
+					              status    )
+
+					smdata = "xcdata.txt"
+
+					IF status = EMPTY THEN
+
+						check_xcsmload_complete ( output_file ,
+						                          smdata      )
+
+						FILE OPEN smdata, status
+
+						IF status = EMPTY THEN
+
+							START WRITE TRANSACTION
+								GET_USER_MESSAGE ( "STD_XCHROM_UPDATE_DATA", 1 )
+
+							load_project_phrase ( smdata )
+
+							load_instrument_phrase ( smdata )
+							
+							IF chrom_type = "ATLAS" THEN
+							
+								load_template_phrase ( chrom_path )
+								
+							ENDIF
+
+							COMMIT
+
+							FILE CLOSE smdata, status
+
+						ENDIF
+
+					ELSE
+
+						status = GET_USER_MESSAGE (
+	        	                                 "STD_XCHROM_XCSM_FAIL", 1 )
+
+					ENDIF
+
+					CLIENT_DELETE_FILE ( output_file )
+
+				ELSE
+
+					status = GET_USER_MESSAGE ( "STD_XCHROM_FAIL_TEMP", 1 )
+
+				ENDIF
+
+			ELSE
+
+				status = GET_USER_MESSAGE ( "STD_XCHROM_FAIL_SMW", 1 )
+
+			ENDIF
+
+		ENDIF
+
+	ELSE
+
+		status = GET_USER_MESSAGE ( "STD_XCHROM_FAILED_LOCATE", 1 )
+		
+		message_fetch ( "STD_XCHROM_FAILED_LOCATE" ,
+					                 message_ptr               )
+		
+		message_add_parameter ( message_ptr ,
+		                        "XChrom"    )
+			
+		status = message_get_text ( message_ptr , 1 )
+
+	ENDIF
+
+	IF status <> EMPTY THEN
+
+		status = GET_USER_MESSAGE ( "STD_XCHROM_UPDATE_DATA", 1 ) : status
+
+		flash_message ( status, TRUE )
+
+	ELSE
+	
+		message_fetch ( "STD_XCHROM_UPDATE_SUCCESS", message_ptr )
+		message_add_parameter ( message_ptr , chrom_name )
+		status = message_get_text ( message_ptr , 1 )
+		
+		flash_message ( status, TRUE )
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE check_xcsmload_complete ( out_path ,
+                                  smdata   )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE platform  ,
+	file_list ,
+	waiting   ,
+	pos       ,
+	temp_path ,
+	temp_file ,
+	buffer
+
+	ARRAY file_list
+
+	platform = GLOBAL ( "PLATFORM" )
+
+	temp_path = out_path
+	buffer    = out_path
+
+	pos = INDEX ( out_path , "\" )
+
+	WHILE ( pos <> 0 )
+
+		buffer = LEFTSTRING ( temp_path , pos )
+
+		temp_path = temp_path # buffer
+
+		pos = INDEX ( temp_path, "\" )
+		
+	ENDWHILE
+
+	temp_path = out_path # temp_path
+	temp_file = out_path # temp_path
+		
+	waiting = 1
+
+	REPEAT
+
+		CLIENT_GET_FILE_NAMES ( temp_path : "\marker.txt" ,
+                                    file_list                    )
+
+		SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+		waiting = waiting + 1
+
+	UNTIL ( size_of_array ( file_list ) <> 0 )
+	OR    ( waiting > 10                     )
+
+	{ Change this to read marker from the drive:\temp directory }
+
+	CLIENT_DELETE_FILE ( temp_path : "\marker.txt" )
+
+	transfer_file ( platform  ,
+			smdata    ,
+			temp_file ,
+			temp_path )
+
+	process_file_for_server ( smdata )
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE load_project_phrase ( VALUE xcsmdata )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE line_buffer  ,
+        projects     ,
+        count        ,
+        project_name ,
+        project_path ,
+        old_path     ,
+        status
+
+        FILE READ xcsmdata, line_buffer, status
+
+        line_buffer = STRIP ( line_buffer )
+
+        line_buffer = line_buffer # "P "
+
+        projects = NUMERIC ( line_buffer )
+
+        count = 1
+
+        WHILE count <= projects DO
+
+                FILE READ xcsmdata, line_buffer, status
+
+                project_name = PAD ( STRIP ( line_buffer ), " ", 10 )
+
+                FILE READ xcsmdata, line_buffer, status
+
+                project_path = STRIP ( line_buffer )
+
+                RESERVE ENTRY phrase ,
+                              "MCPROJECT " :
+                              project_name ,
+                              status
+
+                IF status = EMPTY THEN
+
+                        IF project_path <> EMPTY THEN
+
+                                ASSIGN phrase . phrase_text = project_path
+
+                                UPDATE phrase
+
+                        ENDIF
+
+                ELSE
+
+                        old_path = SELECT phrase . phrase_text
+                                FOR UPDATE
+                                WHERE phrase_type = "MCPROJECT"
+                                AND   phrase_id   = project_name
+
+                        IF old_path <> project_path THEN
+
+                                ASSIGN phrase . phrase_text = project_path
+
+                                UPDATE phrase
+
+                        ENDIF
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE load_instrument_phrase ( VALUE xcsmdata )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE line_buffer     ,
+        instruments     ,
+        instrument_id   ,
+        instrument_name ,
+        count           ,
+        status          ,
+        found           ,
+        entries
+		
+	entries = SELECT COUNT phrase
+	          WHERE phrase_type = "MCINST"
+
+	FILE READ xcsmdata, line_buffer, status
+
+	line_buffer = STRIP ( line_buffer )
+
+	line_buffer = line_buffer # "I "
+
+	instruments = NUMERIC ( line_buffer )
+
+	count = 1
+
+	WHILE count <= instruments DO
+
+		FILE READ xcsmdata, line_buffer, status
+
+		instrument_name = STRIP ( line_buffer )
+				
+		found = SELECT phrase . phrase_id
+		        WHERE phrase_type = "MCINST"
+		        AND   phrase_text = instrument_name
+
+		IF found = EMPTY THEN
+
+			entries = entries + 1
+
+			instrument_id = PAD ( "INST" : STRIP ( TRUNC ( entries ) ) , " ", 10 )
+
+			RESERVE ENTRY phrase                       ,
+			              "MCINST    " : instrument_id ,
+			              status
+
+			IF status = EMPTY THEN
+
+				ASSIGN phrase . phrase_text = instrument_name
+
+				UPDATE phrase
+
+			ENDIF
+		
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+

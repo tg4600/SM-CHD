@@ -1,0 +1,3505 @@
+{******************************************************************************
+*
+* Module Name   : $MESSAGE_VIEWER.RPF
+*
+* Purpose       : Will list all the messages for a user from the messaging 
+*                 table
+*
+* Document Ref. : 
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+{ Standard Libraries **********************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+{ Libraries *******************************************************************}
+
+JOIN LIBRARY $criteria_cache
+JOIN LIBRARY $explorer_rmb
+JOIN LIBRARY $explorer_utils
+JOIN LIBRARY $lib_list_chooser
+JOIN LIBRARY $lib_list_viewer
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $prompt_toolbar
+JOIN LIBRARY $prompt_tree
+JOIN LIBRARY $toolbox
+
+{ Constants *******************************************************************}
+
+CONSTANT TOOLBAR_BIG_BUTTONS        = TRUE
+
+CONSTANT MESSAGING_PRIORITY_LOW     = 1
+CONSTANT MESSAGING_PRIORITY_NORMAL  = 2
+CONSTANT MESSAGING_PRIORITY_HIGH    = 3
+
+CONSTANT MESSAGING_TYPE_SEND        = 1
+CONSTANT MESSAGING_TYPE_REPLY       = 2
+CONSTANT MESSAGING_TYPE_FORWARD     = 3
+
+CONSTANT MESSAGING_RECORD           = "MESSAGING_RECORD"
+CONSTANT MESSAGE_DISPLAY_FORM_CLASS = "MESSAGE_DISPLAY_FORM_CLASS"
+
+CONSTANT MESSAGING_MENU_CREATE           = 15061
+CONSTANT MESSAGING_MENU_READ             = 15062
+CONSTANT MESSAGING_MENU_REMOVE           = 15063
+CONSTANT MESSAGING_MENU_RESTORE          = 15064
+CONSTANT MESSAGING_MENU_REPLY            = 15065
+CONSTANT MESSAGING_MENU_FORWARD          = 15066
+CONSTANT MESSAGING_MENU_CATEGORIZE       = 15067
+CONSTANT MESSAGING_MENU_REMOVE_NOCONFIRM = 15068
+CONSTANT MESSAGING_MENU_DELETE           = 15079
+CONSTANT MESSAGING_MENU_DELETE_NOCONFIRM = 15081
+
+CONSTANT MESSAGING_CLUSTER               = "MESSAGING"
+
+{ Main Code *******************************************************************}
+
+message_viewer_main ( )
+
+EXIT
+
+
+{****************************************************************************}
+
+    ROUTINE message_viewer_main 
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_main_form
+
+    SET DATE FORMAT ( "DD-MON-YYYY H24:MI" )
+
+    IF initailise_message_viewer ( message_main_form ) THEN
+
+        display_message_viewer ( message_main_form )
+
+        assign_user_global ( MESSAGING_CLUSTER , 
+                     MESSAGING_CLUSTER , 
+                     TRUE              )
+
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+ENDROUTINE { message_viewer_main }
+
+{****************************************************************************}
+
+    ROUTINE initailise_message_viewer ( form )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = TRUE
+
+    IF ( NOT user_cluster_exists ( MESSAGING_CLUSTER ) ) THEN
+
+        add_global_cluster ( MESSAGING_CLUSTER )
+
+    ENDIF
+
+    IF ( user_global_exists ( MESSAGING_CLUSTER ,
+                  MESSAGING_CLUSTER ) ) THEN
+
+        ret_val = read_user_global ( MESSAGING_CLUSTER , 
+                         MESSAGING_CLUSTER )
+
+    ELSE
+
+        add_user_global ( MESSAGING_CLUSTER , 
+                  MESSAGING_CLUSTER )
+
+    ENDIF
+
+    IF ret_val THEN
+ 
+        assign_user_global ( MESSAGING_CLUSTER , 
+                     MESSAGING_CLUSTER , 
+                     FALSE             )
+
+        main_form_class_declare ( )
+        message_form_class_declare ( )
+
+        CREATE OBJECT "MESSAGE_MAIN_FORM_CLASS" , form
+
+        form . header       = GET_USER_MESSAGE( "SMP_MESSAGING_MAIN_FORM_HEADER", 1 )
+        form . height       = 24
+        form . width        = 80
+        form . row          = 3
+        form . column       = 20
+        form . button_style = FORM_BUTTON_NONE
+        form . prompt_id    = "$MESSAGE_VIEWER_MAIN"
+
+        create_message_form_toolbar ( form )
+
+        create_message_list ( form )
+
+    ENDIF
+    
+    RETURN ( ret_val )
+
+ENDROUTINE { initailise_message_viewer }
+
+{****************************************************************************}
+
+    ROUTINE main_form_class_declare
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    IF NOT class_defined ( TOOLBAR_CLASS ) THEN
+
+        prompt_toolbar_initialise ( )
+
+    ENDIF
+
+
+    IF NOT class_defined ( LIST_VIEWER_CLASS ) THEN
+
+        define_list_viewer_class ()
+
+    ENDIF
+
+    criteria_cache_initialise ()
+
+    IF NOT class_defined ( "MESSAGE_MAIN_FORM_CLASS" ) THEN
+
+        DEFINE CLASS "MESSAGE_MAIN_FORM_CLASS"
+
+            INHERIT
+
+                PROMPT_CLASS_FORM
+
+            PROPERTIES
+
+                "message_list" ,
+                "prompt_line"
+
+        END CLASS
+
+    ENDIF
+
+ENDROUTINE { main_form_class_declare }
+
+
+{****************************************************************************}
+
+    ROUTINE message_form_class_declare
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    IF NOT class_defined ( TOOLBAR_CLASS ) THEN
+
+        prompt_toolbar_initialise ( )
+
+    ENDIF
+
+    IF NOT class_defined ( MESSAGE_DISPLAY_FORM_CLASS ) THEN
+
+        prompt_toolbar_initialise ( )
+
+        DEFINE CLASS MESSAGE_DISPLAY_FORM_CLASS
+
+            INHERIT
+
+                PROMPT_CLASS_FORM
+
+            PROPERTIES
+
+                "toolbar"          ,
+                "prompt_line"      ,
+                "lo_priority"      ,
+                "hi_priority"      ,
+                "priority"         ,
+                "message_number"   ,
+                "message_text"     ,
+                "read"             ,
+                "date_read"        ,
+                "date_sent"        ,
+                "from_operator_id" , 
+                "subject"          , 
+                "category"         ,
+                "record"           ,
+                "save_changes"     ,
+                "read_mode"        ,
+                "msg_rec"
+
+            ACTIONS
+
+                "display_data"     ,
+                "save_data"        ,
+                "confirm_save_data" ,
+                "remove_data"
+
+        END CLASS
+
+    ENDIF
+
+    IF NOT class_defined ( MESSAGING_RECORD ) THEN
+
+        DEFINE CLASS MESSAGING_RECORD
+
+            INHERIT "STD_OBJECT_RECORD"
+
+            INITIALISATION
+
+            PROPERTIES
+
+                "operator_ids" ,
+                "send_type"
+
+            ACTIONS
+
+                "add"           ,
+                "mark_as_read"  ,
+                "save"          ,
+                "save_category" ,
+                "load"          ,
+                "remove"        ,
+                "delete"        ,
+                "restore"
+
+        END CLASS
+
+    ENDIF
+
+ENDROUTINE { message_form_class_declare }
+
+
+{****************************************************************************}
+
+    ROUTINE create_message_form_toolbar ( form )
+
+{
+*       Toolbar for main messages form
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE toolbar , toolbar_button , tb_no , msg_id
+
+    CREATE OBJECT TOOLBAR_CLASS , toolbar
+    toolbar . header = GET_USER_MESSAGE ( "SMP_MESSAGING_TOOLBAR_HEADER" ,
+                          1                              )
+    toolbar . width  = form . width
+
+    IF TOOLBAR_BIG_BUTTONS THEN
+        form . height      = form .height + 1
+        form . prompt_line = 3
+        toolbar . height   = 2
+    ELSE
+        form . prompt_line = 2
+        toolbar . height   = 1
+    ENDIF
+
+    msg_id = "SMP_MESSAGING_MAIN_TOOLBUTTON"
+
+    tb_no = 1
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_create"                           ,
+                 explorer_utils_get_icon ( "INT_MAIL_NEW" ) ,
+                 TRUE                                       )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_read"                             ,
+                 explorer_utils_get_icon ( 
+                          "INT_ENVELOPE_CLOSED" )   ,
+                 TRUE                                       )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_remove"                           ,
+                 explorer_utils_get_icon ( "INT_REJECT" )   ,
+                 FALSE                                      )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_reply"                            ,
+                 explorer_utils_get_icon ( "INT_MAIL_REPLY" ) ,
+                 FALSE                                      )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_forward"                          ,
+                 explorer_utils_get_icon ( "INT_MAIL_FORWARD" ) ,
+                 FALSE                                      )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_refresh"                          ,
+                 explorer_utils_get_icon ( "INT_REFRESH" )  ,
+                 FALSE                                      )
+
+    add_toolbar_button ( toolbar_button                             ,
+                 toolbar                                    ,
+                 msg_id                                     ,
+                 tb_no                                      ,
+                 "tb_main_category"                         ,
+                 explorer_utils_get_icon ( "INT_TOOLS" )    ,
+                 TRUE                                       )
+
+    form . add_prompt( toolbar )
+
+ENDROUTINE { create_message_form_toolbar }
+
+{****************************************************************************}
+
+    ROUTINE add_toolbar_button (       toolbutton    ,
+                       toolbar       , 
+                     VALUE msg_id        , 
+                       tb_no         , 
+                     VALUE mouse_routine , 
+                     VALUE icon_no       ,
+                     VALUE show_caption  )
+
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    IF TOOLBAR_BIG_BUTTONS THEN
+
+        CREATE OBJECT TOOLBAR_BUTTON_LARGE_CLASS , toolbutton
+
+        toolbutton . caption = GET_USER_MESSAGE ( 
+                            msg_id : "_TEXT" ,
+                            tb_no            )
+        toolbutton . width = 6 + ( 
+                    LENGTH ( toolbutton . caption ) / 2 )
+
+
+    ELSE
+
+        CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+
+        toolbutton . icon_align   = BUTTON_ICON_ALIGN_LEFT
+
+        IF show_caption THEN
+
+            toolbutton . caption = GET_USER_MESSAGE ( 
+                            msg_id : "_TEXT" ,
+                            tb_no            )
+
+            toolbutton . width = 6 + ( 
+                    LENGTH ( toolbutton . caption ) / 2 )
+
+        ENDIF
+
+    ENDIF
+
+
+    toolbutton . status_text = GET_USER_MESSAGE ( msg_id : "_TEXT" ,
+                              tb_no            )
+    toolbutton . tooltip     = GET_USER_MESSAGE ( msg_id : "_TIPS" ,
+                              tb_no            )
+
+    toolbutton . mouse_click_routine  = mouse_routine
+
+    toolbutton . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+
+    toolbutton . user_info            = 1
+
+    toolbutton . use_images ( EMPTY , 16 , icon_no )
+
+    toolbar . add_item ( toolbutton )
+
+    tb_no = tb_no + 1
+
+ENDROUTINE { add_toolbar_button }
+
+
+{****************************************************************************}
+
+    ROUTINE create_message_list ( form )
+
+
+{
+*       List for main messages form
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_list
+
+    CREATE OBJECT LIST_VIEWER_CLASS , msg_list
+
+    msg_list . height = form . height - form . prompt_line
+    msg_list . width  = form . width + 2.5
+    msg_list . row    = form . prompt_line
+    msg_list . column = 0
+
+    msg_list . use_images ( EMPTY, 0 )
+    msg_list . table = "MESSAGING"
+
+    msg_list . default_action   = EMPTY
+    msg_list . default_callback = GLOBAL ( "CURRENT_LIBRARY" ) :
+                        "/tb_main_read"
+    msg_list . auto_status_icon   = TRUE
+    msg_list . display_only       = TRUE
+    msg_list . read_lock          = FALSE
+
+    msg_list . menu_auto_criteria = TRUE
+    msg_list . menu_columns       = TRUE
+    msg_list . menu_criteria      = FALSE
+    msg_list . menu_property      = TRUE
+    msg_list . menu_refresh       = TRUE 
+    msg_list . menu_standard      = TRUE
+    msg_list . menu_view          = FALSE
+
+    msg_list . sub_icon_callback  = GLOBAL ( "CURRENT_LIBRARY" ) :
+                        "/menu_messaging_get_sub_icon"
+
+    msg_list . display_limit = 0
+
+    form . add_prompt ( msg_list )
+    
+    set_msg_list_columns ( msg_list )
+
+    form . message_list = msg_list
+
+    msg_list . create_list ()
+
+    set_criteria_array ( msg_list . criteria )
+
+
+ENDROUTINE { create_message_list }
+
+
+{****************************************************************************}
+
+    ROUTINE set_msg_list_columns ( msg_list )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE table , field , pos
+
+    table = "MESSAGING"
+    field = "PRIORITY"
+
+    ARRAY msg_list . prompt_details
+
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+
+    msg_list . prompt_details [ pos , EXPLORER_UTILS_WID_POS ] = 2
+    msg_list . prompt_details [ pos , 1 ]                      = "!"
+    msg_list . prompt_details [ pos , 2 ] = "ROUTINE"
+    msg_list . prompt_details [ pos , 3 ] = GLOBAL ( "CURRENT_LIBRARY" )
+    msg_list . prompt_details [ pos , 4 ] = "blank_data_routine"
+
+    field = "DATE_READ"
+
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+
+    msg_list . prompt_details [ pos , EXPLORER_UTILS_WID_POS ] = 2
+    msg_list . prompt_details [ pos , 1 ]                      = ""
+    msg_list . prompt_details [ pos , 2 ] = "ROUTINE"
+    msg_list . prompt_details [ pos , 3 ] = GLOBAL ( "CURRENT_LIBRARY" )
+    msg_list . prompt_details [ pos , 4 ] = "blank_data_routine"
+
+    field = "FROM"
+
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+    field = "DATE_SENT"
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+    field = "CATEGORY"
+
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+
+    field = "SUBJECT"
+
+    pos = explorer_utils_add_detail_field ( table                     ,
+                        field                     ,
+                        msg_list . prompt_details ,
+                        TRUE                      )
+    msg_list . prompt_details [ pos , EXPLORER_UTILS_WID_POS ] = -2
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE message_display_form_class_action_display_data ( msg_form )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec , field_value , message_prefix
+
+    msg_rec = msg_form . msg_rec
+
+    msg_form . save_changes = FALSE
+
+    IF msg_form . read_mode THEN
+
+        msg_form . from_operator_id . set_text ( msg_rec . operator_ids )
+
+        field_value = SELECT messaging . date_sent    IN OBJECT msg_rec
+        msg_form . date_sent . set_text ( field_value )
+
+        field_value = SELECT messaging . date_read    IN OBJECT msg_rec
+        msg_form . date_read . set_text ( field_value )
+
+        field_value = SELECT messaging . category     IN OBJECT msg_rec
+        msg_form . category . value = field_value
+        msg_form . category . text  = category_description ( field_value )
+        msg_form . category . repaste ()
+
+        field_value = SELECT messaging . subject      IN OBJECT msg_rec
+        msg_form . subject . set_text ( field_value )
+
+        field_value = SELECT messaging . message_text IN OBJECT msg_rec
+        msg_form . message_text . set_text ( field_value )
+
+        msg_form . priority = SELECT messaging . priority IN OBJECT msg_rec
+
+        msg_rec . mark_as_read ()
+
+    ELSE
+
+        IF ( msg_rec . send_type = MESSAGING_TYPE_REPLY   ) OR
+           ( msg_rec . send_type = MESSAGING_TYPE_FORWARD ) THEN
+
+            IF ( msg_rec . send_type = MESSAGING_TYPE_REPLY   ) THEN
+
+                field_value = SELECT messaging . from_operator_id
+                            IN OBJECT msg_rec
+                msg_form . from_operator_id . set_text ( field_value )
+
+                message_prefix = get_whole_message 
+                        ( "SMP_MESSAGING_REPLY_DIVIDER" )
+
+            ELSE
+
+                message_prefix = get_whole_message 
+                        ( "SMP_MESSAGING_FORWARD_DIVIDER" )
+
+            ENDIF
+
+            field_value = SELECT messaging . category     IN OBJECT msg_rec
+            msg_form . category . value = field_value
+            msg_form . category . text  = category_description ( field_value )
+            msg_form . category . repaste ()
+
+            field_value = SELECT messaging . subject      IN OBJECT msg_rec
+            msg_form . subject . set_text ( field_value )
+
+            field_value = SELECT messaging . message_text IN OBJECT msg_rec
+
+            IF NOT BLANK ( message_prefix ) THEN
+                field_value = message_prefix : CHR ( 10 ) : field_value
+            ENDIF
+
+            msg_form . message_text . set_text ( field_value )
+
+            msg_form . priority = SELECT messaging . priority IN OBJECT msg_rec
+
+            msg_form . save_changes = TRUE
+
+        ELSE
+
+            msg_form . priority = MESSAGING_PRIORITY_NORMAL 
+
+            msg_form . save_changes = FALSE
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE message_display_form_class_action_confirm_save_data ( msg_form )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val , save_data
+
+    ret_val = TRUE
+    save_data = msg_form . save_changes
+
+    IF ( msg_form . read_mode ) THEN
+
+        IF ( msg_form . save_changes ) THEN
+
+            IF ( msg_form . get_lastkey ( ) <> "DO" ) THEN
+
+                save_data = confirm_with_message (
+                    "SMP_MESSAGING_CONFIRM_SAVE_MESSAGE" )
+
+            ENDIF
+        ENDIF
+
+    ELSE
+
+        IF BLANK ( msg_form . from_operator_id . value ) THEN
+
+            ret_val = confirm_with_message (
+                    "SMP_MESSAGING_CONFIRM_CANCEL_MESSAGE" )
+
+            save_data = FALSE
+
+        ELSEIF ( msg_form . save_changes ) THEN
+
+            IF ( msg_form . get_lastkey ( ) <> "DO" ) THEN
+
+                save_data = confirm_with_message ( 
+                    "SMP_MESSAGING_CONFIRM_SEND_MESSAGE" )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    IF save_data THEN
+
+        msg_form . save_data ()
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE message_display_form_class_action_save_data ( msg_form )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec , op_id , operator_ids , pos
+
+    msg_rec = msg_form . msg_rec
+
+    IF NOT msg_form . read_mode THEN
+
+        operator_ids = STRIP ( msg_form . from_operator_id . value )
+
+        WHILE NOT BLANK ( operator_ids ) DO
+
+            pos = INDEX ( operator_ids , "," )
+
+            IF pos = 0 THEN
+                op_id        = operator_ids
+                operator_ids = ""
+            ELSE
+                op_id        = LEFTSTRING  ( operator_ids , 
+                                 pos - 1      )
+                operator_ids = RIGHTSTRING ( operator_ids , 
+                            LENGTH ( operator_ids ) - pos )
+
+            ENDIF
+
+            msg_rec . add ( op_id                           ,
+                    GLOBAL ( "OPERATOR" )           ,
+                    msg_form . priority             ,
+                    msg_form . category . value     ,
+                    msg_form . subject . value      ,
+                    msg_form . message_text . value )
+
+        ENDWHILE
+
+    ELSEIF msg_form . save_changes THEN
+
+        msg_rec . save ( msg_form . priority             ,
+                 msg_form . category . value     ,
+                 msg_form . subject . value      ,
+                 msg_form . message_text . value )
+
+    ENDIF
+
+    msg_form . save_changes = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE message_display_form_class_action_remove_data ( msg_form )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    msg_rec = msg_form . msg_rec
+
+    msg_rec . remove ( FALSE )
+
+    msg_form . save_changes = FALSE
+
+ENDROUTINE
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_class_initialisation ( msg_rec )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    msg_rec . operator_ids = ""
+    msg_rec . send_type    = 0
+
+    msg_rec . table = "messaging"
+
+    object_add_table ( msg_rec , msg_rec . table )
+
+ENDROUTINE { messaging_record_class_initialisation }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_add (         msg_rec      ,
+                        VALUE to_op        ,
+                        VALUE from_op      ,
+                        VALUE priority     ,
+                        VALUE category     ,
+                        VALUE subject      ,
+                        VALUE message_text )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg , message_number , check_ok
+
+    trans_msg = 1
+
+    message_number = INCREMENT ( "MESSAGING" , "KEY0" )
+
+    message_number = PACKED_DECIMAL ( message_number )
+
+    RESERVE ENTRY messaging , message_number , check_ok
+
+    OBJECT_COPY_CURRENT_TABLE ( msg_rec , "messaging" )
+
+    IF ( check_ok = EMPTY ) THEN
+
+        ASSIGN messaging . operator_id      IN OBJECT msg_rec = to_op
+        ASSIGN messaging . from_operator_id IN OBJECT msg_rec = from_op
+
+        ASSIGN messaging . priority         IN OBJECT msg_rec = priority
+        ASSIGN messaging . category         IN OBJECT msg_rec = category
+        ASSIGN messaging . subject          IN OBJECT msg_rec = subject
+        ASSIGN messaging . message_text     IN OBJECT msg_rec = message_text
+
+        ASSIGN messaging . date_sent        IN OBJECT msg_rec = NOW
+        ASSIGN messaging . read             IN OBJECT msg_rec = FALSE
+        ASSIGN messaging . removeflag       IN OBJECT msg_rec = FALSE
+
+        START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                    "SMP_MESSAGING_TRANSACTION" , 
+                    trans_msg                   )
+
+        UPDATE messaging IN OBJECT msg_rec
+
+        COMMIT
+    ELSE
+
+        flash_message (  GET_USER_MESSAGE ( 
+                    "SMP_MESSAGING_TRANSACTION_ERROR" ,
+                    trans_msg                         ) , 
+                    TRUE                                )
+
+    ENDIF
+
+ENDROUTINE { messaging_record_action_add }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_mark_as_read ( msg_rec )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE read , message_number , trans_msg
+
+    trans_msg = 2
+
+    read = SELECT messaging . read IN OBJECT msg_rec
+
+    message_number = SELECT messaging . message_number IN OBJECT msg_rec
+
+    IF ( read <> LOCKED ) AND
+       ( read = FALSE   ) THEN
+
+        ASSIGN messaging . read IN OBJECT msg_rec = TRUE  
+
+        ASSIGN messaging . date_read IN OBJECT msg_rec = NOW
+
+        START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                        "SMP_MESSAGING_TRANSACTION" ,
+                        trans_msg                   )
+
+        UPDATE messaging IN OBJECT msg_rec
+
+        COMMIT
+
+        IF NOT msg_rec . load ( message_number , TRUE ) THEN
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_record_action_mark_as_read }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_save (        msg_rec      ,
+                        VALUE priority     ,
+                        VALUE category     ,
+                        VALUE subject      ,
+                        VALUE message_text )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg
+
+    trans_msg = 2
+
+    ASSIGN messaging . priority         IN OBJECT msg_rec = priority
+    ASSIGN messaging . category         IN OBJECT msg_rec = category
+    ASSIGN messaging . subject          IN OBJECT msg_rec = subject
+    ASSIGN messaging . message_text     IN OBJECT msg_rec = message_text
+
+    START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                    "SMP_MESSAGING_TRANSACTION" ,
+                    trans_msg                   )
+
+    UPDATE messaging IN OBJECT msg_rec
+
+    COMMIT
+
+ENDROUTINE { messaging_record_action_save }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_save_category (        msg_rec ,
+                            VALUE category )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg
+
+    trans_msg = 2
+
+    ASSIGN messaging . category         IN OBJECT msg_rec = category
+
+    START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                    "SMP_MESSAGING_TRANSACTION" ,
+                    trans_msg                   )
+
+    UPDATE messaging IN OBJECT msg_rec
+
+    COMMIT
+
+ENDROUTINE { messaging_record_action_save_category }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_load (        msg_rec        ,
+                        VALUE message_number ,
+                        VALUE for_update     )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    IF for_update THEN
+
+        message_number = SELECT messaging . message_number 
+                    FOR UPDATE
+                    WHERE message_number = message_number
+    ELSE
+        message_number = SELECT messaging . message_number 
+                    WHERE message_number = message_number
+    ENDIF
+
+    IF message_number = LOCKED THEN
+
+        message_number = EMPTY
+
+    ELSEIF message_number <> EMPTY THEN
+
+        OBJECT_COPY_CURRENT_TABLE ( msg_rec , msg_rec . table )
+
+    ENDIF
+
+    RETURN ( message_number <> EMPTY )
+
+ENDROUTINE { messaging_record_action_load }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_remove (       msg_rec      ,
+                         VALUE skip_confirm )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg , removeflag , del_msg
+
+    removeflag = SELECT messaging . removeflag IN OBJECT msg_rec
+
+    del_msg = "SMP_MESSAGING_CONFIRM_DEL_MESSAGE"
+
+    IF ( ( removeflag <> LOCKED                  ) AND
+         ( skip_confirm                     ) OR
+         ( confirm_with_message ( del_msg ) )    ) THEN
+
+        IF NOT removeflag THEN
+
+            trans_msg = 2
+
+            ASSIGN messaging . removeflag IN OBJECT msg_rec = TRUE
+            ASSIGN messaging . read       IN OBJECT msg_rec = TRUE
+
+            START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                            "SMP_MESSAGING_TRANSACTION" ,
+                            trans_msg                   )
+
+            UPDATE messaging IN OBJECT msg_rec
+
+            COMMIT
+
+        ELSE
+
+            ROLLBACK
+
+        ENDIF
+
+    ELSE
+
+        ROLLBACK
+
+    ENDIF
+
+ENDROUTINE { messaging_record_action_remove }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_delete (       msg_rec      ,
+                         VALUE skip_confirm )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg , removeflag , del_msg , check_ok 
+
+    removeflag = SELECT messaging . removeflag IN OBJECT msg_rec
+
+    del_msg = "SMP_MESSAGING_CONFIRM_DEL_PERM_MESSAGE"
+
+    IF ( ( removeflag <> LOCKED                  ) AND
+         ( skip_confirm                     ) OR
+         ( confirm_with_message ( del_msg ) )    ) THEN
+
+        IF removeflag THEN
+
+            trans_msg = 3
+
+            START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                            "SMP_MESSAGING_TRANSACTION" ,
+                            trans_msg                   )
+
+            DELETE messaging IN OBJECT msg_rec , check_ok
+
+            IF check_ok = EMPTY THEN
+
+                COMMIT
+
+            ELSE
+
+                flash_message ( check_ok , FALSE )
+
+                ROLLBACK
+            ENDIF
+        ELSE
+
+            ROLLBACK
+
+        ENDIF
+
+    ELSE
+
+        ROLLBACK
+
+    ENDIF
+
+ENDROUTINE { messaging_record_action_delete }
+
+
+{****************************************************************************}
+
+    ROUTINE messaging_record_action_restore ( msg_rec )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE trans_msg
+
+    trans_msg = 2
+
+    ASSIGN messaging . removeflag IN OBJECT msg_rec = FALSE
+
+    START WRITE TRANSACTION GET_USER_MESSAGE ( 
+                    "SMP_MESSAGING_TRANSACTION" ,
+                    trans_msg                   )
+
+    UPDATE messaging IN OBJECT msg_rec
+
+    COMMIT
+
+ENDROUTINE { messaging_record_action_restore }
+
+
+{****************************************************************************}
+
+    ROUTINE blank_data_routine ( row , p1 , p2 , p3 , p4 , p5 , p6 , p7 , p8 )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    RETURN ( "" )
+
+ENDROUTINE { blank_data_routine }
+
+
+{****************************************************************************}
+
+    ROUTINE display_message_viewer ( form )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    form . start_prompt ()
+    form . message_list . load_data()
+    form . wait_prompt ()
+    form . end_prompt ()
+
+ENDROUTINE { display_message_viewer }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_create ( self )
+
+{
+*       Toolbar button routine to create a new message
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form
+
+    main_form = self . parent_prompt
+
+    IF messaging_create_selected () THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_create }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_read ( self )
+
+{
+*       Toolbar button routine to read multiple messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form , selected_objects
+
+    main_form = self . parent_prompt
+
+    selected_objects = main_form . message_list . get_selected_objs (  FALSE )
+
+    IF messaging_read_selected ( selected_objects ) THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_read }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_refresh ( self )
+
+{
+*       Toolbar button routine to refresh list of messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form
+
+    main_form = self . parent_prompt
+
+    main_form . message_list . load_data ()
+
+ENDROUTINE { tb_main_refresh }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_remove ( self )
+
+{
+*       Toolbar button routine to remove multiple messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form , selected_objects
+
+    main_form = self . parent_prompt
+
+    selected_objects = main_form . message_list . get_selected_objs (  FALSE )
+
+    IF messaging_remove_selected ( selected_objects ) THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_remove }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_category ( self )
+
+{
+*       Toolbar button routine to apply a category to multiple messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form , selected_objects
+
+    main_form = self . parent_prompt
+
+    selected_objects = main_form . message_list . get_selected_objs (  FALSE )
+
+    IF messaging_categorize_selected ( selected_objects ) THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_category }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_reply ( self )
+
+{
+*       Toolbar button routine to reply to multiple messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form , selected_objects
+
+    main_form = self . parent_prompt
+
+    selected_objects = main_form . message_list . get_selected_objs (  FALSE )
+
+    IF messaging_reply_selected ( selected_objects     ,
+                      MESSAGING_TYPE_REPLY ) THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_reply }
+
+
+{****************************************************************************}
+
+    ROUTINE tb_main_forward ( self )
+
+{
+*       Toolbar button routine to reply to multiple messages
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE main_form , selected_objects
+
+    main_form = self . parent_prompt
+
+    selected_objects = main_form . message_list . get_selected_objs (  FALSE )
+
+    IF messaging_reply_selected ( selected_objects       ,
+                      MESSAGING_TYPE_FORWARD ) THEN
+
+        main_form . message_list . load_data ()
+
+    ENDIF
+
+ENDROUTINE { tb_main_forward }
+
+
+{******************************************************************************}
+
+ROUTINE array_selected_messages ( message_id_array ,
+                  message_count    ,
+                  selected         )
+
+{
+*
+*   Load message ids selected into an array.  Used by toolbar button routines.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    ARRAY message_id_array ARRAYSIZE ( 0 , 2 )
+
+    message_count = 0
+
+    selected . set_first ( )
+
+    WHILE ( selected . current <> EMPTY ) DO
+
+        message_count = message_count + 1
+
+        message_id_array [ message_count , 1 ] = 
+                SELECT messaging . message_number
+                    IN OBJECT selected . current
+
+        message_id_array [ message_count , 2 ] = 
+                SELECT messaging . removeflag
+                    IN OBJECT selected . current
+
+        selected . set_next ( )
+
+    ENDWHILE
+
+    IF message_count = 0 THEN
+
+        flash_message ( "SMP_MESSAGING_NO_MESSAGES_SELECTED" , FALSE )
+
+    ENDIF
+
+    RETURN ( message_count > 0 )
+
+ENDROUTINE { array_selected_messages }
+
+{******************************************************************************}
+
+ROUTINE set_operator_id_name ( VALUE operator_id )
+
+{
+*
+*   Append user name to ID
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val , desc
+
+    desc = SELECT personnel . description
+            WHERE identity = operator_id
+
+    IF ( desc = EMPTY  ) OR
+       ( desc = LOCKED ) THEN
+        desc = ""
+    ENDIF
+
+    desc = STRIP ( desc )
+    
+    IF BLANK ( desc ) THEN
+        ret_val = operator_id
+    ELSE
+        ret_val = STRIP ( operator_id ) : " (" : desc : ")"
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { set_operator_id_name }
+
+{****************************************************************************}
+
+    ROUTINE show_message (       msg_rec   ,
+                   VALUE read_mode )
+
+{
+*
+*       Message form for reading (read_mode = TRUE) or creating (read_mode = 
+*       FALSE) a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form , prompt_line , prompt_left , prompt_no , display_fields , 
+    subject_length , display_left
+
+    CREATE OBJECT MESSAGE_DISPLAY_FORM_CLASS , msg_form
+
+    msg_form . height       = 11
+    msg_form . width        = 60
+    msg_form . row          = 9
+    msg_form . column       = 40
+
+    msg_form . button_style = FORM_BUTTON_NONE
+    msg_form . prompt_id    = "$MESSAGE_VIEWER_MESSAGE"
+    msg_form . read_mode    = read_mode
+    msg_form . msg_rec      = msg_rec
+
+    IF TOOLBAR_BIG_BUTTONS THEN
+        prompt_line = 3
+    ELSE
+        prompt_line = 2
+    ENDIF
+    prompt_no   = 1
+    prompt_left = 10
+    display_left = 1
+
+    IF read_mode THEN
+
+        msg_form . header = GET_USER_MESSAGE ( 
+                "SMP_MESSAGING_READ_MESSAGE_FORM_HEADER" , 
+                1                                        )
+
+        display_fields = "SMP_MESSAGING_MESSAGE_FORM_READ_FIELDS"
+
+        PROMPT OBJECT msg_form . from_operator_id
+            ON LINE prompt_line
+            FROM prompt_left
+            WITH (  display_only = read_mode )
+
+        msg_form . add_prompt ( msg_form . from_operator_id )
+
+    ELSE
+
+        msg_form . header = GET_USER_MESSAGE ( 
+                "SMP_MESSAGING_SEND_MESSAGE_FORM_HEADER" ,
+                1                                        )
+
+        display_fields = "SMP_MESSAGING_MESSAGE_FORM_SEND_FIELDS"
+
+        PROMPT OBJECT msg_form . from_operator_id
+            CLASS "STD_PROMPT_TEXT_IDENTITY"
+            ON LINE prompt_line
+            FROM prompt_left 
+            WITH (  display_only       = read_mode               ,
+                uppercase          = TRUE                    ,
+                length             = 500                     ,
+                browse_routine     = "browse_operator_ids"   ,
+                validation_routine = "validate_operator_ids" )
+
+        msg_form . add_prompt ( msg_form . from_operator_id )
+
+    ENDIF
+
+    add_message_toolbar ( msg_form , read_mode )
+
+    msg_form . add_display ( GET_USER_MESSAGE ( display_fields , 
+                            prompt_no      ) ,
+                 display_left                        ,
+                 prompt_line                         ,
+                 PROMPT_RENDITION_NORMAL             )
+
+    IF read_mode THEN
+
+        msg_form . height = msg_form . height + 2
+
+        prompt_line = prompt_line + 1
+        prompt_no   = prompt_no   + 1
+        msg_form . add_display ( GET_USER_MESSAGE ( display_fields , 
+                                prompt_no      ) ,
+                     display_left                        ,
+                     prompt_line                         ,
+                     PROMPT_RENDITION_NORMAL             )
+
+        PROMPT OBJECT msg_form . date_sent
+            FORMAT DATETIME
+            ON LINE prompt_line
+            FROM prompt_left 
+            WITH (  display_only = TRUE )
+
+        msg_form . add_prompt ( msg_form . date_sent )
+
+        prompt_line = prompt_line + 1
+        prompt_no   = prompt_no   + 1
+        msg_form . add_display ( GET_USER_MESSAGE ( display_fields , 
+                                prompt_no      ) ,
+                     display_left                        ,
+                     prompt_line                         ,
+                     PROMPT_RENDITION_NORMAL             )
+
+        PROMPT OBJECT msg_form . date_read
+            FORMAT DATETIME
+            ON LINE prompt_line
+            FROM prompt_left 
+            WITH (  display_only = TRUE )
+
+        msg_form . add_prompt ( msg_form . date_read )
+
+    ENDIF
+
+    prompt_line = prompt_line + 1
+    prompt_no   = prompt_no   + 1
+    msg_form . add_display ( GET_USER_MESSAGE ( display_fields , 
+                            prompt_no      ) ,
+                 display_left                        ,
+                 prompt_line                         ,
+                 PROMPT_RENDITION_NORMAL             )
+{   
+    CREATE OBJECT "STD_PROMPT_FIELD_CHOOSE" , msg_form . category
+    msg_form . category . format             = messaging . category
+    msg_form . category . row                = prompt_line
+    msg_form . category . column             = prompt_left
+    msg_form . category . length             = subject_length
+    msg_form . category . validation_routine = "set_changed_flag" 
+}
+    PROMPT OBJECT msg_form . category
+        FORMAT messaging . category
+        ON LINE prompt_line
+        FROM prompt_left 
+        WITH (  validation_routine = "set_changed_flag" )
+
+    msg_form . add_prompt ( msg_form . category )
+
+    prompt_line = prompt_line + 1
+    prompt_no   = prompt_no   + 1
+    msg_form . add_display ( GET_USER_MESSAGE ( display_fields , 
+                            prompt_no      ) ,
+                 display_left                        ,
+                 prompt_line                         ,
+                 PROMPT_RENDITION_NORMAL             )
+
+    GET_FIELD_DETAILS messaging . subject , "FIELD_SIZE" , subject_length
+
+    CREATE OBJECT "STD_PROMPT_TEXT" , msg_form . subject
+    msg_form . subject . row     = prompt_line
+    msg_form . subject . column  = prompt_left
+    msg_form . subject . length  = subject_length
+    msg_form . subject . validation_routine = "set_changed_flag" 
+
+    msg_form . add_prompt ( msg_form . subject )
+
+    prompt_line = prompt_line + 2
+
+    CREATE OBJECT "STD_PROMPT_TEXT" , msg_form . message_text
+    msg_form . message_text . row     = ( prompt_line - 0.5 )
+    msg_form . message_text . column  = 1
+    msg_form . message_text . height  = 6.8
+    msg_form . message_text . width   = msg_form . width 
+    msg_form . message_text . lowered = TRUE
+    msg_form . message_text . validation_routine = "set_changed_flag" 
+
+    msg_form . add_prompt ( msg_form . message_text )
+
+    msg_form . display_data ( )
+
+    msg_form . start_prompt ()
+
+    REPEAT 
+
+        msg_form . wait_prompt ()
+
+    UNTIL msg_form . confirm_save_data ( )
+
+    msg_form . end_prompt ()
+
+ENDROUTINE { show_message }
+
+
+{******************************************************************************}
+
+ROUTINE add_message_toolbar (       msg_form  ,
+                  VALUE read_mode )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE tb_no , toolbar_button , msg_id
+
+    CREATE OBJECT TOOLBAR_CLASS , msg_form . toolbar
+
+    msg_form . toolbar . header = GET_USER_MESSAGE ( "SMP_MESSAGING_TOOLBAR_HEADER" ,
+                             1                              )
+    msg_form . toolbar . width  = msg_form . width
+
+    IF TOOLBAR_BIG_BUTTONS THEN
+        msg_form . height             = msg_form .height + 1
+        msg_form . prompt_line        = 3
+        msg_form . toolbar . height   = 2
+    ELSE
+        msg_form . prompt_line        = 2
+        msg_form . toolbar . height   = 1
+    ENDIF
+
+    tb_no = 1
+
+    IF read_mode THEN
+
+        msg_id = "SMP_MESSAGING_READ_TOOLBUTTON"
+
+        add_toolbar_button ( toolbar_button                           ,
+                     msg_form . toolbar                       ,
+                     msg_id                                   ,
+                     tb_no                                    ,
+                     "tb_msg_create"                          ,
+                     explorer_utils_get_icon ( "INT_SAVE" )   ,
+                     TRUE                                     )
+
+        add_toolbar_button ( toolbar_button                           ,
+                     msg_form . toolbar                       ,
+                     msg_id                                   ,
+                     tb_no                                    ,
+                     "tb_msg_remove"                          ,
+                     explorer_utils_get_icon ( "INT_REJECT" ) ,
+                     FALSE                                    )
+
+        add_toolbar_button ( toolbar_button                               ,
+                     msg_form . toolbar                           ,
+                     msg_id                                       ,
+                     tb_no                                        ,
+                     "tb_msg_reply"                               ,
+                     explorer_utils_get_icon ( "INT_MAIL_REPLY" ) ,
+                     TRUE                                         )
+
+        add_toolbar_button ( toolbar_button                                 ,
+                     msg_form . toolbar                             ,
+                     msg_id                                         ,
+                     tb_no                                          ,
+                     "tb_msg_forward"                               ,
+                     explorer_utils_get_icon ( "INT_MAIL_FORWARD" ) ,
+                     TRUE                                           )
+
+        add_toolbar_button ( toolbar_button                               ,
+                     msg_form . toolbar                           ,
+                     msg_id                                       ,
+                     tb_no                                        ,
+                     "tb_msg_prev"                                ,
+                     explorer_utils_get_icon ( "INT_ARROW_UP" )   ,
+                     FALSE                                        )
+
+        add_toolbar_button ( toolbar_button                               ,
+                     msg_form . toolbar                           ,
+                     msg_id                                       ,
+                     tb_no                                        ,
+                     "tb_msg_next"                                ,
+                     explorer_utils_get_icon ( "INT_ARROW_DOWN" ) ,
+                     FALSE                                        )
+    ELSE
+        msg_id = "SMP_MESSAGING_NEW_TOOLBUTTON"
+
+        add_toolbar_button ( toolbar_button                              ,
+                     msg_form . toolbar                          ,
+                     msg_id                                      ,
+                     tb_no                                       ,
+                     "tb_msg_create"                             ,
+                     explorer_utils_get_icon ( "INT_SEND_MAIL" ) ,
+                     TRUE                                        )
+
+        add_toolbar_button ( toolbar_button                                 ,
+                     msg_form . toolbar                             ,
+                     msg_id                                         ,
+                     tb_no                                          ,
+                     "tb_msg_low_priority"                          ,
+                     explorer_utils_get_icon ( "INT_LOW_PRIORITY" ) ,
+                     FALSE                                          )
+
+        toolbar_button . two_state = TRUE
+        toolbar_button . is_check  = TRUE
+        toolbar_button . value     = FALSE
+        msg_form . lo_priority = toolbar_button
+
+        add_toolbar_button ( toolbar_button                              ,
+                     msg_form . toolbar                          ,
+                     msg_id                                      ,
+                     tb_no                                       ,
+                     "tb_msg_high_priority"                      ,
+                     explorer_utils_get_icon ( "INT_IMPORTANT" ) ,
+                     FALSE                                       )
+
+        toolbar_button . two_state = TRUE
+        toolbar_button . is_check  = TRUE
+        toolbar_button . value     = FALSE
+        msg_form . hi_priority = toolbar_button
+
+    ENDIF
+
+    msg_form . add_prompt ( msg_form . toolbar )
+
+ENDROUTINE { add_message_toolbar }
+
+
+{****************************************************************************}
+
+ROUTINE tb_msg_remove ( self )
+
+{
+*       Toolbar button routine to remove message currently read
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form
+
+    msg_form = self . parent_prompt
+
+    msg_form . remove_data ()
+
+    tb_msg_next ( self )
+
+ENDROUTINE { tb_msg_remove }
+
+
+{******************************************************************************}
+
+ROUTINE tb_msg_create ( self )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form
+
+    msg_form = self . parent_prompt
+
+    msg_form . set_lastkey ( "DO" )
+
+    msg_form . stop_prompt ( )
+
+ENDROUTINE { tb_msg_create }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_cancel ( self )
+
+{   
+*   
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form
+
+    msg_form = self . parent_prompt
+
+    msg_form . set_lastkey ( "EXIT" )
+
+    msg_form . stop_prompt ( )
+
+ENDROUTINE { tb_msg_cancel }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_reply ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form , message_number
+
+    msg_form = self . parent_prompt
+
+    message_number = SELECT messaging . message_number 
+                IN OBJECT msg_form . msg_rec
+
+    IF ( message_number <> EMPTY          ) AND
+       ( message_number <> LOCKED         ) AND
+       ( msg_form . confirm_save_data ( ) ) THEN
+
+        messaging_reply ( message_number       ,
+                  MESSAGING_TYPE_REPLY )
+
+        IF msg_form . msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_form . display_data ( )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { tb_msg_reply }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_forward ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form , message_number
+
+    msg_form = self . parent_prompt
+
+    message_number = SELECT messaging . message_number 
+                IN OBJECT msg_form . msg_rec
+
+    IF ( message_number <> EMPTY          ) AND
+       ( message_number <> LOCKED         ) AND
+       ( msg_form . confirm_save_data ( ) ) THEN
+
+        messaging_reply ( message_number         ,
+                  MESSAGING_TYPE_FORWARD )
+
+        IF msg_form . msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_form . display_data ( )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { tb_msg_forward }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_next ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form , message_number , row , column
+
+    msg_form = self . parent_prompt
+
+    row = msg_form . row
+    column = msg_form . column
+
+    message_number = SELECT messaging . message_number 
+                IN OBJECT msg_form . msg_rec
+
+    IF ( message_number <> EMPTY          ) AND
+       ( message_number <> LOCKED         ) AND
+       ( msg_form . confirm_save_data ( ) ) THEN
+
+        message_number = SELECT messaging . message_number
+                    WHERE message_number > message_number
+                    AND   operator_id = GLOBAL ( "OPERATOR" )
+                    AND   removeflag = FALSE
+                    ORDER ON read , priority DESCENDING, date_sent
+
+        IF message_number <> EMPTY THEN
+
+            IF msg_form . msg_rec . load ( message_number , TRUE ) THEN
+
+                msg_form . display_data ( )
+
+            ELSE
+
+                flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+            ENDIF
+
+            msg_form . row = row
+            msg_form . column = column
+
+        ELSE
+
+            msg_form . set_lastkey ( "EXIT" )
+
+            msg_form . stop_prompt ( )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { tb_msg_next }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_prev ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form , message_number , row , column
+
+    msg_form = self . parent_prompt
+
+    row = msg_form . row
+    column = msg_form . column
+
+    message_number = SELECT messaging . message_number 
+                IN OBJECT msg_form . msg_rec
+
+    IF ( message_number <> EMPTY          ) AND
+       ( message_number <> LOCKED         ) AND
+       ( msg_form . confirm_save_data ( ) ) THEN
+
+        message_number = SELECT messaging . message_number
+                    WHERE message_number < message_number
+                    AND   operator_id = GLOBAL ( "OPERATOR" )
+                    AND   removeflag = FALSE
+                    ORDER ON read DESCENDING,
+                             priority,
+                             date_sent DESCENDING
+
+        IF message_number <> EMPTY THEN
+
+            IF msg_form . msg_rec . load ( message_number , TRUE ) THEN
+
+                msg_form . display_data ( )
+
+            ELSE
+
+                flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+            ENDIF
+
+            msg_form . row = row
+            msg_form . column = column
+
+        ELSE
+
+            msg_form . set_lastkey ( "EXIT" )
+
+            msg_form . stop_prompt ( )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { tb_msg_prev }
+
+{******************************************************************************}
+
+ROUTINE tb_msg_low_priority ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form 
+
+    msg_form = self . parent_prompt
+
+    IF NOT self . get_check () THEN
+        msg_form . priority = MESSAGING_PRIORITY_NORMAL
+    ELSE
+        msg_form . priority = MESSAGING_PRIORITY_LOW
+    ENDIF
+
+    msg_form . hi_priority . set_check ( FALSE )
+
+ENDROUTINE { tb_msg_low_priority }
+
+
+{******************************************************************************}
+
+ROUTINE tb_msg_high_priority ( self )
+
+{   
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_form 
+
+    msg_form = self . parent_prompt
+
+    IF NOT self . get_check () THEN
+        msg_form . priority = MESSAGING_PRIORITY_NORMAL
+    ELSE
+        msg_form . priority = MESSAGING_PRIORITY_HIGH
+    ENDIF
+
+    msg_form . lo_priority . set_check ( FALSE )
+
+ENDROUTINE { tb_msg_high_priority }
+
+
+{*****************************************************************************}
+
+    ROUTINE browse_operator_ids ( self )
+
+{
+*
+* 
+*
+******************************************************************************}
+
+DECLARE chooser , parsed_string , ret_val
+
+    define_list_chooser_class ( )
+
+    CREATE OBJECT LIST_CHOOSER_CLASS, chooser
+
+    chooser . header     = GET_USER_MESSAGE( "SMP_MESSAGING_SENDER_HEADER", 1 )
+    chooser . desc_field = "DESCRIPTION"
+    chooser . table      = "USER_VIEW"
+    chooser . field      = "IDENTITY"
+    chooser . create_form ( )
+    
+    chooser . load_db()
+    chooser . form . start_prompt ( )
+
+    parsed_string = self . text
+
+    WHILE ( INDEX ( parsed_string , ";" ) > 0 ) DO
+        parsed_string = SUBSTITUTE ( parsed_string , ";" , "," )
+    ENDWHILE
+
+    chooser . read_csv ( parsed_string )
+
+    chooser . form . wait_prompt ( )
+
+    chooser . form . end_prompt  ( )
+
+    ret_val = chooser . valid_db ( )
+
+    self . set_text ( chooser . build_csv ( ) )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { browse_operator_ids }
+
+
+{*****************************************************************************}
+
+    ROUTINE category_description ( VALUE field_value )
+
+{
+*
+*       Return the description of a message category
+*
+******************************************************************************}
+
+DECLARE ret_val
+
+    ret_val = SELECT phrase . phrase_text
+            WHERE phrase_id = field_value
+            AND   phrase_type = "MSG_CATGRY"
+
+    IF ( ret_val = EMPTY  ) OR
+       ( ret_val = LOCKED ) THEN
+
+        ret_val = ""
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { category_description }
+
+
+{*****************************************************************************}
+
+ROUTINE get_message_category 
+
+{
+*
+* Description : Prompts for a category
+*
+******************************************************************************}
+
+DECLARE form , category_prompt , category
+
+    IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+        PROMPT FOR category
+
+        category = SELECT phrase . phrase_id
+                WHERE phrase_type = "MSG_CATGRY"
+                AND   phrase_id = category
+
+        IF category = LOCKED THEN
+
+            category = EMPTY
+
+        ENDIF
+
+    ELSE
+        CREATE OBJECT "STD_FORM", form
+
+        form . row    = 2
+        form . column = 30
+        form . height = 1
+        form . width  = 40
+        form . header = GET_USER_MESSAGE ( "SMP_MESSAGING_CATEGORY_HEADER" , 1 )
+
+        form . add_display( GET_USER_MESSAGE ( "SMP_MESSAGING_CATEGORY_HEADER" , 1 ) ,
+                    2                              ,
+                    1                              ,
+                    PROMPT_RENDITION_RAISED        )
+
+        PROMPT OBJECT category_prompt
+            FORMAT messaging . category
+            ON LINE 1
+            FROM 15
+
+        form . add_prompt ( category_prompt )
+
+        form . start_prompt ( )
+
+        form . wait_prompt ( )
+
+        IF form . get_lastkey ( ) = "DO" THEN
+
+            category = category_prompt . value
+
+        ELSE
+
+            category = EMPTY
+
+        ENDIF
+
+        form . end_prompt ( )
+
+    ENDIF
+
+    RETURN ( category )
+
+ENDROUTINE { get_message_category }
+
+
+{*****************************************************************************}
+
+ROUTINE get_message_number ( VALUE show_removed )
+
+{
+* Description : Prompts the user for an entry number using the passed header
+*               and prompt message. The valid values are restricted by the
+*               criteria_array
+*
+* Returns     : the chosen entry number or EMPTY
+*
+******************************************************************************}
+
+DECLARE form , message_number_prompt , message_number , criteria_array
+
+    IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+        PROMPT FOR message_number
+
+        IF NUMTEXT ( message_number ) THEN
+
+            message_number = SELECT messaging . message_number
+                        WHERE  message_number =
+                        PACKED_DECIMAL ( message_number )
+
+            IF message_number = LOCKED THEN
+
+                message_number = EMPTY
+
+            ENDIF
+
+        ELSE
+
+            message_number = EMPTY
+
+        ENDIF
+
+    ELSE
+        CREATE OBJECT "STD_FORM", form
+
+        form . row    = 2
+        form . column = 2
+        form . height = 1
+        form . width  = 28
+        form . header = GET_USER_MESSAGE( "SMP_MESSAGING_MAIN_FORM_HEADER", 1 )
+
+        form . add_frame( "", 1, 1, form . height, form . width - 1 )
+
+        form . add_display( GET_USER_MESSAGE( "SMP_MESSAGING_MESSAGE_ID", 1 ) ,
+                    2                              ,
+                    1                              ,
+                    PROMPT_RENDITION_RAISED        )
+
+        IF show_removed THEN
+
+            SET BROWSE REMOVED
+
+        ENDIF
+
+        set_criteria_array ( criteria_array )
+
+        PROMPT OBJECT message_number_prompt
+            BROWSE ON messaging
+            ON LINE 1
+            FROM 15
+            TO   25
+            WITH ( mandatory_array = criteria_array )
+
+        form . add_prompt ( message_number_prompt )
+
+        form . start_prompt ( )
+
+        form . wait_prompt ( )
+
+        IF form . get_lastkey ( ) = "DO" THEN
+
+            message_number = message_number_prompt . value
+
+        ELSE
+
+            message_number = EMPTY
+
+        ENDIF
+
+        form . end_prompt ( )
+
+        IF show_removed THEN
+
+            SET BROWSE ACTIVE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( message_number )
+
+ENDROUTINE { get_message_number }
+
+
+{*****************************************************************************}
+
+    ROUTINE get_whole_message ( VALUE message_id )
+
+{
+*
+*       Browse validation callback to set the changed flag 
+*
+******************************************************************************}
+
+DECLARE lines , text , loop , total_text , message , new_line
+
+    message_fetch ( message_id , message )
+
+    lines = message_get_lines ( message )
+
+    total_text = ""
+    new_line = ""
+    loop = 1
+
+    WHILE ( loop <= lines ) DO
+
+        text = message_get_text ( message , loop )
+
+        total_text = total_text : new_line : text
+
+        new_line = CHR ( 10 )
+
+        loop = loop + 1
+
+    ENDWHILE
+
+    total_text = STRIP ( total_text )
+
+    RETURN ( total_text )
+
+ENDROUTINE { get_whole_message }
+
+
+{*****************************************************************************}
+
+    ROUTINE set_changed_flag ( self )
+
+{
+*
+*       Browse validation callback to set the changed flag 
+*
+******************************************************************************}
+
+DECLARE msg_form
+
+    msg_form = self . parent_prompt
+
+    msg_form . save_changes = TRUE
+
+    RETURN ( TRUE )
+
+ENDROUTINE { set_changed_flag }
+
+
+{*****************************************************************************}
+
+    ROUTINE set_criteria_array ( criteria_array )
+
+{
+*
+* Set the criteria array with operator
+*
+******************************************************************************}
+
+    ARRAY criteria_array
+
+    ARRAY_SELECT_ADD ( criteria_array        ,
+               ARRAY_SELECT_EQ       ,
+               "operator_id"         ,
+               GLOBAL ( "OPERATOR" ) )
+
+ENDROUTINE { set_criteria_array }
+
+
+{*****************************************************************************}
+
+    ROUTINE validate_operator_ids ( self )
+
+{
+*
+*       Browse validation callback to check list of operators ar valid 
+*
+******************************************************************************}
+
+DECLARE operator_ids , ret_val , sender_id , pos
+
+    operator_ids = STRIP ( self . text )
+
+    IF BLANK ( operator_ids ) THEN
+        ret_val = FALSE
+    ELSE
+        ret_val = TRUE
+
+        WHILE ( INDEX ( operator_ids , ";" ) > 0 ) DO
+            operator_ids = SUBSTITUTE ( operator_ids , ";" , "," )
+        ENDWHILE
+
+    ENDIF
+
+    WHILE NOT BLANK ( operator_ids ) DO
+
+        pos = INDEX ( operator_ids , "," )
+
+        IF pos = 0 THEN
+            sender_id = operator_ids
+            operator_ids    = ""
+        ELSE
+            sender_id     = LEFTSTRING ( operator_ids , pos - 1 )
+            operator_ids = RIGHTSTRING ( operator_ids , 
+                    LENGTH ( operator_ids ) - pos )
+
+        ENDIF
+
+        sender_id = SELECT personnel . identity
+                WHERE identity = sender_id
+
+        IF ( sender_id = EMPTY  ) OR
+           ( sender_id = LOCKED ) THEN
+
+            ret_val = FALSE
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( ret_val )
+
+ENDROUTINE { validate_operator_ids }
+
+
+{******************************************************************************}
+
+    ROUTINE menu_messaging_categorize ( VALUE option )
+
+{
+*
+*   Menu proc routine to Apply a category to a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number , category
+
+    message_number = get_message_number ( FALSE )
+
+    category       = get_message_category ( )
+
+    messaging_categorize ( message_number , category )
+
+ENDROUTINE { menu_messaging_categorize }
+
+
+{******************************************************************************}
+
+    ROUTINE menu_messaging_create ( VALUE option )
+
+{
+*
+*   Menu proc routine to send a message to multiple recipients.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    messaging_create ( )
+
+ENDROUTINE { menu_messaging_create }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_forward ( VALUE option )
+
+{
+*
+*   Menu proc routine to forward a message
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( FALSE )
+
+    messaging_reply ( message_number         ,
+              MESSAGING_TYPE_FORWARD )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_get_icon ( self, row )
+
+{   
+*   Return back an Appropriate Icon.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE field
+
+    field = 1
+
+    RETURN ( menu_messaging_get_sub_icon ( self, row , field ) )
+
+ENDROUTINE { menu_messaging_get_icon }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_get_sub_icon ( self, row , field )
+
+{   
+*   Return back an Appropriate Icon.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE field_value , icon , ret_val
+
+    ret_val = -1
+    icon    = ""
+
+    IF field = 1 THEN
+
+        field_value = SELECT 'row . table' . priority IN OBJECT row
+
+        IF field_value = MESSAGING_PRIORITY_HIGH THEN
+            icon = "INT_IMPORTANT"
+        ELSEIF field_value = MESSAGING_PRIORITY_LOW THEN
+            icon = "INT_LOW_PRIORITY"
+        ENDIF
+
+    ELSEIF field = 2 THEN
+
+        field_value = SELECT 'row . table' . removeflag IN OBJECT row
+        
+        IF field_value THEN
+            icon = "INT_MESSAGE_DELETED"
+        ELSE
+
+            field_value = SELECT 'row . table' . read IN OBJECT row
+
+            IF field_value THEN
+                icon = "INT_ENVELOPE_OPEN"
+            ELSE
+                icon = "INT_ENVELOPE_CLOSED"
+            ENDIF
+        ENDIF
+
+    ENDIF
+
+    IF NOT BLANK ( icon ) THEN
+
+        ret_val = explorer_utils_get_icon ( icon )
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { menu_messaging_get_sub_icon }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_read ( VALUE option )
+
+{
+*
+*   Menu proc routine to read & update a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( FALSE )
+
+    messaging_read ( message_number )
+
+ENDROUTINE { menu_messaging_read }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_remove ( VALUE option )
+
+{
+*
+*   Menu proc routine to remove a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( FALSE )
+
+    messaging_remove ( message_number , FALSE )
+
+ENDROUTINE { menu_messaging_remove }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_delete ( VALUE option )
+
+{
+*
+*   Menu proc routine to remove a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( TRUE )
+
+    messaging_remove ( message_number , FALSE )
+
+ENDROUTINE { menu_messaging_remove }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_remove_noconfirm ( VALUE option )
+
+{
+*
+*   Menu proc routine to remove a message without confirmation - used to 
+*   remove all selected records.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( FALSE )
+
+    messaging_remove ( message_number , TRUE )
+
+ENDROUTINE { menu_messaging_remove_noconfirm }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_delete_noconfirm ( VALUE option )
+
+{
+*
+*   Menu proc routine to delete a message without confirmation - used to 
+*   remove all selected records.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( TRUE )
+
+    messaging_delete ( message_number , TRUE )
+
+ENDROUTINE { menu_messaging_delete_noconfirm }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_reply ( VALUE option )
+
+{
+*
+*   Menu proc routine to reply to a message
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( FALSE )
+
+    messaging_reply ( message_number       ,
+              MESSAGING_TYPE_REPLY )
+
+ENDROUTINE { menu_messaging_reply }
+
+
+{******************************************************************************}
+
+ROUTINE menu_messaging_restore ( VALUE option )
+
+{
+*
+*   Menu proc routine to restore a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_number
+
+    message_number = get_message_number ( TRUE )
+
+    messaging_restore ( message_number )
+
+ENDROUTINE { menu_messaging_restore }
+
+
+{******************************************************************************}
+
+    ROUTINE rmb_messaging_categorize ( rmb_object, object, data )
+
+{
+*
+*   RMB routine to Apply a category to a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_categorize_selected ( data )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_categorize }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_create ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_create_selected ( )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_create }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_forward ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_reply_selected ( data                   ,
+                         MESSAGING_TYPE_FORWARD )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_forward }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_read ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_read_selected ( data )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_read }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_remove ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_remove_selected ( data )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_remove }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_delete ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_delete_selected ( data )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_delete }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_reply ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_reply_selected ( data                 ,
+                         MESSAGING_TYPE_REPLY )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_reply }
+
+
+{****************************************************************************}
+
+    ROUTINE rmb_messaging_restore ( rmb_object, object, data )
+
+{
+*
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE ret_val
+
+    ret_val = messaging_restore_selected ( data )
+
+    RETURN ( ret_val )
+
+ENDROUTINE { rmb_messaging_restore }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_categorize ( VALUE message_number ,
+                       VALUE category       )
+
+{
+*
+*   Apply a category to a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    message_form_class_declare ( )
+
+    IF ( message_number <> EMPTY ) AND
+       ( category       <> EMPTY ) THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_rec . save_category ( category )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_categorize }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_categorize_selected ( message_list )
+
+{
+*
+*   Apply a category to selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE category , message_id_array , message_count , loop , ret_val
+
+    ret_val = FALSE
+
+    IF array_selected_messages ( message_id_array ,
+                     message_count    ,
+                     message_list     ) THEN
+
+        category = get_message_category ( )
+
+        loop = 0
+
+        WHILE loop < message_count DO
+
+            loop = loop + 1
+
+            MENUPROC MESSAGING_MENU_CATEGORIZE USING 
+                        message_id_array [ loop , 1 ] , 
+                        category
+
+            ret_val = TRUE
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_categorize_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_create
+
+{
+*
+*   Create a message to multiple recipients.
+*
+*******************************************************************************}
+WriteToLog("-")
+
+DECLARE msg_rec 
+
+    message_form_class_declare ( )
+
+    CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+    msg_rec . send_type = MESSAGING_TYPE_SEND
+
+    show_message ( msg_rec ,
+               FALSE   )
+
+ENDROUTINE { messaging_create }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_create_selected
+
+{
+*
+*   Create a message to multiple recipients.
+*
+*******************************************************************************}
+WriteToLog("-")
+
+    MENUPROC MESSAGING_MENU_CREATE
+
+    RETURN ( TRUE )
+
+ENDROUTINE { messaging_create_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_read ( VALUE message_number )
+
+{
+*
+*   Read & update a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec , field_value
+
+    message_form_class_declare ( )
+
+    IF message_number <> EMPTY THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , TRUE ) THEN
+
+            field_value = SELECT messaging . from_operator_id
+                    IN OBJECT msg_rec
+
+            msg_rec . operator_ids = set_operator_id_name ( field_value )
+
+            show_message ( msg_rec ,
+                       TRUE    )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_read }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_read_selected ( message_list )
+
+{
+*
+*   Read selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_id_array , message_count , loop , ret_val
+
+    ret_val = FALSE
+
+    IF array_selected_messages ( message_id_array ,
+                     message_count    ,
+                     message_list     ) THEN
+
+        loop = 0
+
+        WHILE loop < message_count DO
+
+            loop = loop + 1
+
+            EXECUTE_PROCEDURE ( MESSAGING_MENU_READ           ,
+                        message_id_array [ loop , 1 ] )
+
+            ret_val = TRUE
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_read_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_remove ( VALUE message_number   ,
+                   VALUE suppress_confirm )
+
+{
+*
+*   Menu proc routine to remove a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    message_form_class_declare ( )
+
+    IF message_number <> EMPTY THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_rec . remove ( suppress_confirm )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_remove }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_remove_selected ( message_list )
+
+{
+*
+*   Remove selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE selected_count , message_id_array , loop , ret_val , del_msg
+
+    ret_val = FALSE
+
+    array_selected_messages ( message_id_array ,
+                  selected_count   ,
+                  message_list     )
+
+    IF selected_count > 1 THEN
+        del_msg = "SMP_MESSAGING_CONFIRM_DEL_ALL_MESSAGE"
+    ELSE
+        del_msg = "SMP_MESSAGING_CONFIRM_DEL_MESSAGE"
+    ENDIF
+
+    IF ( selected_count > 0               ) AND
+       ( confirm_with_message ( del_msg ) ) THEN
+
+        loop = 0
+
+        WHILE loop < selected_count DO
+
+            loop = loop + 1
+
+            IF ( NOT message_id_array [ loop , 2 ] ) THEN
+
+                MENUPROC MESSAGING_MENU_REMOVE_NOCONFIRM USING 
+                        message_id_array [ loop , 1 ]
+
+
+                ret_val = TRUE
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_remove_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_delete ( VALUE message_number   ,
+                   VALUE suppress_confirm )
+
+{
+*
+*   Menu proc routine to delete a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    message_form_class_declare ( )
+
+    IF message_number <> EMPTY THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_rec . delete ( suppress_confirm )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_delete }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_delete_selected ( message_list )
+
+{
+*
+*   Delete selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE selected_count , message_id_array , loop , ret_val , del_msg
+
+    ret_val = FALSE
+
+    array_selected_messages ( message_id_array ,
+                  selected_count   ,
+                  message_list     )
+
+    IF selected_count > 1 THEN
+        del_msg = "SMP_MESSAGING_CONFIRM_DEL_PERM_ALL_MESSAGE"
+    ELSE
+        del_msg = "SMP_MESSAGING_CONFIRM_DEL_PERM_MESSAGE"
+    ENDIF
+
+    IF ( selected_count > 0               ) AND
+       ( confirm_with_message ( del_msg ) ) THEN
+
+        loop = 0
+
+        WHILE loop < selected_count DO
+
+            loop = loop + 1
+
+            IF ( message_id_array [ loop , 2 ] ) THEN
+
+                MENUPROC MESSAGING_MENU_DELETE_NOCONFIRM USING 
+                        message_id_array [ loop , 1 ]
+
+
+                ret_val = TRUE
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_delete_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_reply ( VALUE message_number ,
+                  VALUE reply_type     )
+
+{
+*
+*   Reply/forward to message
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    message_form_class_declare ( )
+
+    IF message_number <> EMPTY THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , FALSE ) THEN
+
+            msg_rec . send_type = reply_type
+
+            show_message ( msg_rec ,
+                       FALSE   )
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_reply }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_reply_selected (       message_list ,
+                       VALUE reply_type   )
+
+{
+*
+*   Reply/forward to selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_id_array , message_count , loop , ret_val
+
+    ret_val = FALSE
+
+    IF array_selected_messages ( message_id_array ,
+                     message_count    ,
+                     message_list     ) THEN
+
+        loop = 0
+
+        WHILE loop < message_count DO
+
+            loop = loop + 1
+
+            IF reply_type = MESSAGING_TYPE_REPLY THEN
+                EXECUTE_PROCEDURE ( MESSAGING_MENU_REPLY          ,
+                            message_id_array [ loop , 1 ] )
+            ELSE
+                EXECUTE_PROCEDURE ( MESSAGING_MENU_FORWARD        ,
+                            message_id_array [ loop , 1 ] )
+            ENDIF
+
+            ret_val = TRUE
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_reply_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_restore ( VALUE message_number )
+
+{
+*
+*   Restore a message.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE msg_rec
+
+    message_form_class_declare ( )
+
+    IF message_number <> EMPTY THEN
+
+        CREATE OBJECT MESSAGING_RECORD , msg_rec
+
+        IF msg_rec . load ( message_number , TRUE ) THEN
+
+            msg_rec . restore ()
+
+        ELSE
+
+            flash_message ( "SMP_MESSAGING_LOAD_ERROR" , FALSE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { messaging_restore }
+
+
+{******************************************************************************}
+
+    ROUTINE messaging_restore_selected ( message_list )
+
+{
+*
+*   Restore selected messages.
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+DECLARE message_id_array , message_count , loop , ret_val
+
+    ret_val = FALSE
+
+    IF array_selected_messages ( message_id_array ,
+                     message_count    ,
+                     message_list     ) THEN
+
+        loop = 0
+
+        WHILE loop < message_count DO
+
+            loop = loop + 1
+
+            IF ( message_id_array [ loop , 2 ] ) THEN
+
+                MENUPROC MESSAGING_MENU_RESTORE USING 
+                        message_id_array [ loop , 1 ]
+
+                ret_val = TRUE
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ret_val )
+
+ENDROUTINE { messaging_restore_selected }
+
+
+{******************************************************************************}
+
+    ROUTINE rmb_context_remove ( explorer_rmb, record )
+
+{
+*
+*   Return TRUE if all records selected have removeflag set to FALSE
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    DECLARE selected_collection, any, removeflag
+
+    any = FALSE
+
+    selected_collection = explorer_rmb . data
+
+    IF selected_collection . size( ) > 0 THEN
+
+        any = TRUE
+
+        selected_collection . set_first( )
+
+        WHILE ( selected_collection . current <> EMPTY ) AND any DO
+
+            removeflag  = SELECT messaging . removeflag
+                            IN OBJECT selected_collection . current
+
+            IF removeflag THEN
+                any = FALSE
+            ENDIF
+
+            selected_collection . set_next( )
+
+        ENDWHILE
+    ENDIF
+
+    RETURN( any )
+
+
+ENDROUTINE { rmb_context_remove }
+
+
+{******************************************************************************}
+
+    ROUTINE rmb_context_delete ( explorer_rmb, record )
+
+{
+*
+*   Return TRUE if all records selected have removeflag set to TRUE
+*
+*******************************************************************************}
+{WriteToLog("-")}
+
+    DECLARE selected_collection, any, removeflag
+
+    any = FALSE
+
+    selected_collection = explorer_rmb . data
+
+    IF selected_collection . size( ) > 0 THEN
+
+        any = TRUE
+
+        selected_collection . set_first( )
+
+        WHILE ( selected_collection . current <> EMPTY ) AND any DO
+
+            removeflag  = SELECT messaging . removeflag
+                            IN OBJECT selected_collection . current
+
+            IF NOT removeflag THEN
+                any = FALSE
+            ENDIF
+
+            selected_collection . set_next( )
+
+        ENDWHILE
+    ENDIF
+
+    RETURN( any )
+
+ENDROUTINE { rmb_context_delete }
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

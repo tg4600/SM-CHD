@@ -1,0 +1,2993 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_INTERFACE
+*
+* Purpose       : Result commands handling code
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************
+*
+* Modification History :
+*
+* Version   Date         By             Description
+* -------   -----------  ----------     ---------------------------------------
+* 1.2       15-Sep-2008  LIT            SCR 111855 incidents on put_test_results
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $lib_utils
+
+JOIN LIBRARY $lib_re_context
+JOIN LIBRARY $lib_re_collection
+JOIN LIBRARY $lib_re_globals
+JOIN LIBRARY $lib_re_prompt
+JOIN LIBRARY $lib_re_sample
+JOIN LIBRARY $lib_re_test
+JOIN LIBRARY $lib_re_result
+JOIN LIBRARY $lib_re_list
+JOIN LIBRARY $lib_re_globals
+JOIN LIBRARY $lib_tsr_form
+JOIN LIBRARY $lib_twr_grid
+JOIN LIBRARY $lib_comp
+JOIN LIBRARY $mlps_const
+JOIN LIBRARY $browse_field
+JOIN LIBRARY $result_spreadsheet
+JOIN LIBRARY $prompt_grid
+
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+GLOBAL CONSTANT STD_RESULT_INTERFACE = "STD_RESULT_INTERFACE"
+GLOBAL CONSTANT STD_RESULT_GRID      = "STD_RESULT_GRID"
+GLOBAL CONSTANT STD_RESULT_FORMAT    = "STD_RESULT_FORMAT"
+
+
+{* LOCAL CONSTANTS ************************************************************}
+
+
+{* VARIABLES ******************************************************************}
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_re_interface_initialise
+
+{
+*       Module initialisation routine - creates the context class.
+*
+*******************************************************************************}
+
+    lib_comp_initialise ()
+    lib_re_list_initialise ()
+        lib_re_context_initialise ( )
+        lib_re_collection_initialise ( )
+        lib_re_sample_initialise ( )
+        lib_re_test_initialise ( )
+        lib_re_result_initialise ( )
+
+        DEFINE CLASS STD_RESULT_INTERFACE
+
+                INHERIT
+
+                        RESULT_CONTEXT_CLASS
+
+                PROPERTIES
+
+                        "SAMPLE"               ,
+                        "TEST"                 ,
+                        "RESULT_LIST"          ,
+
+            "LOCK_UP_FRONT"        ,
+            "USE_CURRENT_SAMPLE"   ,
+            "USE_CURRENT_TEST"     ,
+            "WRITE_ONLY"           ,
+            "DONT_READ_RESULTS"    ,
+            "CURRENT_ROW"          ,
+
+            { Formatting control properties }
+
+            "DO_COMPARE"           ,
+            "CONVERT_TO_MLP_UNITS" ,
+
+            "CALL_BIND"            ,
+            "BIND_CALLED"
+
+                ACTIONS
+
+            "SET_REPORT_MODE"      ,
+            "SET_MODIFY_MODE"      ,
+            "SET_AUTHORISE_MODE"   ,
+            "SET_DISPLAY_MODE"     ,
+
+            "ADD_RESULT"           ,
+            "CREATE_BLANK_RESULTS" ,
+            "FIND_RESULT"          ,
+            "BIND"                 ,
+            "SELECT_RESULTS"       ,
+            "SELECT_ONE_RESULT"    ,
+            "SELECT_SAMPLE"        ,
+            "SELECT_TEST"          ,
+            "DUMMY_SELECT"         ,
+            "SAMPLE_TEST_OBJECTS"  ,
+            "SIZE"                 ,
+            "GET_BY_NUMBER"        ,
+            "MLP_COMPARE"          ,
+            "MLP_FORMAT"           ,
+            "CREATE_RESULT"        ,
+            "STORE_RESULTS"        ,
+            "CALCULATE"            ,
+            "UPDATE"               ,
+            "IS_COMPLETE"          ,
+            "UPDATE_DISPLAY"       ,
+
+            "COPY_ALL_RESULTS"          ,
+            "COPY_ALL_RESULTS_CATEGORY" ,
+
+            "SET_FIELD"             ,
+            "GET_FIELD"             ,
+            "UPGRADE_TEST_LOCK"     ,
+            "DOWNGRADE_TEST_LOCK"   ,
+            "UPGRADE_SAMPLE_LOCK"   ,
+            "DOWNGRADE_SAMPLE_LOCK" ,
+            "UPDATE_TEST"           ,
+
+            "GET_RESULT"           ,
+            "GET_RESULT_FIRST"     ,
+            "GET_RESULT_NEXT"      ,
+
+            "RELEASE"
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS STD_RESULT_FORMAT
+
+        PROPERTIES "RESULT_OBJECT" ,
+               "NAME"          ,
+               "STATUS"        ,
+               "TEXT"          ,
+               "RESULT_UNITS"  ,
+               "FIRST_LEVEL"   ,
+               "LEVEL_COUNT"   ,
+               "LEVEL"         ,
+               "LOWER"         ,
+               "UPPER"         ,
+               "MLP_UNITS"     ,
+               "PASS_FAIL"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_class_initialisation ( self )
+
+{
+*       Class initialisation routine, called each time a new object is created.
+*
+*******************************************************************************}
+
+        self . single_result_commit  = FALSE
+        self . interactive           = FALSE
+        self . propagate_status      = FALSE
+
+    self . use_current_test      = FALSE
+    self . use_current_sample    = FALSE
+    self . lock_up_front         = FALSE
+    self . write_only            = FALSE
+
+    self . do_compare            = FALSE
+    self . convert_to_mlp_units  = FALSE
+
+    self . call_bind             = TRUE
+    self . bind_called           = FALSE
+
+    self . dont_read_results     = FALSE
+
+    lib_re_collection_create_component ( self . component_collection )
+
+    self . set_report_mode ()
+
+        ARRAY self . result_list
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_format_class_initialisation ( self )
+
+{
+*       Class initialisation routine, called each time a new object is created.
+*
+*******************************************************************************}
+
+    self . result_object = EMPTY
+    self . name          = ""
+    self . status        = ""
+    self . text          = ""
+    self . result_units  = ""
+    self . first_level   = TRUE
+    self . level_count   = 0
+    self . level         = ""
+    self . lower         = ""
+    self . upper         = ""
+    self . mlp_units     = EMPTY
+    self . pass_fail     = MLP_CONST_PASS
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_set_modify_mode ( self )
+
+{
+*       Set the allowed status to be modifiable only.
+*
+*******************************************************************************}
+
+    self . re_mode               = RE_MODIFY
+    self . create_matrix         = TRUE
+        self . allowed_test_status   = "VPC"
+        self . allowed_sample_status = "VC"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_set_authorise_mode ( self )
+
+{
+*       Set the allowed status for the authorise mode
+*
+*******************************************************************************}
+
+    self . re_mode               = RE_AUTHORISE
+    self . create_matrix         = TRUE
+        self . allowed_test_status   = "VPC"
+        self . allowed_sample_status = "VPC"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_set_display_mode ( self )
+
+{
+*       Set the allowed status to be everything.
+*
+*******************************************************************************}
+
+    self . re_mode               = RE_DISPLAY
+    self . create_matrix         = TRUE
+        self . allowed_test_status   = "UWVPSCARXI"
+        self . allowed_sample_status = "UWVHSCARXI"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_set_report_mode ( self )
+
+{
+*       Set the allowed status to be everything.
+*
+*******************************************************************************}
+
+    self . re_mode               = RE_DISPLAY
+    self . create_matrix         = FALSE
+        self . allowed_test_status   = "UWVPSCARXI"
+        self . allowed_sample_status = "UWVHSCARXI"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_add_result ( self          ,
+                                                 result_object )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE position
+
+        position = size_of_array ( self . result_list ) + 1
+
+        self . result_list [ position ] = result_object
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_update_display (       self           ,
+                                                     VALUE cell_column    ,
+                                                     VALUE cell_row       ,
+                                                     VALUE unit_changed   ,
+                                                     VALUE text_changed   ,
+                                                     VALUE status_changed )
+
+{
+*   Override the action if you want to know if things have changed.
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_find_result (       self             ,
+                                                        test_object      ,
+                                                  VALUE component_name   ,
+                                                  VALUE component_number ,
+                                                        result_object    )
+
+{
+*
+*
+*******************************************************************************}
+
+        DECLARE counter, searching, found_result
+
+        IF numtext ( component_number ) THEN
+
+                component_number = numeric ( component_number )
+
+        ELSE
+
+                component_number = 0
+
+        ENDIF
+
+        IF component_number <= 0 THEN
+
+                found_result = FALSE
+
+        ELSE
+
+                counter = component_number
+
+                IF counter < size_of_array( self . result_list ) THEN
+
+                        result_object = self . result_list [ counter ]
+
+                        found_result = ( result_object . name =
+                                                        component_name ) AND
+                                       ( result_object . test_object =
+                                                        test_object )
+
+                ELSE
+
+                        found_result = FALSE
+
+                ENDIF
+
+        ENDIF
+
+        IF NOT found_result THEN
+
+                counter   = 1
+                searching = TRUE
+
+                WHILE searching DO
+
+                        IF counter > size_of_array ( self . result_list )THEN
+
+                                searching = FALSE
+
+                        ELSEIF self . result_list [counter] .
+                                test_object <> test_object THEN
+
+                                searching = FALSE
+
+                        ELSEIF self . result_list [counter] . name =
+                                        component_name THEN
+
+                                result_object = self . result_list [ counter ]
+                                found_result = TRUE
+                                searching = FALSE
+
+                        ELSE
+
+                                counter = counter + 1
+
+                        ENDIF
+
+                ENDWHILE
+
+        ELSE
+
+                found_result = TRUE
+
+        ENDIF
+
+        RETURN ( found_result )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_select_test (       self            ,
+                                                  VALUE test_number     ,
+                                                        test_descriptor )
+
+{
+*   Select the information from the database for the given test.
+*
+*******************************************************************************}
+
+    DECLARE return_value ,
+        test_no
+
+    test_no = packed_decimal ( test_number )
+
+    IF test_no = ERROR THEN
+
+        test_no = test_number
+
+    ELSEIF ( self . use_current_test )             AND
+           ( test_no = SELECT test . test_number ) THEN
+
+        test_no = test_number
+
+    ELSEIF ( self . re_mode = RE_MODIFY    ) OR
+           ( self . re_mode = RE_AUTHORISE ) THEN
+
+        push_file_descriptor ( "TEST" , test_descriptor )
+
+        IF self . lock_up_front THEN
+
+            test_no = SELECT test . test_number
+                          FOR UPDATE
+                          WHERE test_number = test_number
+
+        ELSE
+
+            test_no = SELECT test . test_number
+                          FOR READ_LOCK
+                          WHERE test_number = test_number
+
+        ENDIF
+
+    ELSE
+
+        push_file_descriptor ( "TEST" , test_descriptor )
+
+        test_no = SELECT test . test_number
+                              WHERE test_number = test_number
+    ENDIF
+
+    IF test_no = test_number THEN
+
+        return_value = EMPTY
+
+    ELSEIF test_no = LOCKED THEN
+
+        return_value = "RESULT_ENTRY_TESTLOCKED"
+
+    ELSE
+
+        return_value = "RPC_K_NONEXTEST"
+
+    ENDIF
+
+    return ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_select_sample (       self              ,
+                                                    VALUE sample_id         ,
+                                                          sample_descriptor )
+
+{
+*   Select the information from the database for the given sample.
+*
+*******************************************************************************}
+
+    DECLARE return_value ,
+        samp
+
+    IF ( self . use_current_sample )              AND
+       ( sample_id = SELECT sample . id_numeric ) THEN
+
+        samp = sample_id
+
+    ELSEIF self . re_mode = RE_MODIFY THEN
+
+        push_file_descriptor ( "SAMPLE" , sample_descriptor )
+
+        IF self . lock_up_front THEN
+
+            samp = SELECT sample . id_numeric
+                   FOR UPDATE
+                   WHERE id_numeric = sample_id
+
+        ELSE
+
+            samp = SELECT sample . id_numeric
+                   FOR READ_LOCK
+                   WHERE id_numeric = sample_id
+
+        ENDIF
+
+    ELSE
+
+        push_file_descriptor ( "SAMPLE" , sample_descriptor )
+
+        samp = SELECT sample . id_numeric
+               WHERE id_numeric = sample_id
+
+    ENDIF
+
+    IF samp = sample_id THEN
+
+        return_value = EMPTY
+
+    ELSEIF samp = LOCKED THEN
+
+        return_value = "RESULT_ENTRY_SAMPLELOCKED"
+
+    ELSE
+
+        return_value = "RPC_K_NONEXSAMP"
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_sample_test_objects ( self )
+
+{
+*   Use the information from the database to build the objects.
+*   Assumes the data is already selected in the current VGL rows.
+*
+*******************************************************************************}
+
+    DECLARE return_value ,
+        test_stat
+
+    return_value = lib_re_sample_create_sample_object (
+                                            self . allowed_sample_status ,
+                                            self . sample                )
+
+    IF return_value = EMPTY THEN
+
+        self . lock_retain_object ( "SAMPLE", self . sample )
+
+        test_stat = lib_re_test_create_test_object (
+		                               self                       ,
+                                       self . allowed_test_status ,
+                                       self . re_mode             ,
+                                       self . sample              ,
+                                       self . test                )
+
+        IF ( test_stat = LIB_RE_TEST_SUCCESS ) THEN
+
+            self . lock_retain_object ( "TEST", self . test )
+
+        ENDIF
+
+        return_value = lib_re_test_error_to_message ( test_stat )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_create_blank_results ( self )
+
+{
+*   Select the tests from the database.
+*
+*******************************************************************************}
+
+        DECLARE counter       ,
+        comp_object   ,
+        result_object
+
+        counter = 1
+
+        WHILE counter <= self . size () DO
+
+        self . current_row = counter
+        result_object      = self . get_by_number ( counter )
+
+                IF NOT result_object . result_row_exists THEN
+
+                        comp_object = self . component_collection .
+                                                get_component ( result_object . analysis         ,
+                                result_object . analysis_version ,
+                                                                result_object . name             )
+                        result_object . reserve_result ( comp_object )
+
+                        self . lock_retain_object ( "RESULT"      ,
+                                                    result_object )
+
+                ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_bind ( self )
+
+{
+*   Bind all the formula's.
+*
+*******************************************************************************}
+
+    DECLARE count         ,
+        result_object
+
+    count = 1
+
+    WHILE count <= self . size () DO
+
+        self . current_row = count
+        result_object      = self . get_by_number ( count )
+
+        IF result_object . is_calculation THEN
+
+            result_object . bind ( self )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+        self . bind_called = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_select_results (       self        ,
+                             VALUE test_number )
+
+{
+*   Select the tests from the database.
+*
+*******************************************************************************}
+
+        DECLARE status               ,
+        component_name       ,
+        component_item       ,
+                result_object        ,
+                analysis_id          ,
+                analysis_version     ,
+        test_no              ,
+                result_list_defined  ,
+        test_object          ,
+        sample_descriptor    ,
+        test_descriptor      ,
+        result_descriptor    ,
+        component_descriptor ,
+        matrix_no
+
+
+    push_file_descriptor ( "RESULT"    , result_descriptor    )
+    push_file_descriptor ( "COMPONENT" , component_descriptor )
+
+    status = self . select_test ( test_number, test_descriptor )
+
+    IF status = EMPTY THEN
+
+        status = self . select_sample ( SELECT test . sample ,
+                                        sample_descriptor    )
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        status = self . sample_test_objects ( )
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        test_object          = self . test
+            analysis_id          = SELECT test.analysis IN OBJECT test_object
+            analysis_version     = SELECT test.analysis_version IN OBJECT test_object
+            result_list_defined  = SELECT test.has_result_list IN OBJECT test_object
+
+            { Load the component database if analysis has not been used before }
+
+            component_item = self . component_collection .
+                                            first_by_order ( analysis_id ,
+                                 analysis_version )
+
+            IF component_item = EMPTY THEN
+
+                    { Analysis is unknown to component database so add it }
+
+                    component_name = SELECT versioned_component . name
+                                     WHERE  ( analysis = analysis_id ) AND
+                        ( analysis_version = analysis_version )
+                                     ORDER ON order_number
+
+                    WHILE component_name <> EMPTY DO
+
+                matrix_no = SELECT versioned_component . matrix_no
+
+                IF ( matrix_no = 0 ) OR ( NOT self . create_matrix ) THEN
+
+                                self . component_collection .
+                        add_component ( EMPTY )
+                ELSE
+
+                    lib_re_interface_define_matrix_component ( self )
+
+                ENDIF
+
+
+                            NEXT versioned_component
+                            component_name = SELECT versioned_component . name
+
+                    ENDWHILE
+
+                    component_item = self . component_collection .
+                                            first_by_order ( analysis_id ,
+                                 analysis_version )
+
+            ENDIF
+
+            IF NOT result_list_defined THEN
+
+                    { Use the component database to load the result database }
+
+                    IF component_item <> EMPTY THEN
+
+                           { Load the components for the given analysis }
+
+                            REPEAT
+
+                    matrix_no = SELECT versioned_component . matrix_no
+                            IN OBJECT component_item
+
+
+                    IF ( matrix_no = 0 ) OR ( NOT self . create_matrix ) THEN
+
+                                        result_object =
+                        lib_re_result_create_result_from_component
+                        (test_object     ,
+                        component_item   )
+
+                                        self . add_result ( result_object )
+
+                    ELSE
+
+                        lib_re_interface_define_matrix_result_from_component
+                        ( self          ,
+                          test_object       ,
+                          component_item    )
+
+
+                    ENDIF
+
+                                    component_item = self . component_collection .
+                                                            next_by_order ( analysis_id      ,
+                                        analysis_version )
+
+                           UNTIL component_item = EMPTY
+
+                    ENDIF
+
+            ENDIF
+
+            { Select the results for the given test number }
+
+            test_no = SELECT test.test_number IN OBJECT test_object
+
+        IF self . dont_read_results THEN
+
+            component_name = EMPTY
+
+            ELSEIF self . re_mode = RE_DISPLAY THEN
+
+                    component_name = SELECT result . name
+                     FOR READ_LOCK
+                                     WHERE  test_number = test_no
+                                     ORDER ON order_number
+
+            ELSEIF self . lock_up_front THEN
+
+            IF self . write_only THEN
+
+                        component_name = SELECT result . name
+                         FOR UPDATE
+                                         WHERE  test_number = test_no
+
+            ELSE
+
+                        component_name = SELECT result . name
+                         FOR UPDATE
+                                         WHERE  test_number = test_no
+                                             ORDER ON order_number
+
+            ENDIF
+
+        ELSE
+
+            IF self . write_only THEN
+
+                        component_name = SELECT result . name
+                         FOR READ_LOCK
+                                         WHERE  test_number = test_no
+
+            ELSE
+
+                        component_name = SELECT result . name
+                         FOR READ_LOCK
+                                         WHERE  test_number = test_no
+                                             ORDER ON order_number
+
+            ENDIF
+
+            ENDIF
+
+            IF component_name <> EMPTY THEN
+
+            REPEAT
+
+                matrix_no = SELECT result . matrix_no
+
+                IF ( matrix_no = 0 ) OR ( NOT self . create_matrix ) THEN
+
+                    IF result_list_defined THEN
+
+                                        result_object =
+                                                lib_re_result_create_result_from_result
+                            ( test_object )
+                                        self . add_result ( result_object )
+
+
+                                ELSEIF self . find_result ( test_object,
+                                                            component_name,
+                                                            SELECT result.order_number,
+                                                            result_object ) THEN
+
+                                        result_object . read_existing_result ( TRUE )
+
+                                ELSE
+
+                                        result_object =
+                                                lib_re_result_create_result_from_result
+                            ( test_object )
+                                        self . add_result ( result_object )
+
+                                ENDIF
+
+                    self . lock_retain_object ( "RESULT"      ,
+                                                result_object )
+
+                ELSE
+
+                    lib_re_interface_define_matrix_result ( self       ,
+                                                   test_object)
+
+                ENDIF
+
+                            NEXT result
+                            component_name = SELECT result . name
+
+                   UNTIL component_name = EMPTY
+
+            ENDIF
+
+        IF ( self . re_mode <> RE_DISPLAY ) AND
+           ( self . call_bind             ) THEN
+
+            self . bind ()
+
+        ENDIF
+
+    ENDIF
+
+    IF variable_is_assigned ( test_descriptor ) THEN
+        pop_file_descriptor ( test_descriptor )
+
+    ELSEIF variable_is_assigned ( test_object ) THEN
+                object_set_current_table ( test_object, "TEST" )
+
+    ENDIF
+
+    IF variable_is_assigned ( sample_descriptor ) THEN
+        pop_file_descriptor ( sample_descriptor )
+
+    ELSEIF variable_is_assigned ( test_object  )                AND
+           variable_is_assigned ( test_object . sample_object ) THEN
+                object_set_current_table ( test_object . sample_object, "SAMPLE" )
+
+    ENDIF
+
+    pop_file_descriptor ( result_descriptor    )
+    pop_file_descriptor ( component_descriptor )
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_select_one_result (       self        ,
+                                VALUE test_number ,
+                            VALUE name        )
+
+{
+*   Select the tests from the database.
+*
+*******************************************************************************}
+
+        DECLARE status               ,
+        component_name       ,
+        component_item       ,
+                result_object        ,
+                analysis_id          ,
+                analysis_version     ,
+        test_no              ,
+        test_object          ,
+        sample_descriptor    ,
+        test_descriptor      ,
+        result_descriptor    ,
+        component_descriptor ,
+        comp_name
+
+
+    push_file_descriptor ( "RESULT"    , result_descriptor    )
+    push_file_descriptor ( "COMPONENT" , component_descriptor )
+
+    status = self . select_test ( test_number, test_descriptor )
+
+    IF status = EMPTY THEN
+
+        status = self . select_sample ( SELECT test . sample ,
+                                        sample_descriptor    )
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        status = self . sample_test_objects ( )
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        comp_name            = lib_comp_get_name ( name )
+        test_object          = self . test
+            analysis_id          = SELECT test.analysis IN OBJECT test_object
+            analysis_version     = SELECT test.analysis_version IN OBJECT test_object
+
+            { Load the component database if analysis has not been used before }
+
+            component_item = self . component_collection .
+                                            get_component ( analysis_id ,
+                                analysis_version ,
+                                comp_name        )
+
+            IF component_item = EMPTY THEN
+
+                    { Analysis is unknown to component database so add it }
+
+                    component_name = SELECT versioned_component . name
+                                     WHERE  ( analysis = analysis_id              ) AND
+                        ( analysis_version = analysis_version ) AND
+                        ( name             = comp_name        )
+                                     ORDER ON order_number
+
+                    IF component_name <> EMPTY THEN
+
+                            self . component_collection . add_component ( EMPTY )
+
+                    ENDIF
+
+                    component_item = self . component_collection .
+                                        get_component ( analysis_id ,
+                                analysis_version ,
+                                comp_name        )
+
+            ENDIF
+
+            { Select the results for the given test number }
+
+            test_no = SELECT test.test_number IN OBJECT test_object
+
+            IF self . re_mode = RE_DISPLAY THEN
+
+                    component_name = SELECT result . name
+                     FOR READ_LOCK
+                                     WHERE  ( test_number = test_no ) AND
+                            ( name        = name    )
+
+            ELSEIF self . lock_up_front THEN
+
+                 component_name = SELECT result . name
+                          FOR UPDATE
+                                  WHERE (  test_number = test_no ) AND
+                            ( name        = name    )
+
+        ELSE
+
+                 component_name = SELECT result . name
+                          FOR READ_LOCK
+                                  WHERE (  test_number = test_no ) AND
+                            ( name        = name    )
+
+            ENDIF
+
+        IF component_item <> EMPTY THEN
+
+                IF component_name <> EMPTY THEN
+
+                result_object = lib_re_result_create_result_from_result ( test_object )
+
+            ELSE
+
+                result_object = lib_re_result_create_result_from_component ( test_object ,
+                                                                                     component_item )
+
+            ENDIF
+
+        ELSEIF component_name <> EMPTY THEN
+
+            result_object = lib_re_result_create_result_from_result (
+                                                            test_object )
+                    self . add_result ( result_object )
+
+        ELSE
+
+            result_object = lib_re_result_create_result_blank ( test_object )
+
+        ENDIF
+
+            self . add_result ( result_object )
+
+        self . lock_retain_object ( "RESULT", result_object )
+
+        self . bind ()
+
+    ENDIF
+
+    IF variable_is_assigned ( test_descriptor ) THEN
+        pop_file_descriptor ( test_descriptor )
+
+    ELSEIF variable_is_assigned ( test_object ) THEN
+                object_set_current_table ( test_object, "TEST" )
+
+    ENDIF
+
+    IF variable_is_assigned ( sample_descriptor ) THEN
+        pop_file_descriptor ( sample_descriptor )
+
+    ELSEIF variable_is_assigned ( test_object  )                AND
+           variable_is_assigned ( test_object . sample_object ) THEN
+                object_set_current_table ( test_object . sample_object, "SAMPLE" )
+
+    ENDIF
+
+    pop_file_descriptor ( result_descriptor    )
+    pop_file_descriptor ( component_descriptor )
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_dummy_select ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE component     ,
+        result_object
+
+    component = self . component_collection . first_by_order ( " " ,
+                                       " " )
+
+    WHILE component <> EMPTY DO
+
+        result_object = lib_re_result_create_result_from_component
+                        ( self . test ,
+                          component   )
+
+        result_object . name = lib_comp_add_replicate ( result_object . name ,
+                                1                    )
+
+        result_object . reserve_result ( component )
+
+        self . add_result ( result_object )
+
+        component = self . component_collection . next_by_order ( " " ,
+                                          " " )
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_create_result (       self           ,
+                            VALUE name           ,
+                            VALUE component_type )
+
+{
+*
+*
+*******************************************************************************}
+
+
+    DECLARE component_object ,
+        result_object
+
+        IF NOT self . find_result ( self . test   ,
+                                    name          ,
+                    1             ,
+                    result_object ) THEN
+
+        component_object = self . component_collection . get_component
+                        ( SELECT test . analysis    ,
+                          SELECT test . analysis_version    ,
+                          lib_comp_get_name ( name ))
+
+        IF component_object <> EMPTY  THEN
+
+            result_object = lib_re_result_create_result_from_component
+                        ( self . test       ,
+                          component_object  )
+            result_object . name = name
+
+            result_object . reserve_result ( component_object )
+
+        ELSE
+
+            result_object = lib_re_result_create_blank_from_type
+                        ( self . test    ,
+                          name           ,
+                          component_type )
+
+        ENDIF
+
+        self . add_result ( result_object )
+
+    ELSE
+
+        result_object = ERROR
+
+
+    ENDIF
+
+    RETURN ( result_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_calculate ( self )
+
+{
+*   Update all the results back to the database.
+*
+*
+*******************************************************************************}
+
+    DECLARE count         ,
+                result_object
+
+    count = 1
+
+    WHILE count <= self . size () DO
+
+        self . current_row = count
+        result_object      = self . get_by_number ( count )
+
+        IF result_object . is_calculation THEN
+
+            IF ( self . bind_called           ) AND
+               ( result_object . is_formula ()) THEN
+
+                { Don't Do anything }
+
+            ELSEIF ( result_object . is_locked_for_update ( ) OR
+                     result_object . store_pending )
+
+                result_object . enter_for_type ( 0    ,
+                                 self )
+
+            ENDIF
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_store_results (        self            ,
+                             VALUE do_calculations )
+
+{
+*   Update all the results back to the database.
+*
+*
+*******************************************************************************}
+
+    DECLARE count         ,
+                result_object ,
+        propagate_row
+
+
+    { Find the propagate row }
+
+    count         = 1
+    propagate_row = 0
+
+    WHILE count <= self . size () DO
+
+        self . current_row = count
+        result_object      = self . get_by_number ( count )
+
+        IF ( result_object . modified () OR
+             result_object . store_pending ) AND
+           result_object . is_locked_for_update () THEN
+
+            propagate_row = count
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+
+    count = 1
+
+    WHILE count <= self . size () DO
+
+        self . current_row = count
+        result_object      = self . get_by_number ( count )
+
+        IF result_object . is_calculation = do_calculations THEN
+
+            IF ( result_object . modified () OR
+                 result_object . store_pending ) AND
+               result_object . is_locked_for_update () THEN
+
+                self . propagate_status = ( count = propagate_row )
+
+                result_object . store_result ( self )
+
+				self . in_update_phase = TRUE
+
+{ 1.2 }
+                  {**********************************************************
+                  SCR111855
+
+                  This flag is only used in $LIB_LEVEL routines
+
+                      std_level_class_action_pass_action
+                      std_level_class_action_fail_action
+
+                  to decide if the MLP level routine for on commit, should be
+                  called and in the case of a fail, whether to create any
+                  incidents.
+
+                  It does not corrent when the level routine is called twice,
+                  which may result in more than one incident.
+
+                  ***********************************************************}
+
+                  self.in_update_phase = TRUE                             {SCR111855}
+
+                  result_object . flush_result ( self )
+				result_object . create_incidents ()
+
+                  result_object.create_incidents()                        {SCR111855}
+                  self.in_update_phase = FALSE                            {SCR111855}
+
+{ end 1.2 }
+
+            ENDIF
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_update ( self )
+
+{
+*   Update all the results back to the database.
+*
+*
+*******************************************************************************}
+
+    DECLARE reselected ,
+        status
+
+    IF self . upgrade_test_lock ( reselected ) THEN
+
+        IF self . upgrade_sample_lock ( reselected ) THEN
+
+            self . store_results ( FALSE )
+            self . calculate     ()
+            self . store_results ( TRUE  )
+
+            status = EMPTY
+
+        ELSE
+
+            status = "RESULT_ENTRY_SAMPLELOCKED"
+
+        ENDIF
+
+    ELSE
+
+        status = "RESULT_ENTRY_TESTLOCKED"
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_is_complete ( self       ,
+                          components )
+
+{
+*   Are all the asked for results entered ?.
+*
+*
+*******************************************************************************}
+
+    DECLARE complete       ,
+        name           ,
+        count          ,
+        result_object
+
+    complete = TRUE
+
+    IF INDEX ( "SP" , SELECT test . status IN OBJECT self . test ) > 0 THEN
+
+        count    = 1
+
+        WHILE count <= size_of_array ( components ) DO
+
+            name = components [ count ]
+                name = lib_comp_add_replicate ( name , 1 )
+
+            result_object = self . get_result ( EMPTY ,
+                                        name  )
+
+                    IF result_object <> EMPTY THEN
+
+                IF NOT result_object . result_entered () THEN
+
+                    complete = FALSE
+                    count    = size_of_array ( components ) + 1
+
+                    ENDIF
+
+            ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+    ELSEIF INDEX ( "UWV" , SELECT test . status IN OBJECT self . test ) > 0 THEN
+
+        complete = FALSE
+
+    ENDIF
+
+    RETURN ( complete )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_size ( self )
+
+{
+*   Return the number of results for the test.
+*
+*
+*******************************************************************************}
+
+    RETURN ( size_of_array ( self . result_list ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_get_by_number (       self   ,
+                            VALUE result )
+
+{
+*   Return the given result.
+*
+*
+*******************************************************************************}
+
+    DECLARE result_object    ,
+        component_object
+
+    result_object = self . result_list [ result ]
+
+    IF SELECT result . name IN OBJECT result_object = EMPTY THEN
+
+        component_object = self . component_collection .
+                          get_component
+                        ( result_object . analysis    ,
+                          result_object . analysis_version ,
+                          lib_comp_get_name ( result_object . name ))
+
+        result_object . reserve_result ( component_object )
+
+        self . lock_retain_object ( "RESULT"       ,
+                                     result_object )
+
+    ENDIF
+
+    RETURN ( result_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_get_result (       self        ,
+                                     VALUE test_number ,
+                                 VALUE name        )
+
+{
+*   Find the requested result.
+*
+*
+*******************************************************************************}
+
+
+    DECLARE count         ,
+        result_object ,
+        temp
+
+    result_object = EMPTY
+
+    IF ( test_number = EMPTY ) OR
+       ( test_number = SELECT test . test_number IN OBJECT self . test ) THEN
+
+        count = 1
+
+        WHILE count <= self . size () DO
+
+            temp      = self . get_by_number ( count )
+
+            IF ( strip ( temp . name ) = strip ( name )) THEN
+
+                result_object = temp
+                count         = self . size ()
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( result_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_get_result_first (       self           ,
+                                   VALUE test_number    ,
+                                       VALUE name           ,
+                                         internal_param )
+
+{
+*   Get the first name matching the requested component.
+*
+*
+*******************************************************************************}
+
+
+    DECLARE count         ,
+        result_object ,
+        temp          ,
+        current_name
+
+    name = strip ( name )
+
+    result_object = EMPTY
+
+    IF ( test_number <> EMPTY ) AND
+       ( test_number <> SELECT test . test_number IN OBJECT self . test ) THEN
+
+        internal_param = self . size () + 1
+
+    ELSE
+
+        count = 1
+
+        WHILE count <= size_of_array ( self . result_list ) DO
+
+            temp  = self . get_by_number ( count )
+
+                    current_name = substring ( temp . name           ,
+                                               1                     ,
+                                               string_length ( name ))
+
+            IF ( current_name = strip ( name )) THEN
+
+                internal_param = count
+                result_object  = temp
+                count          = self . size ()
+
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( result_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_get_result_next (       self           ,
+                              VALUE test_number    ,
+                              VALUE name           ,
+                                            internal_param )
+
+{
+*   Get the next result.
+*
+*
+*******************************************************************************}
+
+
+    DECLARE result_object ,
+        current_name
+
+    name = strip ( name )
+
+    internal_param = internal_param + 1
+
+    IF internal_param <= self . size () THEN
+
+        result_object = self . get_by_number ( internal_param )
+
+            current_name = substring ( result_object . name  ,
+                                       1                     ,
+                                       string_length ( name ))
+
+        IF ( current_name <> strip ( name )) THEN
+
+            result_object  = EMPTY
+
+        ENDIF
+
+    ELSE
+
+        result_object = EMPTY
+
+    ENDIF
+
+    RETURN ( result_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_mlp_compare (       self               ,
+                          VALUE mlp_identity       ,
+                          VALUE mlp_version        ,
+                          VALUE mlp_level          ,
+                          VALUE perform_level_operations )
+
+{
+*   Compare the result against an MLP
+*
+*
+*******************************************************************************}
+
+    DECLARE count  ,
+        status ,
+        answer ,
+        result
+
+    count  = 1
+    answer = MLP_CONST_PASS
+
+    WHILE count <= self . size () DO
+
+        result = self . get_by_number ( count )
+
+        IF INDEX ( "EMA" , result . result_status ) <> 0 THEN
+
+            status = result . mlp_compare ( self                     ,
+                            mlp_identity             ,
+                            mlp_version              ,
+                            mlp_level                ,
+                            perform_level_operations )
+
+        ELSEIF NOT result . result_entered () THEN
+
+            status = MLP_CONST_INDETERMINATE
+
+        ELSE
+                        { Status X }
+
+            status = MLP_CONST_PASS
+
+        ENDIF
+
+        IF status = MLP_CONST_FAIL THEN
+
+            answer = MLP_CONST_FAIL
+
+        ELSEIF answer = MLP_CONST_PASS THEN
+
+            answer = status
+
+        ENDIF
+
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_mlp_format (       self              ,
+                         VALUE mlp_identity      ,
+                         VALUE mlp_version       ,
+                         VALUE mlp_level         ,
+                               formatted_results )
+
+{
+*   Format the results against the given MLP
+*
+*
+*******************************************************************************}
+
+    DECLARE count      ,
+        status     ,
+        result     ,
+        formatted  ,
+        limits     ,
+        next_limit ,
+        next_pos
+
+    ARRAY formatted_results
+
+    count    = 1
+    next_pos = 1
+
+    WHILE count <= self . size () DO
+
+        CREATE OBJECT STD_RESULT_FORMAT , formatted
+
+        formatted_results [ next_pos ] = formatted
+
+        next_pos = next_pos + 1
+
+
+        result = self . get_by_number ( count )
+
+        formatted . result_object = result
+        formatted . name          = result . get_field ( "NAME"   )
+        formatted . status        = result . get_field ( "STATUS" )
+        formatted . result_units  = result . get_field ( "UNITS"  )
+        formatted . text          = result . get_field ( "TEXT"   )
+
+        limits = result . mlp_format_limits_context ( self         ,
+                                  mlp_identity ,
+                                          mlp_version  ,
+                                          mlp_level    )
+
+        next_limit = 1
+
+        WHILE next_limit <= limits . total DO
+
+            IF next_limit = 1 THEN
+
+                formatted . first_level = TRUE
+                formatted . level_count = limits . total
+
+            ELSE
+
+                CREATE OBJECT STD_RESULT_FORMAT , formatted
+
+                formatted_results [ next_pos ] = formatted
+
+                next_pos = next_pos + 1
+
+                formatted . first_level = FALSE
+
+            ENDIF
+
+            formatted . level     = limits . levels [ next_limit ]
+            formatted . lower     = limits . limits [ next_limit , 1 ]
+            formatted . upper     = limits . limits [ next_limit , 2 ]
+            formatted . mlp_units = limits . units  [ next_limit ]
+
+            IF self . do_compare THEN
+
+                status = result . mlp_compare ( self           ,
+                                mlp_identity   ,
+                                mlp_version    ,
+                                formatted . level ,
+                                FALSE          )
+
+                formatted . pass_fail = status
+
+            ENDIF
+
+            IF ( self . convert_to_mlp_units    ) AND
+                   ( formatted . mlp_units <> EMPTY ) THEN
+
+                formatted . text =
+                    result . result_as_units ( formatted . mlp_units ,
+                                   status )
+
+                IF status = EMPTY THEN
+
+                    formatted . result_units = formatted . mlp_units
+
+                ELSE
+
+                    formatted . text          = result . get_field ( "TEXT"   )
+
+                ENDIF
+
+            ENDIF
+
+            next_limit = next_limit + 1
+
+        ENDWHILE
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_copy_all_results (        self        ,
+                                  result_list ,
+                            VALUE replicate   )
+
+{
+*   Copy all the results in the object into the result list object
+*
+*
+*******************************************************************************}
+
+        DECLARE count       ,
+                result      ,
+                list_entry
+
+        count       = 1
+
+        WHILE count <= self . size () DO
+
+                result      = self . get_by_number ( count )
+
+                CREATE OBJECT RESULT_LIST_CREATE_ENTRY, list_entry
+
+{
+                list_entry . component_name = result . get_component_name ()
+}
+                list_entry . component_name = lib_comp_get_name ( result . name )
+
+                list_entry . result_name    = list_entry . component_name
+
+                result_list . add_result ( list_entry ,
+                                           replicate  )
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_copy_all_results_category (       self          ,
+                                          result_list   ,
+                                                VALUE copy_category ,
+                                VALUE new_category  ,
+                                    VALUE replicate    )
+
+{
+*   Copy all the results in the object into the result list object
+*
+*
+*******************************************************************************}
+
+        DECLARE count       ,
+                result      ,
+                list_entry  ,
+                temp
+
+        count       = 1
+
+        WHILE count <= self . size () DO
+
+                result = self . get_by_number ( count )
+
+                IF result . get_category () = copy_category  THEN
+
+                        temp = result . get_base ()
+                        temp = lib_comp_add_category ( temp         ,
+                                                       new_category ,
+                               EMPTY        )
+
+                        CREATE OBJECT RESULT_LIST_CREATE_ENTRY, list_entry
+
+                        list_entry . component_name = temp
+                        list_entry . result_name    = temp
+
+                        result_list . add_result ( list_entry ,
+                                                   replicate  )
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_set_field (       self           ,
+                                                VALUE required_field ,
+                            VALUE required_value )
+
+{
+*   Set the field in the test record to the required value.
+*
+*
+*******************************************************************************}
+
+
+    DECLARE field   ,
+        message
+
+    message = EMPTY
+    field   = field_name_to_number ( required_field , "TEST" )
+
+    IF field = field_name_to_number ( "STATUS" , "RESULT" ) THEN
+
+        message = "RPC_K_BADFLDSTATUS"
+
+    ELSEIF field = field_name_to_number ( "TEST_NUMBER" , "RESULT" ) THEN
+
+        message = "RPC_K_BADFLDTEST"
+
+    ELSE
+
+        ASSIGN test . 'required_field' IN OBJECT self . test = required_value
+
+    {ELSE other fieldss }
+
+    ENDIF
+
+    RETURN ( message )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_get_field (       self           ,
+                                                VALUE required_field )
+
+{
+*   Get the field from the test record.
+*
+*
+*******************************************************************************}
+
+    RETURN ( SELECT test . 'required_field' IN OBJECT self . test )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_upgrade_test_lock ( self       ,
+                                    reselected )
+
+{
+*   Upgrade the test lock
+*
+*
+*******************************************************************************}
+
+
+    DECLARE ok
+
+    ok = self . lock_upgrade_object ( "TEST"       ,
+                                       self . test ,
+                                       reselected  )
+    RETURN ( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_downgrade_test_lock ( self )
+
+{
+*
+*
+******************************************************************************}
+
+    self . lock_downgrade_object ( "TEST"       ,
+                                    self . test )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_upgrade_sample_lock ( self       ,
+                                      reselected )
+
+{
+*   Upgrade the sample lock
+*
+*
+*******************************************************************************}
+
+
+    DECLARE ok
+
+    ok = self . lock_upgrade_object ( "SAMPLE"        ,
+                                       self . sample  ,
+                                       reselected     )
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_downgrade_sample_lock ( self )
+
+{
+*
+*
+******************************************************************************}
+
+    self . lock_downgrade_object ( "SAMPLE"       ,
+                                    self . sample )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_update_test ( self )
+
+{
+*
+*
+******************************************************************************}
+
+    UPDATE test IN OBJECT self
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_interface_action_release ( self )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE count         ,
+        result_object
+
+    count = 1
+
+    WHILE count <= self . size () DO
+
+        result_object = self . get_by_number ( count )
+
+        result_object . release_result ( TRUE )
+
+        count = count + 1
+
+    ENDWHILE
+
+    self . test . release_test ( )
+
+    self . sample . release_sample ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE std_result_grid_class_initialisation ( self )
+
+{
+*
+*
+******************************************************************************}
+
+    ARRAY self . component_array ARRAY_SIZE ( 0 , 4 )
+    ARRAY self . analysis_array  ARRAY_SIZE ( 0 , 2 )
+    ARRAY self . sample_array
+
+    self . component_list_expand = FALSE
+    self . create_collections ( )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_setup_component_array (       self             ,
+                                   VALUE analysis         ,
+                                   VALUE analysis_version ,
+                                     component_array  ,
+                               VALUE show_calculated  ,
+                               VALUE component_pos    )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE count     ,
+        name      ,
+        rep_name  ,
+        component ,
+        temp      ,
+        wanted    ,
+        start
+
+    count = 1
+    start = 2
+
+    WHILE count <= size_of_array ( self . analysis_array ) DO
+
+        IF ( self . analysis_array [ count , 1 ] = analysis ) AND
+           ( self . analysis_array [ count , 2 ] = analysis_version ) THEN
+
+            RETURN
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF show_calculated THEN
+
+        name = SELECT versioned_component . name
+               WHERE  ( analysis = analysis ) AND
+                      ( analysis_version = analysis_version )
+               ORDER ON order_number
+
+    ELSE
+
+        name = SELECT versioned_component . name
+               WHERE  ( analysis = analysis                 ) AND
+                      ( analysis_version = analysis_version ) AND
+                  ( result_type      <> "K"             )
+               ORDER ON order_number
+
+    ENDIF
+
+    self . analysis_array [ count , 1 ] = analysis
+    self . analysis_array [ count , 2 ] = analysis_version
+
+    count = size_of_array ( self . component_array ) + 1
+
+    WHILE name <> EMPTY DO
+
+        IF variable_is_assigned ( component_array ) THEN
+
+            wanted = FALSE
+            temp   = start
+
+            WHILE ( component_array [ component_pos, temp ] <> EMPTY ) AND
+                  ( NOT wanted                                       ) DO
+
+                IF strip ( component_array [ component_pos , temp ])=
+                    strip ( name ) THEN
+
+                    wanted = TRUE
+
+                    IF temp = start THEN
+
+                        start = start + 1
+
+                    ENDIF
+
+                ENDIF
+
+                temp = temp + 1
+
+            ENDWHILE
+
+        ELSE
+
+            wanted = TRUE
+
+        ENDIF
+
+        IF wanted AND self . create_matrix THEN
+
+            IF SELECT versioned_component . matrix_no > 0 THEN
+
+                IF ( SELECT versioned_component . row_no    = 1 ) AND
+                   ( SELECT versioned_component . column_no = 1 ) THEN
+
+                    name = STRIP ( SELECT versioned_component . matrix_name ) :
+                           STRIP ( SELECT versioned_component . matrix_no   )
+
+                ELSE
+
+                    wanted = FALSE
+
+                ENDIF
+
+            ENDIF
+
+        ENDIF
+
+        IF wanted THEN
+
+            name     = strip ( name )
+            rep_name = lib_comp_add_replicate ( name , 1 )
+
+            component = self . component_collection . create_component ( rep_name )
+
+            self . component_array [ count , 1 ] = name
+            self . component_array [ count , 2 ] = 0
+            self . component_array [ count , 3 ] = analysis
+            self . component_array [ count , 4 ] = component
+
+                        count = count + 1
+
+        ENDIF
+
+        NEXT versioned_component
+        name  = SELECT versioned_component . name
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_setup_analysis (       self            ,
+                                  component_array ,
+                        VALUE show_calculated )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE analysis_id      ,
+            analysis_version ,
+        count
+
+    count = 1
+
+    WHILE count <= size_of_array ( component_array ) DO
+
+        analysis_id = component_array [ count , 1 ]
+
+        analysis_version = lib_utils_find_highest_version
+                              ( "VERSIONED_ANALYSIS" ,
+                                analysis_id          ,
+                                TRUE                 )
+
+        self . setup_component_array ( analysis_id      ,
+                                       analysis_version ,
+                               component_array  ,
+                           show_calculated  ,
+                           count            )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_load_components_for_analysis (       self     ,
+                                                              VALUE analysis ,
+                                        component_array )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE component  ,
+        count      ,
+        replicates ,
+        copy       ,
+        name
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . component_array ) DO
+
+        IF self . component_array [ count , 2 ] >  0 THEN
+
+            component = self . component_array [ count , 4 ]
+            self . component_collection . add_to_collection ( component )
+
+            replicates = 2
+
+            WHILE replicates <= self . component_array [ count,2] DO
+
+                name = self . component_array [ count, 1 ]
+                    name = lib_comp_get_name ( name )
+                name = lib_comp_add_replicate ( name, replicates )
+
+                copy = self . component_collection .
+                         copy_component ( name      ,
+                                  component )
+
+                self . component_collection . add_to_collection ( copy )
+
+                replicates = replicates + 1
+
+            ENDWHILE
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_find_replicate ( self        ,
+                        test_object )
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE keep_going ,
+            add        ,
+        create     ,
+        count      ,
+        sample     ,
+        replicate  ,
+        position
+
+    IF variable_is_assigned ( test_object . test ) THEN
+
+        sample    = SELECT test . sample     IN OBJECT test_object . test
+        replicate = SELECT test . test_count IN OBJECT test_object . test
+
+        keep_going = TRUE
+        add        = FALSE
+        create     = FALSE
+        count      = 1
+
+    ELSE
+
+        keep_going = FALSE
+        add        = FALSE
+        create     = FALSE
+        count      = 0
+
+    ENDIF
+
+    WHILE keep_going DO
+
+        IF count <= size_of_array ( self . sample_array ) THEN
+
+            IF ( self . sample_array [ count , 1 ] =  sample ) THEN
+
+                { Only want one sample object use the existing one }
+                test_object . sample = self . sample_array [ count, 3 ] . sample
+                test_object . test . sample_object = test_object . sample
+
+                IF ( self . sample_array [ count , 2 ] > replicate ) THEN
+
+                    keep_going = FALSE
+                    create     = TRUE
+
+                ELSEIF self . sample_array [ count , 2 ] = replicate THEN
+
+                    keep_going = FALSE
+
+                ELSE
+
+                    count      = count + 1
+
+                ENDIF
+
+            ELSE
+
+                count = count + 1
+
+            ENDIF
+
+        ELSE
+
+            keep_going = FALSE
+            add        = TRUE
+            create     = TRUE
+
+        ENDIF
+
+    ENDWHILE
+
+    IF create THEN
+
+        IF NOT add THEN
+            array_insert_slice ( self . sample_array ,
+                         1                   ,
+                         count               )
+        ENDIF
+
+        self . sample_array [ count , 1 ] = sample
+        self . sample_array [ count , 2 ] = replicate
+        self . sample_array [ count , 3 ] = test_object
+
+    ELSE
+
+        position = 3
+
+        WHILE self . sample_array [ count , position ] <> EMPTY DO
+
+            position = position + 1
+
+        ENDWHILE
+
+        self . sample_array [ count , position ] = test_object
+
+    ENDIF
+
+    RETURN ( count )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_order_tests (  self       ,
+                          test_array )
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( test_array ) DO
+
+        self . find_replicate ( test_array [ count ] )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_select_sample ( self         ,
+                           test_context )
+
+    DECLARE sample_id
+
+    sample_id = SELECT test . sample
+            IN OBJECT test_context . test
+
+    IF self . sample_collection . get_sample ( sample_id ) = EMPTY THEN
+
+        self . sample_collection . add_sample ( sample_id             ,
+                                    test_context . sample ,
+                                    0                     )
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_set_components_wanted (       self     ,
+                               VALUE analysis ,
+                               VALUE name     )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE count     ,
+        replicate
+
+    replicate = lib_comp_get_replicate ( name )
+    name      = lib_comp_get_name ( name )
+    count     = 1
+
+    WHILE count <= size_of_array ( self . component_array ) DO
+
+        IF ( name     = self . component_array [ count , 1 ] ) AND
+           ( analysis = self . component_array [ count , 3 ] ) THEN
+
+            IF replicate > self . component_array [ count , 2 ] THEN
+
+                self . component_array [ count , 2 ] = replicate
+
+            ENDIF
+
+                        count = size_of_array ( self . component_array )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_select_results (       self           ,
+                              test_context   ,
+                        VALUE show_completed ,
+                        VALUE line_number    )
+
+    DECLARE count         ,
+        result_object ,
+        test_object   ,
+        analysis      ,
+        empty_param
+
+    empty_param  = EMPTY
+
+    test_object  = test_context . test
+    analysis     = SELECT test  . analysis IN OBJECT test_object
+
+    count = 1
+
+    WHILE count <= test_context . size () DO
+
+        result_object = test_context . get_by_number ( count )
+
+                result_object . set_position ( 0           ,
+                           0           ,
+                           empty_param )
+
+        IF show_completed THEN
+
+            self . set_components_wanted ( analysis             ,
+                               result_object . name )
+
+        ELSEIF result_object . get_field ( "RESULT_TYPE" ) <> "K" THEN
+
+            self . set_components_wanted ( analysis             ,
+                               result_object . name )
+
+        ENDIF
+
+                self . result_collection . add_result ( result_object  ,
+                                        line_number    )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_result_grid_action_select_tests (       self            ,
+                          VALUE show_calculated )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE count            ,
+        components       ,
+        analysis         ,
+        analysis_version ,
+        test_object      ,
+        pos
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . sample_array ) DO
+
+        IF ( self . sample_array [ count , 1 ] <> EMPTY ) THEN
+
+            pos = 3
+
+            WHILE self . sample_array [ count , pos ] <> EMPTY DO
+
+                test_object = self . sample_array [ count , pos ]
+
+                analysis         = SELECT test . analysis
+                             IN OBJECT test_object . test
+                analysis_version = SELECT test . analysis_version
+                             IN OBJECT test_object . test
+
+                    self . setup_component_array ( analysis         ,
+                                               analysis_version ,
+                                   components       ,
+                                   show_calculated  ,
+                                   0                )
+
+                self . select_sample  ( test_object )
+                self . select_results ( test_object     ,
+                            show_calculated ,
+                            count           )
+
+                    self . test_list [ count ] = test_object . test
+
+                pos = pos + 1
+
+            ENDWHILE
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_interface_grid_initialise
+
+{
+*
+*
+*******************************************************************************}
+
+        { Initialise libraries }
+
+    browse_field_initialise ( )
+        lib_tsr_form_initialise ( )
+        lib_twr_grid_initialise ( )
+        lib_re_sample_initialise ( )
+        lib_re_test_initialise ( )
+        lib_re_result_initialise ( )
+
+    lib_re_interface_initialise ( )
+    set_up_std_prompt_grid_class ( )
+
+
+    DEFINE CLASS STD_RESULT_GRID
+
+                INHERIT
+
+                        PROMPT_GRID_EX_CLASS ,
+                        RESULT_CONTEXT_CLASS ,
+                        RE_SPREAD_GRID
+
+        PROPERTIES "COMPONENT_ARRAY"    ,
+               "SAMPLE_ARRAY"       ,
+               "SAMPLE_LINES"   ,
+               "ANALYSIS_ARRAY" ,
+               "FORM_OBJECT"
+
+                ACTIONS
+
+            "SETUP_COMPONENT_ARRAY" ,
+            "SETUP_ANALYSIS"        ,
+            "FIND_REPLICATE"        ,
+                        "SELECT_SAMPLE"         ,
+            "ORDER_TESTS"           ,
+                        "SELECT_TESTS"          ,
+                        "SET_COMPONENTS_WANTED" ,
+                        "SELECT_RESULTS"        ,
+            "LOAD_COMPONENTS_FOR_ANALYSIS" ,
+
+            "GET_RESULT"
+                                ROUTINE "LIB_TWR_SELECT_GET_RESULT"
+                                IN LIBRARY "$LIB_TWR_SELECT" ,
+            "GET_RESULT_FIRST"
+                                ROUTINE "LIB_TWR_SELECT_GET_RESULT_FIRST"
+                                IN LIBRARY "$LIB_TWR_SELECT" ,
+            "GET_RESULT_NEXT"
+                                ROUTINE "LIB_TWR_SELECT_GET_RESULT_NEXT"
+                                IN LIBRARY "$LIB_TWR_SELECT"
+        INITIALISATION
+
+        END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_interface_grid_setup (       test_array      ,
+                                                   component_array ,
+                                             VALUE re_mode         ,
+                                             VALUE show_calculated ,
+                                                   status          )
+
+{
+*   Split version of libe_re_interface_grid
+*   Allows caller to define callback routines
+*
+*******************************************************************************}
+
+    DECLARE twr_grid_object ,
+        analysis_id
+
+    status = EMPTY
+
+    lib_re_interface_grid_initialise ()
+
+    { Setup the TWR form }
+
+    IF size_of_array ( test_array ) > 0 THEN
+
+        CREATE OBJECT STD_RESULT_GRID, twr_grid_object
+
+        analysis_id = EMPTY { Until we know better }
+
+        status = twr_grid_object . create ( STD_RESULT_GRID  ,
+                                            analysis_id      ,
+                                            component_array  ,
+                                            re_mode          )
+
+        lib_tsr_form_create_form ( twr_grid_object . form_object      ,
+                                   twr_grid_object                    ,
+                                   "RESULT_ENTRY_TWR_ANALYSIS_HEADER" )
+
+        IF variable_is_assigned ( component_array ) THEN
+
+            twr_grid_object . setup_analysis ( component_array ,
+                                               show_calculated )
+
+        ENDIF
+
+        twr_grid_object . order_tests  ( test_array )
+        twr_grid_object . select_tests ( show_calculated )
+
+        twr_grid_object . sample_lines = size_of_array ( twr_grid_object . sample_array )
+
+        IF size_of_array ( twr_grid_object . component_array ) > 0
+
+            analysis_id = twr_grid_object .
+                                   component_array [ 1 , 3 ]
+
+            twr_grid_object . load_components_for_analysis ( analysis_id     ,
+                                                             component_array )
+
+        ELSE
+
+            status = "RESULT_ENTRY_NO_COMPS"
+
+        ENDIF
+
+    ELSE
+
+        status = "RESULT_ENTRY_NO_COMPS"
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        IF re_mode = RE_MODIFY THEN
+
+            twr_grid_object . allowed_test_status   = "VPC"
+            twr_grid_object . allowed_sample_status = "VPC"
+
+        ELSEIF re_mode = RE_AUTHORISE THEN
+
+            twr_grid_object . allowed_test_status   = "VPC"
+            twr_grid_object . allowed_sample_status = "VPC"
+
+        ELSE
+
+			twr_grid_object . allowed_test_status = "VPCAIRXS"
+			twr_grid_object . allowed_sample_status = "VPCARXIS"
+
+        ENDIF
+
+        result_spreadsheet_add_title ( twr_grid_object . form_object ,
+                                       twr_grid_object               ,
+                                       analysis_id                   ,
+                                       re_mode                       )
+
+        twr_grid_object . cell_rows = twr_grid_object . sample_lines
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        IF ( twr_grid_object . result_collection . size ( ) = 0 ) OR
+           ( twr_grid_object . cell_rows    = 0                 ) OR
+           ( twr_grid_object . cell_columns = 0                 ) THEN
+
+            status = "RESULT_ENTRY_NO_COMPS"
+
+        ENDIF
+
+    ENDIF
+
+    IF status <> EMPTY THEN
+        twr_grid_object . form_object = EMPTY
+        twr_grid_object = EMPTY
+    ENDIF
+
+    RETURN ( twr_grid_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_interface_grid_pre_commit_callback (       lib_re_interface_grid_object ,
+                                                           VALUE callback_routine             ,
+                                                                 callback_parameter           )
+
+{
+*   Allows caller to define the pre commit callback routine and parameter
+*
+*******************************************************************************}
+
+    lib_re_interface_grid_object . pre_commit_callback  = callback_routine
+
+    OBJECT_ASSIGN_UNCOUNTED ( lib_re_interface_grid_object . pre_commit_parameter ,
+                              callback_parameter                                  )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_interface_grid_execute ( twr_grid_object )
+
+{
+*   Split version of libe_re_interface_grid
+*   Allows caller to define callback routines
+*
+*******************************************************************************}
+
+    screen_begin_update ( )
+
+    twr_grid_object . form_object . start_prompt ( )
+
+    twr_grid_object . form_object . wait_prompt ( )
+
+    twr_grid_object . form_object . end_prompt ( )
+
+    twr_grid_object . form_object = EMPTY
+    twr_grid_object = EMPTY
+
+    screen_end_update ( )
+
+    ROLLBACK
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_interface_grid (       test_array      ,
+                                             component_array ,
+                                       VALUE re_mode         ,
+                                       VALUE show_calculated )
+
+{
+*   Generic command for resentry command.
+*
+*******************************************************************************}
+
+    DECLARE lib_re_interface_grid_object, status
+
+    lib_re_interface_grid_object = lib_re_interface_grid_setup ( test_array      ,
+                                                                 component_array ,
+                                                                 re_mode         ,
+                                                                 show_calculated ,
+                                                                 status          )
+
+    IF ( lib_re_interface_grid_object <> EMPTY ) THEN
+        lib_re_interface_grid_execute ( lib_re_interface_grid_object )
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_interface_define_matrix_component ( result_context_object )
+
+{
+*   Generic command for resentry command.
+*
+*******************************************************************************}
+
+    DECLARE row_no, column_no
+
+    row_no = SELECT versioned_component . row_no
+    column_no = SELECT versioned_component . column_no
+
+    IF ( row_no = 1 ) AND ( column_no = 1 ) THEN
+
+        result_context_object . component_collection . add_component ( EMPTY )
+
+    ENDIF
+
+        RETURN ( EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_interface_define_matrix_result ( result_context_object   ,
+                                       test_object             )
+
+{
+*   Generic command for resentry command.
+*
+*******************************************************************************}
+
+    DECLARE row_no,
+            column_no,
+            result_object,
+            empty_var,
+            matrix_name
+
+    row_no    = SELECT result . row_no
+    column_no = SELECT result . column_no
+
+    IF ( row_no = 1 ) AND ( column_no = 1 ) THEN
+
+        matrix_name = STRIP ( SELECT result . matrix_name ) :
+                      STRIP ( SELECT result . matrix_no   )
+
+        result_object = lib_re_result_create_result_matrix (
+                                 test_object               ,
+                                 matrix_name               ,
+                                 SELECT result . matrix_no )
+
+        empty_var = EMPTY
+
+        result_object . reserve_result ( empty_var )
+
+        result_context_object . add_result ( result_object )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_interface_define_matrix_result_from_component
+                                          ( result_context_object,
+                                            test_object          ,
+                                            component_item       )
+
+{
+*   Generic command for resentry command.
+*
+*******************************************************************************}
+
+
+    DECLARE row_no,
+            column_no,
+            result_object,
+            empty_var,
+            matrix_name
+
+    IF ( component_item <> EMPTY ) THEN
+
+        row_no    = SELECT versioned_component . row_no
+                           IN OBJECT component_item
+        column_no = SELECT versioned_component . column_no
+                           IN OBJECT component_item
+
+        IF ( row_no = 1 ) AND ( column_no = 1 ) THEN
+
+            matrix_name = STRIP ( SELECT versioned_component . matrix_name
+                                  IN OBJECT component_item ) :
+                          STRIP ( SELECT versioned_component . matrix_no
+                                  IN OBJECT component_item )
+
+            result_object = lib_re_result_create_result_matrix (
+                                     test_object                     ,
+                                     matrix_name                     ,
+                                     SELECT versioned_component . matrix_no
+                                            IN OBJECT component_item )
+
+            empty_var = EMPTY
+
+            result_object . reserve_result ( empty_var )
+
+                        result_context_object . add_result ( result_object )
+
+        ENDIF
+
+    ENDIF
+
+        RETURN ( EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

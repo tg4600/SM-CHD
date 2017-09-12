@@ -1,0 +1,582 @@
+{***********************************************************************
+* Module Name   : BIZ_TRANSFER
+* Purpose       : Handles data to and from BIZTALK.
+* Document Ref  : LIMS Design Specifications related to MES, version .2
+* Specification :N/A
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2011-11-12  Tommy Bøgeskov  Created
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $LIMSML_PROCESS
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $SP_LOGIN_JOB
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+{**** Start Section for testing ****}
+
+DECLARE repeat_interval, use_BZT 
+
+    repeat_interval = SELECT timerqueue.repeat_interval FOR UPDATE WHERE report_name = GLOBAL("current_library")
+    START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+    ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+    UPDATE timerqueue
+    COMMIT
+ 
+use_BZT = GLOBAL("BIZTALK_ACTIVE")
+    WriteToLog("Transfer to BizTalk = ":use_BZT)
+
+SendMessages(use_BZT)
+
+EXIT
+
+{**** End   Section for testing ****}
+
+GLOBAL ROUTINE SendToBizTalk(File, XMLSchema, WebService, WebServiceAction, InputArray)
+DECLARE LogTxt, TransactionId, FileName, XmlDoc, Transaction, Request_XML
+
+    TransactionId = GenerateTransactionId()
+    LogTxt        = "TransactionId: ":TransactionId:" SendToBizTalk(":File:", ":XMLSchema:", ":WebService:", ":WebServiceAction:", InputArray)"
+    WriteToLog (LogTxt)
+
+    FileName      = File:"_":TransactionId
+    XmlDoc = CreateXML(InputArray, File, TransactionId)
+    Transaction = XmlDoc.gettransaction ( 0 )
+    Request_XML = Transaction.returnxml ()
+    WriteXMLFile(FileName, Request_XML)
+    IF (ChangeXMLNameSpace(FileName, XMLSchema)) THEN
+        SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE GenerateTransactionId
+{
+* Purpose      : Creates a unique transaction identity
+* Parameters   : None
+* Return Value : A new identity
+**************************************************************************}
+    DECLARE Answer, generated_number, i
+
+    SET FORMAT "9999999999"
+    generated_number = RIGHTSTRING(STRIP(INCREMENT("MES_TRANSFER", "IDENTITY")), 7)
+
+    i = LENGTH(STRIP(generated_number))
+
+    WHILE i <= 6 DO
+
+        generated_number = "0" : STRIP(generated_number)
+        i = LENGTH(STRIP(generated_number))
+
+    ENDWHILE
+
+    Answer = "LIMS" : STRIP(RIGHTSTRING(generated_number,6))
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE CreateXML(Input_Array, VALUE FileName, VALUE TransactionId)
+{       CreateXML(InputArray, FileName, TransactionId)
+* Purpose      : Creates and populates a limsml object
+* Parameters   : JobArray - Array
+* Return Value : limsml - HELPER_RICHDOCUMENT
+**************************************************************************}
+DECLARE limsml, entity, i
+
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    entity = limsml.addentity (FileName)
+    entity.field_inout ( "TransactionNo", TransactionId)
+    SET DATE FORMAT "YYYY-MZ-DZ H24:MI:SS.CC"
+        entity.field_inout ( "CreateDateTime", STRING(NOW))
+    RESTORE DATE FORMAT
+
+    i = 1
+    {Loop through array and add entities to xml object.}
+    WHILE Input_Array[i, 1] <> EMPTY DO
+        entity.field_inout ( InputArray[i, 1], InputArray[i, 2])
+        i = i + 1
+    ENDWHILE
+
+    {Return xml object}
+    RETURN( limsml )
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE CreateXMLChild(Input_Array, Child_Array, VALUE FileName, VALUE TransactionId)
+{       CreateXML(InputArray, FileName, TransactionId)
+* Purpose      : Creates and populates a limsml object
+* Parameters   : JobArray - Array
+* Return Value : limsml - HELPER_RICHDOCUMENT
+**************************************************************************}
+DECLARE limsml, i, sample, test, main
+
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    sample = limsml.addentity (FileName)
+    sample.field_in ( "TransactionNo", TransactionId)
+    SET DATE FORMAT "YYYY-MZ-DZ H24:MI:SS.CC"
+        sample.field_inout ( "CreateDateTime", STRING(NOW))
+    RESTORE DATE FORMAT
+
+    i = 1
+    {Loop through main-array and add entities to xml object.}
+    WHILE Input_Array[i, 1] <> EMPTY DO
+        main = sample.field_in ( InputArray[i, 1], InputArray[i, 2])
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    {Loop through child-array and add entities to xml object.}
+    WHILE Child_Array[i, 1] <> EMPTY DO
+        {fm("Child_Array[":i:", 1] = '":Child_Array[i, 1] :"'")}
+        IF Child_Array[i, 1] = "AddChild" THEN
+            test = sample.addchild (Child_Array[i, 2])
+        ELSE
+            test.field_in ( Child_Array[i, 1], Child_Array[i, 2])
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    {Return xml object}
+    RETURN( limsml )
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE WriteXMLFile(VALUE FileName, VALUE XMLText)
+{
+* Purpose      : Creates the physical file and adds xml to it.
+* Parameters   : Filename - where the file should be saved
+*        XMLText  - text to add to created file
+* Return Value :N/A
+**************************************************************************}
+DECLARE check_ok, tmp_name
+
+    {Create temp file}
+    tmp_name = "smp$userfiles:BizTalk\" : STRIP(FileName) : ".txt"
+
+    FILE CREATE tmp_name, check_ok
+    FILE EXTEND tmp_name, check_ok
+    FILE WRITE  tmp_name, XMLText , check_ok
+    FILE CLOSE  tmp_name, check_ok
+
+{WriteToLog("xmldoc: \\dklims04-t\Userfiles\BizTalk\":FileName:".xml")}
+
+    ChangeXMLEncoding(STRIP(FileName))
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ChangeXMLEncoding(VALUE FileName)
+{
+* Purpose      : Changes encoding from UTF-8 to ISO-8859-1
+* Parameters   : Filename as string
+* Return Value :N/A
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath
+
+        FilePath = "smp$userfiles:BizTalk\" : FileName : ".txt"
+
+        IF FILE EXISTS ( FilePath ) THEN
+
+            {Open and read current file}
+            FILE OPEN FilePath, check_ok
+            FILE READ FilePath, out_val, check_ok
+
+            {Remove middle string from file}
+            start_string = SUBSTRING( out_val, 1, 30)
+            end_string = SUBSTRING( out_val, 36, length(out_val)-35)
+            FILE CLOSE FilePath, check_ok
+
+            {Delete original file}
+            FILE DELETE FilePath
+
+            {Create new file and add encoding as requested}
+            tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.txt"
+
+            FILE CREATE tmp_name, check_ok
+            FILE EXTEND tmp_name, check_ok
+            FILE WRITE tmp_name, start_string : "ISO-8859-1" : end_string , check_ok
+            FILE CLOSE tmp_name, check_ok
+
+            {Rename temp file to old name}
+            FILE COPY tmp_name, FilePath, check_ok
+            {Delte temp file}
+            FILE DELETE tmp_name
+        ELSE
+
+            WriteToLog("ERROR: File " : FilePath : " does not exist. Routine ChangeXMLEncoding.")
+
+        ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ConvertDateToXML (VALUE DateToConvert)
+{
+* Purpose      : Converts a date to xml format
+* Parameters   : DateToConvert - well guess...
+* Return Value : Converted date
+**************************************************************************}
+DECLARE Answer, year, month, day, hour, minute, sec
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    Answer = string ( DateToConvert )
+
+    day     = SUBSTRING ( Answer , 1 , 2 )
+    month   = SUBSTRING ( Answer , 4 , 2 )
+    year    = SUBSTRING ( Answer , 7 , 4 )
+    hour    = SUBSTRING ( Answer , 12 , 2 )
+    minute  = SUBSTRING ( Answer , 15 , 2 )
+    sec     = SUBSTRING ( Answer , 18 , 2 )
+
+    Answer = year : "-" : month : "-" : day : "T" : hour : ":" : minute : ":" : sec
+
+    RESTORE DATE FORMAT
+
+    RETURN (Answer)
+
+ENDROUTINE
+{**************************************************************************}
+
+GLOBAL ROUTINE ConvertDateFromXML (VALUE DateToConvert)
+{*************************************************************************
+* Purpose      : Converts a date from xml format
+* Parameters   : DateToConvert - well guess...
+* Return Value : Converted date
+**************************************************************************}
+
+DECLARE Answer, year, month, day, hour, minute, sec, TmpStr
+
+    TmpStr = string ( DateToConvert )
+
+    year    = SUBSTRING ( TmpStr , 1 , 4 )
+    month   = SUBSTRING ( TmpStr , 6 , 2 )
+    day     = SUBSTRING ( TmpStr , 9 , 2 )
+    hour    = SUBSTRING ( TmpStr , 12 , 2 )
+    minute  = SUBSTRING ( TmpStr , 15 , 2 )
+    sec     = SUBSTRING ( TmpStr , 18 , 2 )
+
+{    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"}
+    SET DATE FORMAT "DZ-MON-YYYY H24:MI:SS"
+
+    Answer = day : "-" : month : "-" : year
+
+    IF (STRIP(hour) <> "") THEN
+        Answer = Answer : " " : hour : ":" : minute : ":" : sec
+    ENDIF
+
+    IF IS_DATE ( Answer ) THEN
+        Answer = DATE(Answer)
+        {WriteToLog("STRING(DateToConvert): '":TmpStr:"' Return:'":Answer:"'")}
+        RESTORE DATE FORMAT
+        RETURN (Answer)
+    ELSE
+        Answer = NOW {EMPTY}
+        RESTORE DATE FORMAT
+        WriteToLog("STRING(DateToConvert): '":TmpStr:"' Return:'":Answer:"'")
+        RETURN (Answer)
+    ENDIF
+
+ENDROUTINE
+
+GLOBAL ROUTINE SendToWebService(VALUE WebService, VALUE WebServiceAction, VALUE FileName, LogTxt)
+{
+* Purpose      : Use MSXML2.ServerXmlHttp object to communicate with a web service.
+* Parameters   : WebService       - Path to webservice
+*        WebServiceAction     - Function to call on webservice
+         FileName   - Path to file to be sent as parameter
+* Return Value :N/A
+**************************************************************************}
+DECLARE file_name_txt, xmlhttp, strXml, tmpstr, check_ok, tmpXML, soapMessage, position, Message, status
+
+    LogTxt = PAD(FileName, " ", 25):"(":STRIP(LogTxt):")"
+    Message = EMPTY
+
+    file_name_txt = "smp$userfiles:BizTalk\" : STRIP(FileName) : ".txt"
+    file_name     = "smp$userfiles:BizTalk\" : STRIP(FileName) : ".xml"
+
+    FILE COPY   file_name_txt, file_name, check_ok
+    {WriteToLog("FILE COPY   ":file_name_txt:" ":file_name:" ":check_ok)}
+    FILE DELETE file_name_txt, check_ok
+    {WriteToLog("FILE DELETE ":file_name_txt:" ":check_ok)}
+
+    strXML = EMPTY
+    FILE OPEN file_name, check_ok
+
+    IF (check_ok <> EMPTY) THEN
+        WriteToLog(check_ok:" ":STRIP(FileName):".xml")
+    ELSE
+        FILE READ file_name, strXml ,check_ok
+        WHILE (check_ok = EMPTY) DO
+            FILE READ file_name, tmpstr ,check_ok
+            IF tmpstr <> EMPTY THEN
+                strXml = strXml : tmpstr
+            ENDIF
+        ENDWHILE
+    ENDIF
+
+    FILE CLOSE file_name, check_ok
+
+    IF strXML <> EMPTY THEN
+        tmpXML = SUBSTRING( strXML, 44, LENGTH(strXML))
+
+        soapMessage = "<s:Envelope xmlns:s=" : ASCII(34) : "http://schemas.xmlsoap.org/soap/envelope/" : ASCII(34) : ">"
+        soapMessage = soapMessage : "<s:Body>"
+        soapMessage = soapMessage : STRIP(tmpXML)
+        soapMessage = soapMessage : "</s:Body>"
+        soapMessage = soapMessage : "</s:Envelope>"
+
+        DECLARE msg, i, lstring, rstring
+        msg = soapMessage
+        i = INDEX(msg, "><") 
+        WHILE i > 0
+            lstring = LEFTSTRING(msg, i )
+            rstring = SUBSTRING(msg, i + 1, LENGTH(msg))
+            msg = STRIP(lstring):ASCII(10):STRIP(rstring)
+            i = INDEX(msg, "><")
+        ENDWHILE
+        IF GLOBAL("BIZTALK_ACTIVE") THEN
+            WriteToLog(ASCII(10):ASCII(10):msg:ASCII(10))
+
+            CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+            xmlhttp.create ("WinHTTP.WinHTTPRequest.5.1")
+
+            xmlhttp.open("POST", WebService , False)
+            xmlhttp.setRequestHeader( "Man", "POST " : WebService : " HTTP/1.1")
+            xmlhttp.setRequestHeader( "SOAPAction", WebServiceAction )
+            xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+            xmlhttp.send(soapMessage)
+
+            LogTxt = "Sent to BizTAlk (":STRIP(xmlhttp.statusText):"): ":LogTxt
+            WriteToLog(LogTxt)
+            IF INDEX(STRIP(xmlhttp.statusText),"OK") = 0 THEN
+                {WriteToLog(file_name:" ":STRIP(xmlhttp.statusText))}
+            ELSE
+                FILE DELETE file_name, status
+                IF status <> EMPTY THEN
+                    WriteToLog("FILE DELETE ":file_name:", ":STRIP(status))
+                ENDIF
+            ENDIF
+            Message = STRIP(xmlhttp.responseText)
+            position = INDEX ( Message, "<Message>" ) + 9
+            IF position  > 0 THEN
+                Message = SUBSTRING(Message, position, LENGTH(Message))
+                position = INDEX ( Message, "</Message>" ) - 1
+                Message = LEFTSTRING(Message, position)
+            ENDIF
+        ELSE
+            WriteToLog("BizTalk not active, file saved: ":file_name)
+        ENDIF
+    ENDIF
+    
+    IF (Message <> EMPTY) AND (Message <> "") THEN
+        WriteToLog(Message)
+    ENDIF
+
+    RETURN ( Message )
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ChangeXMLNameSpace (VALUE FileName, VALUE ChangeTo)
+{
+*
+* Purpose      : Changes namespace in xml doc.
+*
+* Parameters   : Filename - file to change in
+                 ChangeTo - Value to replace existing namespace with
+*
+* Return Value :N/A
+*
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath, idx, valid
+
+    FilePath = "smp$userfiles:BizTalk\" : FileName : ".txt"
+
+    IF FILE EXISTS ( FilePath ) THEN
+        {Open org file and read content}
+        FILE OPEN FilePath, check_ok
+        FILE READ FilePath, out_val, check_ok
+        {Find strings to keep}
+        idx = INDEX(out_val, "xmlns:xsi=") - 2
+        start_string = SUBSTRING( out_val, 1, idx) {: "=" : ASCII(34)}
+        idx = INDEX(out_val, " id=")
+        end_string = SUBSTRING( out_val, idx, LENGTH(out_val))
+        out_val = start_string:end_string
+        idx = INDEX(out_val, " id=") + 10
+        start_string = SUBSTRING( out_val, 1, idx):" xmlns=":ASCII(34):ChangeTo
+        end_string = SUBSTRING( out_val, idx, LENGTH(out_val))
+    {Parse new value}
+        outval = start_string : end_string
+        idx = INDEX(out_val, "system response_type=") + 29
+        start_string = SUBSTRING( out_val, 1, idx)
+        end_string = SUBSTRING( out_val, idx + 59, LENGTH(out_val))
+        FILE CLOSE FilePath, check_ok
+        FILE DELETE FilePath
+        tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.xml"
+        FILE CREATE tmp_name, check_ok
+        FILE EXTEND tmp_name, check_ok
+        FILE WRITE tmp_name, start_string : end_string , check_ok
+        FILE CLOSE tmp_name, check_ok
+        FILE COPY tmp_name, FilePath, check_ok
+        FILE DELETE tmp_name
+    ELSE
+        WriteToLog("ERROR: File ":FilePath:" does not exist.")
+    ENDIF
+
+    FILE OPEN FilePath, check_ok
+    FILE READ FilePath, out_val, check_ok
+    valid = (INDEX(out_val, ChangeTo) > 0)
+    FILE CLOSE FilePath, check_ok
+
+    FILE COPY FilePath, "smp$userfiles\BizTalk\":FileName:".limsml"
+
+    RETURN(valid)
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+
+GLOBAL ROUTINE SendMessages(use_BZT)
+{*************************************************************************
+* Purpose      : Send stored xml to BizTalk
+* Parameters   : N/A
+* Return Value : N/A
+**************************************************************************}
+
+DECLARE files_array, files, path, file, ext, WebService, WebServiceAction, c, l, status, LogTxt, Suspend, Rep_Int, EntryNo
+ARRAY files
+
+    IF (NOT(use_BZT)) AND (GLOBAL("MODE") <> "INTERACTIVE") THEN
+        fm("Exit...":ASCII(10):ASCII(10):
+           "use_BZT = ":use_BZT:ASCII(10):
+           "GLOBAL('MODE') = ":GLOBAL("MODE"))
+        EXIT
+    ENDIF
+
+    FILE FIND "smp$userfiles:BizTalk\*.xml", files_array, status
+
+    Suspend = FALSE
+    c = 1
+    IF SIZE_OF_ARRAY(files_array) > 0 THEN
+        {Limit number of files to handle pr. cycle}
+        c = 1
+        WHILE (c <= 25) AND (files_array[c] <> EMPTY) DO
+            files[c] = files_array[c]
+            c = c + 1
+        ENDWHILE
+
+        Suspend = TRUE
+        c = 1
+        WHILE (c <= SIZE_OF_ARRAY(files)) AND (files[c] <> EMPTY) DO
+            file = TOUPPER(files[c])
+            l = LENGTH(file) - 1
+            WHILE (SUBSTRING(file, l, 1) <> ".") AND (l > 0) DO
+                l = l - 1
+            ENDWHILE
+            ext  = STRIP(SUBSTRING(file, l , LENGTH(file)))
+            file = STRIP(SUBSTRING(file, 1, l - 1))
+            WHILE (SUBSTRING(file, l, 1) <> "\") AND (l > 0) DO
+                l = l - 1
+            ENDWHILE
+            path = STRIP(SUBSTRING(file, 1, l))
+            file = STRIP(SUBSTRING(file, l + 1, LENGTH(file)))
+            LogTxt = file
+            IF     INDEX(file, "SAP_CHARS") > 0 THEN
+                WebServiceAction = "SAP_CHARS"
+            ELSEIF INDEX(file, "END_DATE") > 0 THEN
+                WebServiceAction = "END_DATE"
+            ELSEIF INDEX(file, "SAMPLERESPONSE") > 0 THEN
+                WebServiceAction = "SampleResponse"
+            ELSEIF INDEX(file, "SAMPLEORDER") > 0 THEN
+                WebServiceAction = "SampleOrder"
+            ELSE
+                WebServiceAction = EMPTY
+            ENDIF
+            IF (WebServiceAction <> EMPTY) AND ((use_BZT) OR (GLOBAL("MODE") = "INTERACTIVE")) THEN
+                IF NOT(use_BZT) THEN
+                    WebService = STRIP(LEFTSTRING(WebService,INDEX(GLOBAL("BIZTALK_WEBSERVICE"),"INVALID") - 1))
+                ELSE
+                    WebService = GLOBAL("BIZTALK_WEBSERVICE")
+                ENDIF
+                window_set_status("Sending '":File:"' to '":WebService:"'")
+                SendToWebService(WebService, WebServiceAction, File, LogTxt)
+            ENDIF
+            IF (INDEX(LogTxt, "OK") > 0) OR (LogTxt = file) THEN
+                FILE DELETE path:file:ext, status
+                window_set_status("Completed, ":LogTxt)
+                Suspend = FALSE
+            ELSE
+                WriteToLog(LogTxt)
+                fm("The response from BizTalk was different from (OK):":ASCII(10):ASCII(10):
+                   "        ":LogTxt:ASCII(10):ASCII(10):
+                   "Aborting routine!")
+                EXIT
+                
+                {Rename file}
+            ENDIF
+        c = c + 1
+        ENDWHILE
+    ENDIF
+
+    IF Suspend OR (c = 1) THEN
+        {No positive respond from BizTalk increase interval}
+        EntryNo = SELECT timerqueue.entry_number WHERE report_name = GLOBAL("current_library")
+        Rep_Int = INTERVAL(SELECT timerqueue.repeat_interval) * 2
+        IF INTERVAL(Rep_Int) > INTERVAL("0000 01:00:00") THEN
+            Rep_Int = INTERVAL("0000 01:00:00")
+        ENDIF
+    ELSE
+        Rep_Int = INTERVAL("0000 00:00:30")
+    ENDIF
+
+EntryNo = SELECT timerqueue.entry_number FOR UPDATE WHERE report_name = GLOBAL("current_library")
+IF (EntryNo <> EMPTY) AND (EntryNo <> LOCKED) THEN
+    IF NOT transaction_is_write ( ) THEN
+        START WRITE TRANSACTION "Increase interval for: ":STRIP(SELECT timerqueue.report_name)
+    ENDIF
+    IF (Rep_Int <> SELECT timerqueue.repeat_interval) THEN
+        WriteToLog("Set repeat interval for: ":STRIP(SELECT timerqueue.report_name):" to ":Rep_Int)
+    ENDIF
+    ASSIGN timerqueue.run_time = NOW + Rep_Int
+    ASSIGN timerqueue.repeat_interval = Rep_Int
+    UPDATE timerqueue
+    COMMIT
+ENDIF
+
+ENDROUTINE

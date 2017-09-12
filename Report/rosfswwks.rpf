@@ -1,0 +1,542 @@
+{SMP$REPORTS:ROSFSWWKS.RPF}
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0026        140694  LPE     Prompt for Sample Id. Then find all samples    }
+{                               that has been on same Worksheet as Sample ID   }
+{------------------------------------------------------------------------------}
+
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN  STANDARD_LIBRARY  STD_PROMPT
+
+setup_cons ()
+
+get_the_sample()
+
+IF NOT BLANK( cur_smp_id . text ) THEN
+
+   smp_id = cur_smp_id . text
+   number_wks_no = 0
+   number_wks_name = 0
+
+   find_wksno_for_smpid ( smpid ,
+                          number_wks_no ,
+                          number_wks_name )
+
+   IF (number_wks_no <> 0) OR (number_wks_name <> 0) THEN
+
+      sort_wks_no( number_wks_no , number_wks_name )
+
+   ENDIF
+
+   output_sample()
+
+ENDIF
+
+
+{---------------------------- find_worksheet_name ----------------------------}
+
+ROUTINE find_worksheet_name (      wks_link_no          ,
+                             VALUE n_of_wks              )
+declare  count,
+         cur_wks_name
+
+   count = 1
+
+   WHILE count <= n_of_wks
+
+      cur_wks_name =  SELECT worksheet . worksheet_name
+                        WHERE link_number = wks_link_no [count]
+
+      IF NOT BLANK( cur_wks_name ) THEN
+
+         wks_name [count ] = cur_wks_name
+
+      ENDIF
+
+      count = count + 1
+
+   ENDWHILE
+
+ENDROUTINE   {find_worksheet_name}
+
+{------------------------------- get_the_sample -------------------------------}
+
+ROUTINE get_the_sample
+
+   CREATE OBJECT PROMPT_CLASS_FORM , get_sample
+
+   get_sample . height = 1
+   get_sample . width  = 40
+   get_sample . row =    10
+   get_sample . column = 20
+   get_sample . border = TRUE
+   get_sample . header = "        Samples on same Worksheet        "
+   get_sample . footer = "               EXIT to Quit              "
+
+
+   smp_text = "Enter Sample Id : "
+   smp_text_row = 1
+   smp_text_col = 1
+
+   PROMPT OBJECT cur_smp_id
+         BROWSE ON sample
+         ON LINE smp_text_row FROM LENGTH(smp_text) +  2
+         IN WINDOW get_sample . window
+
+   get_sample . add_prompt (cur_smp_id)
+
+   get_sample . add_display (  smp_text,
+                               smp_text_col,
+                               smp_text_row,
+                               PROMPT_RENDITION_BOLD)
+   get_sample . start_prompt ()
+
+
+   REPEAT
+
+      get_sample . wait_prompt ()
+
+   UNTIL (get_sample . get_lastkey () = "EXIT") OR
+         (NOT BLANK( cur_smp_id . text ))
+
+{   declare smpid
+
+   smpid = ""
+
+   can_exit = FALSE
+
+   CREATE TEXT WINDOW prompt_win HEIGHT 5 WIDTH 40 BORDER=""
+   PASTE TEXT WINDOW prompt_win ON lINE 10 FROM 20
+
+   DISPLAY "        Samples on same Worksheet        "
+        ON LINE 1 FROM 1 IN WINDOW prompt_win INVERSE
+   DISPLAY "               EXIT to Quit              "
+         ON LINE 5 FROM 1 IN WINDOW prompt_win INVERSE
+   REPEAT
+
+      PROMPT FOR smpid USING "Enter Sample Id : "
+         ON LINE 3 FROM 2 IN WINDOW prompt_win
+         BROWSE ON sample
+
+      lk = LASTKEY
+
+      IF (lk = "EXIT") THEN
+         can_exit = TRUE
+      ENDIF
+
+   UNTIL (can_exit OR (smpid <> ""))
+
+   UNPASTE TEXT WINDOW prompt_win }
+
+ENDROUTINE   {get_the_sample}
+
+
+{--------------------------------- setup_cons ---------------------------------}
+
+ROUTINE setup_cons
+
+   ARRAY wks_link_no
+   ARRAY save_wks_link_no
+
+   ARRAY wks_name
+   ARRAY save_wks_name
+
+   ARRAY anal
+   ARRAY save_anal
+
+   ARRAY sched_anal
+
+ENDROUTINE   {setup_cons}
+
+
+{---------------------------- find_wksno_for_smpid ----------------------------}
+
+ROUTINE find_wksno_for_smpid (VALUE smpid ,
+                                    number_wks_no,
+                                    number_wks_name             )
+
+declare  c_wks_no,
+         c_analid,
+         c_tst
+
+   c_wks_no = SELECT test.worksheet_id
+                  WHERE (sample_id = smpid) AND
+                        (worksheet_id <> 0)
+                  ORDER ON worksheet_id
+
+
+   WHILE c_wks_no <> EMPTY DO
+
+      c_wks_name = SELECT test.worksheet_name
+
+      IF c_wks_name = PAD(" "," ",20) THEN
+
+         number_wks_no = number_wks_no + 1
+         wks_link_no [number_wks_no] =  c_wks_no
+         anal [number_wks_no] = SELECT test . analysis
+
+      ELSE
+
+         number_wks_name = number_wks_name + 1
+         wks_name   [number_wks_name] = SELECT test . worksheet_name
+         sched_anal [number_wks_name] = SELECT test . analysis
+
+      ENDIF
+
+      NEXT test
+      c_wks_no = SELECT test.worksheet_id
+
+   ENDWHILE
+
+
+ENDROUTINE   {find_wksno_for_smpid}
+
+
+{-------------------------------- sort_wks_no --------------------------------}
+
+ROUTINE sort_wks_no ( VALUE number_wks_no ,
+                      VALUE number_wks_name )
+
+declare  wks_count,
+         save,
+         count,
+         i,
+         j,
+         gem,
+         cur
+
+   wks_count = 1
+   save_count = 0
+
+   WHILE wks_count <= number_wks_no DO
+
+      save = TRUE
+
+      cur = wks_link_no [wks_count]:anal[wks_count]
+
+      count = wks_count
+
+      WHILE count < number_wks_no DO
+
+         IF cur = wks_link_no [count+1]:anal[count+1] THEN
+            save = FALSE
+         ENDIF
+
+         count = count + 1
+
+      ENDWHILE
+
+      IF save THEN
+
+         save_count = save_count + 1
+
+         save_wks_link_no[save_count] = wks_link_no [wks_count]
+         save_anal [save_count] = anal [wks_count ]
+
+      ENDIF
+
+      wks_count = wks_count + 1
+
+   ENDWHILE
+
+   i = 1
+   WHILE i <= save_count DO
+      j = 1
+      WHILE j < save_count DO
+
+          IF save_anal [j] >  save_anal [j+1] THEN
+            gem_1 = save_anal[j]
+            gem_2 = save_wks_link_no[j]
+
+            save_anal [j] = save_anal [j+1]
+            save_anal [j+1] = gem_1
+
+            save_wks_link_no[j] = save_wks_link_no[j+1]
+            save_wks_link_no[j+1] = gem_2
+
+      ENDIF
+
+      j = j + 1
+
+   ENDWHILE
+
+i = i + 1
+
+ENDWHILE
+ENDROUTINE   {sort_wks_no}
+
+
+ROUTINE output_sample
+
+DECLARE  old_committed_tables,committed_tables, date_today, pr_anal, count,
+         cur_no, tst_smp, pr_smp, pr_smptxt, tst_count, u_pos, pr_sched
+
+date_today = SUBSTRING(DATE(NOW),1,11)
+
+SET HEADER
+"         Worksheet Report for Sample                              ":date_today
+SET FOOTER
+"                                                                       Page ##"
+
+SET NAME "DEFER/"
+SET FORMAT "9999"
+SET PRINTERCODES TRUE
+SET WIDTH 120
+SET LENGTH 64
+
+smpid = STRIP(smpid)
+
+IF (number_wks_no <> 0) OR (number_wks_name <> 0) THEN
+
+
+
+LITERAL
+
+         !BSamples on same worksheet(s) as Sample Id :  $smpid____!B
+
+         A = Activ database, C = Committed database
+
+         !LUL66HOUR!L
+         !LVE!L Analysis ID/ !LVE!L Sample Id    !LVE!L Sample Text Id                 !LVE!L DB!LVE!L
+         !LVE!L Plating      !LVE!L              !LVE!L                                !LVE!L   !LVE!L
+$ENDLITERAL
+
+ON NEW PAGE
+
+LITERAL
+
+         Samples on same worksheet(s) as Sample Id : $smpid________
+
+         A = Aktiv database, C = Comitted database
+
+         !LUL66HOUR!L
+         !LVE!L Analysis ID/ !LVE!L Sample Id    !LVE!L Sample Text Id                 !LVE!L DB!LVE!L
+         !LVE!L Plating      !LVE!L              !LVE!L                                !LVE!L   !LVE!L
+$ENDLITERAL
+
+ENDON
+
+   old_committed_tables = GLOBAL("COMMIT_VIEW_MODE")
+
+   count = 1
+   pr_anal = ""
+
+   cur_no = save_wks_link_no [count]
+
+   WHILE count <= save_count
+
+{** SET MODE ACTIVE ** }
+
+      committed_tables = GLOBAL("COMMIT_VIEW_MODE")
+
+      IF committed_tables THEN
+
+         SET GLOBAL "COMMIT_VIEW_MODE" TO FALSE
+
+      ENDIF
+
+      tst_smp = SELECT test.sample_id
+                  WHERE (worksheet = save_wks_link_no[count])
+{                  AND   (analysis  = RIGHTSTRING(save_wks_name[count],10)) }
+
+
+      WHILE tst_smp <> EMPTY DO
+
+
+         IF STRIP(tst_smp) <> STRIP(smpid) THEN
+
+            tst_count = STRIP(SELECT test.test_count)
+
+            pr_smp = tst_smp:"/":tst_count
+
+            pr_smptxt = SELECT sample.id_text
+                     WHERE id_numeric = tst_smp
+                     ORDER ON id_numeric
+
+            IF pr_anal <> save_anal [count] THEN
+               pr_anal = save_anal [count]
+
+               cur_no = save_wks_link_no [count]
+LITERAL
+         !LLT66HORT!L
+         !LVE!L !B$pr_anal____!B !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L A !LVE!L
+$ENDLITERAL
+
+            ELSE
+               IF cur_no <> save_wks_link_no [count] THEN
+
+
+LITERAL
+         !LVE!L              !LVE51HOVE!L
+$ENDLITERAL
+
+                  cur_no = save_wks_link_no[count]
+               ENDIF
+LITERAL
+         !LVE!L              !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L A !LVE!L
+$ENDLITERAL
+            ENDIF
+         ENDIF
+         NEXT test
+         tst_smp = SELECT test.sample_id
+      ENDWHILE
+
+{** SET MODE COMMITTED ** }
+
+      committed_tables = GLOBAL("COMMIT_VIEW_MODE")
+      IF NOT(committed_tables) THEN
+         SET GLOBAL "COMMIT_VIEW_MODE" TO TRUE
+      ENDIF
+
+      tst_smp = SELECT test.sample_id
+                  WHERE (worksheet = save_wks_link_no[count])
+{                  AND   (analysis  = RIGHTSTRING(save_wks_name[count],10)) }
+
+
+      WHILE tst_smp <> EMPTY DO
+         IF STRIP(tst_smp) <> STRIP(smpid) THEN
+            tst_count = STRIP(SELECT test.test_count)
+            pr_smp = tst_smp:"/":tst_count
+            pr_smptxt = SELECT sample.id_text
+                     WHERE id_numeric = tst_smp
+                     ORDER ON id_numeric
+
+            IF pr_anal <> save_anal [count] THEN
+               pr_anal =  save_anal [count]
+               cur_no =  save_wks_link_no [count]
+LITERAL
+         !LLT66HORT!L
+         !LVE!L !B$pr_anal____!B !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L C !LVE!L
+$ENDLITERAL
+
+            ELSE
+               IF cur_no <> save_wks_link_no[count] THEN
+
+
+LITERAL
+         !LVE!L              !LVE48HOVE!L
+$ENDLITERAL
+
+                  cur_no = save_wks_link_no [count]
+               ENDIF
+LITERAL
+         !LVE!L              !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L C !LVE!L
+$ENDLITERAL
+            ENDIF
+         ENDIF
+         NEXT test
+         tst_smp = SELECT test.sample_id
+      ENDWHILE
+      count = count + 1
+   ENDWHILE
+
+
+   {** SET MODE ACTIVE ** }
+
+   committed_tables = GLOBAL("COMMIT_VIEW_MODE")
+
+   IF committed_tables THEN
+
+      SET GLOBAL "COMMIT_VIEW_MODE" TO FALSE
+
+   ENDIF
+
+
+   IF number_wks_name >=1 THEN
+
+      u_pos = INDEX(wks_name[1],"_")
+      pr_sched = LEFTSTRING(wks_name [1],(u_pos-1))
+
+
+      count = 1
+      smp_count = 0
+      tst_smp = SELECT test.sample_id
+                       WHERE ((worksheet_name = wks_name[1]) AND
+                              (test.analysis = sched_anal [1]))
+
+      WHILE tst_smp <> EMPTY DO
+         IF STRIP(tst_smp) <> STRIP(smpid) THEN
+            smp_count = smp_count + 1
+            tst_count = STRIP(SELECT test.test_count)
+
+            pr_smptxt = SELECT sample.id_text
+                     WHERE id_numeric = tst_smp
+                     ORDER ON id_numeric
+
+            pr_smp = tst_smp:"/":tst_count
+            IF smp_count = 1 THEN
+LITERAL
+         !LLT66HORT!L
+         !LVE!L !B$pr_sched___!B !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L A !LVE!L
+$ENDLITERAL
+            ELSE
+LITERAL
+         !LVE!L              !LVE!L $pr_smp_____ !LVE!L $pr_smptxt____________________ !LVE!L A !LVE!L
+$ENDLITERAL
+            ENDIF
+         ENDIF
+         NEXT test
+         tst_smp = SELECT test.sample_id
+      ENDWHILE
+
+      {** SET MODE COMMITTED ** }
+
+      committed_tables = GLOBAL("COMMIT_VIEW_MODE")
+      IF NOT(committed_tables) THEN
+         SET GLOBAL "COMMIT_VIEW_MODE" TO TRUE
+      ENDIF
+
+      tst_smp = SELECT test.sample_id
+                       WHERE ((worksheet_name = wks_name[1]) AND
+                              (test.analysis = sched_anal [1]))
+
+      WHILE tst_smp <> EMPTY DO
+         IF STRIP(tst_smp) <> STRIP(smpid) THEN
+            smp_count = smp_count + 1
+            tst_count = STRIP(SELECT test.test_count)
+
+            pr_smptxt = SELECT sample.id_text
+                     WHERE id_numeric = tst_smp
+                     ORDER ON id_numeric
+
+            pr_smp = tst_smp:"/":tst_count
+            IF smp_count = 1 THEN
+LITERAL
+         !LLT66HORT!L
+         !LVE!L !B$pr_sched___!B !LVE!L $pr_smp______ !LVE!L $pr_smptxt____________________ !LVE!L C !LVE!L
+$ENDLITERAL
+            ELSE
+LITERAL
+         !LVE!L              !LVE!L $pr_smp______ !LVE!L $pr_smptxt____________________ !LVE!L C !LVE!L
+$ENDLITERAL
+            ENDIF
+         ENDIF
+         NEXT test
+         tst_smp = SELECT test.sample_id
+      ENDWHILE
+      count = count + 1
+   ENDIF
+LITERAL
+         !LLL66HOLR!L
+$ENDLITERAL
+
+SET GLOBAL "COMMIT_VIEW_MODE" TO old_committed_tables
+
+ELSE
+
+LITERAL
+
+
+         !BNO Worksheets for Sample Id : $smpid____!B
+
+
+$ENDLITERAL
+
+
+ENDIF
+
+
+ENDROUTINE

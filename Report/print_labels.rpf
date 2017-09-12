@@ -1,0 +1,175 @@
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION
+}
+{------------------------------------------------------------------------------}
+{**AS1082       020398  JDY     Modified structure a lot - passed all job id   }
+{                               handling to print_job_labels                   }
+{------------------------------------------------------------------------------}
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY ROSSAMPLAB
+JOIN LIBRARY ROSPRJOBLA
+JOIN LIBRARY TOOLBOX
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+ARRAY job_arr
+ARRAY wc_arr
+
+{**AS1267 Hbe 23-8-00}
+Sheet_defined = FALSE
+{**AE1267}
+
+show_status( "Loading Work Centers ....", "F" )
+wc_count = 0
+old_wc_id = EMPTY
+the_job = select job_header.job_name
+          where  job_name <> NULL
+          order  on work_center
+WHILE the_job <> EMPTY DO
+   wc_id = select job_header.work_center
+   IF wc_id <> old_wc_id THEN
+      wc_count = wc_count + 1
+      wc_arr [ wc_count, 1 ] = wc_id
+      wc_arr [ wc_count, 2 ] = wc_id
+      old_wc_id = wc_id
+   ENDIF
+   NEXT job_header
+   the_job = select job_header.job_name
+ENDWHILE
+show_status( "Loading Work Centers ....", "D" )
+
+IF get_date_limits ( start_date, end_date, wc_id )
+THEN
+
+   job_id = SELECT job_header.job_name
+            WHERE  date_to_start >= start_date
+            AND    date_to_start <= end_date
+            AND    date_to_start <> NULL
+            AND    product_name  <> EMPTY
+            AND    work_center    = wc_id
+            ORDER  ON job_name
+
+   job_count   = 0
+   job_printed = 0
+
+   WHILE (job_id <> EMPTY) DO
+      job_count = job_count + 1
+      job_arr[job_count] = job_id
+      NEXT job_header
+      job_id = SELECT job_header.job_name
+   ENDWHILE
+
+   j = 0
+   WHILE j < job_count DO
+      j = j+1
+{**MS1267 HBe 22-8-00
+      IF print_job_labels ( job_arr[j] ) THEN
+         job_printed = job_printed + 1
+**}
+
+IF print_job_labels ( job_arr[j], sheet_defined ) THEN
+         job_printed = job_printed + 1
+
+{**ME 1267}
+
+{**ME1267 HBe 22-8-00}
+      ENDIF
+   ENDWHILE
+   flash_message("Jobs handled:":strip(job_count):
+                 " Jobs printed:":strip(job_printed),TRUE)
+ENDIF
+
+
+ROUTINE  get_date_limits ( start_date, end_date, wc_id )
+
+CREATE   OBJECT PROMPT_CLASS_FORM, form
+
+form . height  =  5
+form . width   =  48
+form . row     =  15
+form . column  =  16
+form . border  =  TRUE
+form . header  =  "Print Labels"
+form . footer  =  "Press DO to create report / Exit to quit"
+
+prompt_string = "Date Limits:"
+prompt_length = length(prompt_string)
+prompt_string = prompt_string : "             - "
+prompt_string2= "Work Center:"
+prompt_row    = 2
+prompt_col    = 5
+
+PROMPT   OBJECT prompt_start
+         ON LINE prompt_row
+         FROM prompt_length+prompt_col+1
+         FORMAT date
+
+PROMPT   OBJECT prompt_end
+         ON LINE prompt_row
+         FROM prompt_length+prompt_col+15
+         FORMAT date
+
+PROMPT   OBJECT  prompt_wc
+         ON LINE prompt_row + 1
+         FROM    prompt_length + prompt_col + 1
+         CHOOSE  OUTOF wc_arr
+
+
+form . add_prompt ( prompt_start )
+form . add_prompt ( prompt_end   )
+form . add_prompt ( prompt_wc    )
+
+{
+IF   date_handler("FORMAT","WW",SUBSTRING(TODAY,1,11),cur_week,err)
+THEN week_no . value = cur_week
+ELSE week_no . value = EMPTY
+     flash_message("Could not find current week. ":err,TRUE)
+ENDIF
+}
+prompt_start . value = TODAY
+prompt_end   . value = TODAY + interval(7)
+
+form . start_prompt ()
+
+REPEAT
+
+   DISPLAY  prompt_string  ON LINE prompt_row   FROM prompt_col
+            IN WINDOW form . window
+   DISPLAY  prompt_string2 ON LINE prompt_row+1 FROM prompt_col
+            IN WINDOW form . window
+
+   form . wait_prompt ()
+
+   date_limits_ok = FALSE
+
+   IF      (prompt_start . value > prompt_end . value)
+   THEN     DISPLAY "Lower date limit must be less or equal upper date limit"
+                     BLINKING ON LINE 4 FROM 5 IN WINDOW form . window
+   ELSEIF  (prompt_start . value = EMPTY) OR (prompt_end . value = EMPTY) OR
+           (BLANK(prompt_start . value)) OR (BLANK(prompt_end.value))
+   THEN     DISPLAY "Both date limits must be entered"
+                     BLINKING ON LINE 4 FROM 5 IN WINDOW form . window
+   ELSE     date_limits_ok = TRUE
+   ENDIF
+
+   IF    form . get_LASTKEY() = "EXIT"
+   THEN  return_val = FALSE
+   ELSE  return_val = TRUE
+   ENDIF
+
+UNTIL ( NOT return_val ) OR ( date_limits_ok )
+
+form . end_prompt ()
+
+start_date = date(prompt_start . value)
+end_date   = date(prompt_end . value)
+wc_id      = prompt_wc . value
+
+return ( return_val )
+
+ENDROUTINE  { Get Date Limits }
+

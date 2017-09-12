@@ -1,0 +1,4040 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_TSR_GRID
+*
+* Purpose       : Result List screen handling code
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_LOGIN
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $lib_popup_menu
+JOIN LIBRARY $lab
+JOIN LIBRARY $lib_flags
+JOIN LIBRARY $lib_utils
+
+JOIN LIBRARY $lib_instrument
+
+JOIN LIBRARY $lib_re_context
+
+JOIN LIBRARY $lib_re_globals
+JOIN LIBRARY $lib_re_prompt
+JOIN LIBRARY $lib_re_result
+JOIN LIBRARY $lib_re_columns
+
+JOIN LIBRARY $lib_tsr_select
+JOIN LIBRARY $lib_tsr_user
+JOIN LIBRARY $lib_tsr_toolbox
+
+JOIN LIBRARY $prompt_grid
+
+JOIN LIBRARY $explorer_utils
+JOIN LIBRARY $explorer_lib
+
+JOIN LIBRARY $role_lib
+
+JOIN LIBRARY $lib_stock
+
+{*****************************************************************************}
+{ LOCAL constants }
+
+CONSTANT RESULT_ONLY = TRUE
+CONSTANT RESULT_AND_TEST = FALSE
+
+CONSTANT LIMITS_TOGGLE  = 1
+CONSTANT AUDIT_BOX      = 2
+CONSTANT INFO_BOX       = 3
+CONSTANT LIMITS_BOX     = 4
+CONSTANT INCIDENTS      = 5
+CONSTANT RECALC         = 6
+CONSTANT LESSTHANPQL    = 7
+CONSTANT GREATERTHANPQL = 8
+CONSTANT DILUTIONFACTOR = 9
+CONSTANT PRINTFORMULA   = 10
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_class_initialisation ( re_list_grid_object )
+
+        re_list_grid_object . create_collections ( )
+
+        ARRAY re_list_grid_object . result_array ARRAYSIZE ( 0 )
+        ARRAY re_list_grid_object . field_names_array ARRAYSIZE ( 0, 2 )
+
+        re_list_grid_object . cell_rows = 0
+
+        PROMPT OBJECT re_list_grid_object . quick_text
+               ON LINE 1 FROM 1
+               WITH ( may_prompt  = FALSE ,
+                      status_text = ""    )
+        re_list_grid_object . quick_text . start_prompt ( )
+
+        re_list_grid_object . has_prompted = FALSE
+
+    CREATE OBJECT LIB_RE_COLUMNS_TSR_CLASS ,
+                  re_list_grid_object . column_settings
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE lib_tsr_grid_initialise
+
+IF NOT GLOBAL ( "LIBRARY_INITIALISED" ) THEN
+
+    SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+        lib_re_context_initialise ( )
+        lib_tsr_toolbox_initialise ( )
+    lib_re_columns_initialise ( )
+
+    set_up_std_prompt_grid_class ( )
+
+        DEFINE CLASS RE_LIST_GRID
+
+                PROPERTIES
+
+                        "RESULT_ARRAY"      ,
+                        "FIELD_NAMES_ARRAY" ,
+                        "TEXT_COLUMN"       ,
+                        "STATUS_COLUMN"     ,
+                        "QUICK_TEXT"        ,
+                        "HAS_PROMPTED"      ,
+                        "COLUMN_SETTINGS"   ,
+                        "TOTAL_WIDTH"       ,
+
+                        "MULTIPLE_SAMPLES"  ,
+                        "SUB_SAMPLES"       ,
+            "SELECT_PARAM_1"    ,
+            "SELECT_PARAM_2"
+
+                ACTIONS
+
+                        "ADD_RESULT",
+                        "INSERT_RESULT",
+                        "FIND_RESULT",
+                        "CREATE_BLANK_RESULTS",
+                        "RELEASE_RESULTS",
+
+                        "CREATE_COLLECTIONS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_CREATE_COLLECTIONS"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "RELEASE_COLLECTIONS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_RELEASE_COLLECTIONS"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+
+                        "SELECT_SAMPLES" ,
+                        "SELECT_TESTS"   ,
+                        "SELECT_RESULTS" ,
+
+                        "RECALCULATE"           ,
+                        "BIND"                  ,
+                        "UNDO"                  ,
+                        "AUTHORISE"             ,
+                        "REJECT"                ,
+                        "CANCEL_TEST"           ,
+                        "COMPLETE_TEST"         ,
+                        "UNCOMPLETE_TEST"       ,
+                        "SET_LESS_THAN_PQL"     ,
+                        "SET_GREATER_THAN_PQL"  ,
+                        "UPDATE_DISPLAY"        ,
+                        "LOCAL_START_PROMPT"    ,
+                        "LOCAL_END_PROMPT"      ,
+                        "LOAD_RE_TREE"          ,
+                        "CHECK_COLUMNS"         ,
+                        "DISPLAY_SAMPLE"        ,
+                        "COLUMN_SETTINGS_NAME"  ,
+                        "PROMPT_INSTRUMENT"
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS RE_TSR_GRID
+
+                INHERIT
+
+                        PROMPT_GRID_EX_CLASS ,
+                        RESULT_CONTEXT_CLASS ,
+                        RE_LIST_GRID
+
+                ACTIONS
+
+                        "SELECT_SAMPLES"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_SINGLE_SAMPLE"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_TESTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_TESTS_FOR_SAMPLE"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_RESULTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_RESULTS_FOR_TEST"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+
+                        "GET_RESULT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_FIRST"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_FIRST"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_NEXT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_NEXT"
+                                IN LIBRARY "$LIB_TSR_GRID"
+
+        END CLASS
+
+        DEFINE CLASS RE_TTR_GRID
+
+                INHERIT
+
+                        PROMPT_GRID_EX_CLASS ,
+                        RESULT_CONTEXT_CLASS ,
+                        RE_LIST_GRID
+
+                ACTIONS
+
+                        "SELECT_SAMPLES"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_SINGLE_SAMPLE"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_TESTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_SINGLE_ANALYSIS"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_RESULTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_RESULTS_FOR_TEST"
+                                IN LIBRARY "$LIB_TSR_SELECT" ,
+
+                        "GET_RESULT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_FIRST"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_FIRST"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_NEXT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_NEXT"
+                                IN LIBRARY "$LIB_TSR_GRID"
+
+
+        END CLASS
+
+        DEFINE CLASS RE_RSW_GRID
+
+                INHERIT
+
+                        PROMPT_GRID_EX_CLASS ,
+                        RESULT_CONTEXT_CLASS ,
+                        RE_LIST_GRID
+
+                ACTIONS
+
+                        "SELECT_SAMPLES"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_SINGLE_SAMPLE"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_TESTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_TEST_ARRAY"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_RESULTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_RESULTS_FOR_TEST"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+
+                        "GET_RESULT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_FIRST"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_FIRST"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_NEXT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_NEXT"
+                                IN LIBRARY "$LIB_TSR_GRID"
+
+        END CLASS
+
+        DEFINE CLASS RE_JOB_LIST_GRID
+
+                INHERIT
+
+                        PROMPT_GRID_EX_CLASS ,
+                        RESULT_CONTEXT_CLASS ,
+                        RE_LIST_GRID
+
+                ACTIONS
+
+                        "SELECT_SAMPLES"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_SAMPLES_FOR_JOB"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_TESTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_TESTS_FOR_SAMPLE"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+                        "SELECT_RESULTS"
+                                ROUTINE    "LIB_TSR_SELECT_ACTION_RESULTS_FOR_TEST"
+                                IN LIBRARY "$LIB_TSR_SELECT",
+
+                        "GET_RESULT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_FIRST"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_FIRST"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+                        "GET_RESULT_NEXT"
+                                ROUTINE "LIB_TSR_GRID_GET_RESULT_NEXT"
+                                IN LIBRARY "$LIB_TSR_GRID" ,
+
+                        "COLUMN_SETTINGS_NAME"
+
+        END CLASS
+
+        lib_tsr_select_initialise ( )
+
+ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE lib_tsr_subs_grid_create ( VALUE grid_class_name     ,
+                                         re_list_grid_object ,
+                                   VALUE re_mode             ,
+                                   VALUE sample_id           )
+
+    DECLARE display_control  ,
+            columns_ok       ,
+            screen_width     ,
+            samp_formulation ,
+            sample_number
+
+    object_create ( re_list_grid_object , grid_class_name )
+
+    { Check whether sub samples should be shown }
+
+    IF ( sample_id <> EMPTY ) THEN
+
+        push_file_descriptor ( "SAMPLE_FORMULATION", samp_formulation )
+
+        sample_number = SELECT sample_formulation . child_sample
+                        WHERE  parent_sample = sample_id
+
+        re_list_grid_object . sub_samples = ( sample_number <> EMPTY )
+
+        pop_file_descriptor ( samp_formulation )
+
+    ELSE
+
+        re_list_grid_object .sub_samples = FALSE
+
+    ENDIF
+
+    { Built the grid }
+
+    screen_width = GLOBAL ( "GUI_WIDTH"  )
+
+    re_list_grid_object . width  = TRUNC ( screen_width * 0.50 )
+    re_list_grid_object . height = TRUNC ( GLOBAL ( "GUI_HEIGHT" ) * 0.50 )
+    re_list_grid_object . column = 0
+    re_list_grid_object . row    = 0
+
+        re_list_grid_object . help_routine = "RE_HELP"
+
+        re_list_grid_object . browse_row = re_list_grid_object . height
+        re_list_grid_object . select_routine = "SELECT_CALLBACK"
+
+        re_list_grid_object . vgl_library = global ( "current_library" )
+
+        { Set the prompt routine according to RE mode }
+
+        IF re_mode = RE_MODIFY THEN
+
+                re_list_grid_object . allowed_test_status   = "VPC"
+                re_list_grid_object . allowed_sample_status = "VPC"
+                re_list_grid_object . prompt_cell_routine   =
+                                                "PROMPT_MODIFY_CALLBACK"
+
+                IF global ( "RES_ADHOC" ) THEN
+
+                        re_list_grid_object . insert_routine = "INSERT_CALLBACK"
+
+                ENDIF
+
+        ELSEIF re_mode = RE_AUTHORISE THEN
+
+                re_list_grid_object . allowed_test_status   = "VPCAI"
+                re_list_grid_object . allowed_sample_status = "VPC"
+                re_list_grid_object . prompt_cell_routine   =
+                                                "PROMPT_AUTHORISE_CALLBACK"
+                re_list_grid_object . mouse_click_routine   =
+                                                "MOUSE_SELECT_RESULT_TEST"
+        ELSE
+
+                display_control = global ( "RES_DISP_CONTROL" )
+
+                IF display_control = RE_DISPLAY_AUTHORISED THEN
+                        re_list_grid_object . allowed_test_status = "A"
+                ELSEIF display_control = RE_DISPLAY_COMPLETE THEN
+                        re_list_grid_object . allowed_test_status = "CAIRX"
+                ELSE
+                        re_list_grid_object . allowed_test_status = "VPCAIRXS"
+                ENDIF
+
+                re_list_grid_object . allowed_sample_status = "VCARXIS"
+                re_list_grid_object . prompt_cell_routine   =
+                                                "PROMPT_DISPLAY_CALLBACK"
+
+        ENDIF
+
+        re_list_grid_object . re_mode = re_mode
+
+        re_list_grid_object . display_cell_routine = "DISPLAY_CALLBACK"
+        re_list_grid_object . check_move_routine   = "CHECK_MOVE"
+        re_list_grid_object . right_mouse_routine  = "RIGHT_MOUSE"
+
+        { Titles setup }
+
+        re_list_grid_object . title_size_top = 1
+        re_list_grid_object . title_separator_top = GRID_SEPARATOR_CELLS
+
+
+        re_list_grid_object . column_settings . load_columns (
+                               re_list_grid_object . column_settings_name ( ) ,
+                               re_mode                                        ,
+                               re_list_grid_object . column_size              ,
+                               re_list_grid_object . title_text_top           ,
+                               re_list_grid_object . field_names_array        ,
+                               re_list_grid_object . fixed_columns_left       )
+
+    columns_ok = re_list_grid_object . check_columns ( )
+
+        re_list_grid_object . title_rendition_top = PROMPT_RENDITION_BOLD
+
+        re_list_grid_object . return_behaviour    = GRID_RETURN_DOWN
+
+    { Leave space for the toolbar }
+    re_list_grid_object . total_width = re_list_grid_object . total_width + 1
+
+    IF re_list_grid_object . total_width > re_list_grid_object . width THEN
+
+        re_list_grid_object . width  = re_list_grid_object . total_width
+        re_list_grid_object . height = ROUND ( re_list_grid_object .
+                                                 total_width * 0.22 )
+
+    ENDIF
+
+    re_list_grid_object . column = TRUNC (( screen_width -
+                                              re_list_grid_object . width ) / 2 )
+
+    re_list_grid_object . browse_row = re_list_grid_object.height+2
+    re_list_grid_object . select_routine = "SELECT_CALLBACK_GUI"
+
+    CREATE OBJECT RE_LIST_TOOLBAR_CLASS ,
+                  re_list_grid_object . toolbox
+
+    re_list_grid_object .multiple_samples =
+        ( TOUPPER ( OBJECT_GET_CLASS_NAME ( re_list_grid_object )) =
+          TOUPPER ( SUBSTITUTE ( RE_JOB_LIST_GRID, "_", "" )))
+
+        RETURN ( columns_ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_tsr_grid_create ( VALUE grid_class_name     ,
+                                    re_list_grid_object ,
+                              VALUE re_mode             )
+
+    RETURN ( lib_tsr_subs_grid_create ( grid_class_name     ,
+                                        re_list_grid_object ,
+                                        re_mode             ,
+                                        EMPTY               ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_local_start_prompt ( self )
+
+    DECLARE screen_count
+
+    screen_count = screen_update_override ( )
+
+    IF GLOBAL ( "RES_CALC_ON_ENTRY" ) AND 
+       (( self . re_mode <> RE_DISPLAY ) OR GLOBAL ( "RES_CALC_IN_DISPLAY" )) THEN
+
+        self . recalculate ( TRUE ,
+                             TRUE ,
+                             TRUE ) 
+
+    ELSE
+
+        self . bind ()
+
+    ENDIF
+
+    self . load_re_tree ( )
+
+    screen_update_restore ( screen_count )
+
+    self . result_info_setup ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_local_end_prompt ( self )
+
+    DECLARE screen_count
+
+        self . result_info_exit ( )
+
+        screen_count = screen_update_override ( )
+
+    IF GLOBAL ( "RES_CALC_ON_EXIT" ) AND
+       (( self . re_mode <> RE_DISPLAY ) OR GLOBAL ( "RES_CALC_IN_DISPLAY" )) THEN
+
+                self . recalculate ( FALSE ,
+                     TRUE  ,
+                     TRUE  )
+
+        ENDIF
+
+        self . column_settings . save_columns (
+                                      self . column_settings_name ( ) ,
+                                      self . re_mode                  ,
+                                      self . column_size              ,
+                                      self . title_text_top           ,
+                                      self . field_names_array        ,
+                                      self . fixed_columns_left       )
+
+        screen_update_restore ( screen_count )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_load_re_tree ( re_list_grid_object )
+
+{
+*   Load the selector tree with the samples and tests
+*
+******************************************************************************}
+
+    DECLARE counter       ,
+            result_object ,
+            samp_pos      ,
+            parent_pos    ,
+            parent_object
+
+    IF re_list_grid_object . re_tree_on THEN
+
+        re_list_grid_object .
+          re_tree_form .
+            set_callbacks ( "LIB_TSR_GRID_SELECTED_SAMP" ,
+                            "LIB_TSR_GRID_RMB_SAMP"      ,
+                            "LIB_TSR_GRID_SELECTED_TEST" ,
+                            "LIB_TSR_GRID_RMB_TEST"      ,
+                            "$LIB_TSR_GRID"              ,
+                            re_list_grid_object          )
+
+        counter = 1
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+            result_object = re_list_grid_object . result_array[ counter ]
+
+            parent_object = result_object .
+                               test_object .
+                                  sample_object . get_parent ( )
+
+            IF parent_object <> EMPTY THEN
+                parent_pos = parent_object . get_tree_pos ( )
+            ELSE
+                parent_pos = 0
+            ENDIF
+
+            samp_pos = re_list_grid_object . re_tree_form . add_sample (
+                          parent_pos                                  ,
+                          result_object . test_object . sample_object ,
+                          counter                                     )
+
+            re_list_grid_object . re_tree_form . add_test (
+                          samp_pos                    ,
+                          result_object . test_object ,
+                          counter                     )
+
+            counter = counter + 1
+
+        ENDWHILE
+
+        re_list_grid_object . re_tree_form . expand_all ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_selected_samp (       grid     ,
+                                           sample   ,
+                                     VALUE cell_row )
+
+{
+*   Called when a sample is selected from the tree
+*
+******************************************************************************}
+
+    IF cell_row > 0 THEN
+
+        grid . set_position ( grid . current_column, cell_row )
+
+        grid . ensure_visible ( grid . current_column, cell_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_rmb_samp (       grid     ,
+                                      sample   ,
+                                VALUE cell_row )
+
+{
+*   Present the user with RMB options for a test
+*
+******************************************************************************}
+
+    DECLARE rmb
+
+    CREATE OBJECT POPUP_MENU_CLASS, rmb
+
+    rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_SAMP", 1 ))
+
+    rmb . process_routine = "lib_tsr_grid_rmb_process_samp"
+    rmb . process_library = GLOBAL ( "CURRENT_LIBRARY" )
+    rmb . user_info       = grid
+
+    rmb . process ( rmb . start ( ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_rmb_process_samp (       rmb_popup ,
+                                        VALUE result    )
+
+{
+*
+*
+******************************************************************************}
+
+    IF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_SAMP", 1 ) THEN
+
+        rmb_popup . user_info . display_sample ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_selected_test (       grid     ,
+                                           test     ,
+                                     VALUE cell_row )
+
+{
+*   Called when a test is selected from the tree
+*
+******************************************************************************}
+
+    IF cell_row > 0 THEN
+
+        grid . set_position ( grid . current_column ,
+                              cell_row              )
+
+        grid . ensure_visible ( grid . current_column, cell_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_test_has_cancelled_results ( grid, test )
+
+{
+*   Retunrs true if one of the tests results is cancelled (status X)
+*
+******************************************************************************}
+
+    DECLARE result_position, has_cancelled_results
+
+    has_cancelled_results = FALSE
+    result_position = test . first_result
+
+    WHILE ( NOT has_cancelled_results ) AND
+          ( result_position < ( test . first_result +
+                                test . number_of_results )) DO
+
+        has_cancelled_results = ( "X" = grid . result_array [ result_position ] . result_status )
+
+        result_position = result_position + 1
+
+    ENDWHILE
+
+    RETURN ( has_cancelled_results )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_rmb_test (       grid     ,
+                                      test     ,
+                                VALUE cell_row )
+
+{
+*   Present the user with RMB options for a test
+*
+******************************************************************************}
+
+    DECLARE rmb, sep_added, test_complete
+
+    test_complete = ( test . initial_status = "A" ) OR
+                    ( test . initial_status = "X" ) OR
+                    ( test . initial_status = "R" ) 
+
+    CREATE OBJECT POPUP_MENU_CLASS, rmb
+    sep_added = FALSE
+
+    IF ( test . can_unlock_test ( )) THEN
+        rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_UNLOCK_TEST", 1 ))
+        rmb . add_item  ( "" )
+    ENDIF
+
+    rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_ANAL", 1 ))
+
+    IF ( grid . re_mode = RE_MODIFY ) THEN
+        rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_INST_USED", 1 ))
+    ENDIF
+
+    rmb . add_item  ( "" )
+
+    IF (( grid . re_mode = RE_MODIFY ) AND ( NOT test . read_only )) THEN
+        rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_EDIT_STOCK", 1 ))
+    ELSE
+        rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_STOCK", 1 ))
+    ENDIF
+
+    IF ( ( grid . re_mode = RE_MODIFY )                        AND 
+         ( NOT test_complete )                                 AND
+         ( NOT test . read_only )                              AND
+         ( role_lib_has_privilege( ROLE_LIB_RE_COMP_TEST ) ) ) THEN
+
+        rmb . add_item  ( "" )
+
+        rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_COMPLETE", 1 ))
+
+        IF ((( SELECT test . status IN OBJECT test ) = "C" ) OR
+            (( SELECT test . status IN OBJECT test ) = "P" )) AND
+           lib_tsr_grid_test_has_cancelled_results ( grid, test ) THEN
+
+            rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_UNCOMPLETE", 1 ))
+
+        ENDIF
+
+    ENDIF
+
+    IF ( ( grid . re_mode = RE_AUTHORISE )  OR
+         (( grid . re_mode = RE_MODIFY    ) AND ( NOT test . read_only ))) THEN
+
+        IF NOT test_complete THEN
+
+            IF ( role_lib_has_privilege( ROLE_LIB_RE_AUTH_TEST ) ) THEN
+
+                rmb . add_item  ( "" )
+                sep_added = TRUE
+
+                rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_AUTHORISE", 1 ))
+
+            ENDIF
+
+            IF ( role_lib_has_privilege( ROLE_LIB_RE_REJECT_TEST ) ) THEN
+
+                IF NOT sep_added THEN
+
+                    rmb . add_item( "" )
+                    sep_added = TRUE
+
+                ENDIF
+
+                rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_REJECT"   , 1 ))
+
+            ENDIF
+
+            IF ( role_lib_has_privilege( ROLE_LIB_RE_CANCEL_TEST ) ) THEN
+
+                IF NOT sep_added THEN
+
+                    rmb . add_item( "" )
+                    sep_added = TRUE
+
+                ENDIF
+
+                rmb . add_item  ( GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_CANCEL"   , 1 ))
+
+            ENDIF
+        ENDIF
+    ENDIF
+
+    rmb . add_item("")
+    rmb . add_item("Attachment")
+
+    rmb . process_routine = "lib_tsr_grid_rmb_process_test"
+    rmb . process_library = GLOBAL ( "CURRENT_LIBRARY" )
+
+    ARRAY rmb . user_info ARRAYSIZE ( 2 )
+
+    rmb . user_info [ 1 ] = grid
+    rmb . user_info [ 2 ] = test
+
+    rmb . process ( rmb . start ( ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_rmb_process_test (       rmb_popup ,
+                                        VALUE result    )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE grid ,
+            test
+
+    grid = rmb_popup . user_info [ 1 ]
+    test = rmb_popup . user_info [ 2 ]
+
+    test . selected = TRUE
+
+    IF     result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_UNLOCK_TEST", 1 ) THEN
+
+        lib_tsr_grid_unlock_test ( grid, test )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_ANAL"  , 1 ) THEN
+
+        lib_tsr_grid_call_dal ( grid )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_EDIT_STOCK" , 1 ) THEN
+
+        lib_tsr_grid_call_edit_stock ( grid, FALSE )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_DISP_STOCK" , 1 ) THEN
+
+        lib_tsr_grid_call_edit_stock ( grid, TRUE )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_INST_USED" , 1 ) THEN
+
+        grid . prompt_instrument ( test )
+
+    ELSEIF result = "Attachment" THEN
+        IF (INDEX("VPC", (SELECT test.status WHERE test_number = test.test_number)) > 0)
+        AND (grid.re_mode = RE_MODIFY) 
+        AND (NOT test.read_only) THEN
+            MENUPROC 35226 using test.test_number
+        ELSE
+            MENUPROC 1066 using test.test_number
+        ENDIF
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_COMPLETE"   , 1 ) THEN
+
+        grid . complete_test ( )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_UNCOMPLETE" , 1 ) THEN
+
+        grid . uncomplete_test ( )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_AUTHORISE"  , 1 ) THEN
+
+        grid . authorise ( )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_REJECT"     , 1 ) THEN
+
+        grid . reject ( )
+
+    ELSEIF result = GET_USER_MESSAGE ( "RESULT_ENTRY_RMB_CANCEL"     , 1 ) THEN
+
+        grid . cancel_test ( )
+
+    ENDIF
+
+    grid . re_tree_form . reset ( )
+
+    test . selected = FALSE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_call_unlock_test ( re_list_grid_object )
+
+{
+*   Call unlock on the current test
+*
+******************************************************************************}
+
+    DECLARE test_object
+
+    test_object = re_list_grid_object .
+                      result_array [ re_list_grid_object . current_row ] .
+                          test_object
+
+    lib_tsr_grid_unlock_test ( re_list_grid_object, test_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_unlock_test ( re_list_grid_object, test )
+
+{
+*   Attempt to unlock the current test
+*
+******************************************************************************}
+
+    DECLARE counter     ,
+            anal_unlock ,
+            inst_unlock ,
+            unlocked_analid ,
+            unlocked_analvers ,
+            unlocked_instid ,
+            check_analid ,
+            check_analvers ,
+            check_instid ,
+            unlock_result ,
+            result_object ,
+            check_anal_unlock ,
+            check_inst_unlock
+
+    IF test . unlock_test ( re_list_grid_object ,
+                            anal_unlock         ,
+                            inst_unlock         ) THEN
+
+        unlocked_analid = SELECT test . analysis
+                          IN OBJECT test
+
+        unlocked_analvers = SELECT test . analysis_version
+                            IN OBJECT test
+
+        unlocked_instid = SELECT test . instrument
+                          IN OBJECT test
+
+        counter = 1
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+            unlock_result = FALSE
+
+            result_object = re_list_grid_object . result_array[ counter ]
+
+            IF anal_unlock THEN
+
+                check_analid = SELECT test . analysis
+                               IN OBJECT result_object . test_object
+
+                check_analvers = SELECT test . analysis_version
+                                 IN OBJECT result_object . test_object
+
+                IF ( unlocked_analid   = check_analid   ) AND
+                   ( unlocked_analvers = check_analvers ) THEN
+
+                    unlock_result = TRUE
+
+                ENDIF
+
+            ENDIF
+
+            IF inst_unlock THEN
+
+                check_instid = SELECT test . instrument
+                               IN OBJECT result_object . test_object
+
+                IF ( unlocked_instid   = check_instid ) THEN
+
+                    unlock_result = TRUE
+
+                ENDIF
+
+            ENDIF
+
+            IF unlock_result THEN
+
+                result_object . test_object . unlock_test ( re_list_grid_object ,
+                                                            check_anal_unlock   ,
+                                                            check_inst_unlock   )
+
+                result_object . reset_result ( re_list_grid_object )
+
+                IF ( result_object . is_calculation ) AND
+                   ( result_object . modify_allowed ) THEN
+
+                    result_object . bind ( re_list_grid_object )
+
+                ENDIF
+
+            ENDIF
+
+            counter = counter + 1
+
+        ENDWHILE
+
+    ELSE
+        re_list_grid_object . display_message ( test . read_only_message, TRUE )
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_call_dal ( re_list_grid_object )
+
+{
+*   Display the analysis record for the current test
+*
+******************************************************************************}
+
+    DECLARE test_object ,
+            analysis_id
+
+    test_object = re_list_grid_object .
+                      result_array [ re_list_grid_object . current_row ] .
+                          test_object
+
+    analysis_id = SELECT test . analysis IN OBJECT test_object :
+                  SELECT test . analysis_version IN OBJECT test_object
+
+    screen_end_update ( )
+
+    lab_call_menuproc ( 36                   ,
+                        "VERSIONED_ANALYSIS" ,
+                        analysis_id          ,
+                        EMPTY                )
+
+    screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_call_edit_stock (       re_list_grid_object ,
+                                       VALUE display_only        )
+
+{
+*   Display the analysis record for the current test
+*
+******************************************************************************}
+
+    DECLARE test_object
+
+    test_object = re_list_grid_object .
+                      result_array [ re_list_grid_object . current_row ] .
+                          test_object
+
+    IF NOT test_object . is_null_test ( ) THEN
+
+        IF NOT display_only THEN
+            display_only = (( re_list_grid_object . re_mode <> RE_MODIFY ) OR
+                            ( test_object . read_only ))
+        ENDIF
+
+        screen_end_update ( )
+
+        test_object . prompt_for_stocks ( re_list_grid_object, display_only )
+
+        screen_begin_update ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_call_analysis_instrument ( re_list_grid_object )
+
+{
+*   Allow the instrument used to be specified
+*
+******************************************************************************}
+
+    DECLARE test_object
+
+    test_object = re_list_grid_object .
+                      result_array [ re_list_grid_object . current_row ] .
+                          test_object
+
+    IF NOT test_object . is_null_test ( ) THEN
+
+        re_list_grid_object . prompt_instrument ( test_object )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_prompt_instrument ( re_list_grid_object ,
+                                                test_object         )
+
+{
+*   Allow the user to enter the instrument used.
+*
+******************************************************************************}
+
+    DECLARE inst_id         ,
+            inst_type       ,
+            test_reselected ,
+            counter         ,
+            result_object   ,
+            updated
+
+    updated = FALSE
+
+    inst_id   = SELECT test . instrument IN OBJECT test_object
+    inst_type = SELECT test . instrument_type IN OBJECT test_object
+
+    screen_end_update ( )
+
+    IF lib_instrument_prompt ( inst_type, inst_id ) THEN
+
+        IF re_list_grid_object . lock_upgrade_object ( "TEST"          ,
+                                                       test_object     ,
+                                                       test_reselected ) THEN
+
+            test_object . set_instrument ( re_list_grid_object, inst_id )
+
+            updated = TRUE
+
+            { Update the display to reflect the new status }
+
+            test_object . selected = FALSE
+
+            counter = 1
+
+            WHILE counter <= re_list_grid_object . cell_rows DO
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF result_object . test_object . test_number = test_object . test_number THEN
+
+                    result_object . check_modify_allowed ( FALSE )
+
+                    IF ( result_object . is_calculation ) AND
+                       ( result_object . modify_allowed ) THEN
+
+                        result_object . bind ( re_list_grid_object )
+
+                    ENDIF
+
+                    re_list_grid_object . redisplay_row ( counter )
+
+                ENDIF
+
+                counter = counter + 1
+
+            ENDWHILE
+
+        ENDIF
+
+    ENDIF
+
+    screen_begin_update ( )
+    
+    RETURN ( updated )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_display_sample ( self )
+
+{
+*   Display the current sample
+*
+******************************************************************************}
+
+    DECLARE old_global
+
+    old_global = GLOBAL( "LABTABLE_MODE" )
+
+    SET GLOBAL "labtable_mode" TO TRUE
+
+    MENUPROC 47 USING SELECT sample . id_numeric
+                      IN OBJECT self .
+                                  result_array [ self . current_row ] .
+                                    test_object .
+                                      sample_object
+
+    SET GLOBAL "labtable_mode" TO old_global
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_edit_tests ( self )
+
+{
+*   Edit tests for the current sample
+*
+******************************************************************************}
+
+    DECLARE old_global
+
+    old_global = GLOBAL( "LABTABLE_MODE" )
+
+    SET GLOBAL "labtable_mode" TO TRUE
+
+    MENUPROC 57 USING SELECT sample . id_numeric
+                      IN OBJECT self .
+                                  result_array [ self . current_row ] .
+                                    test_object .
+                                      sample_object
+
+    SET GLOBAL "labtable_mode" TO old_global
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_check_columns ( re_list_grid_object )
+
+{
+*   Set the required column positions and column size
+*
+******************************************************************************}
+
+    DECLARE text_field_present,
+            status_field_present
+
+        text_field_present   = FALSE
+        status_field_present = FALSE
+        re_list_grid_object . cell_columns = 0
+
+        re_list_grid_object . total_width = 1
+
+        WHILE re_list_grid_object . cell_columns < 
+                   size_of_array ( re_list_grid_object . field_names_array ) DO
+
+                re_list_grid_object . cell_columns =
+                                re_list_grid_object . cell_columns + 1
+
+                re_list_grid_object . total_width =
+                              re_list_grid_object . total_width + 1 +
+                              re_list_grid_object . column_size
+                                      [ re_list_grid_object . cell_columns ]
+
+                IF re_list_grid_object . field_names_array [
+                        re_list_grid_object . cell_columns, 1 ] = "RESULT" THEN
+
+                        IF re_list_grid_object . field_names_array [
+                                re_list_grid_object .
+                                        cell_columns, 2 ] = "TEXT" THEN
+
+                                re_list_grid_object . text_column =
+                                        re_list_grid_object . cell_columns
+                                text_field_present = TRUE
+
+                        ELSEIF re_list_grid_object . field_names_array [
+                                re_list_grid_object .
+                                        cell_columns, 2 ] = "STATUS" THEN
+
+                                re_list_grid_object . status_column =
+                                        re_list_grid_object . cell_columns
+                                status_field_present = TRUE
+
+                        ENDIF
+
+                ENDIF
+
+        ENDWHILE
+
+    RETURN ( status_field_present AND text_field_present )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_update_display (       self           ,
+                                             VALUE cell_column    ,
+                                             VALUE cell_row       ,
+                                             VALUE unit_changed   ,
+                                             VALUE text_changed   ,
+                                             VALUE status_changed )
+
+    DECLARE found ,
+            curr_cell_row
+
+    found = FALSE
+    curr_cell_row = cell_row
+
+    WHILE ( cell_row > 1 ) AND ( NOT found ) DO
+
+        IF self . result_array [ cell_row ] . test_object !=
+           self . result_array [ cell_row - 1 ] . test_object THEN
+
+            found = TRUE
+
+        ELSEIF ((self . result_array [ cell_row ] . test_object) =
+                (self . result_array [ cell_row - 1 ] . test_object)) AND
+               (( cell_row - 1 ) = 1 )  THEN
+
+            found    = TRUE
+            cell_row = 1
+
+        ELSE
+
+            cell_row = cell_row - 1
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( SELECT test . status IN OBJECT
+                  self . result_array [ cell_row ] . test_object = "C" ) OR
+       ( status_changed )                                                THEN
+
+        self . redisplay_row ( cell_row )
+        self . re_tree_form . reset ( )
+
+    ENDIF
+
+    self . redisplay_row  ( curr_cell_row )
+    self . redisplay_cell ( cell_column, curr_cell_row )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_add_result ( re_list_grid_object ,
+                                      result_object   )
+
+        re_list_grid_object . cell_rows = re_list_grid_object . cell_rows + 1
+
+        re_list_grid_object . result_array [ re_list_grid_object . cell_rows ] =
+                                                        result_object
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_insert_result ( re_list_grid_object ,
+                                         position         ,
+                                         result_object    )
+
+        DECLARE test_position
+
+        array_insert_slice ( re_list_grid_object . result_array,
+                             1,
+                             position )
+
+        re_list_grid_object . result_array [ position ] = result_object
+
+        re_list_grid_object . insert_row ( re_list_grid_object . current_row,
+                                       1,
+                                       GRID_SEPARATOR_NONE )
+
+        { Increment the number of results against this test }
+
+        result_object . test_object . number_of_results =
+                result_object . test_object . number_of_results + 1
+
+        { Reset the first result for subsequent tests }
+
+        test_position = result_object . test_object . first_result +
+                        result_object . test_object . number_of_results
+
+        WHILE test_position < re_list_grid_object . cell_rows DO
+
+                re_list_grid_object . result_array [ test_position ] .
+                        test_object . first_result = test_position
+
+                test_position =
+                        re_list_grid_object . result_array [ test_position ] .
+                                test_object . first_result +
+                        re_list_grid_object . result_array [ test_position ] .
+                                test_object . number_of_results
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_find_result (       re_list_grid_object ,
+                                             test_object      ,
+                                       VALUE component_name   ,
+                                       VALUE component_number ,
+                                             result_object    )
+
+        DECLARE counter, searching, found_result
+
+        IF numtext ( component_number ) THEN
+
+                component_number = numeric ( component_number )
+
+        ELSE
+
+                component_number = 0
+
+        ENDIF
+
+        IF component_number <= 0 THEN
+
+                found_result = FALSE
+
+        ELSE
+
+                counter = test_object . first_result + component_number - 1
+
+                IF counter < re_list_grid_object . cell_rows THEN
+
+                        result_object = re_list_grid_object .
+                                                result_array [ counter ]
+
+                        found_result = ( result_object . name =
+                                                        component_name ) AND
+                                       ( result_object . test_object =
+                                                        test_object )
+
+                ELSE
+
+                        found_result = FALSE
+
+                ENDIF
+
+        ENDIF
+
+        IF NOT found_result THEN
+
+                counter = test_object . first_result
+                searching = TRUE
+
+                WHILE searching DO
+
+                        IF counter > re_list_grid_object . cell_rows THEN
+
+                                searching = FALSE
+
+                        ELSEIF re_list_grid_object . result_array [counter] .
+                                test_object <> test_object THEN
+
+                                searching = FALSE
+
+                        ELSEIF re_list_grid_object . result_array [counter] . name =
+                                        component_name THEN
+
+                                result_object = re_list_grid_object .
+                                                result_array [ counter ]
+                                found_result = TRUE
+                                searching = FALSE
+
+                        ELSE
+
+                                counter = counter + 1
+
+                        ENDIF
+
+                ENDWHILE
+
+        ELSE
+
+                found_result = TRUE
+
+        ENDIF
+
+        RETURN ( found_result )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_get_result (       result_context ,
+                                  VALUE test_number    ,
+                                  VALUE name           )
+
+
+        DECLARE count         ,
+                result_object ,
+                temp          ,
+                current_test
+
+        result_object = EMPTY
+
+        count = 1
+
+        WHILE count <= result_context . cell_rows DO
+
+                temp         = result_context . result_array [ count ]
+                current_test = SELECT test . test_number
+                                        IN OBJECT temp . test_object
+
+                IF ( strip ( temp . name ) = strip ( name )) AND
+                   ( test_number           = current_test  ) THEN
+
+                        result_object = temp
+                        count         = result_context . cell_rows
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+        RETURN ( result_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_get_result_first (       result_context ,
+                                        VALUE test_number    ,
+                                        VALUE name           ,
+                                              internal_param )
+
+
+        DECLARE count         ,
+                result_object ,
+                temp          ,
+                current_test  ,
+                current_name
+
+        result_object = EMPTY
+
+        count = 1
+
+        WHILE count <= result_context . cell_rows DO
+
+                temp         = result_context . result_array [ count ]
+                current_test = SELECT test . test_number
+                                        IN OBJECT temp . test_object
+                current_name = substring ( temp . name           ,
+                                           1                     ,
+                                           string_length ( name ))
+
+                IF (  current_name  = strip ( name )) AND
+                   ( test_number    = current_test  ) THEN
+
+                        result_object  = temp
+                        internal_param = count
+                        count          = result_context . cell_rows
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+        RETURN ( result_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_get_result_next ( result_context        ,
+                                        VALUE test_number    ,
+                                        VALUE name           ,
+                                              internal_param )
+
+        DECLARE result_object ,
+        current_test  ,
+        current_name
+
+        internal_param = internal_param + 1
+
+        IF internal_param <= result_context . cell_rows THEN
+
+                result_object = result_context . result_array [ internal_param ]
+
+                current_test = SELECT test . test_number
+                                        IN OBJECT result_object . test_object
+                current_name = substring ( result_object . name  ,
+                                           1                     ,
+                                           string_length ( name ))
+
+                IF (  current_name  <> strip ( name )) OR
+                   ( test_number    <> current_test  ) THEN
+
+            result_object = EMPTY
+
+        ENDIF
+
+        ELSE
+
+                result_object = EMPTY
+
+        ENDIF
+
+        RETURN ( result_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_create_blank_results ( re_list_grid_object )
+
+        DECLARE counter, comp_object
+
+        counter = 1
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                IF NOT re_list_grid_object . result_array [ counter ] .
+                                                        result_row_exists THEN
+
+                        comp_object = re_list_grid_object . component_collection .
+                                                get_component (
+                                re_list_grid_object . result_array [ counter ] .
+                                                        analysis ,
+                                re_list_grid_object . result_array [ counter ] .
+                                                        analysis_version ,
+                                re_list_grid_object . result_array [ counter ] .
+                                                        name     )
+                        re_list_grid_object . result_array [ counter ] .
+                                                reserve_result ( comp_object )
+
+            re_list_grid_object . lock_retain_object (
+                                      "RESULT",
+                                      re_list_grid_object .
+                                          result_array [ counter ] )
+
+                ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_release_results ( re_list_grid_object )
+
+        DECLARE counter
+
+        counter = 1
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                re_list_grid_object . result_array [ counter ] .
+                                        release_result ( RESULT_AND_TEST )
+
+                re_list_grid_object . result_array [ counter ] = 0
+
+                counter = counter + 1
+
+        ENDWHILE
+
+        re_list_grid_object . release_collections ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_modify_callback (       re_list_grid_object ,
+                                 VALUE cell_column      ,
+                                 VALUE cell_row         ,
+                                       window           ,
+                                 VALUE column           ,
+                                 VALUE row              ,
+                                 VALUE cell_width       ,
+                                 VALUE cell_height      )
+
+
+        DECLARE result_object
+
+        re_list_grid_object . has_prompted = TRUE
+
+        result_object = re_list_grid_object . result_array [ cell_row ]
+
+        re_list_grid_object . display_component_limits ( result_object )
+
+        re_list_grid_object . result_info_pre_prompt ( result_object )
+
+        result_object . prompt_for_value ( re_list_grid_object,
+                                           cell_column,
+                                           cell_row,
+                                           window,
+                                           column,
+                                           row,
+                                           cell_width,
+                                           cell_height )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_authorise_callback (       re_list_grid_object ,
+                                    VALUE cell_column      ,
+                                    VALUE cell_row         ,
+                                          window           ,
+                                    VALUE column           ,
+                                    VALUE row              ,
+                                    VALUE cell_width       ,
+                                    VALUE cell_height      )
+
+        DECLARE result_object
+
+        re_list_grid_object . has_prompted = TRUE
+
+        result_object = re_list_grid_object . result_array [ cell_row ]
+
+        re_list_grid_object . display_component_limits ( result_object )
+
+        re_list_grid_object . result_info_pre_prompt ( result_object )
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+                result_object . prompt_gui_select ( re_list_grid_object ,
+                                                    cell_column         ,
+                                                    cell_row            ,
+                                                    window              ,
+                                                    column              ,
+                                                    row                 ,
+                                                    cell_width          ,
+                                                    cell_height         )
+        ELSE
+
+                result_object . prompt_for_status ( re_list_grid_object ,
+                                                    cell_column         ,
+                                                    cell_row            ,
+                                                    window              ,
+                                                    column              ,
+                                                    row                 ,
+                                                    cell_width          ,
+                                                    cell_height         )
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_display_callback (       re_list_grid_object ,
+                                  VALUE cell_column      ,
+                                  VALUE cell_row         ,
+                                        window           ,
+                                  VALUE column           ,
+                                  VALUE row              ,
+                                  VALUE cell_width       ,
+                                  VALUE cell_height      )
+
+        DECLARE result_object
+
+        re_list_grid_object . has_prompted = TRUE
+
+        result_object = re_list_grid_object . result_array [ cell_row ]
+
+        re_list_grid_object . display_component_limits ( result_object )
+
+        re_list_grid_object . result_info_pre_prompt ( result_object )
+
+        result_object . display_result ( re_list_grid_object,
+                                         cell_column,
+                                         cell_row,
+                                         window,
+                                         column,
+                                         row,
+                                         cell_width,
+                                         cell_height )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE display_callback (       re_list_grid_object ,
+                           VALUE cell_column      ,
+                           VALUE cell_row         ,
+                                 window           ,
+                           VALUE column           ,
+                           VALUE row              ,
+                           VALUE cell_width       ,
+                           VALUE cell_height      )
+
+        DECLARE field_value, bold_mode, blink_mode, inverse_mode, colour_mode,
+                field_to_use, table_to_use, status, repeated_test,
+                new_length, quick_text, display_italic , record_obj ,
+                repeated_sample
+
+        display_italic = FALSE
+        blink_mode     = FALSE
+        bold_mode      = FALSE
+        inverse_mode   = FALSE
+        status         = " "
+
+        table_to_use = re_list_grid_object . field_names_array [ cell_column, 1 ]
+        field_to_use = re_list_grid_object . field_names_array [ cell_column, 2 ]
+
+        IF table_to_use = "RESULT" THEN
+
+                IF field_to_use = "NAME" THEN
+
+                        field_value = re_list_grid_object .
+                                           result_array [ cell_row ] .
+                                            name
+
+                ELSEIF field_to_use = "TEXT" THEN
+
+                        field_value = re_list_grid_object .
+                                            result_array [ cell_row ] .
+                                            result_str
+
+                        blink_mode = SELECT result . out_of_range IN OBJECT
+                                    re_list_grid_object . result_array [ cell_row ]
+
+                        status = SELECT result . status IN OBJECT
+                                re_list_grid_object . result_array [ cell_row ]
+
+            re_list_grid_object . result_array [ cell_row ].
+                                    set_position ( EMPTY               ,
+                                                   cell_row            ,
+                                                   re_list_grid_object )
+
+            {*****************************}
+                        { See if result has incidents }
+            {*****************************}
+
+                        display_italic = SELECT result . has_incidents
+                                    IN OBJECT re_list_grid_object .
+                                        result_array [ cell_row ]
+
+                ELSEIF field_to_use = "UNITS" THEN
+
+                        field_value = re_list_grid_object .
+                                            result_array [ cell_row ] .
+                                            result_unit
+
+                ELSE
+
+                        field_value = SELECT result . 'field_to_use'
+                                        IN OBJECT re_list_grid_object . 
+                              result_array [ cell_row ]
+
+            IF field_to_use = "STATUS" THEN
+
+                IF re_list_grid_object . result_array [ cell_row ] .
+                                                        store_pending THEN
+
+                    field_value = field_value : "*"
+
+                ELSE
+
+                    field_value = field_value : " "
+
+                ENDIF
+
+            ENDIF
+
+                ENDIF
+
+                inverse_mode =  re_list_grid_object .
+                                  result_array [ cell_row ] . selected
+
+
+                status = SELECT result . status IN OBJECT
+                        re_list_grid_object . result_array [ cell_row ]
+
+    ELSE
+
+                repeated_test = FALSE
+                repeated_sample = FALSE
+
+                IF cell_row > 1 THEN
+
+                        IF re_list_grid_object . result_array [ cell_row ] .
+                                                        test_object . sample_object =
+                               re_list_grid_object . result_array [ cell_row - 1 ] .
+                                                        test_object . sample_object THEN
+
+                                repeated_sample = TRUE
+                                
+                            IF re_list_grid_object . result_array [ cell_row ] .
+                                                            test_object =
+                                   re_list_grid_object . result_array [ cell_row - 1 ] .
+                                                            test_object THEN
+
+                                    repeated_test = TRUE
+                                
+                            ENDIF
+
+                        ENDIF
+
+                ENDIF
+
+                IF repeated_test THEN
+
+                        field_value = " "
+
+            ELSEIF table_to_use = "JOB_HEADER" THEN
+
+            IF repeated_sample THEN
+
+                field_value = " "
+
+            ELSEIF re_list_grid_object . result_array [ cell_row ] .
+                                        test_object .
+                                        sample_object .
+                                        job_object <> EMPTY THEN
+                                                    
+                field_value = SELECT job_header . 'field_to_use'
+                                      IN OBJECT re_list_grid_object .
+                                                        result_array [ cell_row ] .
+                                                        test_object .
+                                                        sample_object . 
+                                                        job_object
+
+            ELSE
+                field_value = " "
+            ENDIF
+
+            ELSEIF table_to_use = "SAMPLE" THEN
+
+            IF repeated_sample THEN
+
+                field_value = " "
+
+            ELSE
+
+                        field_value = SELECT sample . 'field_to_use'
+                                      IN OBJECT re_list_grid_object .
+                                                        result_array [ cell_row ] .
+                                                        test_object .
+                                                        sample_object
+
+                IF ( re_list_grid_object . sub_samples )      OR
+                   ( re_list_grid_object . multiple_samples ) THEN
+
+                    status = SELECT sample . status
+                        IN OBJECT re_list_grid_object .
+                                     result_array [ cell_row ] .
+                                     test_object .
+                                     sample_object
+
+                ENDIF
+
+            ENDIF
+
+        ELSEIF ( table_to_use = "TEST" ) AND
+               ( NOT re_list_grid_object . result_array [ cell_row ] .
+                                             test_object . is_null_test ( )) THEN
+
+            {**************************************}
+            { Check for incidents against the test }
+            {**************************************}
+
+            record_obj = re_list_grid_object .
+                    result_array [ cell_row ] . test_object
+
+            display_italic = SELECT test . has_incidents
+                            IN OBJECT record_obj
+
+            IF NOT display_italic THEN
+
+                {****************************************}
+                { Check for incidents against the sample }
+                {****************************************}
+
+                record_obj = record_obj . sample_object
+
+                display_italic = SELECT sample . has_incidents
+                            IN OBJECT record_obj
+
+            ENDIF
+
+            field_value = SELECT test . 'field_to_use'
+                    IN OBJECT re_list_grid_object .
+                    result_array [ cell_row ] . test_object
+
+            IF field_to_use = "ANALYSIS" THEN
+
+                field_value = strip ( field_value ) : "/" :
+                          strip ( SELECT test . test_count
+                          IN OBJECT re_list_grid_object .
+                             result_array [ cell_row ] .
+                             test_object )
+
+                re_list_grid_object .
+                  result_array [ cell_row ] .
+                    test_object .
+                      set_position ( EMPTY               ,
+                             cell_row            ,
+                             re_list_grid_object )
+
+            ENDIF
+
+            inverse_mode =  re_list_grid_object .
+                          result_array [ cell_row ] .
+                          test_object . selected
+
+            status = SELECT test . status IN OBJECT
+                re_list_grid_object . result_array [ cell_row ].
+                test_object
+
+            ELSE
+
+                    field_value = " "
+
+            ENDIF
+
+    ENDIF
+
+    IF ( status = "A" ) THEN
+
+                colour_mode = PROMPT_COLOUR_RGB ( 0 , 128 , 0 )
+
+        ELSEIF ( status = "R" ) THEN
+
+                colour_mode = PROMPT_COLOUR_RED
+
+        ELSEIF ( status = "C" ) THEN
+
+                IF global ( "TERMTYPE" ) <> "GUI" THEN
+
+                        bold_mode = TRUE
+
+                ENDIF
+
+                colour_mode = PROMPT_COLOUR_BLUE
+        ELSE
+                colour_mode = PROMPT_COLOUR_BLACK
+        ENDIF
+
+    IF re_list_grid_object . has_prompted THEN
+
+        field_value = strip ( field_value )
+
+        DISPLAY field_value
+                ON LINE row FROM column TO column + cell_width - 1
+                IN WINDOW window
+                BLINKING = blink_mode
+                BOLD     = bold_mode
+                INVERSE  = inverse_mode
+                WITH ( foreground_colour = colour_mode    ,
+                       strikethrough     = blink_mode     ,
+                               italic            = display_italic )
+
+    ELSE
+
+        quick_text = re_list_grid_object . quick_text
+
+        { Only assign fields if different }
+
+        IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+            quick_text . window = window
+            quick_text . column = column
+            quick_text . row    = row
+        ELSEIF ( cell_row = 1 ) AND ( cell_column = 1 ) THEN
+            quick_text . window = window
+        ENDIF
+
+        IF quick_text . blinking <> blink_mode THEN
+            quick_text . blinking = blink_mode
+            quick_text . strikethrough = blink_mode
+        ENDIF
+
+        IF quick_text . bold <> bold_mode THEN
+            quick_text . bold = bold_mode
+        ENDIF
+
+        IF quick_text . inverse <> inverse_mode THEN
+            quick_text . inverse = inverse_mode
+        ENDIF
+
+        IF quick_text . foreground_colour <> colour_mode THEN
+            quick_text . foreground_colour = colour_mode
+        ENDIF
+
+                IF quick_text . italic <> display_italic THEN
+                        quick_text . italic = display_italic
+                ENDIF
+
+        new_length = stringlength ( field_value )
+        IF new_length = 0 THEN
+            new_length = 1
+        ENDIF
+
+        IF new_length <> quick_text . length THEN
+            quick_text . width  = new_length
+            quick_text . length = new_length
+        ENDIF
+
+        quick_text . set_text ( strip ( field_value ))
+
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE mouse_select_result_test ( re_list_grid_object ,
+                                   VALUE cell_column   ,
+                                   VALUE cell_row      )
+
+        DECLARE table_to_use , repeated_test, row , this_result , next_result,
+        matrix_no
+
+    IF ( cell_row > 0 ) AND ( cell_column > 0 ) THEN
+
+        table_to_use = re_list_grid_object . field_names_array [ cell_column, 1 ]
+
+        IF table_to_use = "TEST" THEN
+
+            repeated_test = FALSE
+
+            IF cell_row > 1 THEN
+
+                IF re_list_grid_object . result_array [ cell_row ] .
+                                test_object =
+                   re_list_grid_object . result_array [ cell_row - 1 ] .
+                                test_object THEN
+
+
+                    repeated_test = TRUE
+                ENDIF
+            ENDIF
+
+            IF NOT repeated_test THEN
+
+                this_result =
+                    re_list_grid_object . result_array [ cell_row ]
+
+                this_result . test_object . selected
+                    = NOT this_result . test_object . selected
+
+                matrix_no = SELECT result . matrix_no IN OBJECT this_result
+
+                IF ( matrix_no = 0 ) THEN
+                    this_result . selected =
+                           this_result . test_object . selected
+                ENDIF           
+
+                row = cell_row + 1
+
+                next_result = re_list_grid_object . result_array [ row ]
+
+                WHILE ( row <= re_list_grid_object . cell_rows ) AND
+                      ( next_result <> EMPTY                   ) DO
+
+                    IF ( this_result . test_object =
+                              next_result . test_object ) THEN
+
+
+                        matrix_no = SELECT result . matrix_no 
+                                IN OBJECT next_result
+
+                        IF ( matrix_no = 0 ) THEN
+                            next_result . selected =
+                               next_result . test_object . selected
+                        ENDIF           
+
+
+                        re_list_grid_object .
+                                redisplay_row ( row )
+
+                        row = row + 1
+
+                        this_result = next_result
+                        next_result = re_list_grid_object .
+                                 result_array [ row ]
+                    ELSE
+                        next_result = EMPTY
+                    ENDIF
+
+                ENDWHILE
+
+            ENDIF
+
+        ELSEIF table_to_use = "RESULT" THEN
+
+            matrix_no = SELECT result . matrix_no IN OBJECT
+                    re_list_grid_object . result_array [ cell_row ] 
+
+            IF ( matrix_no = 0 ) THEN
+
+                re_list_grid_object . result_array [ cell_row ] . selected =
+                 NOT re_list_grid_object . result_array [ cell_row ] . selected
+
+            ENDIF
+
+        ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE check_move (       re_list_grid_object ,
+                     VALUE current_column ,
+                     VALUE current_row ,
+                           new_column ,
+                           new_line )
+
+    { Only allow movement between modifiable columns }
+
+    IF current_column <> new_column THEN
+
+        IF ( re_list_grid_object . re_mode = RE_AUTHORISE ) AND
+           ( global ( "TERMTYPE" ) <> "GUI" )               THEN
+
+            new_column = re_list_grid_object . status_column
+
+        ELSE
+
+            new_column = re_list_grid_object . text_column
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE right_mouse ( grid )
+
+{
+*
+*   Grid right mouse routine. Figure out where we are, what is selected
+*   and call the appropriate function.
+*
+{*****************************************************************************}
+
+    DECLARE top, left, bottom, right {*** , col, row ***}
+
+        If grid . get_select_area ( top, left, bottom, right ) THEN
+
+            {****
+
+            flash_message ( "Right Mouse Area" :
+                             top : left : bottom : right, TRUE )
+
+            ****}
+
+        ELSEIF grid . mouse_row = 0 THEN
+
+            IF grid . column_settings . right_mouse ( grid ) THEN
+
+                    grid . check_columns ( )
+                grid . rebuild ( )
+
+                IF ( grid . re_mode = RE_AUTHORISE ) AND
+                   ( global ( "TERMTYPE" ) <> "GUI" ) THEN
+
+                    grid . set_position ( grid . status_column ,
+                                          grid . current_row   )
+
+                ELSE
+
+                    grid . set_position ( grid . text_column ,
+                                          grid . current_row )
+
+                ENDIF
+
+            ENDIF
+
+        ELSE
+
+            {***
+
+            col = grid . mouse_column
+            row = grid . mouse_row
+
+            flash_message ( "Right Mouse Cell" :
+                            row : col, TRUE )
+
+            ***}
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE select_callback ( grid )
+
+        DECLARE menu_options, option_number, next_option, result_object
+
+        screen_end_update ( )
+
+        result_object = grid . result_array [ grid . current_row ]
+
+        ARRAY menu_options ARRAY_SIZE ( 0, 4 )
+
+        menu_options [ 1, 1 ] = "*"
+        menu_options [ 1, 2 ] = GET_USER_MESSAGE ( "RESULT_ENTRY_SELECT_HEADER", 1 )
+        menu_options [ 1, 3 ] = "RES_HELP_CONTEXT"
+
+        IF grid . browse_on THEN
+                menu_options [ 2, 2 ] =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_LIMIT_TOGGLE", 1 )
+        ELSE
+                menu_options [ 2, 2 ] =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_LIMIT_TOGGLE", 2 )
+        ENDIF
+
+        menu_options [ 2, 1 ] = substring ( menu_options [ 2, 2 ], 1, 1 )
+        menu_options [ 2, 3 ] = LIMITS_TOGGLE
+
+        next_option = 3
+
+        IF GLOBAL ( "RES_AUDIT_BOX_CONTROL" ) THEN
+
+                IF grid . audit_box_on THEN
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_AUDIT_BOX_CONTROL", 1 )
+                ELSE
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_AUDIT_BOX_CONTROL", 2 )
+                ENDIF
+
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = AUDIT_BOX
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF GLOBAL ( "RES_INFO_BOX_CONTROL" ) THEN
+
+                IF grid . info_box_on THEN
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_INFO_BOX_CONTROL", 1 )
+                ELSE
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_INFO_BOX_CONTROL", 2 )
+                ENDIF
+
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = INFO_BOX
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF GLOBAL ( "RES_LIMITS_BOX_CONTROL" ) THEN
+
+                IF grid . limits_box_on THEN
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_LIMITS_BOX_CONTROL", 1 )
+                ELSE
+                        menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE (
+                                        "RESULT_ENTRY_LIMITS_BOX_CONTROL", 2 )
+                ENDIF
+
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = LIMITS_BOX
+
+                next_option = next_option + 1
+
+        ENDIF
+
+    { Add display incident }
+
+    IF grid . incidents_on THEN
+        menu_options [ next_option, 2 ] =
+            GET_USER_MESSAGE (
+                "RESULT_ENTRY_DISPLAY_INCIDENTS", 1 )
+    ELSE
+        menu_options [ next_option, 2 ] =
+            GET_USER_MESSAGE (
+                "RESULT_ENTRY_DISPLAY_INCIDENTS", 2 )
+    ENDIF
+
+    menu_options [ next_option, 1 ] =
+        substring ( menu_options [ next_option, 2 ], 1, 1 )
+    menu_options [ next_option, 3 ] = INCIDENTS
+
+    next_option = next_option + 1
+
+
+        IF ( grid . re_mode = RE_MODIFY ) OR
+           ( grid . re_mode = RE_AUTHORISE ) THEN
+
+                menu_options [ next_option, 2 ] =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_RECALCULATE_ALL", 1 )
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = RECALC
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF ( grid . re_mode = RE_MODIFY  ) AND
+           ( global ( "PQL_ENABLE"      )) THEN
+
+                menu_options [ next_option, 2 ] =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_LESS_PQL", 1 )
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = LESSTHANPQL
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF ( grid . re_mode = RE_MODIFY  ) AND
+           ( global ( "PQL_ENABLE"      )) THEN
+
+                menu_options [ next_option, 2 ] =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_GREATER_PQL", 1 )
+                menu_options [ next_option, 1 ] =
+                        substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = GREATERTHANPQL
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF ( grid . re_mode = RE_MODIFY  ) AND
+       ( grid . dilution_allowed ( result_object )) THEN
+
+                menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE ( "RESULT_ENTRY_DILUTION_FACTOR", 1 )
+                menu_options [ next_option, 1 ] =
+                                substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = DILUTIONFACTOR
+
+                next_option = next_option + 1
+
+
+        ENDIF
+
+    IF result_object . is_calculation THEN
+
+                menu_options [ next_option, 2 ] =
+                                GET_USER_MESSAGE ( "RESULT_ENTRY_FORMULA", 1 )
+                menu_options [ next_option, 1 ] =
+                                substring ( menu_options [ next_option, 2 ], 1, 1 )
+                menu_options [ next_option, 3 ] = PRINTFORMULA
+
+                next_option = next_option + 1
+
+    ENDIF
+
+
+        CHOOSE option_number OUTOF menu_options
+                ON LINE 10 FROM 20
+
+        IF option_number = LIMITS_TOGGLE THEN
+
+                grid . browse_on = NOT grid . browse_on
+
+                IF NOT grid . browse_on THEN
+
+                        CLEAR LINE grid . browse_row FROM 1
+                                IN WINDOW grid . parent_prompt . window
+
+                ENDIF
+
+        ELSEIF option_number = AUDIT_BOX THEN
+
+        grid . audit_box_on = NOT grid . audit_box_on
+
+        ELSEIF option_number = INFO_BOX THEN
+
+                IF grid . info_box_on THEN
+
+                        grid . result_info_exit ( )
+
+            grid . info_box_on = FALSE
+
+                ELSE
+
+            grid . info_box_on = TRUE
+
+                        grid . result_info_setup ( )
+
+                ENDIF
+
+        ELSEIF option_number = LIMITS_BOX THEN
+
+        grid . limits_box_on = NOT grid . limits_box_on
+
+        ELSEIF option_number = INCIDENTS THEN
+
+        grid . incidents_on = NOT grid . incidents_on
+
+        ELSEIF option_number = RECALC THEN
+
+                grid . recalculate ( TRUE  ,
+                     TRUE  ,
+                     FALSE )    
+
+        ELSEIF option_number = LESSTHANPQL THEN
+
+                grid . set_less_than_pql ( TRUE )
+
+        ELSEIF option_number = GREATERTHANPQL THEN
+
+                grid . set_greater_than_pql ( TRUE )
+
+        ELSEIF option_number = DILUTIONFACTOR THEN
+
+                grid . prompt_dilution_factor ( result_object )
+
+        ELSEIF option_number = PRINTFORMULA THEN
+
+        result_object . print_formula ( grid )
+
+        ENDIF
+
+        screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE select_callback_gui ( grid )
+
+DECLARE option_number, next_option, option_text,
+        option_form, display_width, option_type, option_value
+
+        IF grid . toolbox_or_buttons THEN
+        select_callback ( grid )
+                RETURN
+        ENDIF
+
+        CREATE OBJECT PROMPT_CLASS_FORM , option_form
+
+        next_option = 1
+        display_width = 0
+
+        IF GLOBAL ( "RES_AUDIT_BOX_CONTROL" ) AND NOT GLOBAL ( "RES_SPLITTER" ) THEN
+
+                option_text =
+                      GET_USER_MESSAGE ( "RESULT_ENTRY_AUDIT_BOX_CONTROL" , 3 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+                        FORMAT boolean
+                        ON LINE next_option FROM 2
+                        WITH ( is_check  = TRUE                ,
+                               value     = grid . audit_box_on ,
+                               user_info = AUDIT_BOX           ,
+                               caption   = option_text         )
+
+                display_width = STRINGLENGTH ( option_text )
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF GLOBAL ( "RES_INFO_BOX_CONTROL" ) THEN
+
+                option_text =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_INFO_BOX_CONTROL" , 3 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+                        FORMAT boolean
+                        ON LINE next_option FROM 2
+                        WITH ( is_check  = TRUE               ,
+                               value     = grid . info_box_on ,
+                               user_info = INFO_BOX           ,
+                               caption   = option_text        )
+
+                IF STRINGLENGTH ( option_text ) > display_width THEN
+
+                        display_width = STRINGLENGTH ( option_text )
+
+                ENDIF
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF GLOBAL ( "RES_LIMITS_BOX_CONTROL" ) AND NOT GLOBAL ( "RES_SPLITTER" ) THEN
+
+                option_text =
+                  GET_USER_MESSAGE ( "RESULT_ENTRY_LIMITS_BOX_CONTROL" , 3 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+                        FORMAT boolean
+                        ON LINE next_option FROM 2
+                        WITH ( is_check  = TRUE                 ,
+                               value     = grid . limits_box_on ,
+                               user_info = LIMITS_BOX           ,
+                               caption   = option_text          )
+
+                IF STRINGLENGTH ( option_text ) > display_width THEN
+
+                        display_width = STRINGLENGTH ( option_text )
+
+                ENDIF
+
+                next_option = next_option + 1
+
+        ENDIF
+
+    IF NOT GLOBAL ( "RES_SPLITTER" ) THEN
+
+        { Add display incident }
+
+            option_text =
+              GET_USER_MESSAGE ( "RESULT_ENTRY_DISPLAY_INCIDENTS", 3 ) 
+
+            PROMPT OBJECT option_form . prompt_objects [next_option]
+                    FORMAT boolean
+                    ON LINE next_option FROM 2
+                    WITH ( is_check  = TRUE                ,
+                           value     = grid . incidents_on ,
+                           user_info = INCIDENTS           ,
+                           caption   = option_text         )
+
+            IF STRINGLENGTH ( option_text ) > display_width THEN
+
+                    display_width = STRINGLENGTH ( option_text )
+
+            ENDIF
+
+            next_option = next_option + 1
+
+    ENDIF
+
+    { Quick EXIT from routine if not options to display }
+
+    IF next_option = 1 THEN
+
+        RETURN
+
+    ENDIF
+
+    { Display and prompt }
+
+        screen_end_update ( )
+
+        option_form . height = next_option - 1
+
+        IF ( display_width + 5 ) < 32 THEN
+
+                option_form . width = 32
+
+        ELSE
+
+                option_form . width  = display_width + 5
+                { Allowing space for check boxes }
+
+        ENDIF
+
+        option_form . column       = GLOBAL ( "GUI_WIDTH" ) * 0.60
+        option_form . row          = 1
+        option_form . border       = TRUE
+        option_form . proportional = TRUE
+        option_form . header       = GET_USER_MESSAGE ("RESULT_ENTRY_SELECT_HEADER",1)
+        option_form . help_context = "RES_HELP_CONTEXT"
+
+        option_form . add_frame ( ""                   ,
+                                  1                    ,
+                                  1                    ,
+                                  option_form . height ,
+                                  option_form . width  )
+
+        option_form . start_prompt ()
+
+        option_form . wait_prompt ()
+
+        IF option_form . get_lastkey () <> "EXIT" THEN
+
+                option_number = 1
+
+                WHILE option_number < next_option DO
+
+                        option_type = option_form .
+                                prompt_objects [ option_number] . user_info
+
+                        option_value = option_form .
+                                prompt_objects [ option_number] . value
+
+                        IF option_type = AUDIT_BOX THEN
+
+                                IF grid . audit_box_on AND
+                                   NOT option_value THEN
+
+                                        grid . audit_form . prompt_objects [ 1 ]
+                                                        . set_visible ( FALSE)
+                                        grid . audit_form . set_visible ( FALSE)
+
+                    grid . audit_box_on = FALSE
+
+                                ELSEIF NOT grid . audit_box_on AND
+                                       option_value THEN
+
+                    grid . audit_box_on = TRUE
+
+                                        grid . audit_form . prompt_objects [ 1 ]
+                                                        . set_visible ( TRUE )
+                                        grid . audit_form . set_visible ( TRUE )
+
+                                ENDIF
+
+                        ELSEIF option_type = INFO_BOX THEN
+
+                                IF grid . info_box_on AND
+                                   NOT option_value THEN
+
+                                        grid . result_info_exit ( )
+
+                    grid . info_box_on = FALSE
+
+                                ELSEIF NOT grid . info_box_on AND
+                                       option_value THEN
+
+                    grid . info_box_on = TRUE
+
+                                        grid . result_info_setup ( )
+
+                                ENDIF
+
+                        ELSEIF option_type = LIMITS_BOX THEN
+
+                                IF grid . limits_box_on AND
+                                   NOT option_value THEN
+
+                                        grid . mlp_form . prompt_objects [1] .
+                                                         set_visible ( FALSE )
+                                        grid . mlp_form . set_visible ( FALSE )
+
+                    grid . limits_box_on = FALSE
+
+                                ELSEIF NOT grid . limits_box_on AND
+                                       option_value THEN
+
+                    grid . limits_box_on = TRUE
+
+                                        grid . mlp_form . prompt_objects [1] .
+                                                        set_visible ( TRUE )
+
+                                        grid . mlp_form . set_visible ( TRUE )
+
+                                ENDIF
+
+                        ELSEIF option_type = INCIDENTS THEN
+
+                               IF grid . incidents_on AND
+                                  NOT option_value THEN
+
+                                        grid . incidents_form . prompt_objects [1] .
+                                                               set_visible ( FALSE )
+                                        grid . incidents_form . set_visible ( FALSE )
+
+                                        grid . incidents_on = FALSE
+
+                               ELSEIF NOT grid . incidents_on AND
+                                      option_value THEN
+
+                    grid . incidents_on = TRUE
+
+                                        grid . incidents_form . prompt_objects [1] .
+                                                        set_visible ( TRUE )
+
+                                        grid . incidents_form . set_visible ( TRUE )
+
+                               ENDIF
+
+                        ENDIF
+
+                        option_number = option_number + 1
+
+                ENDWHILE
+
+        ENDIF
+
+        option_form . end_prompt ()
+        screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE select_callback_gui_idl ( grid )
+
+DECLARE option_text, next_option ,
+        option_form, display_width,
+    result_object, current_option
+
+        result_object = grid . result_array [ grid . current_row ]
+
+
+        IF grid . toolbox_or_buttons THEN
+                RETURN
+        ENDIF
+
+        CREATE OBJECT PROMPT_CLASS_FORM , option_form
+
+        display_width = 21
+    next_option = 1
+
+    IF ( grid . re_mode = RE_MODIFY  ) AND
+           ( global ( "PQL_ENABLE"      )) THEN
+
+        option_text = GET_USER_MESSAGE
+            ( "RESULT_ENTRY_GREATER_PQL" , 2 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 1 + (( next_option - 1 ) * 2 )
+            FROM 2 TO 20
+                        WITH ( caption = option_text            ,
+                   user_info = grid                 ,
+                   mouse_click_routine = "click_greater_pql" )
+
+                display_width = STRINGLENGTH ( option_text )
+
+                next_option = next_option + 1
+
+                option_text =
+                      GET_USER_MESSAGE ( "RESULT_ENTRY_LESS_PQL" , 2 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 1 + (( next_option - 1 ) * 2 )
+            FROM 2 TO 20
+            WITH ( caption = option_text              ,
+                   user_info = grid               ,
+                   mouse_click_routine = "click_less_pql" )
+
+                display_width = STRINGLENGTH ( option_text )
+
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF ( grid . re_mode = RE_MODIFY  ) AND
+       ( grid . dilution_allowed ( result_object )) THEN
+
+                option_text =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_DILUTION_FACTOR" , 2 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 1 + (( next_option - 1 ) * 2 )
+            FROM 2 TO 20
+                        WITH ( caption = option_text              ,
+                   user_info = grid                       ,
+                   mouse_click_routine = "click_dilution" )
+
+                IF STRINGLENGTH ( option_text ) > display_width THEN
+
+                        display_width = STRINGLENGTH ( option_text )
+
+                ENDIF
+        
+                next_option = next_option + 1
+
+        ENDIF
+
+        IF ( result_object . is_calculation ) AND
+       ( NULL <> SELECT result . formula IN OBJECT result_object ) THEN
+
+                option_text =
+                        GET_USER_MESSAGE ( "RESULT_ENTRY_FORMULA" , 2 )
+
+                PROMPT OBJECT option_form . prompt_objects [next_option]
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 1 + (( next_option - 1 ) * 2 )
+            FROM 2 TO 20
+                        WITH ( caption = option_text             ,
+                   mouse_click_routine = "click_formula" ,
+                   user_info = grid                  )
+
+                IF STRINGLENGTH ( option_text ) > display_width THEN
+
+                        display_width = STRINGLENGTH ( option_text )
+
+                ENDIF
+        
+                next_option = next_option + 1
+
+    ENDIF
+
+        screen_end_update ( )
+
+    IF next_option > 1 THEN
+
+            option_form . height       = (( next_option - 1 ) * 2 ) - 1
+            option_form . width        = display_width + 4
+            option_form . column       = 10
+            option_form . row          = 5
+            option_form . border       = TRUE
+            option_form . proportional = TRUE
+            option_form . header       = GET_USER_MESSAGE ("RESULT_ENTRY_IDL_HEADER",1)
+            option_form . button_style = FORM_BUTTON_CLOSE
+            option_form . prompt_id    = "RES_IDL_CONTEXT"
+
+            option_form . add_frame ( ""                   ,
+                                      1                    ,
+                                      1                    ,
+                                      option_form . height ,
+                                      option_form . width  )
+
+        { Adjust the button width }
+
+        current_option = 1
+
+        WHILE current_option < next_option DO
+
+            option_form . prompt_objects [ current_option ] .
+                            width = display_width + 2
+        
+            current_option = current_option + 1
+
+        ENDWHILE
+
+            option_form . start_prompt ()
+            option_form . wait_prompt ()
+            option_form . end_prompt ()
+
+    ELSE
+
+        screen_beep ( )
+
+    ENDIF
+
+        screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE insert_callback ( re_list_grid_object )
+
+        DECLARE current_result,
+                new_result_object,
+                existing_result,
+                add_ad_hoc_result,
+                status,
+                current_is_ad_hoc,
+        res_name,
+        res_type
+
+        { Get the current result }
+
+        current_result = re_list_grid_object . result_array [
+                                                re_list_grid_object . current_row ]
+
+    { If the current test is a blank marker dont allow result creation }
+
+    IF ( current_result . test_object . is_null_test ( )) THEN
+        RETURN
+    ENDIF
+
+        screen_end_update ( )
+
+        { If the current result is not an ad_hoc place
+          marker create a blank result record }
+
+        current_is_ad_hoc = ( LIB_RE_AD_HOC_RESULT_TYPE =
+                              ( SELECT result . result_type
+                                IN OBJECT current_result ))
+
+        status = result_reserve ( current_result . test_number : " " )
+
+        IF status = EMPTY THEN
+
+                lib_re_result_assign_defaults ( )
+
+        res_name = SELECT result . name
+                          IN OBJECT current_result
+        res_type = SELECT result . result_type
+                          IN OBJECT current_result
+
+                REPEAT
+
+                        CALL_ROUTINE "AD_HOC_RESULT"
+
+                                IN LIBRARY "$LIB_RESLT"
+
+                USING res_name, res_type
+
+                                RETURNING add_ad_hoc_result
+
+                UNTIL NOT add_ad_hoc_result OR
+                      NOT re_list_grid_object . find_result (
+                                                current_result . test_object,
+                                                SELECT result . name,
+                                                0,
+                                                existing_result )
+
+        ELSE
+
+                add_ad_hoc_result = FALSE
+
+        ENDIF
+
+        IF add_ad_hoc_result THEN
+
+                new_result_object = lib_re_result_create_result_from_result (
+                                        current_result . test_object )
+
+                re_list_grid_object . lock_retain_object ( "RESULT"          ,
+                                                           new_result_object )
+
+                IF NOT current_is_ad_hoc THEN
+
+                        re_list_grid_object . insert_result (
+                                        re_list_grid_object . current_row,
+                                        new_result_object )
+
+            re_list_grid_object . bind ()
+
+                        re_list_grid_object . redisplay_row (
+                                        re_list_grid_object . current_row )
+
+                        re_list_grid_object . set_position (
+                                        re_list_grid_object . current_column,
+                                        re_list_grid_object . current_row - 1 )
+
+                ELSE
+
+                        current_result . release_result ( RESULT_ONLY )
+
+                        re_list_grid_object . result_array [ re_list_grid_object .
+                                        current_row ] = new_result_object
+
+                        re_list_grid_object . redisplay_row (
+                                        re_list_grid_object . current_row )
+
+                ENDIF
+
+        ENDIF
+
+        screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_recalculate (       re_list_grid_object ,
+                                          VALUE redisplay_result    ,
+                                          VALUE do_formulas         ,
+                                          VALUE commit_results      )
+
+        DECLARE counter ,
+                result_object ,
+                reselected ,
+                ok ,
+                result_info_enabled ,
+                old_cache
+
+        counter = 1
+
+    { Store any results not yet committed }
+    IF NOT re_list_grid_object . ask_store_results ( ) THEN
+        RETURN
+    ENDIF
+
+    { Now perform calculations }
+        re_list_grid_object . play_avi ( "RESULT_ENTRY_RECALC_HEADER" ,
+                                     RE_CONTEXT_RECALCULATE_AVI   ,
+                                     TRUE                         )
+
+        re_list_grid_object . display_message ( "RESULT_ENTRY_RECALCULATING" ,
+                                                TRUE                         )
+
+        old_cache = re_list_grid_object . set_result_cache ( )
+
+        result_info_enabled = re_list_grid_object . info_box_on
+
+    re_list_grid_object . info_box_on = FALSE
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF ( result_object . is_calculation ) AND
+                   ( result_object . modify_allowed ) THEN
+
+
+            IF ( NOT do_formulas                  ) AND
+                   (     result_object . is_formula ()) THEN
+
+                ok         = FALSE
+                reselected = FALSE
+
+            ELSE
+
+                result_object . bind ( re_list_grid_object )
+
+                            ok = re_list_grid_object . 
+                                      lock_upgrade_object ( "RESULT"      ,
+                                                            result_object ,
+                                                            reselected    )
+
+            ENDIF
+
+                        IF reselected AND ok THEN
+
+                                result_object . result_str =
+                                  SELECT result . text IN OBJECT result_object
+                                result_object . result_val =
+                                  SELECT result . value IN OBJECT result_object
+
+                                IF redisplay_result THEN
+                                        re_list_grid_object .
+                                                redisplay_row ( counter )
+                                ENDIF
+
+                        ENDIF
+
+                        IF ok THEN
+
+                IF ( result_object . recalculate ( re_list_grid_object )) THEN
+
+                    { If the calculated value has changed
+                      then store the new value }
+
+                    IF ( result_object . result_str <>
+                           ( SELECT result . text IN OBJECT result_object )) OR
+                       ( result_object . result_val <>
+                           ( SELECT result . value IN OBJECT result_object )) THEN
+
+                        result_object . store_result ( re_list_grid_object )
+
+                        IF redisplay_result THEN
+                            re_list_grid_object . redisplay_row ( counter )
+                        ENDIF
+
+                    ELSE
+
+                        { Free up read locks }
+                        re_list_grid_object . rollback ( )
+
+                    ENDIF
+
+                ELSE
+
+                    result_object.remove_failed_calc ( re_list_grid_object )
+                    result_object.redisplay ( )
+
+                ENDIF
+
+                re_list_grid_object .
+                      lock_downgrade_object ( "RESULT"      ,
+                                              result_object )
+
+                        ENDIF
+
+                ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+    IF commit_results THEN
+        re_list_grid_object . store_results ( RE_AUDIT_SUPPRESS )
+    ELSE
+        re_list_grid_object . ask_store_results ( )
+    ENDIF
+
+    re_list_grid_object . restore_result_cache ( old_cache )
+
+        re_list_grid_object . display_message ( ""    ,
+                                                FALSE )
+
+        re_list_grid_object . play_avi ( "RESULT_ENTRY_RECALC_HEADER" ,
+                                     RE_CONTEXT_RECALCULATE_AVI   ,
+                                     FALSE                        )
+
+    re_list_grid_object . info_box_on = result_info_enabled
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_bind ( re_list_grid_object )
+
+        DECLARE counter , result_object
+
+        re_list_grid_object . display_message ( "RESULT_ENTRY_BINDING" ,
+                                                TRUE                   )
+
+        counter = 1
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF ( result_object . is_calculation ) AND
+                   ( result_object . modify_allowed ) THEN
+
+            result_object . bind ( re_list_grid_object )
+
+        ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+        re_list_grid_object . display_message ( "" , FALSE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_set_less_than_pql (       re_list_grid_object ,
+                                                VALUE redisplay_result    )
+
+        DECLARE counter , result_object , reselected , result_info_enabled,
+        pql
+
+        counter = 1
+
+        re_list_grid_object . display_message ( "RESULT_ENTRY_SET_LESS_PQL" ,
+                                                TRUE                        )
+
+        result_info_enabled = re_list_grid_object . info_box_on
+
+    re_list_grid_object . info_box_on = FALSE
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF (     result_object . get_minimum_pql ( pql                 ,
+                               re_list_grid_object )) AND
+                   ( NOT result_object . result_entered    ()) THEN
+
+                        IF result_object . upgradelock ( reselected ) THEN
+
+                                result_object . set_less_than_pql ( re_list_grid_object )
+                                result_object . store_result ( re_list_grid_object )
+
+                                result_object . downgradelock ( re_list_grid_object )
+
+                                IF redisplay_result THEN
+
+                                        re_list_grid_object .
+                                                redisplay_row ( counter )
+                                ENDIF
+
+
+                        ENDIF
+
+                ENDIF
+
+
+                counter = counter + 1
+
+        ENDWHILE
+
+        re_list_grid_object . display_message ( "" , FALSE )
+
+    re_list_grid_object . info_box_on = result_info_enabled
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_set_greater_than_pql (       re_list_grid_object ,
+                                                   VALUE redisplay_result    )
+
+        DECLARE counter , result_object , reselected, result_info_enabled,
+        pql
+
+        counter = 1
+
+        re_list_grid_object . display_message ( "RESULT_ENTRY_SET_GREATER_PQL" ,
+                                                TRUE                          )
+
+        result_info_enabled = re_list_grid_object . info_box_on
+
+    re_list_grid_object . info_box_on = FALSE
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF (     result_object . get_maximum_pql ( pql                 ,
+                               re_list_grid_object )) AND
+                   ( NOT result_object . result_entered       ()) THEN
+
+                        IF result_object . upgradelock ( reselected ) THEN
+
+                                result_object . set_greater_than_pql ( re_list_grid_object )
+                                result_object . store_result ( re_list_grid_object )
+
+                                result_object . downgradelock ( re_list_grid_object )
+
+                                IF redisplay_result THEN
+
+                                        re_list_grid_object .
+                                                redisplay_row ( counter )
+                                ENDIF
+
+                        ENDIF
+
+                ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+        re_list_grid_object . display_message ( "" , FALSE )
+
+    re_list_grid_object . info_box_on = result_info_enabled
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_help ( self )
+
+        screen_end_update ( )
+
+        self . parent_prompt . help ( )
+
+        SET GLOBAL "LASTKEY" TO "CONTINUE"
+
+        screen_begin_update ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_undo ( re_list_grid_object )
+
+        DECLARE counter ,
+                result_object,
+                result_info_enabled ,
+                repeated_test,
+                do_result
+
+    do_result = TRUE
+
+        counter = 1
+
+        result_info_enabled = re_list_grid_object . info_box_on
+
+    re_list_grid_object . info_box_on = FALSE
+
+        WHILE counter <= re_list_grid_object . cell_rows DO
+
+                repeated_test = FALSE
+
+                result_object = re_list_grid_object . result_array[ counter ]
+
+                IF counter > 1 THEN
+
+                        IF re_list_grid_object . result_array [ counter ] .
+                                                        test_object =
+                           re_list_grid_object . result_array [ counter - 1 ] .
+                                                        test_object THEN
+
+                                repeated_test = TRUE
+                        ENDIF
+                ENDIF
+
+                IF NOT repeated_test THEN
+
+                        IF result_object . test_object . selected THEN
+
+                result_object . test_object . undo_status( re_list_grid_object )
+                result_object . test_object . selected = FALSE
+
+                        ENDIF
+
+                ENDIF
+
+                IF result_object . selected THEN
+
+            do_result = FALSE
+
+            result_object . undo_status ( re_list_grid_object )
+
+                        result_object . selected = FALSE
+
+                        re_list_grid_object . redisplay_row ( counter )
+
+                ENDIF
+
+                counter = counter + 1
+
+        ENDWHILE
+
+    IF do_result THEN
+
+        result_object = re_list_grid_object . result_array
+                             [ re_list_grid_object . current_row ]
+
+        result_object . undo_status ( re_list_grid_object )
+
+        re_list_grid_object . redisplay_row ( re_list_grid_object . current_row )
+
+    ENDIF
+
+    re_list_grid_object . info_box_on = result_info_enabled
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_set_status (       re_list_grid_object ,
+                                  VALUE new_status          )
+
+    DECLARE counter,
+            result_object,
+            reselected,
+            result_info_enabled,
+            repeated_test,
+            do_result,
+            results_to_do,
+            result_object_array,
+            tests_to_do,
+            test_object_array,
+            some_allowed,
+            some_disallowed,
+            do_update,
+            new_result_status,
+            test_update
+
+    do_result = TRUE
+    test_update = FALSE
+
+    results_to_do = 0
+    tests_to_do   = 0
+    ARRAY result_object_array ARRAYSIZE ( 0, 4 )
+    ARRAY test_object_array   ARRAYSIZE ( 0, 2 )
+
+    counter = 1
+
+    result_info_enabled = re_list_grid_object . info_box_on
+
+    re_list_grid_object . info_box_on = FALSE
+
+    WHILE counter <= re_list_grid_object . cell_rows DO
+
+        result_object = re_list_grid_object . result_array[ counter ]
+
+        IF counter > 1 THEN
+
+            repeated_test = ( re_list_grid_object . result_array [ counter ] .
+                                                                    test_object =
+                              re_list_grid_object . result_array [ counter - 1 ] .
+                                                                    test_object )
+
+        ELSE
+
+            repeated_test = FALSE
+
+        ENDIF
+
+        IF result_object . test_object . selected THEN
+
+            IF NOT repeated_test THEN
+            
+                test_update = TRUE
+
+                tests_to_do = tests_to_do + 1
+
+                test_object_array [ tests_to_do, 1 ] = result_object . test_object
+                test_object_array [ tests_to_do, 2 ] = TRUE
+
+            ENDIF
+
+            do_result = FALSE
+
+            results_to_do = results_to_do + 1
+
+            result_object_array [ results_to_do, 1 ] = result_object
+            result_object_array [ results_to_do, 2 ] = counter
+            result_object_array [ results_to_do, 3 ] = TRUE
+            result_object_array [ results_to_do, 4 ] = tests_to_do
+
+        ELSEIF ( result_object . selected ) THEN
+
+            do_result = FALSE
+
+            results_to_do = results_to_do + 1
+
+            result_object_array [ results_to_do, 1 ] = result_object
+            result_object_array [ results_to_do, 2 ] = counter
+            result_object_array [ results_to_do, 3 ] = FALSE
+            result_object_array [ results_to_do, 4 ] = 0
+
+        ENDIF
+
+        counter = counter + 1
+
+    ENDWHILE
+
+    { Check user has authority to update tests }
+
+    IF test_update THEN
+
+        IF NOT ( user_has_test_permission( new_status ) ) THEN
+
+            tests_to_do = 0 
+            results_to_do = 0 
+
+        ENDIF
+
+    ENDIF           
+
+    IF do_result THEN
+
+        result_object = re_list_grid_object . result_array
+                             [ re_list_grid_object . current_row ]
+
+        results_to_do = results_to_do + 1
+
+        result_object_array [ results_to_do, 1 ] = result_object
+        result_object_array [ results_to_do, 2 ] = re_list_grid_object . current_row
+        result_object_array [ results_to_do, 3 ] = FALSE
+        result_object_array [ results_to_do, 4 ] = 0
+
+    ENDIF
+
+    some_disallowed = FALSE
+    some_allowed    = FALSE
+
+    IF results_to_do > 0 THEN
+    
+        counter = 1
+
+        WHILE ( counter <= results_to_do ) AND
+              (( NOT some_disallowed ) OR ( NOT some_allowed )) DO
+
+            result_object = result_object_array [ counter, 1 ]
+
+            IF ( new_status = "P" ) THEN
+
+                IF ( result_object . result_status = "X" ) AND
+                   ( BLANK ( result_object . result_str )) THEN
+                    some_allowed = TRUE
+                ENDIF
+
+            ELSEIF ( result_object . initial_status = "A" ) OR
+                   ( result_object . initial_status = "R" ) OR
+                   ( result_object . initial_status = "X" ) THEN
+
+            ELSEIF ( result_object . result_status = new_status ) OR
+                   ( result_object . result_status = " "        ) THEN
+
+            ELSEIF ( result_object . result_status = "U" ) THEN
+
+                some_allowed = TRUE
+
+            ELSEIF ( result_object . initial_status = "U" ) AND
+                   ( BLANK ( result_object . result_str  )) THEN
+
+                IF ( result_object . result_status <> "X" ) THEN
+                    some_allowed = TRUE
+                ENDIF
+
+            ELSEIF ( new_status = "C" ) THEN
+
+            ELSEIF ( GLOBAL ( "RESULT_AUTHORISE_OWN" )) THEN
+
+                some_allowed = TRUE
+
+            ELSEIF ( OPERATOR = ( SELECT result . entered_by
+                                     IN OBJECT result_object )) OR
+                   ( BLANK      ( SELECT result . entered_by
+                                     IN OBJECT result_object )) THEN
+
+                some_disallowed = TRUE
+
+                IF result_object_array [ counter, 4 ] <> 0 THEN
+
+                    { We were supposed to the test but cant }
+
+                    test_object_array [ result_object_array [ counter, 4 ], 2 ] = FALSE
+
+                ENDIF
+
+            ELSE
+
+                some_allowed = TRUE
+
+            ENDIF
+
+            counter = counter + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    IF some_disallowed THEN
+
+        IF some_allowed THEN
+            some_allowed = confirm_with_message ( "RESULT_ENTRY_SOME_ALLOWED" )
+        ELSE
+            flash_message ( "RESULT_ENTRY_OPERATION_DENIED", TRUE )
+        ENDIF
+
+    ENDIF
+
+    IF some_allowed THEN
+
+        counter = 1
+
+        WHILE ( counter <= results_to_do ) DO
+
+            result_object     = result_object_array [ counter, 1 ]
+            new_result_status = new_status
+
+            IF ( new_status = "P" ) THEN
+
+                IF ( result_object . result_status = "X" ) AND
+                   ( BLANK ( result_object . result_str  )) THEN
+
+                    new_result_status = "U"
+                    do_update = TRUE
+
+                ELSE
+
+                    do_update = FALSE
+
+                ENDIF
+
+            ELSEIF ( result_object . initial_status = "A" ) OR
+                   ( result_object . initial_status = "R" ) OR
+                   ( result_object . initial_status = "X" ) THEN
+
+                do_update = FALSE
+
+            ELSEIF ( result_object . result_status = " "        ) OR
+                   ( result_object . result_status = new_status ) THEN
+
+                do_update = FALSE
+
+            ELSEIF ( result_object . result_status = "U" ) THEN
+
+                do_update = TRUE
+                new_result_status = "X"
+
+            ELSEIF ( result_object . initial_status = "U" ) AND
+                   ( BLANK ( result_object . result_str  )) THEN
+
+                new_result_status = "X"
+                do_update = ( result_object . result_status <> "X" )
+
+            ELSEIF ( new_status = "C" ) THEN
+
+                do_update = FALSE
+
+            ELSEIF ( GLOBAL ( "RESULT_AUTHORISE_OWN" )) THEN
+
+                do_update = TRUE
+
+            ELSEIF ( OPERATOR = ( SELECT result . entered_by
+                                     IN OBJECT result_object )) OR
+                   ( BLANK      ( SELECT result . entered_by
+                                     IN OBJECT result_object )) THEN
+
+                do_update = FALSE
+
+            ELSE
+                do_update = TRUE
+
+            ENDIF
+
+            IF do_update THEN
+
+                IF re_list_grid_object .
+                     lock_upgrade_object ( "RESULT"        ,
+                                            result_object  ,
+                                            reselected     ) THEN
+
+                    result_object . result_status = new_result_status
+
+                    IF result_object . result_status <>
+                        ( SELECT result . status
+                              IN OBJECT result_object ) THEN
+
+                        result_object . store_status (
+                                          re_list_grid_object )
+
+                    ENDIF
+
+                    re_list_grid_object .
+                         lock_downgrade_object ( "RESULT"       ,
+                                                  result_object )
+
+                ENDIF
+
+            ELSE
+
+                result_object . schedule_check_modify_allowed (
+                                              re_list_grid_object )
+
+            ENDIF
+
+            counter = counter + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    { Do the tests }
+
+    counter = 1
+
+    WHILE ( counter <= tests_to_do ) DO
+
+        IF test_object_array [ counter, 2 ] THEN
+
+            test_object_array [ counter, 1 ] .
+                    store_status ( re_list_grid_object ,
+                                   new_status          )
+
+        ENDIF
+
+        counter = counter + 1
+
+    ENDWHILE
+    
+    { If we're going back to P in multi result mode we need to save before proceeding }
+
+    IF (( new_status = "P" ) AND 
+        ( some_allowed ) AND 
+        ( tests_to_do > 0 ) AND 
+        ( NOT re_list_grid_object . single_result_commit )) THEN
+
+
+        REPEAT
+
+            IF confirm_with_message ( "RESULT_ENTRY_MUST_COMMIT" ) THEN
+                do_update = TRUE
+                re_list_grid_object . store_results ( FALSE )
+            ELSE
+                do_update = re_list_grid_object . abandon_results ( )
+            ENDIF
+
+        UNTIL do_update
+
+    ENDIF
+
+    { Update the display }
+
+    counter = 1
+
+    WHILE ( counter <= results_to_do ) DO
+
+        result_object = result_object_array [ counter, 1 ]
+
+        IF result_object . test_object . selected THEN
+
+            result_object . test_object . selected = FALSE
+
+        ENDIF
+
+        {
+        IF result_object_array [ counter, 3 ] THEN
+
+            result_object . reselect_result ( re_list_grid_object ,
+                                              FALSE               )
+
+        ENDIF
+        }
+
+        result_object . selected = FALSE
+
+        re_list_grid_object . redisplay_row ( result_object_array [ counter, 2 ] )
+
+        counter = counter + 1
+
+    ENDWHILE
+
+    re_list_grid_object . info_box_on = result_info_enabled
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_cancel_test ( re_list_grid_object )
+
+{
+*
+*   Mark the test as cancelled and modify the result status's accordingly
+*
+******************************************************************************}
+
+    lib_tsr_grid_set_status ( re_list_grid_object, "X" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_complete_test ( re_list_grid_object )
+
+{
+*
+*   Mark the test as complete and modify the result status's accordingly
+*
+******************************************************************************}
+
+    lib_tsr_grid_set_status ( re_list_grid_object, "C" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_uncomplete_test ( re_list_grid_object )
+
+{
+*
+*   Mark the test as in progress, if appropriate,
+*   after moving all cancelled results back to U
+*
+******************************************************************************}
+
+    lib_tsr_grid_set_status ( re_list_grid_object, "P" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_authorise ( re_list_grid_object )
+
+    DECLARE stat, auth_routine, auth_library
+
+    IF NOT ( lib_tsr_user_specified_auth_routine ( auth_library ,
+                                                   auth_routine )) THEN
+
+        lib_tsr_grid_set_status ( re_list_grid_object, "A" )
+
+    ELSE
+
+        stat = "A"
+
+        CALL_ROUTINE auth_routine
+          IN LIBRARY auth_library
+               USING re_list_grid_object ,
+                 stat
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_reject ( re_list_grid_object )
+
+    DECLARE stat, reject_routine, reject_library
+
+    IF NOT ( lib_tsr_user_specified_reject_routine ( reject_library ,
+                                                     reject_routine )) THEN
+
+        lib_tsr_grid_set_status ( re_list_grid_object, "R" )
+
+    ELSE
+
+        stat = "R"
+
+        CALL_ROUTINE reject_routine
+          IN LIBRARY reject_library
+               USING re_list_grid_object ,
+                     stat
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE click_less_pql ( self )
+
+DECLARE grid
+
+    grid = self . user_info
+
+    grid . set_less_than_pql ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE click_greater_pql ( self )
+
+DECLARE grid
+
+    grid = self . user_info
+
+    grid . set_greater_than_pql ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE click_dilution ( self )
+
+DECLARE grid         ,
+    result_object
+
+    grid = self . user_info
+    result_object = grid . result_array [ grid . current_row ]
+
+    grid . prompt_dilution_factor ( result_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE click_formula ( self )
+
+DECLARE grid         ,
+    result_object
+
+    grid = self . user_info
+        result_object = grid . result_array [ grid . current_row ]
+        IF result_object . is_calculation THEN
+                result_object . print_formula ( grid )
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+ROUTINE user_has_test_permission ( VALUE new_status )
+
+{ Check that the current user has permission to upgrade tests to the new_status.
+*
+*
+* Parameters   : new_status, the status to which the test is to be changed.
+*
+* Return Value : has_privilege, boolean return value. TRUE indicates the user
+*                               is authorised to make the status change.
+*
+{******************************************************************************}
+
+DECLARE has_privilege
+
+    has_privilege = TRUE
+    
+    IF new_status = "A" THEN
+    
+        IF NOT ( role_lib_has_privilege( ROLE_LIB_RE_AUTH_TEST ) ) THEN
+        
+            has_privilege = FALSE
+        
+            flash_message( GET_USER_MESSAGE( "RESULT_ENTRY_NO_TEST_AUTH", 1 ), TRUE )
+            
+        ENDIF
+        
+    ELSEIF new_status = "R" THEN        
+
+        IF NOT ( role_lib_has_privilege( ROLE_LIB_RE_REJECT_TEST ) ) THEN
+        
+            has_privilege = FALSE
+            
+            flash_message( GET_USER_MESSAGE( "RESULT_ENTRY_NO_TEST_REJECT", 1 ), TRUE )
+            
+        ENDIF
+        
+    ENDIF
+    
+    RETURN( has_privilege )
+        
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_list_grid_action_column_settings_name ( re_list_grid_object )
+
+    IF re_list_grid_object . sub_samples THEN
+        RETURN ( RE_COLUMNS_FOR_TSR_SUBS )
+    ELSE
+        RETURN ( RE_COLUMNS_FOR_TSR )
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_job_list_grid_action_column_settings_name ( re_list_grid_object )
+
+    RETURN ( RE_COLUMNS_FOR_JOB )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_tsr_grid_reselect_data ( re_list_grid_object )
+
+{
+*
+*   Called after a save operation to rebuild the display
+*
+******************************************************************************}
+
+    DECLARE orig_cell_rows
+
+    IF NOT re_list_grid_object . ask_store_results ( ) THEN
+        RETURN
+    ENDIF
+
+    re_list_grid_object . release_results ( )
+
+    re_list_grid_object . create_collections ( )
+
+    ARRAY re_list_grid_object . result_array ARRAYSIZE ( 0 )
+
+    orig_cell_rows = re_list_grid_object . cell_rows
+
+    re_list_grid_object . cell_rows = 0
+
+    re_list_grid_object . select_samples ( re_list_grid_object . select_param_1 ,
+                                           re_list_grid_object . select_param_2 )
+
+    re_list_grid_object . create_blank_results ( )
+
+    IF ( orig_cell_rows = re_list_grid_object . cell_rows ) THEN
+
+        re_list_grid_object . redisplay_contents ( )
+
+    ELSE
+
+        re_list_grid_object . rebuild ( )
+
+    ENDIF
+
+    IF re_list_grid_object . re_tree_on THEN
+
+        re_list_grid_object . re_tree_form . remove_all ( )
+        re_list_grid_object . load_re_tree ( )
+
+    ENDIF
+
+    re_list_grid_object . bind ()
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}

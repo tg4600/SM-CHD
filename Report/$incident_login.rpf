@@ -1,0 +1,4430 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $INCIDENT_LOGIN.RPF
+*
+* Purpose       : Provides an interface for the craetion and maintenance of
+*         incident records and incident checklist results.
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : No
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_LOGIN
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+
+JOIN LIBRARY $lib_db
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $line_editor
+JOIN LIBRARY $lib_grid
+JOIN LIBRARY $lib_temp
+JOIN LIBRARY $list_box
+JOIN LIBRARY $browse_field
+JOIN LIBRARY $compl_checklist
+JOIN LIBRARY $incident_actions
+JOIN LIBRARY $lib_inspect
+JOIN LIBRARY $criteria_cache
+JOIN LIBRARY $role_lib
+JOIN LIBRARY $gen_appr
+JOIN LIBRARY $lib_inspect
+
+{* Global Constants ***********************************************************}
+
+{* Local Constants ************************************************************}
+
+CONSTANT LOGIN_FORM_CLASS     = "LOGIN_FORM_CLASS"
+CONSTANT AUTO_INCIDENT_OBJECT = "AUTO_INCIDENT_OBJECT"
+CONSTANT SUBJECT_ID_PROMPT    = "SUBJECT_ID_PROMPT"
+
+CONSTANT FORM_HEIGHT        = 15
+CONSTANT FORM_WIDTH         = 60
+CONSTANT MAX_PROMPT_WIDTH   = 30
+
+CONSTANT INC_OP_CANCEL      = "CANCEL"
+CONSTANT INC_OP_CHK_LST_RE  = "CHECKLIST_RE"
+CONSTANT INC_OP_COMPLETE    = "COMPLETE"
+CONSTANT INC_OP_DISPLAY     = "DISPLAY"
+CONSTANT INC_OP_INSPECT     = "INSPECT"
+CONSTANT INC_OP_INS_SUBMIT  = "INS_SUBMIT"
+CONSTANT INC_OP_LOGIN       = "LOGIN"
+CONSTANT INC_OP_MODIFY      = "MODIFY"
+CONSTANT INC_OP_QUIT        = "QUIT"
+CONSTANT INC_OP_REVIEW      = "REVIEW"
+CONSTANT INC_OP_SUBMIT      = "SUBMIT"
+CONSTANT INC_OP_SAVE        = "SAVE"
+CONSTANT INC_OP_ACCEPT      = "ACCEPT"
+CONSTANT INC_OP_REJECT      = "REJECT"
+CONSTANT INC_OP_AUTHORISE   = "AUTHORISE"
+CONSTANT INC_OP_CHECKLIST   = "CHECKLIST"
+CONSTANT INC_OP_CONFIRM     = "CONFIRM"
+CONSTANT INC_OP_DISQUALIFY  = "DISQUALIFY"
+CONSTANT INC_OP_VIEW_ACTION = "VIEW"
+CONSTANT INC_OP_BACKGROUND  = "BACKGROUND"
+
+CONSTANT CONST_SAMPLE_SUBJECT = "sample_subject"
+CONSTANT CONST_TEST_SUBJECT   = "test_subject"
+CONSTANT CONST_RESULT_SUBJECT = "result_subject"
+
+{* Global Variables ***********************************************************}
+
+
+{* Main Code ******************************************************************}
+
+    EXIT
+
+{* Start Of Routines **********************************************************}
+
+{******************************************************************************}
+
+    GLOBAL ROUTINE setup_incident_login_class
+
+{
+*
+*******************************************************************************}
+
+    IF NOT class_defined ( LOGIN_FORM_CLASS ) THEN
+
+        DEFINE CLASS LOGIN_FORM_CLASS
+
+            INHERIT
+
+                PROMPT_CLASS_FORM
+
+            PROPERTIES
+
+                "editor_prompt_details" ,
+                "template_details"      ,
+                "incident_object"       ,
+                "line_editor"           ,
+                "display_mode"          ,
+                "incident_login"        ,
+                "incident_status"       ,
+                "status"                ,
+                "operation"             ,
+                "action_object"         ,
+                "the_list_editor"       ,
+                "field_details"         ,
+                "editor_row"            ,
+                "template_id"           ,
+                "template_fields"       ,
+                "incident_id"           ,
+                "table_name"            ,
+                "subject_id"            ,
+                "sample_subject"        ,
+                "test_subject"          ,
+                "result_subject"        ,
+                "other_subject"         ,
+                "can_commit"            ,
+                "can_update_db"         ,
+                "auto_login_ok"         ,
+                "key0_data"             ,
+                "multi_key0"            ,
+                "key0_fields"
+
+            ACTIONS
+
+                "create_base_form"        ,
+                "add_form_prompts"        ,
+                "add_template_prompts"    ,
+                "add_incident_prompts"    ,
+                "add_background_prompts"  ,
+                "assign_prompt_values"    ,
+                "add_form_buttons"        ,
+                "create_line_editor"      ,
+                "start_base_form"         ,
+                "get_form_prompts"        ,
+                "auto_login_interactive"  ,
+                "auto_login_background"   ,
+                "assign_incidents"        ,
+                "assign_incident_id"      ,
+                "clear_base_form"         ,
+                "exit_base_form"          ,
+                "add_dummy_status"        ,
+                "create_inc_rec"          ,
+                "create_inc_rec_obj"      ,
+                "start_write_transaction" ,
+                "commit"                  ,
+                "rollback"                ,
+                "set_has_incidents_flag"  ,
+                "update_auto_obj"         ,
+                "get_multiple_key0"
+
+            INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS AUTO_INCIDENT_OBJECT
+
+            PROPERTIES
+
+                "checklist_db" ,
+                "table_id"     ,
+                "key0"
+
+            TABLES
+
+                INCIDENTS
+
+        END CLASS
+
+        DEFINE CLASS SUBJECT_ID_PROMPT
+
+            INHERIT
+
+                "std_prompt"                            ,
+                "std_prompt_field"                      ,
+                "std_prompt_field_identity"             ,
+                "std_prompt_class_field_packed_decimal" ,
+                "std_prompt_field_integer"
+
+            ACTIONS
+
+                "set_text"      ,
+                "format_before" ,
+                "format_after"
+
+        END CLASS
+
+    ENDIF
+
+ENDROUTINE { setup_login_class }
+
+
+{***************************}
+{ Subject Id prompt actions }
+{***************************}
+
+{******************************************************************************}
+
+    ROUTINE inc_login_get_record_data ( form     ,
+                        list_box )
+
+{
+*   Builds up the list box entries for the selected multiple key0 record.
+*
+*******************************************************************************}
+
+DECLARE field_val , count , field_count , table_id , field_name , sub_text
+
+    ARRAY list_box . select_list  ARRAYSIZE ( 0 ) = FALSE
+    ARRAY list_box . display_list ARRAYSIZE ( 0 ) = ""
+
+    table_id   = form . ? form . subject_id ? . table
+    field_name = form . ? form . subject_id ? . field
+    sub_text   = form . ? form . subject_id ? . text
+    count      = 1
+
+    field_val = SELECT 'table_id' . 'field_name'
+            WHERE 'field_name' = sub_text
+
+    WHILE field_val <> EMPTY DO
+
+        field_val   = ""
+        field_count = 1
+
+        WHILE field_count <= size_of_array ( form . key0_fields ) DO
+
+            field_val = SELECT 'table_id' .
+                    'form . key0_fields [ field_count ]'
+            list_box . display_list [ count ] =
+                list_box . display_list [ count ] : field_val
+
+            field_count = field_count + 1
+
+        ENDWHILE
+
+        count = count + 1
+
+        NEXT 'table_id'
+
+        field_val = SELECT 'table_id' . 'field_name'
+
+    ENDWHILE
+
+ENDROUTINE     { inc_login_get_record_data }
+
+
+{******************************************************************************}
+
+    ROUTINE subject_id_prompt_action_set_text (       subject_prompt ,
+                            VALUE text_val       )
+
+{
+*   Replace the prompt's set_text action.
+*
+*******************************************************************************}
+
+    subject_prompt . text  = text_val
+    subject_prompt . value = text_val
+
+    object_invoke_class ( subject_prompt , "STD_PROMPT_TEXT" , "re_paste" )
+
+ENDROUTINE     { subject_id_prompt_action_set_text }
+
+
+{******************************************************************************}
+
+    ROUTINE subject_id_prompt_action_format_before ( subject_prompt )
+
+{
+*   Provide basic data entry formatting.
+*
+*******************************************************************************}
+
+DECLARE field_type
+
+    GET_FIELD_DETAILS 'subject_prompt . table' . 'subject_prompt . field' ,
+              "DATA_TYPE"                                         ,
+              field_type
+
+    GET_FIELD_DETAILS 'subject_prompt . table' . 'subject_prompt . field' ,
+              "IS_IDENTITY"                                       ,
+              subject_prompt . uppercase
+
+    GET_FIELD_DETAILS 'subject_prompt . table' . 'subject_prompt . field' ,
+                  "ALLOWED_CHARACTERS"                        ,
+                      subject_prompt . allowed_chars
+
+    field_type = TOUPPER( field_type )
+
+    IF subject_prompt . allowed_chars = EMPTY THEN
+
+        IF ( field_type = "INTEGER"        ) OR
+           ( field_type = "PACKED DECIMAL" ) THEN
+
+            subject_prompt . allowed_chars   = "0123456789 "
+            subject_prompt . allow_wildcards = FALSE
+
+        ELSE
+
+            subject_prompt . allowed_chars   = ""
+            subject_prompt . allow_wildcards = TRUE
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE     { subject_id_prompt_action_format_before }
+
+
+{******************************************************************************}
+
+    ROUTINE subject_id_prompt_action_format_after ( subject_prompt )
+
+{
+*   Disable the prompt's formatting routine.
+*
+*******************************************************************************}
+
+DECLARE field_type , field_val , is_ident
+
+    GET_FIELD_DETAILS 'subject_prompt . table' . 'subject_prompt . field' ,
+              "DATA_TYPE"                                         ,
+              field_type
+
+    GET_FIELD_DETAILS 'subject_prompt . table' . 'subject_prompt . field' ,
+              "IS_IDENTITY"                                       ,
+              is_ident
+
+    IF TOUPPER ( field_type ) = "PACKED DECIMAL" THEN
+        field_val = PACKED_DECIMAL ( subject_prompt . value )
+    ELSEIF is_ident THEN
+        field_val = TOUPPER ( subject_prompt . value )
+    ELSE
+        field_val = subject_prompt . value
+    ENDIF
+
+    FORMAT field_val FROM field_val
+        USING 'subject_prompt . table' . 'subject_prompt . field'
+
+    subject_prompt . set_text ( field_val )
+
+ENDROUTINE     { subject_id_prompt_action_format_after }
+
+
+{***********************}
+{ Incident form actions }
+{***********************}
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_class_initialisation ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+    criteria_cache_initialise ( )
+
+    CREATE OBJECT "STD_OBJECT_DATABASE" , self . action_object
+
+    self . action_object . initialise ( "INC_CHECKLIST_RESULTS" )
+
+    self . can_update_db = TRUE
+    self . key0_data     = ""
+    self . multi_key0    = FALSE
+
+ENDROUTINE { login_form_class_class_initialisation }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_form_buttons ( self            ,
+                               buttons_details )
+
+{
+*
+*******************************************************************************}
+
+    lib_form_add_vertical_buttons ( self             ,
+                    buttons_details  )
+
+ENDROUTINE { login_form_class_action_add_form_buttons  }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_create_inc_rec_obj ( form         ,
+                                 new_incident ,
+                                 template_id  )
+
+{
+*   Creates the inident record object.
+*
+*******************************************************************************}
+
+    CREATE OBJECT "STD_OBJECT_RECORD", new_incident
+
+    new_incident . new   = TRUE
+    new_incident . table = "INCIDENTS"
+
+    object_add_table ( new_incident, "INCIDENTS" )
+
+    record_create ( "INCIDENTS" )
+
+    object_copy_current_table ( new_incident, "INCIDENTS" )
+
+    ASSIGN incidents . template_id IN OBJECT new_incident = template_id
+
+ENDROUTINE    { login_form_class_action_create_inc_rec_obj }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_create_inc_rec (       form        ,
+                             VALUE template_id )
+
+{
+*   Creates the incident rrecord and updates the line editor.
+*
+*******************************************************************************}
+
+DECLARE field_controls , num_of_fields , display_mode , new_incident ,
+    prompt_details , initial_status
+
+    display_mode = form . display_mode
+
+    form . create_inc_rec_obj ( new_incident , template_id )
+
+    create_prompt_details ( INC_OP_LOGIN        ,
+                template_id         ,
+                field_controls      ,
+                num_of_fields       ,
+                "INCIDENTS"         ,
+                form . display_mode ,
+                prompt_details      )
+
+    assign_default_value_to_object ( new_incident    ,
+                     field_controls  ,
+                     "INCIDENTS"     ,
+                     initial_status  )
+
+    IF BLANK ( initial_status ) THEN
+        form . status . set_text ( "U" )
+    ELSE
+        form . status . set_text ( initial_status )
+    ENDIF
+
+    form . line_editor . display_only = display_mode
+    form . line_editor . object       = new_incident
+
+    form . line_editor . change_prompt_details ( prompt_details )
+
+    form . field_details = field_controls
+
+ENDROUTINE     { login_form_class_action_create_inc_rec }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_start_base_form (
+                            self             ,
+                          VALUE template_id      ,
+                          VALUE base_form_header ,
+                            prompt_details   ,
+                            buttons_details  )
+
+{
+*
+*******************************************************************************}
+    self . editor_prompt_details = prompt_details
+    self . create_base_form ( base_form_header )
+    self . add_form_prompts ()
+    self . create_line_editor ()
+    self . add_form_buttons ( buttons_details )
+    self . start_prompt ()
+
+    WHILE ( self . get_lastkey () != "EXIT" ) DO
+
+        self . wait_prompt ()
+
+        self . exit_base_form ()
+
+    ENDWHILE
+
+    self . end_prompt ()
+
+ENDROUTINE { login_form_class_action_start_base_form }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_get_multiple_key0 ( form )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE row , table_id  , list_box , sub_text
+
+    sub_text = form . ? form . subject_id ? . text
+
+    set_up_list_box_class ( )
+
+    CREATE OBJECT LIST_BOX_CLASS , list_box
+
+    list_box . row             = 8
+    list_box . column          = 15
+    list_box . must_select_one = TRUE
+    list_box . display_mode    = FALSE
+
+    table_id          = form . table_name . text
+    list_box . header = table_id : " : " : sub_text
+
+    inc_login_get_record_data ( form , list_box )
+
+    list_box . start_prompt ()
+    list_box . wait_prompt ()
+    list_box . end_prompt ()
+
+    IF list_box . get_lastkey () = "DO" THEN
+
+        form . ? form . subject_id ?  . format_after ()
+
+        row              = list_box . last_selected
+        form . key0_data = list_box . display_list [ row ]
+
+    ELSEIF TOUPPER ( STRIP ( table_id ) ) = "RESULT" THEN
+        form . key0_data = "0"
+    ELSE
+        form . key0_data = ""
+    ENDIF
+
+    {****************************************}
+    { The set_text action does not work      }
+    { with the result prompt so don't use it }
+    {****************************************}
+
+    form . ? form . subject_id ? . width  = MAX_PROMPT_WIDTH
+    form . ? form . subject_id ? . length = MAX_PROMPT_WIDTH
+    form . ? form . subject_id ? . text   = form . key0_data
+    form . ? form . subject_id ? . value  = form . key0_data
+
+    form . ? form . subject_id ? . re_paste ()
+
+ENDROUTINE     { login_form_class_action_get_multiple_key0 }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_select_subject_table ( VALUE table_id   ,
+                         VALUE subject_id )
+
+{
+*   Selects the incident subject table.
+*
+*******************************************************************************}
+
+DECLARE fields , field_width , select_array , count , field_val
+
+    IF NOT BLANK ( table_id ) THEN
+
+        ARRAY select_array ARRAYSIZE ( 0 , 4 )
+
+        GET_TABLE_DETAILS 'table_id' , "KEY0_FIELD" , fields
+
+        count = 1
+
+        WHILE count <= size_of_array ( fields ) DO
+
+            GET_FIELD_DETAILS 'table_id' . 'fields [ count ]' ,
+                      "FIELD_SIZE"                    ,
+                      field_width
+
+            field_val  = LEFTSTRING ( subject_id , field_width )
+            subject_id = subject_id # field_val
+
+            array_select_add ( select_array     ,
+                       ARRAY_SELECT_EQ  ,
+                       fields [ count ] ,
+                       field_val        )
+
+            count = count + 1
+
+        ENDWHILE
+
+        array_select ( table_id , TRUE , select_array )
+
+    ENDIF
+
+ENDROUTINE    { inc_login_select_subject_table }
+
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE inc_login_set_has_incidents_flag ( VALUE table_id   ,
+                           VALUE subject_id )
+
+{
+*   Sets the has_incidents flag on the record with incidents. If the record
+*   is not selected it will be.
+*
+*******************************************************************************}
+
+DECLARE has_incidents , param , ok
+
+    ok = TRUE
+
+    IF valid_field ( table_id , "has_incidents" ) THEN
+
+        has_incidents = SELECT 'table_id' . has_incidents
+
+        IF ( has_incidents            = EMPTY            )
+        OR ( lock_state ( table_id ) <> "SELECTED_WRITE" ) THEN
+
+            inc_login_select_subject_table ( table_id , subject_id )
+
+        ENDIF
+
+        IF lock_state ( table_id ) = "SELECTED_WRITE" THEN
+
+            ASSIGN 'table_id' . has_incidents = TRUE
+
+            IF transaction_is_write () THEN
+                UPDATE 'table_id'
+            ENDIF
+
+        ELSE
+
+            param = STRIP ( table_id )
+            ok    = FALSE
+
+            flash_message_with_param ( "INCIDENT_NOT_SELECTED" ,
+                           param                   )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE     { inc_login_set_has_incidents_flag }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_update_auto_obj (       incident_obj    ,
+                              VALUE subject_id      ,
+                                incident_rec    ,
+                                incidents_array )
+
+{
+*
+*******************************************************************************}
+
+DECLARE pos , table_id
+
+    table_id = SELECT incident_template . subject_table
+    pos      = size_of_array ( incidents_array ) + 1
+
+    CREATE OBJECT AUTO_INCIDENT_OBJECT , incidents_array [ pos ]
+
+    object_set_current_table ( incident_rec ,
+                   "incidents"  )
+
+    object_copy_current_table ( incidents_array [ pos ] ,
+                    "incidents"             )
+
+    incidents_array [ pos ] . checklist_db = incident_obj . action_object
+    incidents_array [ pos ] . table_id     = table_id
+    incidents_array [ pos ] . key0         = subject_id
+
+ENDROUTINE { login_form_class_action_update_auto_obj  }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_auto_login_interactive (
+                                incident_obj    ,
+                              VALUE template_id     ,
+                              VALUE subject_id      ,
+                                incidents_array )
+
+{
+*   Calls the incident login screen when creating incidents from result
+*   entry where there are mandatory fields on the template.
+*
+*******************************************************************************}
+DECLARE base_form_header , buttons_details , old_mode
+
+    incident_obj . auto_login_ok = FALSE
+
+    template_id = SELECT incident_template . template_id
+            WHERE template_id = template_id
+
+
+
+    IF  ( template_id <> EMPTY  )
+    AND ( template_id <> LOCKED ) THEN
+
+        ARRAY incident_obj . editor_prompt_details
+
+        incident_obj . display_mode = FALSE
+        incident_obj . operation    = INC_OP_BACKGROUND
+
+        buttons_details =
+            get_temp_login_buttons_details ( INC_OP_BACKGROUND )
+
+        base_form_header = GET_USER_MESSAGE (
+                        "INC_BACK_LOGIN_FORM_HDR" , 1 )
+
+        incident_obj . create_base_form ( base_form_header )
+
+        incident_obj . add_form_prompts ()
+        incident_obj . assign_prompt_values ( template_id ,
+                              subject_id  )
+        incident_obj . create_line_editor ()
+
+        incident_obj . add_form_buttons ( buttons_details )
+
+        old_mode = GLOBAL ( "LABTABLE_MODE" )
+
+        SET GLOBAL "LABTABLE_MODE" TO TRUE
+
+        incident_obj . start_prompt ()
+
+        incident_obj . operation = INC_OP_LOGIN
+
+        incident_obj . create_inc_rec ( template_id )
+
+        incident_obj . operation     = INC_OP_LOGIN
+        incident_obj . active_prompt =
+                    incident_obj . line_editor . tag
+
+        incident_obj . wait_prompt ()
+
+        incident_obj . update_auto_obj (
+                    subject_id                          ,
+                    incident_obj . line_editor . object ,
+                    incidents_array                     )
+
+        incident_obj . end_prompt ()
+
+        SET GLOBAL "LABTABLE_MODE" TO old_mode
+
+    ELSEIF template_id = LOCKED THEN
+        flash_message ( "INCIDENT_NOT_AVAILABLE" , FALSE )
+    ELSE
+        flash_message ( "INC_BACK_LOGIN_FAILED" , FALSE )
+    ENDIF
+WriteToLog("login_form_class_action_auto_login_interactive" : incident_obj.template_id )
+    RETURN ( incident_obj . auto_login_ok )
+
+ENDROUTINE { login_form_class_action_auto_login_interactive }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_auto_login_background (
+                                incident_obj    ,
+                              VALUE template_id     ,
+                              VALUE subject_id      ,
+                                incidents_array )
+
+{
+*   Creates an incident record without displaying the incident login screen.
+*
+*******************************************************************************}
+
+DECLARE modify_entry , include_copy , incident_rec , initial_status ,
+    field_controls , ok , syntax_id
+
+    ok                       = FALSE
+    modify_entry             = TRUE
+    include_copy             = FALSE
+    incident_obj . operation = INC_OP_BACKGROUND
+
+    template_id = SELECT incident_template . template_id
+            WHERE template_id = template_id
+
+    IF  ( template_id <> EMPTY  )
+    AND ( template_id <> LOCKED ) THEN
+
+        read_in_template_fields ( template_id    ,
+                      "INCIDENTS"    ,
+                      field_controls ,
+                      modify_entry   ,
+                      include_copy   )
+
+        incident_obj . add_dummy_status ()
+        incident_obj . start_write_transaction ()
+        incident_obj . create_inc_rec_obj ( incident_rec ,
+                            template_id  )
+
+        assign_default_value_to_object ( incident_rec    ,
+                         field_controls  ,
+                         "INCIDENTS"     ,
+                         initial_status  )
+
+        IF BLANK ( initial_status ) THEN
+            incident_obj . status . value = "U"
+        ELSE
+            incident_obj . status .value = initial_status
+        ENDIF
+
+        inc_login_set_status ( incident_obj , incident_rec )
+
+        ok = incident_obj . assign_incident_id ( incident_rec ,
+                             syntax_id    )
+
+        IF ok THEN
+
+            assign_modified_fields ( incident_obj , incident_rec )
+
+            inc_login_assign_incident_fields ( incident_obj ,
+                               incident_rec ,
+                               subject_id   )
+
+            ok = create_checklist_action_result ( incident_obj ,
+                                  incident_rec )
+        ENDIF
+
+        IF ok THEN
+
+            incident_obj . update_auto_obj ( subject_id      ,
+                             incident_rec    ,
+                             incidents_array )
+
+        ENDIF
+
+    ELSEIF template_id = LOCKED THEN
+        flash_message ( "INCIDENT_NOT_AVAILABLE" , FALSE )
+    ELSE
+        flash_message ( "INC_BACK_LOGIN_FAILED" , FALSE )
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE { login_form_class_action_auto_login_background }
+
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_assign_incident_fields (       self         ,
+                             incident_rec ,
+                           VALUE subject_id   )
+
+{
+*   Updates the incident record internal fields.
+*
+*******************************************************************************}
+
+DECLARE Table, Field, Template, JobID, Product, Batch_name, Sample, TestNum, ResultID, Analysis, TestCount,
+        ResName, ResText, ResUnits, Description, Remark, i, reported_by , reported_on, LogTxt,
+        Duration, Date_Exp, Form {, NextId, SQL }
+
+    ASSIGN incidents . status
+                IN OBJECT incident_rec = self . status . value
+
+    IF ( self . operation = INC_OP_LOGIN      )
+    OR ( self . operation = INC_OP_BACKGROUND ) THEN
+
+        ASSIGN incidents . subject_field
+            IN OBJECT incident_rec = subject_id
+
+        reported_on = SELECT incidents . incident_date
+                    IN OBJECT incident_rec
+        reported_by = SELECT incidents . reported_by
+                    IN OBJECT incident_rec
+
+        IF BLANK ( reported_by ) THEN
+
+            ASSIGN incidents . reported_by
+                    IN OBJECT incident_rec = OPERATOR
+
+        ENDIF
+
+        IF reported_on = DATE ( "" ) THEN
+
+            ASSIGN incidents . incident_date
+                    IN OBJECT incident_rec = NOW
+
+        ENDIF
+
+{2009-06-24  Create Incident from lib_tsr_toolbox}
+        Table       = STRIP(SELECT incidents . subject_table IN OBJECT incident_rec)
+        Field       =       SELECT incidents . subject_field IN OBJECT incident_rec
+        Template    = STRIP(SELECT incidents . template_id IN OBJECT incident_rec)
+        JobID       = STRIP(SELECT incidents . job_name IN OBJECT incident_rec)
+        Product     = STRIP(SELECT incidents . product IN OBJECT incident_rec)
+        Batch_name  = STRIP(SELECT incidents . batch_name IN OBJECT incident_rec)
+        Sample      =       SELECT incidents . sample IN OBJECT incident_rec
+        TestNum     =       SELECT incidents . test_number IN OBJECT incident_rec
+        ResultID    =       SELECT incidents . resultid IN OBJECT incident_rec
+        Analysis    = STRIP(SELECT incidents . analysis IN OBJECT incident_rec)
+        TestCount   = STRIP(SELECT incidents . test_count IN OBJECT incident_rec)
+        ResName     = STRIP(SELECT incidents . result_name IN OBJECT incident_rec)
+        ResText     = STRIP(SELECT incidents . result_text IN OBJECT incident_rec)
+        ResUnits    = STRIP(SELECT incidents . units IN OBJECT incident_rec)
+        Description = STRIP(SELECT incidents . description IN OBJECT incident_rec)
+        Remark      = STRIP(SELECT incidents . remark IN OBJECT incident_rec)
+        ResultID    = TestNum:ResName
+
+        i = LENGTH(Field)
+        WHILE (SUBSTRING(Field, i-1,1) = " ")
+          AND (i > 10)
+            i = i - 1
+        ENDWHILE
+        Field       = SUBSTRING(Field,1,i)
+
+        {WriteToLog("Table: ":Table:"; Field: ":Field)}
+
+        IF  Table       = "JOB_HEADER" THEN
+            JobID       = Field
+            Sample      = " "
+            TestNum     = " "
+            ResultID    = " "
+            Analysis    = " "
+            TestCount   = " "
+            Product     = SELECT job_header . product_name WHERE job_header . job_name = Field
+            Batch_name  = SELECT job_header . batch_name WHERE job_header . job_name = Field
+        ENDIF
+
+        IF  Table       = "SAMPLE" THEN
+            Sample      = Field
+            TestNum     = " "
+            ResultID    = " "
+            Analysis    = " "
+            TestCount   = " "
+            JobID       = SELECT sample . job_name WHERE id_numeric = Field
+            Product     = SELECT sample . product WHERE id_numeric = Field
+            Batch_name  = SELECT sample . batch_name WHERE id_numeric = Field
+        ENDIF
+
+        IF  Table = "TEST" THEN
+            TestNum     = Field
+            Sample      = SELECT test . sample          WHERE test_number = TestNum
+            Analysis    = SELECT test . analysis        WHERE test_number = TestNum
+            TestCount   = SELECT test . test_count      WHERE test_number = TestNum
+            JobID       = SELECT sample . job_name      WHERE id_numeric = Sample
+            Batch_name  = SELECT sample . batch_name    WHERE id_numeric = Sample
+            Product     = SELECT sample . product       WHERE id_numeric = Sample
+        ENDIF
+
+        IF  Table = "RESULT" THEN
+            ResultID    = Field
+            TestNum     = SUBSTRING(ResultID,  1, 10)
+            Sample      = SELECT test . sample          WHERE test_number = TestNum
+            Analysis    = SELECT test . analysis        WHERE test_number = TestNum
+            TestCount   = SELECT test . test_count      WHERE test_number = TestNum
+            JobID       = SELECT sample . job_name      WHERE id_numeric = Sample
+            Batch_name  = SELECT sample . batch_name    WHERE id_numeric = Sample
+            Product     = SELECT sample . product       WHERE id_numeric = Sample
+        ENDIF
+
+        Duration = (SELECT incident_template.duration WHERE template_id = Template)
+
+        IF NUMTEXT(Duration)
+            IF Duration = 0
+                Date_Exp = NOW
+            ELSE
+                Duration = INTERVAL("000":STRIP(Duration):" 00:00:00.00")
+                Date_Exp = NOW + Duration
+                fm("Incident to be completed by: ":Date_Exp)
+            ENDIF
+        ELSEIF (Duration = NULL) OR (Duration = EMPTY) OR (Duration = "") OR (Duration = "?") THEN
+            SET DATE FORMAT "DD-MON-YYYY H24:MI"
+            Date_Exp = NOW
+            Date_Exp = set_date_exp_form(form, Date_Exp, Template)
+            RESTORE DATE FORMAT
+        ENDIF
+
+        LogTxt = ASCII(10):
+                 "Duration    = ":Duration:ASCII(10):
+                 "Template    = ":Template:ASCII(10):
+                 "Table       = ":Table:ASCII(10):
+                 "Field       = ":Field:ASCII(10):
+                 "JobID       = ":JobID:ASCII(10):
+                 "Product     = ":Product:ASCII(10):
+                 "Batch_name  = ":Batch_name:ASCII(10):
+                 "Sample      = ":Sample:ASCII(10)
+
+        IF TestNum <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"TestNum     = ":TestNum
+        ENDIF
+        IF ResultID <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"ResultID    = ":ResultID
+        ENDIF
+        IF Analysis <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"Analysis    = ":Analysis
+        ENDIF
+        IF TestCount <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"TestCount   = ":TestCount
+        ENDIF
+        IF ResName <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"ResName     = ":ResName
+        ENDIF
+        IF ResText <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"ResText     = ":ResText
+        ENDIF
+        IF ResUnits <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"ResUnits    = ":ResUnits
+        ENDIF
+        IF Description <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"Description = ":Description
+        ENDIF
+        IF Remark <> " "THEN
+            LogTxt = LogTxt:ASCII(10):"Remark      = ":Remark
+        ENDIF
+        IF IS_DATE(Date_Exp) THEN
+            LogTxt = LogTxt:ASCII(10):"Date_Exp    = ":Date_Exp
+        ENDIF
+
+WriteToLog (LogTxt:ASCII(10))
+
+
+        ASSIGN incidents.template_id      IN OBJECT incident_rec = Template
+        ASSIGN incidents.job_name         IN OBJECT incident_rec = JobID
+        ASSIGN incidents.product          IN OBJECT incident_rec = Product
+        ASSIGN incidents.batch_name       IN OBJECT incident_rec = Batch_name
+        ASSIGN incidents.sample           IN OBJECT incident_rec = Sample
+        ASSIGN incidents.test_number      IN OBJECT incident_rec = TestNum
+        ASSIGN incidents.resultid         IN OBJECT incident_rec = ResultID
+        ASSIGN incidents.analysis         IN OBJECT incident_rec = Analysis
+        ASSIGN incidents.test_count       IN OBJECT incident_rec = TestCount
+        ASSIGN incidents.result_name      IN OBJECT incident_rec = ResName
+        ASSIGN incidents.result_text      IN OBJECT incident_rec = ResText
+        ASSIGN incidents.units            IN OBJECT incident_rec = ResUnits
+        ASSIGN incidents.description      IN OBJECT incident_rec = Description
+        ASSIGN incidents.remark           IN OBJECT incident_rec = Remark
+        ASSIGN incidents.date_exp         IN OBJECT incident_rec = date_exp
+        IF table = "JOB_HEADER" THEN
+            insert_iu("UPDATE", "JobDateResReq", JobID, "")
+        ELSE
+            ASSIGN incidents.subject_table    IN OBJECT incident_rec = "SAMPLE"
+            ASSIGN incidents.subject_field    IN OBJECT incident_rec = Sample
+            insert_iu("UPDATE", "SampleDateResReq", Sample, "")
+        ENDIF
+        
+        insert_iu("UPDATE", "Incident", STRIP(SELECT incidents.incident_id IN OBJECT incident_rec), "")
+        
+        {*** self.incident_id.text is not available for INTERNAL incident? ***
+        WriteToLog(SELECT incidents.incident_id IN OBJECT incident_rec:" ":Template)}
+
+{2009-06-24  Create Incident from lib_tsr_toolbox}
+
+    ENDIF
+
+ENDROUTINE   { inc_login_assign_incident_fields }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_start_write_transaction ( self )
+
+{
+*   Starts a write transaction if it can.
+*
+*******************************************************************************}
+
+    self . can_commit = FALSE
+
+    IF self . can_update_db THEN
+
+        IF NOT ( TRANSACTION_IS_WRITE () ) THEN
+
+            START WRITE TRANSACTION GET_USER_MESSAGE ( "INCIDENT_WRITE" , 1 )
+
+            self . can_commit = TRUE
+
+        ELSE
+
+            self . can_commit = FALSE
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE    { login_form_class_action_start_write_transaction )
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_commit ( self )
+
+{
+*   Commits to the DB if it can.
+*
+*******************************************************************************}
+
+    IF self . can_update_db THEN
+
+        IF ( self . can_commit ) THEN
+            COMMIT
+            WriteToLog((SELECT incidents.incident_id ORDER ON incident_id DESCENDING):" ":(SELECT incidents.incident_date))
+        ENDIF
+
+    ENDIF
+
+    self . auto_login_ok = TRUE
+
+ENDROUTINE    { login_form_class_action_commit }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_rollback ( self )
+
+{
+*   Rolls back DB changes if it can.
+*
+*******************************************************************************}
+
+    IF self . can_update_db THEN
+
+        IF ( self . can_commit ) THEN
+            ROLLBACK
+        ENDIF
+
+    ENDIF
+
+    self . auto_login_ok = FALSE
+
+ENDROUTINE    { login_form_class_action_commit }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_assign_incident_id ( self         ,
+                                 incident_rec ,
+                                 syntax_id    )
+
+{
+*   Creates the incident and checklist result records.
+*
+*******************************************************************************}
+
+DECLARE reserve_mess
+
+    syntax_id = SELECT incident_template . incident_syntax
+
+    object_set_current_table ( incident_rec , "INCIDENTS" )
+
+    IF BLANK ( syntax_id ) THEN
+        syntax_id = get syntax ( "INCIDENT" )
+    ELSE
+        syntax_id = get syntax ( syntax_id )
+    ENDIF
+
+    reserve_mess = record_reserve ( "INCIDENTS" , syntax_id )
+
+    IF reserve_mess <> EMPTY THEN
+
+        flash_message ( reserve_mess , TRUE )
+
+    ELSE
+
+        object_copy_current_table ( incident_rec , "INCIDENTS" )
+
+        IF self . operation <> INC_OP_BACKGROUND THEN
+            self . incident_id . set_text ( syntax_id )
+        ENDIF
+
+    ENDIF
+
+    RETURN ( reserve_mess = EMPTY )
+
+ENDROUTINE    { login_form_class_action_assign_incident_id }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_assign_incidents ( self )
+
+{
+*   Creates the incident and checklist result records.
+*
+*******************************************************************************}
+
+DECLARE ok , syntax_id , subject_id
+
+    ok = TRUE
+
+    IF variable_get_type ( self . subject_id ) = "Object" THEN
+        subject_id = self . subject_id . value
+
+    ELSEIF ( self . subject_id = CONST_SAMPLE_SUBJECT ) THEN
+
+        OBJECT_SET_CURRENT_TABLE ( self . sample_subject, "SAMPLE" )
+        subject_id = self . sample_subject . value
+
+    ELSEIF ( self . subject_id = CONST_TEST_SUBJECT ) THEN
+
+        OBJECT_SET_CURRENT_TABLE ( self . test_subject, "TEST" )
+        subject_id = self . test_subject . value
+
+    ELSE
+        subject_id = self . ? self . subject_id ? . value
+    ENDIF
+
+    IF ( self . operation != INC_OP_DISPLAY ) AND
+       ( NOT BLANK ( subject_id )           ) THEN
+
+        self . start_write_transaction ()
+
+        IF ( self . operation = INC_OP_LOGIN ) THEN
+
+            ok = self . assign_incident_id (
+                        self . line_editor . object ,
+                        syntax_id                   )
+
+            IF ok THEN
+
+                assign_modified_fields (
+                        self                        ,
+                        self . line_editor . object )
+
+                inc_login_assign_incident_fields (
+                        self                         ,
+                        self . line_editor . object  ,
+                        subject_id                   )
+
+                ok = create_checklist_action_result (
+                        self                        ,
+                        self . line_editor . object )
+
+                IF self . can_update_db THEN
+                    ok = inc_login_set_has_incidents_flag (
+                        self . table_name . value ,
+                        subject_id                )
+                ENDIF
+
+            ENDIF
+
+        ELSE
+
+            assign_modified_fields ( self                        ,
+                         self . line_editor . object )
+
+            inc_login_assign_incident_fields (
+                        self                        ,
+                        self . line_editor . object ,
+                        subject_id                  )
+
+        ENDIF
+
+        IF ( ok ) THEN
+
+            IF self . can_update_db THEN
+
+                self . line_editor . object . update ()
+
+                self . action_object . invoke_all ( "UPDATE" )
+
+                self . commit ()
+
+            ENDIF
+
+            IF ( self . operation = INC_OP_LOGIN ) THEN
+
+                syntax_id = STRIP ( syntax_id )
+
+{               flash_message_with_param ( "INCIDENT_NEW_ID" ,
+                               syntax_id         )}
+            ENDIF
+
+        ELSEIF ( self . can_commit    )
+        AND    ( self . can_update_db ) THEN
+
+                ROLLBACK
+
+            flash_message ( "INCIDENT_NOT_CREATED" , TRUE )
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( "INCIDENT_NO_SUBJECT" , FALSE )
+
+        ok = FALSE
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE { login_form_class_action_assign_incidents }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_exit_base_form (  self )
+
+{
+*
+*******************************************************************************}
+
+    ROLLBACK
+
+    IF ( GLOBAL ( "LABTABLE_MODE" ) ) AND
+       ( NOT BLANK ( self . prompt_objects [ 1 ] . value ) ) OR
+       ( BLANK ( self . prompt_objects [ 1 ] . value ) ) THEN
+
+        self . set_lastkey ( "EXIT" )
+    ENDIF
+
+    self . clear_base_form ()
+
+{Added EXIT to close Incident screen after creation  ATØ 2010-02-23}
+
+    EXIT
+
+ENDROUTINE { login_form_class_action_exit_base_form }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_clear_base_form (  self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE prompt_details
+
+    ARRAY prompt_details
+
+    IF variable_get_type ( self . subject_id ) = "Object" THEN
+        self . subject_id . set_text ( " " )
+    ELSE
+        self . ? self . subject_id ? . set_text ( " " )
+    ENDIF
+
+    self . table_name . set_text ( " " )
+    self . incident_id . set_text ( "" )
+    self . status . set_text ( " " )
+
+    IF self . operation = INC_OP_LOGIN THEN
+        self . template_id . set_text ( " " )
+
+        self . ? self . subject_id ? . display_only = TRUE
+        self . ? self . subject_id ? . set_visible ( TRUE )
+
+        self . incident_id . set_text (
+                 GET_USER_MESSAGE ( "INCIDENT_TO_BE_CREATED", 1 ))
+    ENDIF
+
+    IF variable_is_assigned ( self . line_editor ) THEN
+        self . line_editor . object = EMPTY
+        self . line_editor . change_prompt_details ( prompt_details )
+    ENDIF
+
+    IF variable_is_assigned ( self . action_object ) THEN
+
+        CREATE OBJECT "STD_OBJECT_DATABASE" , self . action_object
+
+        self . action_object . initialise ( "INC_CHECKLIST_RESULTS" )
+
+    ENDIF
+
+    self . active_prompt = 1
+
+ENDROUTINE { login_form_class_action_clear_base_form }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_template_has_mandatory ( VALUE template_id )
+
+{
+*   Checks for mandatory fields in the template.
+*
+*******************************************************************************}
+
+DECLARE mand_flag
+
+    mand_flag = SELECT template_fields . mandatory_flag
+            WHERE table_name     = "INCIDENTS"
+            AND   template_id    = template_id
+            AND   mandatory_flag = TRUE
+
+    RETURN ( mand_flag <> EMPTY )
+
+ENDROUTINE    { inc_login_template_has_mandatory }
+
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE incidents_login_background ( VALUE template_id     ,
+                         VALUE subject_id      ,
+                           incidents_array ,
+                                           result_grid{,   VALUE check_result_grid} )
+
+{
+*   Used to automatically log in incident records at result entry time. If
+*   the selected template has any prompt fields the display the login form
+*   otherwise log in the incident silently.
+*
+*******************************************************************************}
+
+DECLARE incident_obj , ok, check_result_grid
+
+check_result_grid = TRUE
+
+    setup_incident_login_class ()
+
+    CREATE OBJECT LOGIN_FORM_CLASS , incident_obj
+
+    incident_obj . can_update_db = FALSE
+
+{ 1.2 }
+
+      {**********************************************************
+
+      SCR111885
+
+      If the result_grid is empty then we don't have a result
+      screen so assume we don't want to show the incident login
+      screen when using PUT_TEST_RESULST even when the program is
+      being run being an interactive session
+
+      ***********************************************************}
+
+    IF inc_login_template_has_mandatory ( template_id )                {SCR111885}
+    AND (  ( NOT check_result_grid ) OR ( result_grid <> EMPTY ) )     {SCR111885}
+
+        ok = incident_obj . auto_login_interactive ( template_id     ,
+                                 subject_id      ,
+                                 incidents_array )
+
+    ELSE
+
+        ok = incident_obj . auto_login_background ( template_id     ,
+                                subject_id      ,
+                                incidents_array )
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE    { incidents_login_background }
+
+
+{************************ Menu Section Routines Section ***********************}
+
+
+{******************************************************************************}
+
+    ROUTINE call_standard_incident_form ( VALUE template_id      ,
+                          VALUE operation        ,
+                          VALUE display_mode     ,
+                            base_form_header ,
+                            buttons_details  )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE incident_obj , prompt_details
+
+    ARRAY prompt_details
+
+    setup_incident_login_class ()
+
+    CREATE OBJECT LOGIN_FORM_CLASS, incident_obj
+
+    incident_obj . display_mode = display_mode
+    incident_obj . operation    = operation
+
+    incident_obj . start_base_form ( template_id      ,
+                     base_form_header ,
+                     prompt_details   ,
+                     buttons_details  )
+
+ENDROUTINE { call_standard_incident_form }
+
+
+{******************************************************************************}
+
+GLOBAL  ROUTINE inc_login_background (  VALUE template_id ,
+                    VALUE subject_id  )
+
+{
+*   Calls the incident login screen when creating incidents from result
+*   entry where there are mandatory fields on the template.
+*
+*******************************************************************************}
+
+DECLARE base_form_header , buttons_details , operation , display_mode ,
+    old_mode
+
+    display_mode     = FALSE
+    operation        = INC_OP_BACKGROUND
+
+    buttons_details  = get_temp_login_buttons_details ( operation )
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_LOGIN_HEADER", 1 )
+
+    old_mode = GLOBAL ( "LABTABLE_MODE" )
+
+    SET GLOBAL "LABTABLE_MODE" TO TRUE
+
+    call_standard_incident_form ( template_id      ,
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+    SET GLOBAL "LABTABLE_MODE" TO old_mode
+
+ENDROUTINE { inc_login_background }
+
+
+{******************************************************************************}
+
+    ROUTINE login_incident_test ( option )
+
+{
+*
+*******************************************************************************}
+
+DECLARE base_form_header , buttons_details , operation , display_mode
+
+    display_mode = FALSE
+    operation    = INC_OP_LOGIN
+
+
+    buttons_details = get_temp_login_buttons_details ( operation )
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_LOGIN_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { login_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE modify_incident_test ( option )
+
+{
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    display_mode = FALSE
+    operation    = INC_OP_MODIFY
+
+    buttons_details = get_temp_modify_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_MODIFY_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { modify_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE submit_for_release ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_SUBMIT
+    display_mode = TRUE
+
+    buttons_details = get_temp_submit_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_RELEASE_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { submit_for_release }
+
+
+{******************************************************************************}
+
+    ROUTINE review_incident_test ( option )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_REVIEW
+    display_mode = TRUE
+
+    buttons_details = get_temp_review_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_REVIEW_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { review_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE checklist_res_entry ( option )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_CHK_LST_RE
+    display_mode = TRUE
+
+    buttons_details = get_temp_checklist_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_CHLIST_RE_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { checklist_res_entry }
+
+
+{******************************************************************************}
+
+    ROUTINE complete_incident_test ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_COMPLETE
+    display_mode = TRUE
+
+    buttons_details = get_temp_complete_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_COMPLET_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { complete_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE submit_for_inspection ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_INS_SUBMIT
+    display_mode = TRUE
+
+    buttons_details = get_temp_sub_inpection_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_INSPEC_SUB_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { complete_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE inspect_incident_test ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_INSPECT
+    display_mode = TRUE
+
+    buttons_details = get_temp_inspect_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_INSPECT_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { inspect_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE display_incident_test ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_DISPLAY
+    display_mode = TRUE
+
+    buttons_details = get_temp_display_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_DISPLAY_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { display_incident_test }
+
+
+{******************************************************************************}
+
+    ROUTINE cancel_incident_test ( option )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE base_form_header, buttons_details, operation, display_mode
+
+    operation    = INC_OP_CANCEL
+    display_mode = TRUE
+
+    buttons_details = get_temp_cancel_buttons_details ()
+
+    base_form_header = GET_USER_MESSAGE ( "INC_FORMS_CANCEL_HEADER", 1 )
+
+    call_standard_incident_form ( ""               ,    { template_id }
+                      operation        ,
+                      display_mode     ,
+                      base_form_header ,
+                      buttons_details  )
+
+ENDROUTINE { cancel_incident_test }
+
+
+{*********************** Buttons Setup Routines Section ***********************}
+
+{******************************************************************************}
+
+    ROUTINE get_temp_login_buttons_details ( VALUE operation )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_LOGIN
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_LOGIN_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                 user_val                     )
+
+    user_val = INC_OP_CHECKLIST
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "display_checklist_template"     ,
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    IF operation = INC_OP_LOGIN THEN
+
+        lib_grid_action_button (
+                buttons_details ,
+                position        ,
+                GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ) ,
+                "exit_base_form",
+                GLOBAL ( "CURRENT_LIBRARY" ) ,
+                position                     )
+
+    ENDIF
+
+    RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_login_buttons_details }
+
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_modify_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_MODIFY
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_MODIFY_CAPTION", 1 ) ,
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_CHECKLIST
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions"     ,
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ) ,
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_modify_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_submit_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_SUBMIT
+        position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_SUBMIT_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                 user_val                     )
+
+    user_val = INC_OP_VIEW_ACTION
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_commit_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_review_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_VIEW_ACTION
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    user_val = INC_OP_ACCEPT
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_ACCEPT_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_REJECT
+
+        lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_REJECT_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    lib_grid_lastkey_button ( buttons_details ,
+                              position        ,
+                  "EXIT"          ,
+                  GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ))
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_review_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_sub_inpection_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_INS_SUBMIT
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_SUBMIT_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_VIEW_ACTION
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_sub_inpection_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_inspect_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_VIEW_ACTION
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    user_val = INC_OP_AUTHORISE
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_AUTHORISE_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_DISQUALIFY
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_DISQUALIFY_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    lib_grid_lastkey_button ( buttons_details ,
+                              position        ,
+                  "EXIT"          ,
+                  GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ))
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_inspect_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_checklist_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_CONFIRM
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_OK_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_CHECKLIST
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_checklist_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_complete_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_COMPLETE
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_COMPLETE_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_VIEW_ACTION
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions",
+                 GLOBAL ( "CURRENT_LIBRARY" )     ,
+                                 user_val                         )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_complete_buttons_details }
+
+{******************************************************************************}
+
+    ROUTINE get_temp_display_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_VIEW_ACTION
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions" ,
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_display_buttons_details }
+
+
+{******************************************************************************}
+
+    ROUTINE get_temp_cancel_buttons_details
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE position, buttons_details , user_val
+
+    user_val = INC_OP_CANCEL
+    position = 1
+
+    ARRAY buttons_details
+
+    lib_grid_initialise ()
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_OK_CAPTION", 1 ),
+                 "write_incident_modification",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 user_val                     )
+
+    user_val = INC_OP_VIEW_ACTION
+
+    lib_grid_action_button ( buttons_details                   ,
+                                 position                          ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CHECKLIST_CAPTION", 1 ),
+                 "call_complete_checklist_actions" ,
+                 GLOBAL ( "CURRENT_LIBRARY" )      ,
+                                 user_val                          )
+
+    lib_grid_action_button ( buttons_details ,
+                                 position        ,
+                 GET_USER_MESSAGE ( "INC_BUTTONS_CANCEL_CAPTION", 1 ),
+                 "exit_base_form",
+                 GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 position        )
+
+        RETURN ( buttons_details )
+
+ENDROUTINE { get_temp_cancel_buttons_details }
+
+
+{******************** Form Prompts Setup Routines Section *********************}
+
+{*********************** Button Acton Routines Section ************************}
+
+{******************************************************************************}
+
+    ROUTINE inc_login_set_status (  self          ,
+                    editor_object )
+
+{
+*   Set the incident login status
+*
+*******************************************************************************}
+
+DECLARE no_review , initial_status
+
+    initial_status = self . status . value
+    no_review      = BLANK ( SELECT incidents . review_inspectors
+                        IN OBJECT editor_object )
+
+    IF  ( initial_status = "W" )
+    AND ( no_review            ) THEN
+        initial_status = "V"
+    ELSEIF  ( initial_status = "V" )
+    AND     ( NOT no_review        ) THEN
+        initial_status = "W"
+    ENDIF
+
+    self . status . set_text ( initial_status )
+
+ENDROUTINE    { inc_login_set_status }
+
+
+{******************************************************************************}
+
+    ROUTINE write_incident_modification ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE incident_object, editor_object, valid_fields , ok
+
+    valid_fields    = TRUE
+    incident_object = self . parent_prompt
+
+    IF ( incident_object . operation = INC_OP_LOGIN  )
+    OR ( incident_object . operation = INC_OP_MODIFY ) THEN
+        valid_fields = prompt_validation_routine ( self . parent_prompt )
+    ENDIF
+
+    IF valid_fields THEN
+
+        editor_object = incident_object . line_editor . object
+
+        IF ( self . user_info = INC_OP_LOGIN ) THEN
+
+            inc_login_set_status ( self . parent_prompt ,
+                           editor_object        )
+
+        ELSEIF ( self . user_info = INC_OP_MODIFY ) THEN
+
+            incident_object . status . value = "U"
+
+        ELSEIF ( self . user_info = INC_OP_SUBMIT ) THEN
+
+            IF ( SELECT incidents . review_inspectors
+                 IN OBJECT editor_object = " "    ) THEN
+
+                incident_object . status . value = "V"
+
+            ELSE
+
+                incident_object . status . value = "W"
+
+            ENDIF
+
+        ELSEIF ( self . user_info = INC_OP_CANCEL ) THEN
+
+            incident_object . status . value = "X"
+
+        ELSEIF ( self . user_info = INC_OP_ACCEPT  ) THEN
+
+            incident_object . status . value = "V"
+
+        ELSEIF ( self . user_info = INC_OP_CONFIRM ) THEN
+
+            IF all_checklist_actions_completed (
+                            incident_object ) THEN
+
+                IF ( SELECT incidents . authorise_inspectors
+                     IN OBJECT editor_object = " "  ) THEN
+
+                    incident_object . status . value = "A"
+
+                ELSE
+
+                    incident_object . status . value = "C"
+
+                ENDIF
+
+            ENDIF
+
+        ELSEIF ( self . user_info = INC_OP_DISQUALIFY ) THEN
+
+            incident_object . status . value = "V"
+
+        ELSEIF ( self . user_info = INC_OP_REJECT ) THEN
+
+            incident_object . status . value = "R"
+
+        ELSEIF ( self . user_info = INC_OP_AUTHORISE ) THEN
+
+            incident_object . status . value = "A"
+
+        ELSEIF ( self . user_info = INC_OP_COMPLETE ) THEN
+
+            IF ( SELECT incidents . authorise_inspectors
+                 IN OBJECT editor_object = " "  ) THEN
+
+                incident_object . status . value = "A"
+            ELSE
+                incident_object . status . value = "C"
+            ENDIF
+
+        ELSEIF ( self . user_info = INC_OP_INS_SUBMIT ) THEN
+
+            incident_object . status . value = "I"
+        ENDIF
+
+        ok = self . parent_prompt . assign_incidents ()
+
+        IF  ( ok                                   )
+        AND ( self . parent_prompt . can_update_db ) THEN
+            self . parent_prompt . exit_base_form ()
+        ELSE
+            self . parent_prompt . exit ()
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { write_incident_modification }
+
+
+{******************************************************************************}
+
+    ROUTINE create_checklist_action_result ( incident_object ,
+                         editor_object   )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE new_chk_result, result_id, status, checklist_id, action_number,
+    incident_id
+
+    incident_id   = SELECT incidents . incident_id IN OBJECT editor_object
+    checklist_id  = SELECT incidents . checklist_id IN OBJECT editor_object
+    status        = EMPTY
+
+    IF ( checklist_id != EMPTY ) THEN
+
+        action_number = SELECT inc_checklist_actions . action_number
+                    WHERE checklist_id = checklist_id
+
+        WHILE ( action_number <> EMPTY  )
+        AND   ( action_number <> LOCKED )
+        AND   ( status        =  EMPTY  ) DO
+
+            result_id = incident_id : action_number
+
+            CREATE OBJECT "STD_OBJECT_RECORD", new_chk_result
+
+            new_chk_result . new   = TRUE
+            new_chk_result . table = "INC_CHECKLIST_RESULTS"
+
+            object_add_table ( new_chk_result          ,
+                       "INC_CHECKLIST_RESULTS" )
+
+            RESERVE ENTRY inc_checklist_results
+                IN OBJECT new_chk_result, result_id, status
+
+            IF ( status = EMPTY ) THEN
+
+                incident_object . action_object . add ( new_chk_result )
+
+                ASSIGN inc_checklist_results . action_taken
+                    IN OBJECT new_chk_result =
+                        SELECT inc_checklist_actions . action_taken
+
+                ASSIGN inc_checklist_results . action_type
+                    IN OBJECT new_chk_result =
+                        SELECT inc_checklist_actions . action_type
+
+                ASSIGN inc_checklist_results . checklist_id
+                    IN OBJECT new_chk_result = checklist_id
+
+            ELSE
+
+                flash_message ( status , FALSE )
+
+            ENDIF
+
+            NEXT inc_checklist_actions
+
+            action_number = SELECT inc_checklist_actions . action_number
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ( status = EMPTY ) AND ( action_number = EMPTY ) )
+
+ENDROUTINE { create_checklist_action_result }
+
+
+{******************************************************************************}
+
+    ROUTINE call_complete_checklist_actions ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE answer, editor_object, copied_id, operation, identity, incident_object
+
+    incident_object = self . parent_prompt
+
+    copied_id = EMPTY
+
+    IF ( self . user_info = INC_OP_CONFIRM ) OR
+       ( self . user_info = INC_OP_MODIFY  ) THEN
+
+        operation = INC_OP_SAVE
+
+    ELSEIF ( self . user_info = INC_OP_CHECKLIST ) THEN
+
+        operation = INC_OP_MODIFY
+
+    ELSEIF ( self . user_info = INC_OP_VIEW_ACTION ) THEN
+
+        operation = INC_OP_DISPLAY
+
+    ELSE
+        operation = INC_OP_QUIT
+
+    ENDIF
+
+    editor_object = incident_object . line_editor . object
+    identity      = SELECT incidents . incident_id IN OBJECT editor_object
+
+    complete_checklist_actions ( incident_object . the_list_editor ,
+                     answer                            ,
+                     identity                          ,
+                     copied_id                         ,
+                     operation                         )
+
+ENDROUTINE { call_complete_checklist_actions }
+
+
+{******************************************************************************}
+
+    ROUTINE display_checklist_template ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE operation, editor_object, copied_id, identity, incident_object
+
+    incident_object = self . parent_prompt
+    copied_id       = EMPTY
+
+    IF variable_is_assigned ( incident_object . line_editor . object ) THEN
+
+        editor_object = incident_object . line_editor . object
+        operation     = "DISPLAY"
+
+        IF ( editor_object <> EMPTY ) THEN
+
+            identity      = SELECT incidents . checklist_id
+                        IN OBJECT editor_object
+
+            IF  ( NOT BLANK ( identity ) )
+            AND ( identity <> EMPTY      ) THEN
+
+                inc_actions_edit_actions ( identity  ,
+                               copied_id ,
+                               operation )
+            ENDIF
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { edit_checklist_actions }
+
+
+{******************************************************************************}
+
+    ROUTINE assign_modified_fields ( self         ,
+                     incident_rec )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE confirm_butt, inspect_field , disp_txt
+
+    confirm_butt = EMPTY
+
+    IF ( ( self . operation = INC_OP_CHK_LST_RE ) OR
+         ( self . operation = INC_OP_MODIFY     )    ) THEN
+
+        confirm_butt = self . prompt_objects [ 6 ]
+
+        call_complete_checklist_actions ( confirm_butt )
+
+    ENDIF
+
+    object_set_current_table ( incident_rec , "INCIDENTS" )
+
+    IF ( self . status . value = "I" ) OR
+       ( self . status . value = "W" ) THEN
+
+        IF ( self . status . value = "I" ) THEN
+            inspect_field = "AUTHORISE_INSPECTORS"
+        ELSE
+            inspect_field = "REVIEW_INSPECTORS"
+        ENDIF
+
+        IF self . can_update_db THEN
+            create_inspection_record ( "INCIDENTS" , inspect_field )
+        ENDIF
+
+        IF ( self . status . value = "W" ) THEN
+
+            IF ( SELECT inspector . version != EMPTY ) THEN
+
+                ASSIGN incidents . review_version
+                    IN OBJECT incident_rec =
+                        SELECT inspector . version
+            ENDIF
+
+        ELSEIF ( self . status . value = "I" ) THEN
+
+            IF ( SELECT inspector . version != EMPTY ) THEN
+
+                ASSIGN incidents . authorise_version
+                    IN OBJECT incident_rec =
+                            SELECT inspector . version
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    IF ( self . status . value = "V" ) THEN
+
+        inspect_field = "REVIEW_INSPECTORS"
+
+        authorise_the_record ( "INCIDENTS" , inspect_field )
+
+        IF ( all_inspection_authorised ( "INCIDENTS" ) ) THEN
+
+            IF ( self . operation = INC_OP_SUBMIT  ) OR
+               ( self . operation = INC_OP_REVIEW  ) THEN
+
+                self . status . value = "V"
+
+            ELSEIF ( self . operation = INC_OP_COMPLETE ) THEN
+
+                self . status . value = "A"
+
+            ENDIF
+
+        ELSE
+
+            disp_txt = GET_USER_MESSAGE (
+                        "INCIDENT_NOT_INSPECTED" , 1 )
+
+            window_set_status ( disp_txt )
+
+            IF ( self . operation = INC_OP_REVIEW ) THEN
+
+                self . status . value = "W"
+
+            ELSEIF ( self . operation = INC_OP_COMPLETE ) THEN
+
+                self . status . value = "V"
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    IF  ( self . status . value  = "A"              )
+    AND ( self . operation      != INC_OP_COMPLETE  ) THEN
+
+        inspect_field = "AUTHORISE_INSPECTORS"
+
+        authorise_the_record ( "INCIDENTS" , inspect_field )
+
+        IF ( all_inspection_authorised ( "INCIDENTS") ) THEN
+
+            self . status . value = "A"
+
+        ELSEIF ( SELECT incidents . authorise_inspectors != " " ) THEN
+
+            disp_txt = GET_USER_MESSAGE (
+                        "INCIDENT_NOT_INSPECTED" , 1 )
+
+            window_set_status ( disp_txt )
+
+            self . status . value = "I"
+
+        ENDIF
+
+    ENDIF
+
+    IF self . status . value = "R" THEN
+
+        cancel_inspection ( "INCIDENTS" )
+
+        IF ( self . operation = INC_OP_INSPECT ) THEN
+
+            self . status . value = "V"
+
+        ELSEIF ( self . operation = INC_OP_REVIEW ) THEN
+
+            self . status . value = "R"
+        ENDIF
+
+    ENDIF
+
+    object_copy_current_table ( incident_rec , "INCIDENTS" )
+
+ENDROUTINE { assign_modified_fields }
+
+
+{******************************************************************************}
+
+    ROUTINE exit_base_form ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE operation
+
+    operation = self . parent_prompt . operation
+
+    IF ( operation = INC_OP_COMPLETE   ) OR
+       ( operation = INC_OP_CHK_LST_RE ) OR
+       ( operation = INC_OP_INSPECT    ) THEN
+
+        call_complete_checklist_actions ( self )
+
+    ENDIF
+
+    self . parent_prompt . exit ()
+
+ENDROUTINE { exit_base_form }
+
+
+{******************************************************************************}
+
+    ROUTINE check_for_valid_inspectors ( VALUE operation    ,
+                           select_array )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE current_user, temp_array, inspection_db, object_size, count,
+    current_inspect, inspect_id
+
+    current_user = lib_inspect_get_person ()
+
+    ARRAY temp_array
+
+    array_select_add ( temp_array      ,
+               ARRAY_SELECT_EQ ,
+               "PERSONNEL_ID"  ,
+               current_user    )
+
+    object_create ( inspection_db, "STD_OBJECT_DATABASE" )
+
+    inspection_db . initialise ( "INSPECTION_RECORD" )
+
+    inspection_db . select ( temp_array )
+
+    object_size = inspection_db . size ()
+
+    count = 0
+
+    array_select_add ( select_array      ,
+               ARRAY_SELECT_PUSH ,
+               EMPTY             ,
+               EMPTY             )
+
+    WHILE ( count < object_size ) DO
+
+        count = count + 1
+
+        current_inspect = inspection_db . get_by_number ( count )
+
+        inspect_id = SELECT inspection_record . inspection_identity
+                 IN OBJECT current_inspect
+
+        IF ( count > 1     ) AND
+           ( inspect_id != EMPTY ) THEN
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_OR ,
+                       EMPTY           ,
+                       EMPTY           )
+        ENDIF
+
+        IF ( inspect_id != EMPTY ) THEN
+
+            IF ( operation = INC_OP_REVIEW ) THEN
+
+                array_select_add ( select_array ,
+                           ARRAY_SELECT_EQ     ,
+                           "REVIEW_INSPECTORS" ,
+                           inspect_id          )
+
+            ELSEIF ( operation = INC_OP_INSPECT ) THEN
+
+                array_select_add ( select_array           ,
+                           ARRAY_SELECT_EQ        ,
+                           "AUTHORISE_INSPECTORS" ,
+                           inspect_id             )
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( object_size = 0 ) THEN
+
+        IF ( operation = INC_OP_REVIEW ) THEN
+
+            array_select_add ( select_array        ,
+                       ARRAY_SELECT_EQ     ,
+                       "REVIEW_INSPECTORS" ,
+                       EMPTY               )
+
+                ELSEIF ( operation = INC_OP_INSPECT ) THEN
+
+            array_select_add ( select_array           ,
+                       ARRAY_SELECT_EQ        ,
+                       "AUTHORISE_INSPECTORS" ,
+                       EMPTY                  )
+
+        ENDIF
+
+    ENDIF
+
+    array_select_add ( select_array      ,
+               ARRAY_SELECT_POP  ,
+               EMPTY             ,
+               EMPTY             )
+
+    array_select_add ( select_array    ,
+               ARRAY_SELECT_AND,
+               EMPTY           ,
+               EMPTY           )
+
+ENDROUTINE { check_for_valid_inspectors }
+
+
+
+{******************************************************************************}
+
+    ROUTINE prompt_validation_routine ( self )
+
+{
+*   Validates the data entered at the form prompts when logging or
+*   modifying an incident.
+*
+*******************************************************************************}
+
+DECLARE fields_not_filled, editor_object, return_value, incident_object ,
+    subject_id
+
+    return_value    = FALSE
+    incident_object = self
+
+    IF self . operation = INC_OP_LOGIN THEN
+
+        IF variable_get_type ( self . subject_id ) = "Object" THEN
+            subject_id = self . subject_id . text
+        ELSE
+            subject_id = self . ? self . subject_id ? . text
+        ENDIF
+
+        IF BLANK ( self . template_id . value ) THEN
+            flash_message ( "INCIDENT_FILE_NOT_FOUND" , FALSE )
+        ELSEIF BLANK ( subject_id ) THEN
+            flash_message ( "INCIDENT_NO_SUBJECT" , FALSE )
+        ELSE
+            return_value = TRUE
+        ENDIF
+
+    ELSE
+        return_value = TRUE
+    ENDIF
+
+    IF return_value = TRUE
+
+        editor_object = incident_object . line_editor . object
+        {editor_object = incident_object . line_editor }
+
+        IF ( variable_is_assigned ( editor_object )) AND
+           ( editor_object <> EMPTY )                THEN
+
+            object_set_current_table ( editor_object         ,
+                           editor_object . table )
+
+            return_value = mandatory_fields_filled (
+                                editor_object . table ,
+                                incident_object .
+                                    field_details ,
+                                fields_not_filled     )
+
+            object_copy_current_table ( editor_object         ,
+                            editor_object . table )
+
+            IF NOT (  return_value ) THEN
+                flash_message ( "INCIDENT_MISSING_VALUES" , TRUE )
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE { prompt_validation_routine }
+
+
+{******************************************************************************}
+
+    ROUTINE all_checklist_actions_completed ( incident_object )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE return_value, incident_id, result_entered, temp_count, current ,
+    res_val
+
+    incident_id = SELECT incidents . incident_id
+              IN OBJECT incident_object . line_editor . object
+
+    return_value = TRUE
+    temp_count   = 0
+
+    IF ( variable_is_assigned ( incident_object . the_list_editor ) ) THEN
+
+        IF ( incident_id != EMPTY ) THEN
+
+            incident_object . the_list_editor . collection . set_first ()
+
+            current = incident_object . the_list_editor . collection . current
+
+            WHILE ( current != EMPTY ) DO
+
+                res_val = SELECT inc_checklist_results . action_result
+                            IN OBJECT current
+                result_entered = NOT BLANK ( res_val )
+
+                IF NOT ( result_entered ) THEN
+                    temp_count = temp_count + 1
+                ENDIF
+
+                incident_object . the_list_editor . collection . set_next ()
+
+                current = incident_object . the_list_editor . collection . current
+
+            ENDWHILE
+
+            IF ( temp_count > 0 ) THEN
+                return_value = FALSE
+            ENDIF
+        ENDIF
+    ELSE
+        return_value = FALSE
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE { all_checklist_actions_completed }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_create_base_form (       self       ,
+                             VALUE base_form_header )
+
+{
+*
+*
+*******************************************************************************}
+
+    IF ( self . operation = INC_OP_LOGIN      )
+    OR ( self . operation = INC_OP_BACKGROUND ) THEN
+        self . height = FORM_HEIGHT
+    ELSE
+        self . height = FORM_HEIGHT - 1
+    ENDIF
+
+    self . width            = FORM_WIDTH
+    self . row              = 1
+    self . column           = 2
+    self . header           = base_form_header
+    self . button_style     = FORM_BUTTON_NONE
+    self . return_behaviour = FORM_RETURN_STAY
+
+ENDROUTINE { login_form_class_action_create_base_form }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_create_id_prompt (       prompt_object ,
+                                         VALUE operation     ,
+                                         VALUE row           ,
+                                         VALUE prompt_col    )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE select_array,
+            approve_as
+
+    IF ( operation = INC_OP_INSPECT ) OR
+       ( operation = INC_OP_REVIEW  ) THEN
+
+        { For INC_OP_INSPECT, STATUS should be I }
+        { For INC_OP_REVIEW,  STATUS should be W }
+
+        lib_inspect_define_inspection_prompt ( )
+
+        CREATE OBJECT INSPECTION_SELECT_CLASS, prompt_object
+
+        prompt_object . row                  = row
+        prompt_object . column               = prompt_col
+        prompt_object . table                = "INCIDENTS"
+        prompt_object . leave_prompt_routine = "inc_review_leave_incident_id_prompt"
+        prompt_object . always_validate      = TRUE
+        prompt_object . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+
+        { Can authorise for anyone if sufficient priv }
+
+        IF role_lib_has_privilege ( ROLE_LIB_PRIV_APPROVE_ON_BEHALF ) THEN
+
+            approve_as = prompt_for_approver ( )
+
+            IF approve_as = EMPTY THEN
+                EXIT
+            ENDIF
+
+            approve_as = STRIP ( approve_as )
+
+        ELSE
+            approve_as = STRIP ( OPERATOR )
+        ENDIF
+
+        prompt_object . set_for_table ( "INCIDENTS" ,
+                                        approve_as  )
+
+    ELSE
+
+        ARRAY select_array ARRAYSIZE ( 0 , 4 )
+
+        IF ( operation = INC_OP_MODIFY  )
+        OR ( operation = INC_OP_SUBMIT  ) THEN
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_EQ ,
+                       "STATUS"        ,
+                       "U"             )
+
+            IF ( operation = INC_OP_MODIFY ) THEN
+
+                array_select_add ( select_array    ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+
+                array_select_add ( select_array    ,
+                           ARRAY_SELECT_EQ ,
+                           "STATUS"        ,
+                           "R"             )
+            ENDIF
+
+        ELSEIF ( operation = INC_OP_COMPLETE   ) OR
+               ( operation = INC_OP_CHK_LST_RE ) THEN
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_EQ ,
+                       "STATUS"        ,
+                       "V"             )
+
+        ELSEIF ( operation = INC_OP_INS_SUBMIT ) THEN
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_EQ ,
+                       "STATUS"        ,
+                       "C"             )
+
+        ELSEIF ( operation = INC_OP_CANCEL ) THEN
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_NE ,
+                       "STATUS"        ,
+                       "A"             )
+
+            array_select_add ( select_array    ,
+                       ARRAY_SELECT_NE ,
+                       "STATUS"        ,
+                       "X"             )
+
+        ELSEIF( operation = INC_OP_DISPLAY ) THEN
+
+            {*****************}
+            { No Restrictions }
+            {*****************}
+
+        ENDIF
+
+        PROMPT OBJECT prompt_object
+            ON LINE row
+            FROM    prompt_col
+            BROWSE ON incidents
+            WITH (  leave_prompt_routine =
+                        "inc_review_leave_incident_id_prompt" ,
+                mandatory_array      = select_array                   )
+
+    ENDIF
+
+ENDROUTINE     { inc_login_set_incident_browse_status }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_dummy_status ( self )
+
+{
+*   Add a dummy status prompt for auto non-interactive incident login.
+*
+*******************************************************************************}
+
+    PROMPT OBJECT self . status
+        ON LINE 1
+        FROM    1
+        TO      1
+        FORMAT TEXT
+
+    self . add_prompt ( self . status )
+
+ENDROUTINE     { login_form_class_action_add_dummy_status }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_form_prompts ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE frame_height
+
+    IF self . operation = INC_OP_LOGIN THEN
+        self . add_template_prompts ()
+    ELSEIF self . operation = INC_OP_BACKGROUND THEN
+        self . add_background_prompts ()
+    ELSE
+        self . add_incident_prompts ()
+    ENDIF
+
+        self . add_frame ( ""                    ,
+                           1                     ,
+                           1                     ,
+                           self . editor_row - 2 ,
+                           self . width          )
+
+        self . add_panel( self . width -1       ,
+                          1                     ,
+                          self . editor_row - 2 ,
+                          1                     ,
+                          PANEL_H_ALIGN_LEFT
+                          + PANEL_H_EXPAND_ON   )
+
+    frame_height = self . height - self . editor_row
+
+        self. add_frame ( ""                ,
+                          1                 ,
+                          self . editor_row ,
+                          frame_height      ,
+                          self . width      )
+
+ENDROUTINE     { login_form_class_action_add_form_prompts }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_assign_prompt_values (
+                                self        ,
+                              VALUE template_id ,
+                              VALUE subject_id  )
+
+{
+*   Add the background login prompts as text only prompts.
+*
+*******************************************************************************}
+
+DECLARE table_id
+
+    table_id = SELECT incident_template . subject_table
+
+    IF table_id = EMPTY THEN
+
+        table_id = SELECT incident_template . subject_table
+                WHERE template_id = template_id
+
+    ENDIF
+
+    self . template_id . value = template_id
+    self . subject_id . value  = subject_id
+    self . table_name . value  = table_id
+    self . status . value      = SELECT incident_template . initial_status
+
+ENDROUTINE    { login_form_class_action_assign_prompt_values }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_background_prompts ( self )
+
+{
+*   Add the background login prompts as text only prompts.
+*
+*******************************************************************************}
+
+DECLARE disp_txt , disp_col , prompt_col , row
+
+    disp_col   = 2
+    prompt_col = 20
+    row        = 1
+
+    {****************************}
+    { Add the template Id prompt }
+    {****************************}
+
+    disp_txt   = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_INC_TEMPLATE", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+
+    PROMPT OBJECT self . template_id
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 10
+        FORMAT TEXT
+        WITH ( enabled = FALSE )
+
+    self . add_prompt ( self . template_id )
+
+    {***************************}
+    { Add the table name prompt }
+    {***************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_TABLE", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . table_name
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 20
+        FORMAT TEXT
+        WITH ( enabled = FALSE )
+
+    self . add_prompt ( self . table_name )
+
+    {***************************}
+    { Add the subject id prompt }
+    {***************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_KEY", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . subject_id
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 20
+        FORMAT TEXT
+        WITH ( enabled = FALSE )
+
+    self . add_prompt ( self . subject_id )
+
+    {****************************}
+    { Add the incident id prompt }
+    {****************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_INCIDENT_IDENT", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . incident_id
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 30
+        FORMAT TEXT
+        WITH (  enabled = FALSE                                ,
+            value   = GET_USER_MESSAGE (
+                    "INCIDENT_TO_BE_CREATED" , 1 ) )
+
+    self . add_prompt ( self . incident_id )
+
+    {********************************}
+    { Add the incident status prompt }
+    {********************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_STATUS", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . status
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 18
+        FORMAT incidents . status
+        WITH ( enabled = FALSE )
+
+    self . add_prompt ( self . status )
+
+    self . editor_row = row + 2
+
+ENDROUTINE       { login_form_class_action_add_background_prompts }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_template_prompts ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE disp_txt , disp_col , prompt_col , row , table_array ,
+    view_array
+
+    disp_col   = 2
+    prompt_col = 20
+    row        = 1
+
+    {****************************}
+    { Add the template Id prompt }
+    {****************************}
+
+    disp_txt   = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_INC_TEMPLATE", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+
+    PROMPT OBJECT self . template_id
+        ON LINE row
+        FROM    prompt_col
+        BROWSE ON incident_template
+        WITH (  display_only         =
+                ( self . operation = INC_OP_BACKGROUND )  ,
+            leave_prompt_routine =
+                    "inc_login_leave_template_prompt" ,
+            enter_prompt_routine =
+                    "inc_login_enter_template_prompt" )
+
+    self . add_prompt ( self . template_id )
+
+    {***************************}
+    { Add the table name prompt }
+    {***************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_TABLE", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . table_name
+        ON LINE row
+        FROM    prompt_col
+        FORMAT incident_template . subject_table
+        WITH (  display_only = TRUE  ,
+            tab_stop     = FALSE )
+
+    self . add_prompt ( self . table_name )
+
+    {*****************************************************}
+    { Add the subject id prompts. Need additional prompts }
+    { to  allow browse on sample test and result          }
+    {*****************************************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_KEY", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    {***********************}
+    { add the sample prompt }
+    {***********************}
+
+    PROMPT OBJECT self . sample_subject
+        ON LINE row
+        FROM    prompt_col
+        BROWSE ON SAMPLE THEN SELECT
+        WITH (  visible = FALSE  ,
+            text    = ""     ,
+            value   = ""     )
+
+    self . add_prompt ( self . sample_subject )
+
+    {*********************}
+    { add the test prompt }
+    {*********************}
+
+    PROMPT OBJECT self . test_subject
+        ON LINE row
+        FROM    prompt_col
+        BROWSE ON TEST THEN SELECT
+        WITH (  visible = FALSE  ,
+            text    = ""     ,
+            value   = ""     )
+
+    self . add_prompt ( self . test_subject )
+
+    {***********************}
+    { add the result prompt }
+    {***********************}
+
+    PROMPT OBJECT self . result_subject
+        ON LINE row
+        FROM    prompt_col
+        BROWSE ON RESULT
+        WITH (  width                = MAX_PROMPT_WIDTH          ,
+            length               = MAX_PROMPT_WIDTH          ,
+            visible              = FALSE                     ,
+            enter_prompt_routine =
+                    "inc_login_enter_subject_prompt" ,
+            leave_prompt_routine =
+                    "inc_login_leave_subject_prompt" ,
+            validation_routine   =
+                    "inc_login_validate_subject"     )
+
+    self . add_prompt ( self . result_subject )
+
+    {******************************}
+    { add the general table prompt }
+    {******************************}
+
+    inc_action_get_tables_and_views ( table_array ,
+                      view_array  )
+
+    PROMPT OBJECT self . other_subject
+        CLASS SUBJECT_ID_PROMPT
+        ON LINE row
+        FROM    prompt_col
+        WITH (  width                = MAX_PROMPT_WIDTH          ,
+            length               = MAX_PROMPT_WIDTH          ,
+            visible              = TRUE                      ,
+            text                 = ""                        ,
+            value                = ""                        ,
+            table                = "CUSTOMER"                ,
+            field                = "identity"                ,
+            may_browse           = TRUE                      ,
+            format_only          = FALSE                     ,
+            display_only         =
+                ( self . operation = INC_OP_BACKGROUND ) ,
+            enabled              = FALSE                     ,
+            leave_prompt_routine =
+                    "inc_login_leave_subject_prompt" ,
+            enter_prompt_routine =
+                    "inc_login_enter_subject_prompt" ,
+            validation_routine   =
+                    "inc_login_validate_subject"     )
+
+    object_add_table ( self . other_subject , "CUSTOMER" )
+
+    inc_action_add_tables_to_object ( table_array          ,
+                      self . other_subject )
+
+    self . add_prompt ( self . other_subject )
+
+    {*************************************}
+    { identify the default subject prompt }
+    {*************************************}
+
+    self . subject_id = "other_subject"
+
+    {****************************}
+    { Add the incident id prompt }
+    {****************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_INCIDENT_IDENT", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . incident_id
+        ON LINE row
+        FROM    prompt_col
+        FORMAT incidents . incident_id
+        WITH (  display_only = TRUE  ,
+            tab_stop     = FALSE ,
+            value        = GET_USER_MESSAGE ( "INCIDENT_TO_BE_CREATED", 1 ))
+
+    self . add_prompt ( self . incident_id )
+
+    {********************************}
+    { Add the incident status prompt }
+    {********************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_STATUS", 1 )
+
+    self . add_display ( disp_txt                ,
+                 disp_col                ,
+                 row                     ,
+                 PROMPT_RENDITION_BOLD +
+                 PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . status
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 18
+        FORMAT incidents . status
+        WITH (  display_only = TRUE  ,
+            tab_stop     = FALSE )
+
+    self . add_prompt ( self . status )
+
+    self . editor_row = row + 2
+
+ENDROUTINE    { login_form_class_action_add_template_prompts }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_add_incident_prompts ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE disp_txt , disp_col , prompt_col , row
+
+    disp_col   = 2
+    prompt_col = 20
+    row        = 1
+
+    {****************************}
+    { Add the incident id prompt }
+    {****************************}
+
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_INCIDENT_IDENT", 1 )
+
+    self . add_display ( disp_txt                ,
+                     disp_col                ,
+                     row                     ,
+                     PROMPT_RENDITION_BOLD +
+                     PROMPT_RENDITION_RAISED )
+
+    inc_login_create_id_prompt ( self . incident_id ,
+                                 self . operation   ,
+                                 row                ,
+                                 prompt_col         )
+
+    self . add_prompt ( self . incident_id )
+
+    {***************************}
+    { Add the table name prompt }
+    {***************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_TABLE", 1 )
+
+    self . add_display ( disp_txt                ,
+                     disp_col                ,
+                     row                     ,
+                     PROMPT_RENDITION_BOLD +
+                     PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . table_name
+        ON LINE row
+        FROM    prompt_col
+        FORMAT  incident_template . subject_table
+        WITH (  display_only = TRUE  ,
+            tab_stop     = FALSE )
+
+    self . add_prompt ( self . table_name )
+
+    {***************************}
+    { Add the subject id prompt }
+    {***************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_SUBJECT_KEY", 1 )
+
+    self . add_display ( disp_txt                ,
+                     disp_col                ,
+                     row                     ,
+                     PROMPT_RENDITION_BOLD +
+                     PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . subject_id
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 20
+        FORMAT incidents . subject_field
+        WITH (  display_only = TRUE )
+
+    self . add_prompt ( self . subject_id )
+
+    {********************************}
+    { Add the incident status prompt }
+    {********************************}
+
+    row      = row + 1
+    disp_txt = GET_USER_MESSAGE ( "INC_FORMS_PROMPTS_STATUS", 1 )
+
+    self . add_display ( disp_txt                ,
+                     disp_col                ,
+                     row                     ,
+                     PROMPT_RENDITION_BOLD +
+                     PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT self . status
+        ON LINE row
+        FROM    prompt_col
+        TO      prompt_col + 18
+        FORMAT incidents . status
+        WITH (  display_only = TRUE  ,
+            tab_stop     = FALSE )
+
+    self . add_prompt ( self . status )
+
+    self . editor_row = row + 2
+
+ENDROUTINE    { login_form_class_action_add_incident_prompts }
+
+
+{*********************** Leave Prompts Routines Section ***********************}
+
+{******************************************************************************}
+
+    ROUTINE inc_review_leave_incident_id_prompt ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE field_controls, num_of_fields, tabl_name, templ_id, display_mode,
+    prompt_details, inc_object, select_array, temp_status, subject_field,
+    subject_table , operation , re_create , inc_id
+
+    re_create = FALSE
+
+    IF variable_get_type (
+        self . parent_prompt . line_editor . object ) = "Object" THEN
+
+        inc_id = SELECT incidents . incident_id
+                IN OBJECT self . parent_prompt .
+                            line_editor . object
+
+        IF inc_id <> self . value THEN
+            re_create = TRUE
+        ENDIF
+
+    ELSE
+
+        re_create = TRUE
+
+    ENDIF
+
+    IF re_create THEN
+
+        tabl_name = "INCIDENTS"
+
+        display_mode = self . parent_prompt . display_mode
+        operation    = self . parent_prompt . operation
+
+        CREATE OBJECT "STD_OBJECT_RECORD", inc_object
+
+        inc_object . table = tabl_name
+
+        object_add_table ( inc_object, tabl_name )
+
+        ARRAY select_array
+
+        array_select_add ( select_array    ,
+                   ARRAY_SELECT_EQ ,
+                   "INCIDENT_ID"   ,
+                   self . value    )
+
+        IF ( self . parent_prompt . operation = INC_OP_DISPLAY ) THEN
+            ARRAY_SELECT ( tabl_name, FALSE, select_array )
+        ELSE
+            ARRAY_SELECT ( tabl_name, TRUE, select_array )
+        ENDIF
+
+        OBJECT_COPY_CURRENT_TABLE ( inc_object, tabl_name )
+
+        IF ( inc_object != EMPTY ) THEN
+
+            templ_id = SELECT incidents . template_id
+                    IN OBJECT inc_object
+
+            create_prompt_details ( operation            ,
+                        templ_id             ,
+                        field_controls       ,
+                        num_of_fields        ,
+                        tabl_name            ,
+                        display_mode         ,
+                        prompt_details       )
+
+            self . parent_prompt . line_editor .
+                        display_only = display_mode
+
+            self . parent_prompt . line_editor . object = inc_object
+
+            temp_status   = SELECT incidents . status
+                            IN OBJECT inc_object
+            subject_field = SELECT incidents . subject_field
+                            IN OBJECT inc_object
+            subject_table = SELECT incidents . subject_table
+                            IN OBJECT inc_object
+
+            self . parent_prompt . subject_id . set_text (
+                                subject_field )
+            self . parent_prompt . table_name . set_text (
+                                subject_table )
+            self . parent_prompt . status . set_text ( temp_status )
+            self . parent_prompt . line_editor .
+                    change_prompt_details ( prompt_details )
+
+            self . parent_prompt . field_details   = field_controls
+            self . parent_prompt . the_list_editor = EMPTY
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { incident_review_leave_incident_id_prompt }
+
+
+{*****************************************************************************}
+
+    ROUTINE inc_login_enter_subject_prompt ( sub_prompt )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE field_width , field_val , form
+
+    form                = sub_prompt . parent_prompt
+    sub_prompt . width  = MAX_PROMPT_WIDTH
+    sub_prompt . length = MAX_PROMPT_WIDTH
+
+    IF form . multi_key0 THEN
+
+        GET_FIELD_DETAILS 'sub_prompt . table' . 'sub_prompt . field' ,
+                  "FIELD_SIZE"                                ,
+                  field_width
+
+        field_val = LEFTSTRING ( form . key0_data , field_width )
+
+        IF ( TOUPPER ( STRIP ( sub_prompt . table ) ) <> "RESULT"        )
+        OR (     ( STRIP ( field_val ) <> ""                           )
+             AND ( TOUPPER ( STRIP ( sub_prompt . table ) ) = "RESULT" ) )
+        THEN
+            sub_prompt . value = field_val
+            sub_prompt . text  = field_val
+        ENDIF
+
+        sub_prompt . re_paste ()
+
+    ENDIF
+
+ENDROUTINE    { inc_login_enter_subject_prompt }
+
+
+{*****************************************************************************}
+
+    ROUTINE inc_login_leave_subject_prompt ( sub_prompt )
+
+{
+*   Gets the next incident Id if one has not already been selected and a
+*   subject has.
+*
+******************************************************************************}
+
+DECLARE form
+
+    form = sub_prompt . parent_prompt
+
+    IF NOT BLANK ( sub_prompt . text ) THEN
+
+        IF form . multi_key0 THEN
+
+            {****************************************}
+            { The set_text action does not work      }
+            { with the result prompt so don't use it }
+            {****************************************}
+
+            form . ? form . subject_id ? . text  = form . key0_data
+            form . ? form . subject_id ? . value = form . key0_data
+            form . ? form . subject_id ? . re_paste ()
+
+        ENDIF
+
+        lib_db_select_padded ( sub_prompt . table, form . key0_data, false )
+
+    ENDIF
+
+ENDROUTINE    { inc_login_leave_subject_prompt }
+
+
+{*****************************************************************************}
+
+    ROUTINE inc_login_validate_subject ( sub_prompt )
+
+{
+*   Gets the next incident Id if one has not already been selected and a
+*   subject has.
+*
+******************************************************************************}
+
+DECLARE field_type , ok , form
+
+    form = sub_prompt . parent_prompt
+    ok   = TRUE
+
+    IF NOT BLANK ( sub_prompt . text ) THEN
+
+        GET_FIELD_DETAILS 'sub_prompt . table' . 'sub_prompt . field' ,
+                  "DATA_TYPE"                                 ,
+                  field_type
+
+        IF (     ( NOT BLANK ( sub_prompt . text )           )
+             AND ( TOUPPER ( field_type ) <> "PACKED DECIMAL" ) )
+        OR (     ( STRIP ( sub_prompt . text ) <> "0"         ) ) THEN
+
+            IF form . multi_key0 THEN
+                form . get_multiple_key0 ()
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE    { inc_login_validate_subject }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_enter_template_prompt ( self )
+
+{
+*   Called when the incident template Id prompt is left. Saves the existing
+*   incident if required and clears the form
+*
+*******************************************************************************}
+
+DECLARE form , template_id
+
+    form = self . parent_prompt
+
+        IF NOT BLANK ( self . value ) THEN
+
+        IF NOT BLANK ( self . original_text ) THEN
+
+            IF NOT BLANK ( form . ? form . subject_id ? . text ) THEN
+
+                IF confirm_with_message (
+                        "INCIDENT_TEMPLATE_CHANGED" ) THEN
+
+                    form . assign_incidents ()
+
+                ELSE
+                    ROLLBACK
+                ENDIF
+
+            ELSE
+                ROLLBACK
+            ENDIF
+
+            template_id = self . value
+
+            form . clear_base_form ()
+
+            self . set_text ( template_id )
+
+        ENDIF
+
+        ENDIF
+
+ENDROUTINE { inc_login_enter_template_prompt }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_leave_template_prompt ( self )
+
+{
+*   Called when the incident template Id prompt is left. Saves the existing
+*   incident if required and clears the form
+*
+*******************************************************************************}
+
+DECLARE base_form
+
+        IF NOT BLANK ( self . value ) THEN
+
+        login_new_incident_template ( self . parent_prompt ,
+                          self . value         )
+
+        base_form = self . parent_prompt
+
+        IF ( BLANK ( base_form . incident_id . value ) )
+        OR ( TOUPPER(base_form . incident_id . value) = TOUPPER(GET_USER_MESSAGE ( "INCIDENT_TO_BE_CREATED", 1 )) )
+        OR ( base_form . incident_id . value =
+             GET_USER_MESSAGE ( "INCIDENT_TO_BE_CREATED", 1 ) ) THEN
+
+            base_form . create_inc_rec ( self . value )
+
+        ENDIF
+
+        ENDIF
+
+ENDROUTINE { inc_login_leave_template_prompt }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_set_table_prompt ( VALUE table_id ,
+                           form     )
+
+{
+*
+*
+*******************************************************************************}
+
+    IF NOT BLANK ( table_id ) THEN
+
+        table_id         = TOUPPER ( table_id )
+        form . key0_data = ""
+
+        GET_TABLE_DETAILS 'table_id'         ,
+                  "KEY0_FIELD"       ,
+                  form . key0_fields
+
+        IF size_of_array ( form . key0_fields ) > 1 THEN
+            form . multi_key0 = TRUE
+        ELSE
+            form . multi_key0 = FALSE
+        ENDIF
+
+        form . sample_subject . set_enabled ( table_id = "SAMPLE" )
+        form . sample_subject . set_visible ( table_id = "SAMPLE" )
+
+        form . test_subject . set_enabled ( table_id = "TEST" )
+        form . test_subject . set_visible ( table_id = "TEST" )
+
+        form . result_subject . set_enabled ( table_id = "RESULT" )
+        form . result_subject . set_visible ( table_id = "RESULT" )
+
+        IF table_id = "SAMPLE" THEN
+
+            form . subject_id = CONST_SAMPLE_SUBJECT
+
+            form . other_subject . set_enabled ( FALSE )
+            form . other_subject . set_visible ( FALSE )
+
+        ELSEIF table_id = "TEST" THEN
+
+            form . subject_id = CONST_TEST_SUBJECT
+            form . key0_data  = "0"
+
+            form . other_subject . set_enabled ( FALSE )
+            form . other_subject . set_visible ( FALSE )
+
+        ELSEIF table_id = "RESULT" THEN
+
+            form . subject_id = CONST_RESULT_SUBJECT
+
+            form . other_subject . set_enabled ( FALSE )
+            form . other_subject . set_visible ( FALSE )
+
+        ELSE
+
+            inc_login_set_new_table ( table_id , form )
+
+        ENDIF
+
+        form . table_name . set_text ( table_id )
+
+        form . ? form . subject_id ? . display_only = FALSE
+        form . ? form . subject_id ? . set_text ( "" )
+
+    ELSE
+
+                flash_message ( "INCIDENT_MISSING_TABLE" , FALSE )
+
+        form . template_id . set_text ( "" )
+        form . table_name . set_text ( "" )
+        form . ? form . subject_id ? . set_text ( "" )
+        form . ? form . subject_id ?. set_enabled ( FALSE )
+
+    ENDIF
+
+
+ENDROUTINE    { inc_login_set_table_prompt }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_set_new_table ( VALUE table_id ,
+                        form     )
+
+{
+*   Updates the ID prompt with the new table and clears the prompt.
+*
+*******************************************************************************}
+
+DECLARE fields , field_width
+
+    GET_TABLE_DETAILS 'table_id'   ,
+              "KEY0_FIELD" ,
+              fields
+
+    GET_FIELD_DETAILS 'table_id' . 'fields [ 1 ]' ,
+              "FIELD_SIZE"                ,
+              field_width
+
+    form . other_subject . field  = fields [ 1 ]
+    form . other_subject . name_field = fields [ 1 ]
+    form . other_subject . table  = table_id
+
+    form . other_subject . set_enabled ( TRUE )
+    form . other_subject . set_visible ( TRUE )
+    form . other_subject . re_paste ()
+
+    form . subject_id = "other_subject"
+
+ENDROUTINE    { inc_login_set_new_table }
+
+
+{******************************************************************************}
+
+    ROUTINE login_new_incident_template (       form        ,
+                                          VALUE template_id )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE table_id
+
+    table_id = SELECT incident_template . subject_table
+            WHERE template_id = template_id
+
+    IF  ( table_id <> EMPTY  )
+    AND ( table_id <> LOCKED ) THEN
+
+        inc_login_set_table_prompt ( table_id , form )
+
+    ELSE
+        flash_message ( "INCIDENT_NOT_AVAILABLE" , FALSE )
+    ENDIF
+
+ENDROUTINE { login_new_incident_template }
+
+
+{******************************************************************************}
+
+    ROUTINE inc_login_disable_checklist_prompt ( field_controls )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE count , found , field_name
+
+    count = 1
+    found = FALSE
+
+    WHILE ( NOT found                                 )
+    AND   ( count <= size_of_array ( field_controls ) ) DO
+
+        field_name = TOUPPER ( STRIP ( field_controls [ count , 1 ] ) )
+
+        IF field_name = "CHECKLIST_ID" THEN
+
+            field_controls [ count , DISPLAY_POSITION ] = TRUE
+            field_controls [ count , PROMPT_POSITION  ] = FALSE
+            found                                       = TRUE
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE    { inc_login_disable_checklist_prompt }
+
+
+{******************************************************************************}
+
+    ROUTINE create_prompt_details ( VALUE operation      ,
+                    VALUE item_id        ,
+                          field_controls ,
+                          num_of_fields  ,
+                    VALUE tabl_name      ,
+                    VALUE display_mode   ,
+                          prompt_details )
+
+{
+*   Reads the incident template fields and creates a
+*
+*******************************************************************************}
+
+DECLARE modify_entry, include_copy
+
+    modify_entry = TRUE
+    include_copy = FALSE
+
+    read_in_template_fields ( item_id        ,
+                  tabl_name      ,
+                  field_controls ,
+                  modify_entry   ,
+                  include_copy   )
+
+    IF  ( operation <> INC_OP_LOGIN      )
+    AND ( operation <> INC_OP_BACKGROUND ) THEN
+        inc_login_disable_checklist_prompt ( field_controls )
+    ENDIF
+
+    create_prompt_array ( field_controls ,
+                  tabl_name      ,
+                  prompt_details ,
+                  display_mode   ,
+                  num_of_fields  ,
+                  include_copy   )
+
+ENDROUTINE { create_prompt_details }
+
+
+{******************************************************************************}
+
+    ROUTINE assign_default_value_to_object (       new_incident    ,
+                               field_controls  ,
+                         VALUE table_id        ,
+                               initial_status  )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE count, field_value, is_key , field_name , subject_table , num_of_fields
+
+    count = 0
+    num_of_fields = size_of_array ( field_controls )
+
+    WHILE ( count < num_of_fields ) DO
+
+        count = count + 1
+
+        field_value = field_controls [ count , DEFAULT_VALUE ]
+        field_name  = field_controls [ count, FIELD_NAME_POSITION ]
+
+        IF field_name <> EMPTY THEN
+
+            field_name = TOUPPER ( field_name )
+
+            IF field_name = "INCIDENT_DATE" THEN
+
+                field_value = DATE ( field_value )
+
+                IF ( field_value = ERROR ) THEN
+                    field_value = NOW
+                ENDIF
+
+            ENDIF
+
+            GET_FIELD_DETAILS 'table_id' . 'field_name' ,
+                      "KEY0_FIELD"              ,
+                      is_key
+
+            IF NOT ( is_key ) THEN
+
+                ASSIGN 'table_id' . 'field_name'
+                    IN OBJECT new_incident = field_value
+
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    initial_status = SELECT incident_template . initial_status
+    subject_table  = SELECT incident_template . subject_table
+
+    IF  ( NOT BLANK ( subject_table ) )
+    AND ( subject_table <> EMPTY      ) THEN
+
+        ASSIGN incidents . subject_table
+                IN OBJECT new_incident = subject_table
+
+    ENDIF
+
+ENDROUTINE { assign_default_value_to_object }
+
+
+{******************************************************************************}
+
+    ROUTINE login_form_class_action_create_line_editor ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE line_height
+
+    line_height = self . height - self . editor_row
+
+    line_editor_initialise_new ()
+
+    PROMPT OBJECT self . line_editor
+        ON LINE self . editor_row
+        FROM 2
+        TO self . width - 2
+        CLASS "STD_LINE_EDITOR"
+        WITH ( height         = line_height                  ,
+               title_width    = 15                           ,
+               prompt_details = self . editor_prompt_details )
+
+    self . add_prompt ( self . line_editor )
+
+ENDROUTINE { login_form_class_action_create_line_editor }
+
+{*************************************************************************
+* Purpose      : Prompt for incident end date
+* Parameters   : new_date, template (used for title)
+* Return Value : N/A
+**************************************************************************}
+ROUTINE set_date_exp_form (form, new_date, Template)
+
+    DECLARE prompt_object, old_date, key
+
+    old_date = new_date
+
+    PROMPT OBJECT form CLASS "STD_FORM"
+
+        form . header           = "Change 'Expected End Date' for ":Template:"-incident"
+        form . row              = 10
+        form . column           = 10
+        form . height           = 6
+        form . width            = 50
+        form . button_style     = FORM_BUTTON_NONE
+        form . return_behaviour = FORM_RETURN_STAY
+
+
+{        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT"
+        prompt_object . value   = "Current 'Date results required' saved: " : SUBSTRING(old_date,1,11)
+        prompt_object . row       = 1
+        prompt_object . column      = 1
+        prompt_object . height        = 1
+        prompt_object . width           = 48
+        prompt_object . FOREGROUND_COLOUR = PROMPT_COLOUR_BLUE
+
+        form . add_display ( prompt_object )}
+
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT"
+        prompt_object . value   = "Expected end date: "
+        prompt_object . row     = 1
+        prompt_object . column  = 1
+        prompt_object . height  = 1
+        prompt_object . width   = 25
+
+        form . add_display ( prompt_object )
+
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT_DATE"
+        prompt_object . row            = 1
+        prompt_object . column         = 18
+        prompt_object . height         = 1
+        prompt_object . width          = 21
+        prompt_object . allow_date     = TRUE
+        prompt_object . allow_time     = TRUE
+        prompt_object . allow_interval = FALSE
+        prompt_object . value          = new_date
+
+        form . add_prompt ( prompt_object )
+
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_BUTTON"
+        prompt_object . caption      = get_user_message ( "SMP_PROMPT_BUTTON_OK" , 1 )
+        prompt_object . row          = 5
+        prompt_object . column       = 10
+        prompt_object . height       = 1
+        prompt_object . width        = 10
+        prompt_object . send_lastkey = "DO"
+
+        form . add_prompt ( prompt_object )
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_BUTTON"
+        prompt_object . caption      = "Cancel"
+        prompt_object . row          = 5
+        prompt_object . column       = 30
+        prompt_object . height       = 1
+        prompt_object . width        = 10
+        prompt_object . send_lastkey = "EXIT"
+
+        form . add_prompt ( prompt_object )
+
+
+        form . start_prompt ()
+        form . wait_prompt ()
+        form . end_prompt ()
+
+        new_date   = form . prompt_objects [1] . value
+
+        key = form . get_lastkey ()
+
+        IF key = "EXIT" THEN
+{           fm("Key: ":key:"; Return 'New Date = ":new_date:"'")}
+           new_date = old_date
+           RETURN(old_date)
+        ELSEIF key = "ENTER" THEN
+{           fm("Key: ":key:"; Return 'New Date = ":new_date:"'")}
+           RETURN(new_date)
+        ELSEIF key = "DO" THEN
+{           fm("Key: ":key:"; Return 'New Date = ":new_date:"'")}
+           RETURN(new_date)
+        ELSE
+           fm("Error! Lastkey not Enter, Do or Exit but = ":strip(key))
+        ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+ROUTINE sample_job_name ( column , line , display_id , is_display )
+    DECLARE my_value, initial_value
+    { Get the initial value of the field }
+    initial_value = SELECT incidents.job_name
+    my_value = SELECT sample.job_name
+    
+    IF is_display THEN
+        DISPLAY my_value
+            ON LINE line
+            FROM column
+            IN WINDOW display_id
+        { If the user can edit the prompt value, create a prompt.
+        The initial value of the prompt is my_value, but the user
+        can modify it. }
+    ELSE
+        PROMPT FOR my_value
+            ON LINE line
+            FROM column
+            IN WINDOW display_id
+        { If the value in the prompt has changed, assign the new value
+        to the table_name.field_name field. }
+        IF my_value <> initial_value THEN
+            ASSIGN incidents.job_name = my_value
+        ENDIF
+    ENDIF    
+
+ENDROUTINE

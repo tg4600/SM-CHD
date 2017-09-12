@@ -1,0 +1,297 @@
+{**M1448 HBe 16-1-2003: Changing program structure to be called by routines: ACTIVE or TOTAL export }
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_UTILS
+
+
+exp_type = "ACT"
+mainroutine (exp_type)
+
+
+{-----------------------------------------------------------------------------------------------}
+
+
+ROUTINE ACT (not_used)
+
+exp_type = "ACT"
+mainroutine (exp_type)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------------------------}
+
+ROUTINE COM_3 (not_used)
+
+exp_type = "COM_3"
+mainroutine (exp_type)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------------------------}
+
+ROUTINE COM_4 (not_used)
+
+exp_type = "COM_4"
+mainroutine (exp_type)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------------------------}
+
+ROUTINE COM (not_used)
+
+exp_type = "COM"
+mainroutine (exp_type)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------------------------}
+
+ROUTINE ALL (not_used)
+
+exp_type = "ALL"
+mainroutine (exp_type)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------------------------}
+
+
+ROUTINE mainroutine (export_type)
+
+IF export_type     = "ALL" THEN
+   view_mask          = "EXPORT_RESULTS"
+ELSEIF export_type = "ACT" THEN
+   view_mask          = "EXPORT_RESULTS_ACT"
+ELSEIF export_type = "COM" THEN
+   view_mask          = "EXPORT_RESULTS_COM"
+ELSE
+{   RETURN(EMPTY)}
+   view_mask          = "EXPORT_RESULTS_":export_type
+ENDIF
+
+mask_length        = LENGTH(view_mask)
+
+
+ARRAY table_names
+WriteToLog(GetArray(table_names))
+
+{IF   get_global( "EXPORT-LOG-FILE", log_file, FALSE ) AND export_init ( log_file ) THEN
+   IF   rc = EMPTY THEN }
+
+      lines_written    = 0
+
+      IF get_global( "EXPORT-RESULTS-FILE",    export_file,   TRUE ) THEN
+
+         old_file = FILE EXISTS (export_file)
+         IF old_file = TRUE THEN
+            FILE DELETE export_file
+         ENDIF
+
+         WriteToLog("Start generation of ":export_file)
+         FILE CREATE export_file, is_ok
+         IF is_ok <> EMPTY THEN
+            WriteToLog(is_ok)
+         ENDIF
+
+         get_table_names ( table_names )
+         tabs = size_of_array ( table_names )
+         tab = 0
+
+         WHILE tab < tabs DO
+
+            tab = tab+1
+            if substring( table_names [ tab, 1 ], 1, mask_length) = view_mask THEN
+               WriteToLog("Start export from: ":table_names[tab,1])
+
+               batch = select 'table_names[tab,1]'.batch_name
+                  where batch_name <> EMPTY
+
+               IF batch <> EMPTY THEN
+                  textline (text)
+               ENDIF
+               WHILE batch <> EMPTY DO
+                  FILE EXTEND export_file, is_ok
+                  IF is_ok <> EMPTY THEN
+                     WriteToLog(is_ok)
+                  ENDIF
+                  FILE WRITE  export_file, text, is_ok
+                  IF is_ok <> EMPTY THEN
+                     WriteToLog(is_ok)
+                  ENDIF
+                  next 'table_names[tab,1]'
+
+                  textline (text)
+
+                  batch = select 'table_names[tab,1]'.batch_name
+
+               ENDWHILE
+               WriteToLog(STRIP(lines_written):" lines written")
+            endif
+         endwhile
+
+{**************************************************************************************************************}
+{    * * * * *       Added to include committed results batches from smp$userfiles\joblist.txt       * * * * * } 
+{**************************************************************************************************************}
+
+            DECLARE filename, status, batch
+            ARRAY table_names
+            table_names[1,1] = "EXPORT_RESULTS_COM_3"   
+            table_names[2,1] = "EXPORT_RESULTS_COM_4"   
+            WriteToLog(GetArray(table_names))
+
+            filename = "smp$userfiles\joblist.txt"
+            FILE OPEN filename, status
+            FILE READ filename, batch, status
+
+            WHILE status = EMPTY DO
+                tab = 1
+                WHILE tab <= size_of_array(table_names)
+                    id = SELECT 'table_names[tab,1]'.batch_name WHERE batch_name = batch
+                    WriteToLog(table_names[tab,1]:": ":batch)
+                    WHILE id <> EMPTY
+                        textline(text)
+                        FILE EXTEND export_file, is_ok
+                        FILE WRITE  export_file, text, is_ok
+                    NEXT 'table_names[tab,1]'    
+                        id = SELECT 'table_names[tab,1]'.batch_name
+                    ENDWHILE
+                    tab = tab + 1
+                ENDWHILE
+                FILE READ filename, batch, status
+            ENDWHILE
+
+            FILE CLOSE filename, status
+            FILE COPY  filename, filename:".OK", status
+            FILE DELETE filename, status
+
+{**************************************************************************************************************}
+
+         FILE CLOSE export_file, is_ok
+         IF is_ok <> EMPTY THEN
+            WriteToLog(is_ok)
+         ELSE
+            FILE COPY export_file, "\\DKHOEORA01\SAP_DATA\dklims.txt", is_ok 
+            IF is_ok <> EMPTY THEN
+                WriteToLog("Exported results copied to \\DKHOEORA01\SAP_DATA\dklims.txt":ASCII(10):ASCII(10):is_ok)
+                fm("Exported results copied to \\DKHOEORA01\SAP_DATA\dklims.txt":ASCII(10):ASCII(10):is_ok)
+            ELSE
+                WriteToLog("Exported results copied to \\DKHOEORA01\SAP_DATA\dklims.txt")
+                fm("Exported results copied to \\DKHOEORA01\SAP_DATA\dklims.txt")
+            ENDIF
+         ENDIF
+      {ENDIF 
+   ENDIF}
+
+   WriteToLog("Completed, ":STRIP(lines_written):" lines created":ASCII(10))
+{   FILE CLOSE log_file }
+
+ENDIF
+
+ENDROUTINE {Main}
+
+{-----------------------------------------------------------------------------------------------}
+{**M1599 HBe 10-12-04: id_text included}
+{**M1613 HBe 01-04-05: tank_number included}
+ROUTINE textline (text)
+
+   lines_written = lines_written + 1
+   
+   IF lines_written/1000 = ROUND(lines_written/1000) THEN
+        WriteToLog("Writing line ":STRIP(lines_written))
+   ENDIF
+
+   text =      JUSTIFY(PAD(strip(select 'table_names[tab,1]'.batch_name)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.product_name)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.product_version)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.id_numeric)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.sampling_point)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.test_number)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.analysis)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.component_name)," ",40),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.result_text)," ",234),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.unit)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.out_of_range)," ",1),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.job_status)," ",1),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.min_limit)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.max_limit)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.test_count)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.sample_comment)," ",234),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.sample_status)," ",1),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.test_status)," ",1),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.result_value)," ",20),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.mlp_group_id)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(LEFTSTRING(select 'table_names[tab,1]'.job_authorised,11))," ",11),"LEFT")
+   text = text:JUSTIFY(PAD(strip(LEFTSTRING(select 'table_names[tab,1]'.job_first_authorised,11))," ",11),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.analysis_version)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.id_text)," ",30),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.tank_number)," ",10),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.analysis_type)," ",17),"LEFT")
+   text = text:JUSTIFY(PAD(strip(select 'table_names[tab,1]'.coa_group)," ",17),"LEFT") 
+
+ENDROUTINE
+
+
+ROUTINE  get_global ( VALUE id, the_value, VALUE log_error )
+
+   the_value = EMPTY
+   the_operator = OPERATOR
+
+   the_value = select config_item.value
+               where  operator = the_operator
+               and    identity = id
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN the_value = select config_header.value
+                    where  identity = id
+   ENDIF
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN IF   log_error
+        THEN WriteToLog("ERROR: Could not find global variable:" : id )
+        ENDIF
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{ROUTINE WriteToLog( VALUE text )
+   FILE WRITE log_file, text
+ENDROUTINE}
+
+ROUTINE export_init ( VALUE the_log_file )
+   log_file = the_log_file
+
+   old_log_file = FILE EXISTS (log_file)
+   IF old_log_file = TRUE
+   THEN
+      FILE DELETE log_file
+   ENDIF
+
+   FILE CREATE log_file, rc
+   IF   rc = EMPTY
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+ENDROUTINE
+
+

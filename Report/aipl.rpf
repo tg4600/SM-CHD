@@ -1,0 +1,559 @@
+{******************************************************************************
+* Module Name   : AIPL.RPF
+* Purpose       : New improved Advanced Import from Previous Level
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+{ Change log:                                                                   }
+{                                                                               }
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $LIMSML_SAMPLE_USER
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+GLOBAL ROUTINE AIPL(from_test, to_test)
+
+DECLARE c_analysis, c_test, sample, job_id, product, batch, c_child, child, trace_array, job_array, status, i, j, sample_array, test_array, result_text
+ARRAY   trace_array
+ARRAY   job_array
+ARRAY   sample_array
+ARRAY   test_array
+
+    c_analysis  = SELECT test.analysis WHERE test_number = to_test
+
+    IF (LEFTSTRING(c_analysis,2) = "T-") THEN
+        c_analysis = SUBSTRING(c_analysis,3,10)
+    ELSE
+        result_text = ("Analysis ":c_analysis:" must be type 'T-*'")
+    ENDIF
+    sample      = SELECT test.sample WHERE test_number = to_test
+    job_id      = SELECT sample.job_name WHERE id_numeric = sample
+    product     = SELECT job_header.product_name WHERE job_name = job_id
+    batch       = SELECT job_header.batch_name
+    c_child     = SELECT count batch_trace_view WHERE product_name_master = product AND batch_name_master = batch AND material_type = "HALB"
+
+    {fm("Test Number :":to_test:ASCII(10):
+       "Sample      :":sample:ASCII(10):
+       "Job Name    :":job_id:ASCII(10):
+       "Childs      :":c_child:ASCII(10))
+    }
+    i = 0
+    IF c_child > 0 THEN
+        child     = SELECT batch_trace_view.batch_name_child WHERE product_name_master = product AND batch_name_master = batch  AND material_type = "HALB"
+        WHILE child <> EMPTY DO
+            i = i + 1
+            trace_array[i,1] = child
+        NEXT batch_trace_view
+        child     = SELECT batch_trace_view.batch_name_child
+        ENDWHILE
+    ENDIF
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(trace_array) DO
+        trace_array[i,2] = trace_array[i,1]
+        trace_array[i,1] = SELECT batch_trace_view.product_name_child WHERE product_name_master = product AND batch_name_master = batch AND batch_name_child = trace_array[i,2]
+        trace_array[i,3] = SELECT all_job_header.job_status WHERE product_name = trace_array[i,1] AND batch_name = trace_array[i,2]
+                                                              {AND (inspection_type = "04" OR inspection_type = "09")
+                                                              AND job_status = "A"}
+       {trace_array[i,4] = SELECT all_job_header.product_description
+        trace_array[i,5] = SELECT all_job_header.date_authorised}
+
+       {IF (trace_array[i,3] <> "A") THEN
+            array_remove_slice ( trace_array, 1, i)
+        ELSE}
+            i = i + 1
+       {ENDIF}
+    ENDWHILE
+
+    IF SIZE_OF_ARRAY(trace_array) > 1 THEN
+        result_text = "Multiple bulks, import not allowed!":ASCII(10):ASCII(10):GetArray(trace_array)
+        fm(result_text)
+        RETURN("Found ":STRIP(SIZE_OF_ARRAY(trace_array)):" bulks")
+        EXIT
+    ELSEIF SIZE_OF_ARRAY(trace_array) < 1
+        result_text = "No valid bulks found for import!"
+        fm(result_text)
+        EXIT
+    ELSE
+        i = 0
+        job_id = SELECT all_job_header.job_name WHERE product_name = trace_array[1,1] AND batch_name = trace_array[1,2]
+        WHILE job_id <> EMPTY DO
+            i = i + 1
+            job_array[i,1] = job_id
+        NEXT all_job_header
+        job_id = SELECT all_job_header.job_name
+        ENDWHILE
+
+        i = 1
+        WHILE i <= SIZE_OF_ARRAY(job_array) DO
+            {i = i + 1}
+            status = SELECT all_job_header.job_status where job_name = job_array[i,1]
+            IF status <> "A" THEN
+                array_remove_slice ( job_array, 1, i)
+            ELSE
+                job_array[i,2] = job_array[i,1]
+                job_array[i,1] = SELECT all_job_header.date_authorised
+                i = i + 1
+            ENDIF
+        ENDWHILE
+
+        array_sort (job_array, ARRAY_SORT_DESCENDING)
+
+        i = 0
+        WHILE i < SIZE_OF_ARRAY(job_array) DO
+            i = i + 1
+            GetSamples(job_array[i,2], sample_array)
+        ENDWHILE
+    ENDIF
+
+    i = 1
+    j = 0
+    WHILE i <= SIZE_OF_ARRAY(sample_array) DO
+{       c_test = SELECT all_test.test_number WHERE sample = sample_array[i,1] AND status = "A" AND analysis like "%":STRIP(c_analysis):"%"}
+        c_test = SELECT all_test.test_number WHERE sample = sample_array[i,1] 
+                                             AND status = "A" 
+                                             AND (analysis like "%":STRIP(c_analysis):"%" 
+                                               OR analysis like "T-":STRIP(c_analysis):"%")
+        WHILE c_test <> EMPTY DO
+            j = j + 1
+            test_array[j,1] = c_test
+        NEXT all_test
+        c_test = SELECT all_test.test_number
+        ENDWHILE
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+
+    WHILE i <= SIZE_OF_ARRAY(test_array)
+        test_array[i,2] = test_array[i,1]
+        test_array[i,1] = SELECT all_test.date_authorised WHERE test_number = test_array[i,2]
+        test_array[i,3] = SELECT all_test.sample
+        test_array[i,4] = STRIP(SELECT all_test.analysis):"/":STRIP(SELECT all_test.test_count)
+        test_array[i,5] = SELECT all_sample.sampling_point WHERE id_numeric = test_array[i,3]
+        i = i + 1
+    ENDWHILE
+
+    array_sort (test_array, ARRAY_SORT_DESCENDING)
+
+    IF  SIZE_OF_ARRAY(test_array) > 1 THEN
+        {fm("Multiple results are available for importing!":ASCII(10):ASCII(10):
+            GetArray(test_array))}
+        from_test = EMPTY
+        user_selection(test_array, from_test, to_test)
+        sample = select all_test.sample where test_number = from_test
+        result_text = SELECT all_sample.id_text WHERE id_numeric = sample
+        result_text = sample:" - ":STRIP(SELECT all_test.analysis):"/":STRIP(SELECT all_test.test_count)
+    ELSEIF SIZE_OF_ARRAY(test_array) < 1 THEN
+        fm("No results for importing")
+        result_text = EMPTY
+    ELSE
+        from_test = test_array[1,2]
+        sample = select all_test.sample where test_number = from_test
+        result_text = SELECT all_sample.id_text WHERE id_numeric = sample
+        result_text = sample:" - ":STRIP(SELECT all_test.analysis):"/":STRIP(SELECT all_test.test_count)
+        {TransferTimeSeries(test_array[1,1], to_test)
+        TransferResults(test_array[1,1], to_test)
+        fm("Results imported from: ":STRIP(c_text))}
+    ENDIF
+
+    RETURN (result_text)
+
+ENDROUTINE
+
+ROUTINE GetSamples(job_id, sample_array)
+{*************************************************************************
+* Purpose      : Get authorised samples from job
+* Parameters   : job_id
+* Return Value : sample_array
+**************************************************************************}
+DECLARE i, sample
+    i = SIZE_OF_ARRAY(sample_array)
+    Sample = SELECT all_sample.id_numeric WHERE job_name = job_id AND status = "A"
+    WHILE sample <> EMPTY DO
+        i = i + 1
+        sample_array[i,1] = sample
+    NEXT all_sample
+    Sample = SELECT all_sample.id_numeric
+    ENDWHILE
+
+ENDROUTINE
+
+GLOBAL ROUTINE TransferResults(FromTest, ToTest, current_component_name)
+{*************************************************************************
+* Purpose      : TransferResults from one test to another
+*                after matching component names
+* Parameters   : Test numbers (From and To)
+* Return Value : N/A
+**************************************************************************}
+DECLARE test_n, res_array, order_number, i, j, sample, sample_text, status_array, cur_result
+
+test_n      = FromTest {STRIP("   3743538")  Child}
+sample      = SELECT all_test.sample WHERE test_number = test_n
+sample      = SELECT all_test.sample WHERE test_number = FromTest
+sample_text = SELECT all_sample.id_text WHERE id_numeric = sample
+
+ARRAY res_array
+
+res_array[1,1]  = "NAME"
+res_array[1,2]  = "TEXT"
+res_array[1,3]  = "UNITS"
+res_array[2,1]  = "ANALYSIS"
+res_array[2,2]  = SELECT all_test.analysis WHERE test_number = test_n
+
+cur_result   = SELECT all_result.order_number WHERE test_number = test_n AND name = current_component_name
+order_number = SELECT all_result.order_number WHERE test_number = test_n ORDER ON order_number
+
+i = 2
+WHILE (order_number <> EMPTY) DO
+    IF order_number <> cur_result THEN
+        i = i + 1
+        res_array[i,1] = order_number
+    ENDIF
+NEXT all_result
+order_number = SELECT all_result.order_number
+ENDWHILE
+
+j = 3
+WHILE j <= i DO
+    res_array[j,1] = STRIP(SELECT all_result.name  WHERE test_number = test_n AND order_number = res_array[j,1])
+    res_array[j,2] = STRIP(SELECT all_result.text)
+    res_array[j,3] = STRIP(SELECT all_result.units)
+    j = j + 1
+ENDWHILE
+
+test_n = ToTest {STRIP("   3793976")    Parent}
+sample      = SELECT test.sample WHERE test_number = test_n
+sample      = SELECT all_test.sample WHERE test_number = ToTest
+sample_text = SELECT sample.id_text WHERE id_numeric = sample
+
+CleanUpValues(test_n, res_array)
+
+ARRAY   status_array
+{WriteToLog("PUT_TEST_RESULTS (":test_n:", ":ASCII(10):GetArray(res_array))}
+PUT_TEST_RESULTS test_n, res_array, status_array
+
+IF SIZE_OF_ARRAY(status_array) > 0 THEN
+    IF INDEX(GetArray(status_array),"is not an array") = 0 THEN
+        i = 2
+        WHILE i <= SIZE_OF_ARRAY(Res_Array) DO
+            IF status_array[i] = "EMPTY" THEN
+                Res_Array[i,3] = "OK"
+            ELSE
+                Res_Array[i,3] = status_array[i]
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        WriteToLog("Results transferred to:":ASCII(10):
+           sample_text:ASCII(10):ASCII(10):
+           GetArray(Res_Array))
+    ENDIF
+ENDIF
+
+RETURN
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Transfer Timeseries from one test to another
+*                after matching component names
+* Parameters   : Test numbers (From and To)
+* Return Value : N/A
+**************************************************************************}
+GLOBAL ROUTINE TransferTimeSeries(FromTest, ToTest)
+DECLARE SQL, TS, TS_array, component, result, i, c
+ARRAY TS_array
+
+ToTest = RIGHTSTRING("          ":ToTest,10)
+
+IF (0 < SELECT COUNT timeseries WHERE test_number = ToTest) THEN
+    SQL = "DELETE timeseries WHERE test_number = '":ToTest:"'"
+    execute_sql(SQL)
+    execute_sql("COMMIT")
+ENDIF
+
+{fm("Transfer ":STRIP(SELECT COUNT timeseries WHERE test_number = FromTest):" timeseries entries from test number ":STRIP(FromTest))}
+
+TS = SELECT timeseries.timestamp WHERE test_number = FromTest
+
+i = 0
+WHILE TS <> EMPTY DO
+    i = i + 1
+    TS_Array[i,1] = TS
+NEXT timeseries
+    TS = SELECT timeseries.timestamp
+ENDWHILE
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(TS_array) DO
+    TS = STRIP(TS_Array[i,1])
+    component = STRIP(SELECT timeseries.component_name WHERE test_number = FromTest AND timestamp = TS)
+    result    = STRIP(SELECT timeseries.result_value)
+    IF (LEFTSTRING(component, 5) <> "-----") AND (component <> EMPTY) 
+    AND (LEFTSTRING(result, 5) <> "-----") AND (result <> EMPTY)THEN
+        C = SELECT count timeseries WHERE test_number = ToTest AND TIMESTAMP = TS
+        IF (C = 0) THEN
+            SQL = "INSERT INTO timeseries (test_number, component_name, timestamp, result_value) VALUES ('":ToTest:"', '":component:"', '":TS_Array[i,1]:"', '":result:"')"
+            execute_sql(SQL)
+        ENDIF
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+execute_sql("COMMIT")
+
+IF i > 1 THEN
+    fm("Timeseries transferred (":STRIP(i-1):" entries).")
+ENDIF
+
+RETURN
+
+ENDROUTINE
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+    {fm("Write to ":STRIP(global("current_library")):ASCII(10):ASCII(10):msg)}
+ENDROUTINE
+
+ROUTINE user_selection (test_array, from_test, to_test)
+{*************************************************************************
+* Purpose      : Select one of multiple samples for import
+* Parameters   : test_array
+* Return Value : test_number for import
+**************************************************************************}
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+DECLARE the_form                {form objects}
+DECLARE component_grid          {grid object}
+DECLARE import_to
+DECLARE i
+
+import_to = SELECT test.sample WHERE test_number = to_test
+import_to = import_to:" - ":STRIP(SELECT sample.id_text WHERE id_numeric = import_to)
+import_to = import_to:" - ":STRIP(SELECT test.analysis):"/":STRIP(SELECT test.test_count)
+
+SET DISPLAY FALSE
+
+
+CREATE OBJECT "STD_FORM", the_form
+
+{setup defaults}
+the_form . header  = "Select results to transfer"
+the_form . footer  = "Press DO to exit"
+the_form . row     =  1
+the_form . column  =  2
+the_form . width   = 70
+the_form . height  = 10
+
+the_form . return_behaviour = FORM_RETURN_STAY
+the_form . add_display ( "Import results to : ": STRIP(import_to), 8, 1, prompt_rendition_bold )
+the_form . add_display ( "  Select the test to import from:"        , 8, 3, prompt_rendition_bold )
+
+
+CREATE OBJECT "STD_GRID_EDITOR" , component_grid
+
+ARRAY component_grid.user_info ARRAYSIZE ( 0, 12 ) = ""
+
+component_grid . row          = 4
+component_grid . column       = 8
+component_grid . height       = 5
+component_grid . width        = 40
+component_grid . cell_rows    = 0
+component_grid . cell_columns = 6
+component_grid . column_size [ 1 ]  = 8
+component_grid . column_size [ 2 ]  = 20
+component_grid . column_size [ 3 ]  = 12
+component_grid . column_size [ 4 ]  = 12
+component_grid . column_size [ 5 ]  = 16
+component_grid . column_size [ 6 ]  = 7
+component_grid . title_size_top = 1
+component_grid . title_rendition_top = PROMPT_RENDITION_BOLD
+
+component_grid . title_text_top [ 1 , 1 ] = "Sample"
+component_grid . title_text_top [ 2 , 1 ] = "ID Text"
+component_grid . title_text_top [ 3 , 1 ] = "Analysis"
+component_grid . title_text_top [ 4 , 1 ] = "Sampling Point"
+component_grid . title_text_top [ 5 , 1 ] = "Test Authorised"
+component_grid . title_text_top [ 6 , 1 ] = "Transfer"
+
+component_grid . title_separator_top = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 1 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 2 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 3 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 4 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 5 ] = GRID_SEPARATOR_BOTH
+component_grid . column_separator [ 6 ] = GRID_SEPARATOR_BOTH
+
+component_grid . display_cell_routine   = "DISPLAY_GRID_CELL"
+component_grid . prompt_cell_routine    = "PROMPT_GRID_CELL"
+component_grid . check_move_routine     = "CHECK_MOVE"
+component_grid . fixed_columns_left     = 1
+
+the_form . add_prompt (component_grid)
+
+i = 1
+
+   WHILE  (i <= SIZE_OF_ARRAY(test_array)) DO
+
+      component_grid . user_info [ i, 1 ] = test_array [i, 3] {sample id}
+      component_grid . user_info [ i, 2 ] = STRIP(SELECT all_sample.id_text WHERE id_numeric = test_array [i, 3]) {id_text}
+      component_grid . user_info [ i, 3 ] = test_array [i, 4] {analysis}
+      component_grid . user_info [ i, 4 ] = test_array [i, 5] {sampling point}
+      component_grid . user_info [ i, 5 ] = test_array [i, 1] {Date authorised}
+      component_grid . user_info [ i, 6 ] = FALSE
+      component_grid . user_info [ i, 7 ] = test_array [i, 2] {testnumber}
+      i = i + 1
+
+   ENDWHILE
+
+   component_grid . cell_rows = i - 1
+
+the_form . start_prompt ()
+
+
+REPEAT
+    the_form . wait_prompt ()
+UNTIL ((the_form . get_lastkey () = "EXIT") OR ((the_form . get_lastkey () = "DO")) AND (check_doubles (component_grid)))
+
+the_form . end_prompt ()
+
+IF the_form . get_lastkey () = "EXIT" THEN
+   EXIT
+ENDIF
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(component_grid.user_info)
+    IF component_grid.user_info[i,6] THEN
+        from_test = component_grid.user_info[i,7]
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+ENDROUTINE {user_selection}
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE check_move  (self           ,
+            VALUE old_column,
+            VALUE old_row   ,
+                  new_column,
+                  new_row   )
+
+IF  new_column < 6 THEN
+    new_column = 6
+ENDIF
+
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE display_grid_cell (     self,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                    window,
+                    VALUE column,
+                    VALUE row,
+                    VALUE cell_width,
+                    VALUE cell_height )
+
+DECLARE val
+
+val = self . user_info [ cell_row, cell_column ]
+IF cell_column <> 6 THEN
+   IF val = EMPTY THEN
+       val = pad( "", " ", cell_width )
+   ELSEIF val = FALSE THEN
+       val = " "
+   ELSEIF val = TRUE THEN
+       val = "Yes"
+   ELSE
+       val = substring( val, 1, cell_width )
+   ENDIF
+
+   DISPLAY val
+      AT column, row
+      IN WINDOW window
+      to column + cell_width - 1
+
+ELSE
+   DISPLAY val
+      AT column, row
+      IN WINDOW window
+      to column + cell_width - 1
+      FORMAT boolean with (is_check = TRUE)
+
+
+ENDIF
+
+
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE prompt_grid_cell    ( self,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                    window,
+                    VALUE column,
+                    VALUE row,
+                    VALUE cell_width,
+                    VALUE cell_height )
+
+IF cell_column = 6 THEN
+   PROMPT FOR self . user_info [ cell_row, cell_column ]
+    AT column, row
+    IN WINDOW window
+    TO column + cell_width - 1
+        BROWSE ON boolean with
+            (DISPLAY_ONLY = FALSE ,
+             IS_CHECK = TRUE,
+             ZAP_ON_FIRST = false )
+
+ENDIF
+
+ENDROUTINE
+
+{ ----------------------------------------- CHECK_DOUBLES --------------------------------------------------- }
+
+ROUTINE check_doubles (component_grid)
+
+DECLARE selected, i
+
+    selected = 0
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(component_grid.user_info)
+        IF component_grid.user_info[i,6] THEN
+            selected = selected + 1
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    IF selected = 0 THEN
+        EXIT
+    ELSEIF selected > 1 THEN
+        fm("The same test can not recieve results from two different bulk tests")
+        RETURN(FALSE)
+    ENDIF
+
+    RETURN (TRUE)
+
+ENDROUTINE
+

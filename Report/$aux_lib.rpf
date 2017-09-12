@@ -1,0 +1,1473 @@
+{******************************************************************************
+*
+* Module Name   : $AUX_LIB
+*
+* Purpose       : Library routines for the Auxilliary Generator
+*
+* Document Ref. : SE/T/VGSM310-WORK-REPORTS
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_VGL
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_SAMP_VALIDATE
+JOIN LIBRARY $LIB_JOB_VALIDATE
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+
+SET COMPILE_OPTION declare
+
+{------------------------------------------------------------------------------}
+
+GLOBAL CONSTANT MESSAGE_POSITION    = 1
+GLOBAL CONSTANT TYPE_POSITION       = 2
+GLOBAL CONSTANT TABLE_NAME_POSITION = 3
+GLOBAL CONSTANT FIELD_NAME_POSITION = 4
+
+GLOBAL CONSTANT LIBRARY_POSITION    = 3
+GLOBAL CONSTANT ROUTINE_POSITION    = 4
+
+{------------------------------------------------------------------------------}
+
+CONSTANT MAGIC_PROMPT_NUMBER     = 34
+CONSTANT AUX_LIB_FORM_CLASS      = "AUX_LIB_FORM"
+CONSTANT AUX_LIB_CALLBACK_CLASS  = "AUX_LIB_CALLBACK"
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_initialise
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+        aux_lib_class_declare ( )
+
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_class_declare
+
+    { Defaine a subclass for the form }
+
+    DEFINE CLASS AUX_LIB_FORM_CLASS
+
+        INHERIT PROMPT_CLASS_FORM
+
+        PROPERTIES "ON_GUI"            ,
+                   "REPORT_ID"         ,
+                   "DISPLAY_DETAILS"   ,
+                   "DISPLAY_ROW"       ,
+                   "PROMPT_DETAILS"    ,
+                   "PROMPT_ROW"        ,
+                   "TITLE_COLUMN"      ,
+                   "DATA_COLUMN"       ,
+                   "LAST_COLUMN"       ,
+                   "NUMBER_OF_PROMPTS" ,
+                   "NUMBER_OF_IDS"
+
+        ACTIONS "ADD_TITLE_TEXT" ,
+                "ADD_PROMPTS"    ,
+                "ADD_DISPLAYS"   ,
+                "RESET_PROMPTS"  ,
+                "RESET_DISPLAYS"
+
+    END CLASS
+
+    { Define a subclass for the ROUTINE prompt types }
+
+    DEFINE CLASS AUX_LIB_CALLBACK_CLASS
+
+    INHERIT PROMPT_CLASS_TEXT
+
+    ACTIONS "START_PROMPT" ,
+            "WAIT_PROMPT"
+
+        PROPERTIES "LIBRARY_NAME" ,
+                   "ROUTINE_NAME"
+
+    INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_action_add_title_text ( self )
+
+    DECLARE details_array, start_line, count, array_number
+
+    array_number = 1
+
+    WHILE array_number <= 2 DO
+
+        IF array_number = 1 THEN
+
+            details_array = self . display_details
+            start_line = self . display_row
+            array_number = 2
+
+        ELSE
+
+            details_array = self . prompt_details
+            start_line = self . prompt_row
+            array_number = 3
+
+        ENDIF
+
+        count = 1
+
+        WHILE count <= size_of_array ( details_array ) DO
+
+            self . add_display ( pad ( details_array [ count,
+                                                        MESSAGE_POSITION ],
+                                       " ",
+                                       self . data_column -
+                                         self . title_column - 1 ),
+                                 self . title_column,
+                                 count + start_line - 1,
+                                 PROMPT_RENDITION_BOLD +
+                                   PROMPT_RENDITION_RAISED )
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_action_add_prompts ( self, prompts_type_array )
+
+    DECLARE prompt_object, count,
+            table_details, valid_prompt
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . prompt_details ) DO
+
+        self . number_of_prompts = self . number_of_prompts + 1
+
+        ARRAY table_details ARRAYSIZE ( 3 )
+
+        table_details [ 1 ] = self . prompt_details [ count,
+                                            TYPE_POSITION ]
+        table_details [ 2 ] = self . prompt_details [ count,
+                                            TABLE_NAME_POSITION ]
+        table_details [ 3 ] = self . prompt_details [ count,
+                                            FIELD_NAME_POSITION ]
+
+        IF ( self . prompt_details [ count, TYPE_POSITION ] = "FORMAT"  ) THEN
+
+            PROMPT OBJECT prompt_object
+                   ON LINE count + self . prompt_row - 1
+                   FROM self . data_column TO self . last_column
+                   FORMAT 'table_details [ 2 ]' .
+                          'table_details [ 3 ]'
+                   WITH ( enter_prompt_routine =
+                                "AUX_LIB_ENTER_FORMAT",
+                          leave_prompt_routine =
+                                "AUX_LIB_LEAVE_FORMAT",
+                          vgl_library =
+                                global ( "CURRENT_LIBRARY" ),
+                          user_info =
+                                table_details )
+
+            valid_prompt = TRUE
+
+        ELSEIF ( self . prompt_details [ count, TYPE_POSITION ] = "ROUTINE"  ) THEN
+
+            PROMPT OBJECT prompt_object
+                   ON LINE count + self . prompt_row - 1
+                   FROM self . data_column TO self . last_column
+                   CLASS aux_lib_callback_class
+                   WITH ( library_name = self . prompt_details [
+                                           count,
+                                           LIBRARY_POSITION ],
+                          routine_name = self . prompt_details [
+                                           count,
+                                           ROUTINE_POSITION ],
+                          user_info =
+                                table_details )
+
+            valid_prompt = TRUE
+
+        ELSE
+
+            valid_prompt = FALSE
+
+        ENDIF
+
+        IF valid_prompt THEN
+
+            prompts_type_array [ self . number_of_prompts, 2 ] = prompt_object
+            prompts_type_array [ self . number_of_prompts, 3 ] = TRUE
+
+            prompts_type_array [ self . number_of_prompts, 1 ] =
+              self . add_prompt ( prompts_type_array
+                                   [ self . number_of_prompts, 2 ] )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_action_add_displays ( self )
+
+    DECLARE details_array, start_line, count,
+            array_number,  display_object, table_details
+
+    array_number = 1
+
+    WHILE array_number <= 2 DO
+
+        IF array_number = 1 THEN
+
+            details_array = self . display_details
+            start_line = self . display_row
+            array_number = 2
+
+        ELSE
+
+            details_array = self . prompt_details
+            start_line = self . prompt_row
+            array_number = 3
+
+        ENDIF
+
+        count = 1
+
+        WHILE count <= size_of_array ( details_array ) DO
+
+            IF ( details_array [ count, TYPE_POSITION ] = "DISPLAY" ) THEN
+
+                ARRAY table_details ARRAYSIZE ( 2 )
+
+        ARRAY table_details ARRAYSIZE ( 3 )
+
+                table_details [ 1 ] = details_array [
+                                        count,
+                                        TYPE_POSITION ]
+                table_details [ 2 ] = details_array [
+                                        count,
+                                        TABLE_NAME_POSITION ]
+                table_details [ 3 ] = details_array [
+                                        count,
+                                        FIELD_NAME_POSITION ]
+
+                PROMPT OBJECT display_object
+                       ON LINE count + start_line - 1
+                       FROM self . data_column
+                       TO self . last_column
+                       WITH ( user_info = table_details,
+                              lowered   = TRUE )
+
+                self . add_display ( display_object )
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_action_reset_prompts ( form )
+
+    DECLARE prompts_array, count,
+            last_prompt_number, last_prompt
+
+    prompts_array = form . user_info
+
+    count = 1
+    last_prompt = FALSE
+
+    WHILE NOT last_prompt DO
+
+        IF count > form . number_of_prompts THEN
+
+            last_prompt = TRUE
+
+        ELSEIF prompts_array [ count, 3 ] THEN
+
+            last_prompt = TRUE
+
+        ELSE
+
+            count = count + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    { Clear the prompt and deselect table }
+
+    prompts_array [ count - 1, 2 ] . value = EMPTY
+    prompts_array [ count - 1, 2 ] . text  = pad ( " ", " ",
+                                 prompts_array [ count - 1, 2 ] . width )
+
+    prompts_array [ count - 1, 2 ] . repaste ( )
+
+    set_table_empty ( prompts_array [ count - 1, 2 ] ,
+              prompts_array [ count - 1, 4 ] )
+
+    last_prompt_number = prompts_array [ count - 1, 1 ]
+
+    WHILE count <= form . number_of_prompts DO
+
+        IF prompts_array [ count, 3 ] THEN
+
+            set_value_in_prompt ( prompts_array [ count, 2 ],
+                                  FALSE )
+            prompts_array [ count, 2 ] . set_enabled ( FALSE )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( last_prompt_number )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_action_reset_displays ( self )
+
+    DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . display_objects ) DO
+
+        set_value_in_prompt ( self . display_objects [ count ],
+                              FALSE )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_callback_class_initialisation ( self )
+
+    self . library_name = " "
+    self . routine_name = " "
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_callback_action_start_prompt ( self )
+
+    DECLARE is_display
+
+    is_display = TRUE
+
+    CALL_ROUTINE self . routine_name
+    IN LIBRARY   self . library_name
+    USING  self          ,
+           self . parent_prompt ,
+           self . column        ,
+           self . row           ,
+           self . width         ,
+           self . window        ,
+           is_display
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_callback_action_wait_prompt ( self )
+
+    DECLARE is_display, return_value
+
+    is_display = FALSE
+
+    CALL_ROUTINE self . routine_name
+    IN LIBRARY   self . library_name
+    USING  self                 ,
+           self . parent_prompt ,
+           self . column        ,
+           self . row           ,
+           self . width         ,
+           self . window        ,
+           is_display
+    RETURNING return_value
+
+    self . set_lastkey ( global ( "LASTKEY" ))
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_value_in_prompt ( prompt_object, VALUE write_to_object )
+
+    DECLARE field_value, text_value
+
+    IF ( prompt_object . user_info [1] = "FORMAT" )  OR
+       ( prompt_object . user_info [1] = "DISPLAY" ) THEN
+
+        field_value = SELECT 'prompt_object . user_info [ 2 ]' .
+                             'prompt_object . user_info [ 3 ]'
+
+        IF field_value = EMPTY THEN
+
+            prompt_object . set_text (
+                            pad ( " ", " ", prompt_object . width ))
+
+            { prompt_object . value = field_value
+
+            CLEAR LINE prompt_object . row
+                  FROM prompt_object . column
+                  TO   prompt_object . column +
+                       prompt_object . width - 1
+                  IN WINDOW prompt_object . window }
+
+
+        ELSE
+
+            FORMAT text_value FROM field_value
+                   USING  'prompt_object . user_info [ 2 ]' .
+                          'prompt_object . user_info [ 3 ]'
+
+            prompt_object . set_text ( string ( text_value ))
+            prompt_object . value = field_value
+
+        ENDIF
+
+    ELSE
+
+        prompt_object . start_prompt ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_table_empty (       prompt_object  ,
+                          VALUE table_to_empty )
+
+    DECLARE primary_field, current_id
+
+    get_table_details 'table_to_empty' ,
+              "KEY0_FIELD"     ,
+               primary_field
+
+    REPEAT
+
+        NEXT 'table_to_empty' IN OBJECT prompt_object
+        current_id = SELECT 'table_to_empty'.'primary_field [ 1 ]'
+                            IN OBJECT prompt_object
+
+    UNTIL ( current_id = EMPTY ) OR
+          ( current_id = ERROR ) OR
+          ( current_id = LOCKED )
+
+    object_set_current_table ( prompt_object, table_to_empty )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE prompt_to_array ( form )
+
+    DECLARE prompts_array, array_number
+
+    prompts_array = form . user_info
+
+    array_number = form . active_prompt
+
+    WHILE form . active_prompt <> prompts_array [ array_number, 1 ] DO
+
+        IF form . active_prompt <
+           prompts_array [ array_number, 1 ] THEN
+
+            array_number = array_number - 1
+
+        ELSEIF form . active_prompt >
+               prompts_array [ array_number, 1 ] THEN
+
+            array_number = array_number + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( array_number )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_enter_sampletests ( self )
+
+    self . sample_id = self . user_info . value
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_enter_identity ( self )
+
+    DECLARE prompts_array, current_prompt
+
+    prompts_array  = self . parent_prompt . user_info
+    current_prompt = self . parent_prompt . active_prompt
+
+    lock_unretain_object ( prompts_array [ current_prompt, 4 ] ,
+                           prompts_array [ current_prompt, 2 ] )
+    lock_downgrade_object ( prompts_array [ current_prompt, 4 ] ,
+                            prompts_array [ current_prompt, 2 ] )
+    rollback
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_leave_identity ( self )
+
+    DECLARE prompts_array, count, incomplete_id,
+            current_prompt, clear_prompts
+
+    prompts_array = self . parent_prompt . user_info
+    current_prompt = self . parent_prompt . active_prompt
+
+    IF self . get_lastkey ( ) <> "EXIT" THEN
+
+        { Has the current prompt changed }
+
+        incomplete_id = FALSE
+        clear_prompts = FALSE
+
+        object_set_current_table ( prompts_array [ current_prompt, 2 ] ,
+                                   prompts_array [ current_prompt, 4 ] )
+
+        lock_retain_object ( prompts_array [ current_prompt, 4 ] ,
+                             prompts_array [ current_prompt, 2 ] )
+
+        IF self . text <> self . original_text THEN
+
+            clear_prompts = TRUE
+            self . parent_prompt . reset_displays ( )
+
+        ENDIF
+
+        count = 1
+
+        WHILE count <= self . parent_prompt . number_of_prompts DO
+
+            IF prompts_array [ count, 3 ] THEN
+
+                set_value_in_prompt ( prompts_array [count,2],
+                                      TRUE )
+                prompts_array [ count, 2 ] .
+                       set_enabled ( NOT incomplete_id )
+
+            ELSEIF ( prompts_array [ count, 2 ] .text <> " " ) AND
+                   ( count > current_prompt                  ) AND
+                   clear_prompts                               THEN
+
+                { Clear the prompt and deselect table }
+
+                prompts_array [ count, 2 ] . value = EMPTY
+                prompts_array [ count, 2 ] . text  =
+                        pad ( " ", " ",
+                          prompts_array [ count, 2 ] . width )
+
+                prompts_array [ count, 2 ] . repaste ( )
+
+                set_table_empty (
+                        prompts_array [ count, 2 ] ,
+                        prompts_array [ count, 4 ] )
+
+                incomplete_id = TRUE
+
+                ROLLBACK
+
+            ELSEIF ( prompts_array [ count, 2 ] . text = " " ) THEN
+
+                incomplete_id = TRUE
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+        IF incomplete_id THEN
+
+            IF self . get_lastkey ( ) = "DO" THEN
+                self . set_lastkey ( "CONTINUE" )
+            ENDIF
+
+        ENDIF
+
+    ELSEIF NOT self . parent_prompt . on_gui THEN
+
+        lock_unretain_object ( prompts_array [ current_prompt, 4 ] ,
+                       prompts_array [ current_prompt, 2 ] )
+
+        IF self . parent_prompt . active_prompt >
+           prompts_array [ 1, 1 ] THEN
+
+            self . parent_prompt . set_position (
+                     self . parent_prompt . active_prompt - 1 )
+            self . set_lastkey ( "CONTINUE" )
+
+        ELSEIF ( self .text = " " ) THEN
+
+            self . parent_prompt . confirmrequired = FALSE
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_enter_format ( self )
+
+
+    self . value = SELECT 'self . user_info [2]' . 'self . user_info [3]'
+
+    self . cursor_position = 1
+    self . char_position   = 1
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_leave_format ( self )
+
+    ASSIGN 'self . user_info [2]' . 'self . user_info [3]' = self . value
+
+    IF ( self . get_lastkey ( ) = "EXIT" )   AND
+       ( NOT self . parent_prompt . on_gui ) THEN
+
+        self . parent_prompt . set_position (
+               self . parent_prompt . user_info [
+                      self . parent_prompt .number_of_ids,
+                      1 ] )
+
+        self . set_lastkey ( "CONTINUE" )
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_select ( self )
+
+    DECLARE prompts_array, first_id, second_id, line, call_select
+
+    line = self . active_prompt
+    prompts_array = self . user_info
+
+    first_id = prompts_array [ 1, 2 ] .text
+
+    IF self . number_of_ids > 1 THEN
+        second_id = prompts_array [ 2, 2 ] .text
+        call_select = ( second_id <> " " )
+    ELSE
+        second_id = " "
+        call_select = TRUE
+    ENDIF
+
+    IF ( first_id <> " " ) AND call_select THEN
+
+        CALL_ROUTINE "select_key"
+                     USING line,
+                           self . window,
+                           first_id,
+                           second_id
+                     IN LIBRARY self . report_id
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_form_validation ( self )
+
+    DECLARE answer
+
+    answer = TRUE
+
+    CALL_ROUTINE "validation"
+                 USING self . window
+                 RETURNING answer
+                 IN LIBRARY self . report_id
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE aux_lib_call_action ( self )
+
+    DECLARE prompts_array, first_id, second_id, answer
+
+    prompts_array = self . user_info
+
+    first_id = prompts_array [ 1, 2 ] .text
+
+    IF self . number_of_ids > 1 THEN
+        second_id = prompts_array [ 2, 2 ] .text
+    ELSE
+        second_id = EMPTY
+    ENDIF
+
+    answer = TRUE
+
+    CALL_ROUTINE "action"
+                 USING first_id,
+                       second_id
+                 RETURNING answer
+                 IN LIBRARY self . report_id
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE change_table_status ( VALUE table_to_change ,
+                              VALUE new_status      ,
+                                    success_string  )
+
+    DECLARE status
+
+    IF table_to_change = "JOB_HEADER" THEN
+
+        CHANGE JOB STATUS TO new_status, status
+
+    ELSEIF table_to_change = "SAMPLE" THEN
+
+        CHANGE SAMPLE STATUS TO new_status, status
+
+    ELSEIF table_to_change = "TEST" THEN
+
+
+        CHANGE TEST STATUS TO new_status, status
+
+    ELSE
+
+        ASSIGN 'table_to_change'.status = new_status
+        status = EMPTY
+
+    ENDIF
+
+    IF ( status <> EMPTY ) THEN
+
+        success_string = status
+
+        IF status = GET_USER_MESSAGE ( "CHSTAT_K_AUTHTOINSP", 1 ) THEN
+            status = EMPTY
+        ENDIF
+
+    ENDIF
+
+    RETURN ( status = EMPTY )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE check_change_status ( change_stat, table_names, success_msg )
+
+    DECLARE count, return_value
+
+    count = 1
+    return_value = TRUE
+
+    WHILE ( count <= size_of_array ( table_names )) AND return_value DO
+
+        change_stat [ count ] = toupper ( change_stat [ count ])
+
+        IF change_stat [ count ] = " " THEN
+
+        ELSEIF INDEX ( change_stat [ count ], "STATUS" ) <> 0  THEN
+
+            return_value = change_table_status (
+                                  table_names [count] ,
+                                  SELECT 'table_names [count]'.
+                                         old_status   ,
+                                  success_msg         )
+
+        ELSEIF ( change_stat [ count ] <> EMPTY ) AND
+               ( change_stat [ count ] <> " "   ) THEN
+
+            return_value = change_table_status (
+                                  table_names [count] ,
+                                  change_stat [count] ,
+                                  success_msg         )
+
+        ELSE
+
+                    return_value = FALSE
+
+                ENDIF
+
+        IF ( return_value )               AND
+                   ( table_names [ count ] <> EMPTY ) AND 
+                   ( table_names [ count ] <> "" )    THEN
+
+            UPDATE 'table_names [ count ]'
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE process_array ( array_details ,
+                        array_height  ,
+                        array_width   )
+
+    DECLARE count
+
+    array_height = size_of_array ( array_details )
+
+    count = 1
+    array_width = 0
+
+    WHILE count <= array_height DO
+
+        array_details [ count , TYPE_POSITION ] =
+                toupper ( array_details [ count , TYPE_POSITION ])
+
+        array_width = find_max_number ( array_width,
+                                        length ( array_details [
+                                                   count,
+                                                   MESSAGE_POSITION ] ))
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE add_colon_to_titles (       array_details  ,
+                              VALUE max_prompt_width )
+
+    DECLARE count, array_height
+
+    count = 1
+    array_height = size_of_array ( array_details )
+
+    WHILE count <= array_height DO
+
+        array_details [ count, 1 ] = pad ( array_details [ count, 1 ],
+                                           " ",
+                                           max_prompt_width ) : " : "
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+        ROUTINE aux_lib_create_buttons ( select_key_text ,
+                                     button_list     )
+
+{
+*
+*       Build the button list
+*
+*******************************************************************************}
+
+    DECLARE button_count
+
+    ARRAY button_list
+    button_count = 1
+
+    lib_grid_initialise ( )
+
+    lib_grid_lastkey_button ( button_list    ,
+                              button_count   ,
+                              "DO"           ,
+                              EMPTY          )
+
+    lib_grid_lastkey_button ( button_list     ,
+                              button_count    ,
+                              "SELECT"        ,
+                              select_key_text )
+
+    lib_grid_lastkey_button ( button_list    ,
+                              button_count   ,
+                              "HELP"         ,
+                              EMPTY          )
+
+    lib_grid_lastkey_button ( button_list    ,
+                              button_count   ,
+                              "EXIT"         ,
+                              EMPTY          )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE build_screen ( prompt_details,
+                       display_details,
+                       top_line,
+                       bottom_line,
+                       mess_area_one,
+                       mess_area_two,
+                       prompt_text,
+                       table_names,
+                       report_id,
+                       need_confirm )
+
+    DECLARE display_height, display_width, display_row, display_header_row,
+            prompt_height, prompt_width, prompt_row, prompt_header_row,
+            max_prompt_width, title_column, data_column, last_column,
+            screen_height, screen_width, button_list, select_key_text,
+            count, form, prompts_array, button_lines, buttons_per_line,
+            got_sample, sample_table_prompt, on_gui
+
+    ARRAY prompts_array ARRAY_SIZE ( 0, 4 )
+
+    on_gui = ( global ( "TERMTYPE" ) = "GUI" )
+
+    process_array ( display_details ,
+                        display_height  ,
+                        display_width   )
+
+    process_array ( prompt_details ,
+                        prompt_height  ,
+                        prompt_width   )
+
+    max_prompt_width = find_max_number ( prompt_width, display_width )
+
+    screen_height = size_of_array ( prompt_text )
+
+    count = 1
+    WHILE count <= screen_height DO
+
+        max_prompt_width = find_max_number ( max_prompt_width,
+                                             length ( prompt_text [
+                                                        count ]))
+        count = count + 1
+
+    ENDWHILE
+
+    IF on_gui THEN
+        title_column = 2
+        data_column  = max_prompt_width + 3
+    ELSE
+        title_column = 1
+        data_column  = max_prompt_width + 4
+    ENDIF
+
+    screen_width = data_column + MAGIC_PROMPT_NUMBER - 1
+
+    screen_width = find_max_number ( screen_width,
+                                     length ( top_line ) + 2 )
+    screen_width = find_max_number ( screen_width,
+                                     length ( bottom_line ) + 2 )
+
+    IF on_gui THEN
+        last_column = screen_width - 1
+    ELSE
+        last_column = screen_width
+    ENDIF
+
+    display_row = 0
+    display_header_row = 0
+
+    IF display_height > 0 THEN
+
+        IF on_gui THEN
+
+            screen_height = screen_height + 1
+
+        ELSEIF mess_area_one <> "" THEN
+
+            screen_height = screen_height + 2
+            display_header_row = screen_height
+            screen_width = find_max_number (
+                                screen_width,
+                                length ( mess_area_one ) + 2 )
+
+        ENDIF
+
+        display_row = screen_height + 2
+        screen_height = screen_height + display_height + 1
+
+    ENDIF
+
+    prompt_row = 0
+    prompt_header_row = 0
+
+    IF prompt_height > 0 THEN
+
+        IF on_gui THEN
+
+            screen_height = screen_height + 1
+
+        ELSEIF mess_area_two <> "" THEN
+
+            screen_height = screen_height + 2
+            prompt_header_row = screen_height
+            screen_width = find_max_number (
+                                screen_width,
+                                length ( mess_area_two ) + 2 )
+
+        ENDIF
+
+        prompt_row = screen_height + 2
+        screen_height = screen_height + prompt_height + 1
+
+    ENDIF
+
+    { Create the form from the position calculations }
+
+    CREATE OBJECT AUX_LIB_FORM_CLASS, form
+
+    form . height       = screen_height
+    form . width        = screen_width
+    form . row          = find_max_number (( global ( "SCREEN_HEIGHT" ) -
+                                               form.height ) DIV 2, 8 )
+    form . column       = 1 + (( global ( "SCREEN_WIDTH" ) -
+                                       form . width ) DIV 2 )
+    form . border       = TRUE
+    form . proportional = TRUE
+    form . header       = top_line
+    form . footer       = bottom_line
+    form . help_context = report_id : "_MAIN"
+
+    form . on_gui       = on_gui
+    form . report_id    = report_id
+    form . prompt_id    = report_id
+
+    form . confirmrequired = need_confirm AND NOT on_gui
+
+    form . validation_routine = "AUX_LIB_FORM_VALIDATION"
+    form . select_routine     = "AUX_LIB_FORM_SELECT"
+
+    form . return_behaviour = FORM_RETURN_STAY
+
+    form . title_column = title_column
+    form . data_column  = data_column
+    form . last_column  = last_column
+
+    form . number_of_prompts = 0
+
+    IF vgl_validate_routine (  report_id         ,
+                               "SELECT_KEY_TEXT" ) THEN
+    
+        CALL_ROUTINE "SELECT_KEY_TEXT"
+             RETURNING  select_key_text
+             IN LIBRARY report_id
+
+    ELSE
+
+        select_key_text = ""
+
+    ENDIF
+
+    IF NOT BLANK ( select_key_text ) THEN
+
+        aux_lib_create_buttons ( select_key_text ,
+                                 button_list     )
+
+        form . button_style = FORM_BUTTON_NONE
+
+            lib_form_button_lines ( screen_width     ,
+                                    button_list      ,
+                                    button_lines     ,
+                                    buttons_per_line )
+
+            screen_height = screen_height + ( 2 * button_lines ) + 1
+        form . height = screen_height
+        
+        { The buttons are added after all the other prompts }
+
+    ENDIF
+
+    { Add the identity prompts }
+
+    count = 1
+    got_sample = FALSE
+
+    form . number_of_ids = size_of_array ( prompt_text )
+
+    WHILE count <= form . number_of_ids DO
+
+        IF on_gui THEN
+
+            form . add_display ( pad ( prompt_text [ count ],
+                                       " ",
+                                       max_prompt_width ),
+                                 title_column,
+                                 count,
+                                 PROMPT_RENDITION_RAISED +
+                                 PROMPT_RENDITION_BOLD )
+
+        ELSE
+
+            form . add_display ( pad ( prompt_text [ count ], " ",
+                                       max_prompt_width ) : " : ",
+                                 title_column,
+                                 count,
+                                 PROMPT_RENDITION_BOLD )
+
+        ENDIF
+
+        form . number_of_prompts = form . number_of_prompts + 1
+
+        IF ( table_names [ count ] = "TEST" ) AND got_sample THEN
+
+                    PROMPT OBJECT prompts_array [ form . number_of_prompts, 2 ]
+                           ON LINE count
+                   FROM data_column TO last_column
+                   { CLASS prompt_sample_tests_class }
+                           BROWSE ON sampletests.0
+                   THEN SELECT FOR UPDATE
+                   WITH ( leave_prompt_routine = "AUX_LIB_LEAVE_IDENTITY",
+                      enter_prompt_routine = "AUX_LIB_ENTER_SAMPLETESTS",
+                          vgl_library          = global ( "CURRENT_LIBRARY" ),
+                          user_info            = sample_table_prompt ,
+                          allow_blank          = true )
+
+        ELSE
+
+                    PROMPT OBJECT prompts_array [ form . number_of_prompts, 2 ]
+                           ON LINE count
+                   FROM data_column TO last_column
+                           BROWSE ON 'table_names [ count ]'
+                   THEN SELECT FOR UPDATE
+                   WITH ( leave_prompt_routine = "AUX_LIB_LEAVE_IDENTITY",
+                      enter_prompt_routine = "AUX_LIB_ENTER_IDENTITY",
+                          vgl_library          = global ( "CURRENT_LIBRARY" ))
+
+            IF table_names [ count ] = "SAMPLE" THEN
+
+                got_sample = TRUE
+                sample_table_prompt = prompts_array [
+                                        form . number_of_prompts, 2 ]
+
+            ENDIF
+
+        ENDIF
+
+        IF vgl_validate_routine (  report_id                ,
+                                   "PROMPT_MANDATORY_ARRAY" ) THEN
+    
+            CALL_ROUTINE "PROMPT_MANDATORY_ARRAY"
+                 USING form . number_of_prompts
+                 RETURNING  prompts_array [ form . number_of_prompts, 2 ] . mandatory_array
+                 IN LIBRARY report_id
+
+        ENDIF
+
+        prompts_array [ form . number_of_prompts, 3 ] = FALSE
+        prompts_array [ form . number_of_prompts, 4 ] = table_names [ count ]
+
+        prompts_array [ form . number_of_prompts, 1 ] =
+          form . add_prompt ( prompts_array [ form . number_of_prompts, 2 ] )
+
+        count = count + 1
+
+    ENDWHILE
+
+    { Add the display header and block as required }
+
+    IF form . on_gui AND ( display_row > 0 ) THEN
+
+        form . add_frame ( strip ( mess_area_one ),
+                           1,
+                           display_row - 1,
+                           0,
+                           screen_width )
+
+    ELSEIF display_header_row > 0 THEN
+
+        form . add_display ( centre_text ( mess_area_one,
+                                    last_column - title_column + 1 ),
+                             title_column,
+                             display_header_row,
+                             PROMPT_RENDITION_BOLD )
+
+    ENDIF
+
+    form . display_row = display_row
+    form . display_details = display_details
+
+    IF form . display_row > 0 THEN
+
+        IF NOT on_gui THEN
+            add_colon_to_titles ( display_details,
+                                  max_prompt_width )
+        ENDIF
+
+    ENDIF
+
+    { Add the prompt header and block as required }
+
+    IF form . on_gui AND ( prompt_row > 0 ) THEN
+
+        form . add_frame ( strip ( mess_area_two ),
+                           1,
+                           prompt_row - 1,
+                           0,
+                           screen_width )
+
+    ELSEIF prompt_header_row > 0 THEN
+
+        form . add_display ( centre_text ( mess_area_two,
+                                    last_column - title_column + 1 ),
+                             title_column,
+                             prompt_header_row,
+                             PROMPT_RENDITION_BOLD )
+
+    ENDIF
+
+    form . prompt_row = prompt_row
+    form . prompt_details = prompt_details
+
+    IF form . prompt_row > 0 THEN
+
+        IF NOT on_gui THEN
+            add_colon_to_titles ( prompt_details,
+                                  max_prompt_width )
+        ENDIF
+
+    ENDIF
+
+    form . add_title_text ( )
+    form . add_prompts ( prompts_array )
+    form . add_displays ( )
+
+    form . user_info = prompts_array
+
+    IF NOT BLANK ( select_key_text ) THEN
+
+        lib_form_add_control_buttons ( form        ,
+                                       button_list )
+
+    ENDIF
+
+    RETURN ( form )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+ROUTINE aux_generator ( VALUE top_line,
+                        VALUE bottom_line ,
+                        VALUE mess_area_one,
+                        VALUE mess_area_two,
+                        VALUE samp_stat_allowed,
+                        VALUE job_stat_allowed,
+                        VALUE test_stat_allowed,
+                              prompt_text,
+                              table_names,
+                              change_stat,
+                        VALUE report_id,
+                        VALUE success_text,
+                        VALUE abort_text,
+                        VALUE need_confirm,
+                              display_details,
+                              prompt_details,
+                        VALUE read_transaction_name,
+                        VALUE write_transaction_name )
+
+DECLARE form, can_leave, next_position, return_value, message_to_show
+
+{ Set the status sets for browse }
+
+SET JOB_STATUS job_stat_allowed
+SET SAMPLE_STATUS samp_stat_allowed
+SET TEST_STATUS test_stat_allowed
+
+{ Initialise the report and library reports }
+
+aux_lib_initialise ( )
+
+{ Create the form and prompts }
+
+form = build_screen ( prompt_details,
+                      display_details,
+                      top_line,
+                      bottom_line
+                      mess_area_one,
+                      mess_area_two,
+                      prompt_text,
+                      table_names,
+                      report_id,
+                      need_confirm )
+
+{ Activate the form }
+
+form . start_prompt ( )
+
+can_leave = FALSE
+
+REPEAT
+
+    START READ TRANSACTION read_transaction_name
+
+    form . wait_prompt ( )
+
+    IF form . get_lastkey ( ) = "DO" THEN
+
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION write_transaction_name
+        ENDIF
+        
+        return_value = aux_lib_call_action ( form )
+
+        IF return_value = EMPTY THEN
+
+        ELSEIF return_value THEN
+
+            message_to_show = success_text
+
+            return_value = check_change_status ( change_stat     ,
+                                                 table_names     ,
+                                                  message_to_show )
+
+            IF return_value THEN
+
+                IF ( table_names [ 2 ] = "TEST" )  AND
+                   (( change_stat [ 2 ] = "A"   )  OR
+                    ( change_stat [ 2 ] = "R"   )  OR
+                    ( change_stat [ 2 ] = "X"   )) THEN
+
+                    auto_validate_sample ( SELECT test . sample      ,
+                                           SELECT test . test_number )
+
+                ENDIF
+
+                IF ( table_names [ 1 ] = "SAMPLE" )  AND
+                   (( change_stat [ 1 ] = "A"     )  OR
+                    ( change_stat [ 1 ] = "R"     )  OR
+                    ( change_stat [ 1 ] = "X"     )) THEN
+
+                    lib_samp_validate_process_parent ( SELECT sample . id_numeric )
+
+                ENDIF
+
+                IF vgl_validate_routine (  report_id    ,
+                                           "PRE_COMMIT" ) THEN
+
+                    CALL_ROUTINE "PRE_COMMIT"
+                         IN LIBRARY report_id
+
+                ENDIF
+
+                COMMIT
+
+                IF vgl_validate_routine (  report_id     ,
+                                           "POST_COMMIT" ) THEN
+
+                    CALL_ROUTINE "POST_COMMIT"
+                         IN LIBRARY report_id
+
+                ENDIF
+
+            ELSE
+
+                ROLLBACK
+
+            ENDIF
+
+            IF vgl_validate_routine (  report_id    ,
+                                      "POST_ACTION" ) THEN
+
+                CALL_ROUTINE "POST_ACTION"
+                     USING return_value
+                     IN LIBRARY report_id
+
+            ENDIF
+
+            IF message_to_show = success_text THEN
+                window_set_status ( message_to_show )
+            ELSE
+                flash_message ( message_to_show, TRUE )
+            ENDIF
+
+        ELSE
+
+            ROLLBACK
+            output_message ( abort_text )
+
+        ENDIF
+
+        can_leave = global ( "LABTABLE_MODE" )
+
+        IF NOT can_leave THEN
+
+            next_position = form . reset_prompts ( )
+            form . reset_displays ( )
+            form . set_position ( next_position )
+
+        ENDIF
+
+    ELSE
+
+        ROLLBACK
+        IF NOT form . on_gui THEN
+            output_message ( abort_text )
+        ENDIF
+        can_leave = TRUE
+
+    ENDIF
+
+UNTIL can_leave
+
+form . end_prompt ( )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}

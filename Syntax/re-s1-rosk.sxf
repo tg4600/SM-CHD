@@ -1,0 +1,120 @@
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0026        270694  LPE     Generate Resampled Sample Text ID =            }
+{                               Partnumber+"/"+SamplingPoint+"/"               }
+{                               +Batchname+"RX", shere X is the number of      }
+{                               resampled samples to the Job.                  }
+{------------------------------------------------------------------------------}
+
+ROUTINE syntax
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+SET NAME "DISPLAY/"
+
+SET FORMAT "9999999999"
+
+original_sid = SELECT sample.id_numeric
+
+product_id = STRIP(SELECT sample. product_name)
+samp_pt_id = STRIP(SELECT sample. sampling_point)
+batch_name = STRIP(SELECT sample. batch_name)
+
+original_job_id = SELECT sample.job_name
+
+
+the_table = "SAMPLE"
+the_field = "ID_NUMERIC"
+
+push_file_descriptor ( the_table, the_field )
+
+n_resample = ROSFBINJOB ( original_job_id )
+
+pop_file_descriptor ( the_field )
+
+
+sid_text = product_id:"/":samp_pt_id:"/":batch_name:"-R":
+           STRIP(STRING(n_resample))
+
+
+sid_text = LEFTSTRING( PAD( sid_text, " ", 30 ), 30 )
+
+RETURN(sid_text)
+
+ENDROUTINE
+
+{--------------------------------- rosfbinjob ---------------------------------}
+
+ROUTINE rosfbinjob (VALUE original_job_id       )
+
+JOIN LIBRARY $LIB_UTILS
+
+ARRAY samp_text_pref
+
+DECLARE n_pref ,
+        sampl_in_job ,
+        sampl_in_job_text ,
+        len_sam_text ,
+        count ,
+        suf_sl_found ,
+        suf_sl_pos ,
+        suf_sl_found
+
+
+n_pref = 0
+
+sampl_in_job = SELECT sample.id_numeric
+                      WHERE (job_name = original_job_id)
+                      ORDER ON job_name
+
+WHILE sampl_in_job <> EMPTY
+   sampl_in_job_text = STRIP(SELECT sample.id_text)
+   len_sam_text = LENGTH(sampl_in_job_text)
+   count = len_sam_text
+   suf_sl_found = FALSE
+   WHILE (count >= 1) AND NOT(suf_sl_found) DO
+      IF SUBSTRING(sampl_in_job_text,count,1) = "/" THEN
+         suf_sl_pos = count
+         suf_sl_found = TRUE
+      ENDIF
+      count = count - 1
+   ENDWHILE
+   IF suf_sl_found THEN
+      start = suf_sl_pos + 1
+      n_char = len_sam_text - suf_sl_pos
+      suf_text = SUBSTRING(sampl_in_job_text,start,n_char)
+      r_pos = INDEX(suf_text,"-R")
+      IF r_pos <> 0 THEN
+         IF NUMTEXT(RIGHTSTRING(suf_text,(n_char -(r_pos+1))))
+            n_pref = n_pref + 1
+            n_resample =
+            NUMERIC(RIGHTSTRING(suf_text,(n_char - (r_pos+1))))
+            samp_text_pref[n_pref] = n_resample
+         ENDIF
+      ENDIF
+   ENDIF
+   NEXT sample
+   sampl_in_job = SELECT sample.id_numeric
+ENDWHILE
+
+IF n_pref <> 0 THEN
+   count = 1
+   biggest = samp_text_pref[count]
+   WHILE count <= n_pref DO
+      IF samp_text_pref[count] > biggest THEN
+         biggest = samp_text_pref[count]
+      ENDIF
+      count = count + 1
+   ENDWHILE
+ELSE
+   biggest = 0
+ENDIF
+
+n_resample = biggest + 1
+
+RETURN(n_resample)
+
+ENDROUTINE   {rosfbinjob}
+
+

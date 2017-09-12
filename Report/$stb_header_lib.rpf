@@ -1,0 +1,915 @@
+{******************************************************************************
+*
+* Module Name   : $STB_HEADER_LIB
+*
+* Purpose       : Holds support programs for the Protocol and Study headers
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_GLOBAL
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LABTABLIB
+JOIN LIBRARY $LIB_INVENTORY
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $STB_GLBL
+JOIN LIBRARY $STB_LIB
+JOIN LIBRARY $STB_LOGIN
+
+DECLARE approval_object, activate_object
+
+{******************************************************************************}
+
+ROUTINE define_approve_class
+
+{
+* definition of the approve class. The instance of the class used is defined
+* at the module level so information can be kept in scope between modify and
+* save special action calls
+*
+*******************************************************************************}
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+        DEFINE CLASS "STB_APPROVAL"
+
+            PROPERTIES
+                "approved_for",
+                "do_approval",
+                "message_no",
+                "table_name"
+
+            ACTIONS
+                "define_for_protocol",
+                "define_for_study"
+
+        END CLASS
+        
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+        
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_approval_action_define_for_protocol ( self )
+{
+* defines an approval object for use with protocols
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    self . do_approval       = FALSE
+    self . table_name        = "PDS_PROTO"
+    self . message_no        = 1
+    self . approved_for      = ""
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_approval_action_define_for_study ( self )
+{
+* defines an approval object for use with studys
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    self . do_approval       = FALSE
+    self . table_name        = "PDS_STUDY"
+    self . message_no        = 2
+    self . approved_for      = ""
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE protocol_approve ( proto_ndx, param2, action )
+{
+* configures approval for protocols
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    define_approve_class ( )
+
+    IF NOT ( variable_is_assigned ( approval_object ) ) THEN
+        object_create ( approval_object, "STB_APPROVAL" )
+        approval_object . define_for_protocol ()
+    ENDIF
+
+    header_approve ( action, approval_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE study_approve ( study_ndx, param2, action )
+{
+* configures approval for studies
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    define_approve_class ( )
+
+    IF NOT ( variable_is_assigned ( approval_object ) ) THEN
+        object_create ( approval_object, "STB_APPROVAL" )
+        approval_object . define_for_study ()
+    ENDIF
+
+    header_approve ( action, approval_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE header_approve ( VALUE action, approval_object )
+{
+* Runs approval of a protocol from LTE's
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE table_form, matrix_object, header_id, header_version, ident, header_context
+
+    IF action = "READ_FOR_DISPLAY" THEN
+
+    ELSEIF action = "DISPLAY" THEN
+
+        approval_object . do_approval = get_authorisation_text ( approval_object . approved_for )
+
+    ELSEIF action = "QUIT" THEN
+
+        labtablib_get_form ( table_form )
+
+        IF table_form . get_lastkey () = "DO" THEN
+
+            IF approval_object . do_approval THEN
+
+                header_id = SELECT 'approval_object . table_name' . identity
+                
+                IF approval_object . table_name = "PDS_PROTO" THEN
+                    header_version = SELECT 'approval_object . table_name' . protocol_version
+                ENDIF
+                
+                push_file_descriptor ( approval_object . table_name, header_context )
+
+                START WRITE TRANSACTION "Approve Header"
+
+                IF approval_object . table_name = "PDS_PROTO" THEN
+                
+                    ident = SELECT 'approval_object . table_name' . identity FOR UPDATE
+                             WHERE identity = header_id
+                               AND protocol_version = header_version
+                ELSE
+                    ident = SELECT 'approval_object . table_name' . identity FOR UPDATE
+                             WHERE identity = header_id
+                ENDIF
+
+                IF ( ident <> EMPTY  ) AND
+                   ( ident <> LOCKED ) THEN
+
+                    ASSIGN 'approval_object . table_name' . authorised_by      = OPERATOR
+                    ASSIGN 'approval_object . table_name' . authorised_on      = NOW
+                    ASSIGN 'approval_object . table_name' . authorisation_text = approval_object . approved_for
+                    ASSIGN 'approval_object . table_name' . status             = "O"
+
+                    UPDATE 'approval_object . table_name'
+                    COMMIT
+                    
+                    CALL_ROUTINE "get_matrix_object" USING matrix_object IN LIBRARY "$STB_MATRIX"
+
+                    IF approval_object . table_name = "PDS_PROTO" THEN
+                        CALL_ROUTINE "after_protocol_approval" USING matrix_object IN LIBRARY "$STB_USER"
+                    ELSE
+                        CALL_ROUTINE "after_study_approval"    USING matrix_object IN LIBRARY "$STB_USER"
+                    ENDIF
+                    
+                ELSE
+                    ROLLBACK
+                ENDIF
+
+                pop_file_descriptor ( header_context )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_authorisation_text ( auth_text )
+{
+* init authorisation form
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE mess_no, auth_form
+
+    mess_no = approval_object . message_no
+
+    PROMPT OBJECT auth_form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 1                      ,
+                width  = 70                     ,
+                row    = 5                      ,
+                column = 5                      ,
+                header = get_user_message ( "APPROVE_STATUS_FORM_TITLE", mess_no ),
+                userinfo = approval_object,
+                validation_routine = "authorisation_form_validate" )
+
+    auth_form . add_display ( PAD ( get_user_message ( "APPROVE_STATUS_AUTH_TEXT", mess_no ), " ", "20" ),
+                              1,
+                              1,
+                              PROMPT_RENDITION_RAISED )
+
+    PROMPT OBJECT auth_form . prompt_objects [ 1 ]
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( width   = 60,
+               height  = 1 ,
+               column  = 23,
+               row     = 1 ,
+               value   = auth_text )
+
+    auth_form . start_prompt ()
+    auth_form . wait_prompt ()
+    auth_form . end_prompt ()
+
+    auth_text = auth_form . prompt_objects [ 1 ] . value
+
+    RETURN( auth_form . get_lastkey ( ) = "DO" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE authorisation_form_validate ( self )
+{
+* validates approval entries and saves them to the proto record. Not carried
+* out if proto already approved
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE mess_no, valid
+    
+    valid = TRUE
+
+    mess_no = self . user_info . message_no
+
+    IF ( STRIP ( self . prompt_objects [ 1 ] . text ) = "" ) THEN
+
+        flash_gui ( GET_USER_MESSAGE ( "APPROVE_STATUS_VALID_TITLE", mess_no ),
+                    GET_USER_MESSAGE ( "APPROVE_STATUS_VALID_TEXT" , mess_no ),
+                    1,
+                    "$LTE_APPROVE" )
+
+        valid = FALSE
+
+    ENDIF
+    
+    RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE do_auto_approval ( VALUE pds_table_name )
+{
+* get auth values from record or set them to default values
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    ASSIGN 'pds_table_name' . authorised_by      = OPERATOR
+    ASSIGN 'pds_table_name' . authorised_on      = NOW
+    ASSIGN 'pds_table_name' . authorisation_text = GET_USER_MESSAGE ( "APPROVE_STATUS_AUTH_BY", 1 ) : " " :
+                                                   STRIP ( OPERATOR ) : " " :
+                                                   GET_USER_MESSAGE ( "APPROVE_STATUS_ON", 1 ) : " " :
+                                                   STRIP ( NOW )
+
+    ASSIGN 'pds_table_name' . status             = "O"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE do_auto_unapproval ( VALUE pds_table_name, VALUE show_message )
+{
+* sets up a header with the correct data for an auto unapproval
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE mess_no
+
+    ASSIGN 'pds_table_name' . authorised_by      = ""
+    ASSIGN 'pds_table_name' . authorised_on      = ""
+    ASSIGN 'pds_table_name' . authorisation_text = ""
+
+    IF pds_table_name = "PDS_STUDY" THEN
+        ASSIGN 'pds_table_name' . status             = "S"
+        mess_no = 2
+    ELSE
+        ASSIGN 'pds_table_name' . status             = "P"
+        mess_no = 1
+    ENDIF
+
+    IF show_message THEN
+        flash_message ( GET_USER_MESSAGE ( "APPROVE_STATUS_UNAPPROVAL_TEXT", mess_no ), TRUE )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE write_proto_to_study ( proto_id, proto_ver )
+{
+* Controls selection and writing of protocol data to new study header. All
+* fields will be copied unless named in the delete array
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE delete_fields, proto_fields, study_fields, copy_fields
+
+    define_delete_array ( delete_fields )
+
+    get_field_names ( "PDS_PROTO", proto_fields )
+    get_field_names ( "PDS_STUDY", study_fields )
+
+    copy_fields = delete_unwanted_fields ( proto_fields, delete_fields )
+
+    assign_proto_to_study ( proto_id, proto_ver, copy_fields, study_fields )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE define_delete_array ( delete_field )
+{
+* defines fields not to be copied from protocol to study
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    ARRAY delete_field
+
+    delete_field [ 1  ] = TOUPPER ( "identity" )
+    delete_field [ 2  ] = TOUPPER ( "protocol_version" )
+    delete_field [ 3  ] = TOUPPER ( "status" )
+    delete_field [ 4  ] = TOUPPER ( "authorised_on" )
+    delete_field [ 5  ] = TOUPPER ( "authorised_by" )
+    delete_field [ 6  ] = TOUPPER ( "authorisation_text" )
+    delete_field [ 7  ] = TOUPPER ( "modified_on" )
+    delete_field [ 8  ] = TOUPPER ( "modified_by" )
+    delete_field [ 9  ] = TOUPPER ( "modifiable" )
+    delete_field [ 10 ] = TOUPPER ( "remove_flag" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_unwanted_fields ( proto_fields, del_fields )
+{
+* Selects fields to be copied from proto table and adds them to the array
+* 'new_proto_fields' which is returned by the function
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE i_count, o_count, new_proto_fields, counter, putin_copy
+
+    ARRAY new_proto_fields
+
+    o_count = 0
+    WHILE ( o_count < size_of_array ( proto_fields ) ) DO
+
+        o_count = o_count + 1
+
+        putin_copy = TRUE
+
+        i_count = 0
+        WHILE ( i_count < size_of_array ( del_fields ) ) DO
+
+            i_count = i_count + 1
+
+            IF ( del_fields [ i_count ] = proto_fields [ o_count, 1 ] ) THEN
+                 putin_copy = FALSE
+            ENDIF
+
+        ENDWHILE
+
+        IF putin_copy THEN
+             counter = size_of_array ( new_proto_fields ) + 1
+             new_proto_fields [ counter ] = proto_fields [ o_count, 1 ]
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( new_proto_fields )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE assign_proto_to_study ( proto_id     ,
+                                proto_ver    ,
+                                proto_fields ,
+                                study_fields )
+{
+* Assign information to the study from the proto. This will include standard
+* information e.g.created from which protcol and by whom etc.   
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE i_count, o_count, select_id
+
+    select_id = SELECT pds_proto . identity
+                 WHERE ( identity         = proto_id  )
+                   AND ( protocol_version = proto_ver )
+
+    ASSIGN pds_study . created_on = TODAY
+    ASSIGN pds_study . created_by = OPERATOR
+    ASSIGN pds_study . created_from = proto_id
+    ASSIGN pds_study . protocol_version = proto_ver
+
+    IF select_id <> EMPTY THEN
+
+        o_count = 0
+        WHILE ( o_count < size_of_array ( study_fields ) ) DO
+
+            o_count = o_count + 1
+
+            i_count = 0
+            WHILE ( i_count < size_of_array ( proto_fields ) ) DO
+
+                i_count = i_count + 1
+                IF ( study_fields [ o_count, 1 ] = proto_fields [ i_count ] ) THEN
+
+                    ASSIGN pds_study . 'study_fields [ o_count, 1 ]' =
+                        SELECT pds_proto . 'proto_fields [ i_count ]'
+
+                    i_count = size_of_array ( proto_fields ) + 1
+
+                ENDIF
+
+            ENDWHILE
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE define_activate_class
+{
+* definition of the activate class. The instance of the class used is defined
+* at the module level so information can be kept in scope between modify and
+* save special action calls  
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DEFINE CLASS "STB_ACTIVATE"
+
+        PROPERTIES
+            "activate_date",
+            "do_activation"
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE study_activate ( study_ndx, param2, action )
+{
+* special action routine for activation a study. The special will be called
+* from within a modified display lte call. This means that the special action
+* routine will not be called in a in a start write transaction routine. The data 
+* must be saved commited from this routine.      
+*                                                
+* There will also be no save action called so the quit must be used. However
+* if the OK button is pressed then the last key will be DO
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE study_context, ident, table_form , use_study_name,
+      tmp_study_id , job_template_id , study_job_name, matrix_object, errors
+
+    IF action = "READ_FOR_DISPLAY" THEN
+
+        define_activate_class ()
+        object_create ( activate_object, "STB_ACTIVATE" )
+        activate_object . do_activation = FALSE
+        activate_object . activate_date = NOW
+
+    ELSEIF action = "DISPLAY" THEN
+
+        activate_object . do_activation = get_activation_date ( activate_object . activate_date )
+
+    ELSEIF action = "QUIT" THEN
+
+        labtablib_get_form ( table_form )
+        IF table_form . get_lastkey () = "DO" THEN
+
+            IF activate_object . do_activation THEN
+
+                job_template_id = STRIP ( SELECT pds_study . job_template_id )
+                use_study_name  = SELECT pds_study . use_study_name
+                tmp_study_id    = SELECT pds_study . identity
+
+                push_file_descriptor ( "PDS_STUDY", study_context )
+
+                IF GLOBAL ( "STAB_CREATE_JOB" ) THEN
+
+                    window_set_status ( "Login Study Job" )
+                    study_job_name = get_new_job ( job_template_id, use_study_name, tmp_study_id )
+                    window_set_status ( "" )
+                ELSE
+                    study_job_name = ""
+                ENDIF
+
+                CALL_ROUTINE "get_matrix_object" USING matrix_object IN LIBRARY "$STB_MATRIX"
+                
+                errors = EMPTY
+
+                START WRITE TRANSACTION "Approve Header"
+
+                ident = SELECT pds_study . identity
+                            FOR UPDATE
+                            WHERE identity = study_ndx
+
+                IF ( ident = EMPTY  ) OR ( ident = LOCKED ) THEN
+                    
+                    errors = "Could not lock record for allocation"
+                    
+                ENDIF
+                
+                IF errors = EMPTY THEN
+                
+                    IF NOT BLANK( matrix_object . get_product( ) ) THEN
+                   
+                        errors = matrix_object . allocate_stock( )
+                        
+                    ENDIF
+                    
+                ENDIF
+                
+                IF errors = EMPTY THEN
+                
+                    ASSIGN pds_study . start_date = activate_object . activate_date
+                    ASSIGN pds_study . status     = "A"
+
+                    ASSIGN pds_study . job_name   = study_job_name
+
+                    UPDATE PDS_STUDY
+
+                    COMMIT
+                
+                    CALL_ROUTINE "after_study_activation" 
+                           USING matrix_object IN LIBRARY "$STB_USER"
+
+                    do_activation_tasks ( matrix_object, activate_object )
+                
+                ENDIF
+                
+                IF errors <> EMPTY THEN
+                    ROLLBACK
+                    flash_message( errors, TRUE )
+                ENDIF
+
+                pop_file_descriptor ( study_context )
+
+                stb_login_activate ( study_ndx )
+
+               
+            ENDIF
+            
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_activation_date ( activation_date )
+{
+* setup the activate form to get date
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE activate_form
+
+    PROMPT OBJECT activate_form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 4                      ,
+                width  = 60                     ,
+                row    = 5                      ,
+                column = 5                      ,
+                header = "Study Activation Date",
+                button_style = FORM_BUTTON_NONE ,
+                use_top_line = TRUE             )
+
+    PROMPT OBJECT activate_form . display_objects [ 1 ]
+        WITH ( width   = 30,
+               height  = 1 ,
+               column  = 5 ,
+               row     = 1 ,
+               display_only = TRUE,
+               value = "Enter the Study Activation Date : " )
+
+    PROMPT OBJECT activate_form . prompt_objects [ 1 ]
+        BROWSE ON date
+        WITH ( width   = 20,
+               height  = 1 ,
+               column  = 35,
+               row     = 1 ,
+               display_only = FALSE,
+               value = activation_date,
+               allow_date = TRUE,
+               allow_time = TRUE,
+               allow_interval = TRUE )
+
+    PROMPT OBJECT activate_form . prompt_objects [ 2 ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width  = 10,
+               height = 1,
+               column = 5,
+               row    = activate_form . height - 1,
+               caption = get_user_message ( "STD_OK", 1 ),
+               send_lastkey = "DO" )
+
+    PROMPT OBJECT activate_form . prompt_objects [ 3 ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width  = 10,
+               height = 1,
+               column = 25,
+               row = activate_form . height - 1,
+               caption = get_user_message ( "STD_HELP", 1 ),
+               send_lastkey = "HELP" )
+
+    PROMPT OBJECT activate_form . prompt_objects [ 4 ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width  = 10,
+               height =  1,
+               column = 45,
+               row    =  activate_form . height - 1,
+               caption = get_user_message ( "STD_CANCEL", 1 ),
+               send_lastkey = "EXIT" )
+
+    activate_form . prompt_objects [ 1 ] . value = activate_object . activate_date
+
+    activate_form . start_prompt ()
+    activate_form . wait_prompt ()
+    activate_form . end_prompt ()
+
+    activation_date = activate_form . prompt_objects [ 1 ] . value
+
+    RETURN( activate_form . get_lastkey () = "DO" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_new_job ( job_template, use_study_name, study_id )
+{
+* 
+*
+* Parameters :
+*
+*******************************************************************************}
+
+    DECLARE study_job_name
+
+    IF job_template = "" THEN
+        job_template = STAB_DEFAULT_JOB_TEMPLATE
+    ENDIF
+
+    IF ( use_study_name ) THEN
+        study_job_name = NEWJOB ( job_template, study_id )
+    ELSE
+        study_job_name = NEWJOB ( job_template, "" )
+    ENDIF
+
+    RETURN ( study_job_name )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE do_activation_tasks ( matrix_object, activate_object )
+{
+* calculates the login dates for pulls and predicts their sample syntax
+*
+* Parameters : matrix_object   , Stb Matrix Object
+*              activate_object , contains the activation date
+*
+*******************************************************************************}
+
+    DECLARE pull_select, pull_db, pull_counter, pull_syntax, time_select , time_db
+
+    ARRAY pull_select
+    ARRAY time_select
+
+    ARRAY_SELECT_ADD ( pull_select, ARRAY_SELECT_EQ, "HEADER", SELECT pds_study . identity )
+    OBJECT_CREATE ( pull_db, "STD_OBJECT_DATABASE" )
+    pull_db . initialise ( "PDS_STUDY_PULL" )
+    pull_db . select_for_update ( pull_select )
+
+
+    ARRAY_SELECT_ADD ( time_select, ARRAY_SELECT_NE, "IDENTITY", "" )
+    OBJECT_CREATE ( time_db, "STD_OBJECT_DATABASE" )
+    time_db . initialise ( "TIME_FACTOR" )
+    time_db . select_for_read ( time_select )
+
+
+    pull_counter = 1
+    WHILE ( pull_counter <= pull_db . size () ) DO
+
+        pull_db . set_by_number ( pull_counter )
+
+        activate_many_pulls ( matrix_object, pull_db . current , time_db )
+
+        pull_syntax = get_pull_syntax ( pull_db . current )
+        OBJECT_ASSIGN_FIELD ( pull_db . current, "PDS_STUDY_PULL", "SAMPLE_ID_TEXT", pull_syntax )
+
+        pull_counter = pull_counter + 1
+
+    ENDWHILE
+
+    START WRITE TRANSACTION "Update study pulls"
+    pull_db . invoke_all ( "UPDATE" )
+    COMMIT
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE reset_study_header
+{
+* Resets the study header files that are not to be copied
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    ASSIGN pds_study . start_date = ""
+    ASSIGN pds_study . authorised_on = ""
+    ASSIGN pds_study . authorised_by = ""
+    ASSIGN pds_study . authorisation_text = ""
+
+    ASSIGN pds_study . job_name = ""
+
+    GLOBAL_FLUSH ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_allocate_stock ( matrix_object )
+
+{
+*
+* call the IMM to reserve a quantity of products for the current study.
+* Must be called in a transaction
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE layer_object, product_id, product_unit, batch_id, conditions_array,
+            product_form, qty, allocation_id, usage_text, layer_id, errors,
+            study_id, layer_pos, condition_id, overage, conditions_db, pulls_array
+
+    product_id   = matrix_object . get_product( )
+    product_unit = matrix_object . get_product_unit( )
+    
+    study_id = matrix_object . header_id
+
+    product_form = matrix_object . product_info_form
+
+    layer_pos = 1
+    WHILE ( layer_pos <= matrix_object . layer_count( ) ) DO
+    
+        layer_id = matrix_object . get_layer_id_at_position( layer_pos )
+       
+        layer_object = product_form . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+       
+        batch_id = SELECT layer_entry . batch_number
+                      IN OBJECT layer_object
+
+
+        OBJECT_CREATE ( conditions_db, "STD_OBJECT_DATABASE" )
+        conditions_db . initialise ( "CONDITION_ENTRY" )
+
+        ARRAY conditions_array
+        ARRAY_SELECT_ADD ( conditions_array, ARRAY_SELECT_EQ, "HEADER"      , study_id )
+        ARRAY_SELECT_ADD ( conditions_array, ARRAY_SELECT_EQ, "MATRIX_TYPE" , "S"      )
+        ARRAY_SELECT_ADD ( conditions_array, ARRAY_SELECT_EQ, "LAYER_FACTOR", layer_id )
+
+        conditions_db . select_for_update ( conditions_array ) 
+       
+        conditions_db . set_first( )
+        WHILE ( conditions_db . current <> EMPTY ) DO
+
+            condition_id = SELECT condition_entry . c_factor
+                               IN OBJECT conditions_db . current
+
+            overage      = SELECT condition_entry . overage
+                               IN OBJECT conditions_db . current
+
+            ARRAY pulls_array
+            ARRAY_SELECT_ADD ( pulls_array, ARRAY_SELECT_EQ, "HEADER"      , study_id     )
+            ARRAY_SELECT_ADD ( pulls_array, ARRAY_SELECT_EQ, "LAYER_FACTOR", layer_id     )
+            ARRAY_SELECT_ADD ( pulls_array, ARRAY_SELECT_EQ, "C_FACTOR"    , condition_id )
+
+            qty = ARRAY_SELECT_SUM( "PDS_STUDY_PULL", "PULL_AMOUNT", pulls_array ) 
+
+			IF qty = EMPTY THEN	
+				qty = 0
+			ENDIF
+
+            usage_text = GET_USER_MESSAGE ( "STB_INVENTORY_RESERVE_QUANTITY", 1 ) :
+                   STRIP( study_id ) : ", " : STRIP( layer_id ) : ", " : STRIP( condition_id )
+
+            allocation_id = inventory_allocation_next_id( product_id )
+
+            errors = inventory_item_allocate_id( product_id    ,
+                                                 batch_id      ,
+                                                 allocation_id ,
+                                                 qty + overage ,
+                                                 product_unit  ,
+                                                 usage_text    )
+                                                 
+            IF errors = EMPTY THEN
+
+                ASSIGN condition_entry . allocation_id
+                    IN OBJECT conditions_db . current = allocation_id
+
+                ASSIGN condition_entry . reserved_on
+                    IN OBJECT conditions_db . current = NOW
+
+            ENDIF
+
+            conditions_db . set_next( )
+
+        ENDWHILE
+
+        conditions_db . invoke_all( "UPDATE" )
+
+        layer_pos = layer_pos + 1
+
+    ENDWHILE
+
+    RETURN ( errors )
+
+ENDROUTINE 

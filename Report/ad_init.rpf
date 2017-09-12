@@ -1,0 +1,216 @@
+{******************************************************************************
+* Module Name   : AD_INIT.RPF
+* Purpose       : Import AD usernames
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+{ Change log:                                                                   }
+{                                                                               }
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $USER_ENVIRONMENT
+JOIN STANDARD_LIBRARY STD_USER_LOGIN
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+DECLARE source, files, users, ad_array, err_mes, i, l, filename, line, check_ok, ad_init, id, ad, record,
+        Removed, Password, Updated, respons, status
+
+respons = EMPTY
+
+ARRAY files
+ARRAY users
+ARRAY ad_array
+
+source = "smp$userfiles:globalcitrixlims.txt"
+
+FILE FIND source, files, err_mes
+
+IF err_mes <> EMPTY THEN
+   {WriteToLog(err_mes)}
+   RETURN(EMPTY)
+ENDIF
+
+i = 1
+l = 0
+WHILE i <= SIZE_OF_ARRAY(files) DO
+    window_set_status("Processing ":files[i])
+    filename = files[i]
+    FILE OPEN filename, check_ok
+    IF check_ok = EMPTY THEN
+        FILE READ filename, line, check_ok
+        WHILE check_ok = EMPTY DO
+            l = l + 1
+            ad_array[l] = STRIP(line)
+            FILE READ filename, line, check_ok
+        ENDWHILE
+        FILE CLOSE filename
+    ELSE
+        fm(check_ok)
+    ENDIF
+i = i + 1
+ENDWHILE
+
+window_set_status("SIZE_OF_ARRAY(ad_array): ":STRIP(SIZE_OF_ARRAY(ad_array)))
+
+{******** Build user array ********
+
+ users[i,1] = personnel . identity
+ users[i,2] = personnel . ad_init
+ users[i,3] = personnel . removeflag
+ users[i,4] = GlobalCitirxLIMS
+ users[i,5] = password . cryptpass
+
+ **********************************}
+
+i = 0
+ID = SELECT personnel . identity WHERE identity like "%"
+WHILE ID <> EMPTY DO
+    i = i + 1
+    users[i,1] = ID
+NEXT personnel
+    ID = SELECT personnel . identity
+ENDWHILE
+
+window_set_status("Collecting data for ":STRIP(SIZE_OF_ARRAY(users)):" users")
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(users) DO
+    users[i,2] = STRIP(SELECT personnel . ad_init  WHERE identity = users[i,1])
+    users[i,3] = SELECT personnel . removeflag
+    l = 1
+    WHILE l <= SIZE_OF_ARRAY(ad_array) DO
+        IF TOUPPER(ad_array[l]) = users[i,1]
+            users[i,4] = ad_array[l]
+            l = SIZE_OF_ARRAY(ad_array)
+        ENDIF
+        l = l + 1
+    ENDWHILE
+    users[i,5] = STRIP(SELECT password . cryptpass WHERE identity = users[i,1])
+    i = i + 1
+ENDWHILE
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(users) DO
+    window_set_status(ROUND(i / SIZE_OF_ARRAY(users) * 100):"% completed")
+    ID       = users[i,1]   {personnel . identity   }
+    AD_Init  = users[i,2]   {personnel . ad_init    }
+    Removed  = users[i,3]   {personnel . removeflag }
+    AD       = users[i,4]   {GlobalCitirxLIMS       }
+    Password = users[i,5]   {password . cryptpass   }
+
+    IF AD <> EMPTY THEN
+        IF TOUPPER(AD) = ID THEN
+            IF (Removed) OR (AD_INIT <> AD) THEN
+
+               {fm("i        = '":STRIP(i):"'":ASCII(10):
+                   "ID       = '":users[i,1]:"'":ASCII(10):
+                   "AD_Init  = '":users[i,2]:"'":ASCII(10):
+                   "Removed  = '":users[i,3]:"'":ASCII(10):
+                   "AD       = '":users[i,4]:"'":ASCII(10):
+                   "Password = '":users[i,5]:"'")}
+
+                record = SELECT personnel . identity FOR UPDATE WHERE identity = ID
+                IF record = ID THEN
+                    Updated = FALSE
+                    IF NOT transaction_is_write ( ) THEN
+                        START WRITE TRANSACTION "Update operator"
+                    ENDIF
+                    IF (SELECT password . identity WHERE identity = ID) <> EMPTY THEN
+                        ASSIGN personnel . removeflag = FALSE
+                        Updated = TRUE
+                    ENDIF
+                    IF (AD_Init <> AD) THEN
+                        ASSIGN personnel . ad_init = AD
+                        Updated = TRUE
+                    ENDIF
+                    UPDATE personnel
+                    COMMIT
+                    IF Updated THEN
+                        WriteToLog("Update user:   ":ID)
+                        IF respons = EMPTY THEN
+                            respons = "Updated user(s): ":ID
+                        ELSE
+                            respons = respons:", ":ID
+                        ENDIF
+                    ENDIF
+                ENDIF
+            ENDIF
+
+            IF (NOT Removed) AND (STRIP(AD_INIT) <> "") AND (AD = EMPTY) THEN
+                record = SELECT personnel . identity FOR UPDATE WHERE identity = ID
+                IF record = ID THEN
+                    IF NOT transaction_is_write ( ) THEN
+                        START WRITE TRANSACTION "Remove operator"
+                    ENDIF
+                    ASSIGN personnel . removeflag = TRUE
+                    UPDATE personnel
+                    COMMIT
+                ENDIF
+            ENDIF
+
+            IF Password <> "**********" THEN
+                record = SELECT password . identity FOR UPDATE WHERE identity = ID
+                IF (record = EMPTY) AND (NOT Removed)
+                    RESERVE ENTRY password, ID, record
+                    IF record = EMPTY THEN
+                        record = ID
+                    ENDIF
+                ENDIF
+                IF record = ID THEN
+                    IF NOT transaction_is_write ( ) THEN
+                        START WRITE TRANSACTION "Blur Password"
+                    ENDIF
+                    ASSIGN password . cryptpass = "**********"
+                    UPDATE password
+                    COMMIT
+                    WriteToLog("Blur password: ":ID)
+                ENDIF
+            ENDIF
+        ENDIF
+    ELSEIF (Removed = FALSE) AND (AD_INIT <> "")
+        status = user_login_delete_user ( ID )   {JOIN STANDARD_LIBRARY STD_USER_LOGIN}
+        status = user_environment_delete( ID )   {JOIN LIBRARY $USER_ENVIRONMENT}
+        status = SELECT personnel . identity FOR UPDATE
+                 WHERE identity = ID
+
+        IF status = ID THEN
+            START WRITE TRANSACTION "Remove operator"
+            ASSIGN personnel . removeflag = TRUE
+            UPDATE personnel
+            COMMIT
+        ENDIF
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+IF respons <> EMPTY THEN
+    fm(respons)
+ELSE
+    fm("No updates needed.":ASCII(10):
+       "All entries aligned with AD setup.")
+ENDIF
+window_set_status("")
+
+RETURN
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

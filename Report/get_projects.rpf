@@ -1,0 +1,126 @@
+
+{Task 1806: HBe 2/9-2007: Automatic update of project info table based on information in PROWEB system.}
+
+SET NAME "DISPLAY/"
+
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+DECLARE lines_inserted, lines_restored, do_expiry_counter
+lines_inserted      = 0
+lines_restored      = 0
+do_expiry_counter   = 0
+
+do_removal        ( do_expiry_counter )
+do_insert_restore ( lines_inserted, lines_restored )
+
+FLASH_MESSAGE("Removed " : STRIP(do_expiry_counter) : " expired projects. Inserted " : STRIP(lines_inserted) : " records into the project table. Restored " : STRIP(lines_restored) : " projects.", TRUE)
+
+
+ROUTINE do_insert_restore ( lines_inserted, lines_restored )
+
+DECLARE new_project_id, is_removed, project_description, counter, insert_counter, check_ok, project_array
+ARRAY project_array
+check_ok = EMPTY
+{Building array with active projects}
+counter = 0
+START READ TRANSACTION "Find projects"
+new_project_id = SELECT proweb_projects.sap_number 
+WHERE status_id = 1 
+AND sap_number > 0
+WHILE (new_project_id <> EMPTY) AND (counter < 10000)
+   counter = counter+1
+   project_description = SELECT proweb_projects.browse_description
+   IF BLANK(project_description) THEN
+      project_description = "No Project Information Available"
+   ENDIF
+   project_array[counter,1] = STRIP(new_project_id)
+   project_array[counter,2] = STRIP(project_description)
+   NEXT proweb_projects
+   new_project_id = SELECT proweb_projects.sap_number
+ENDWHILE
+
+insert_counter      = 1
+
+SET NOTPROTECTED
+
+   {Inserting active projects not already in the system - and restoring reactivated projects.}
+WHILE (insert_counter <= counter) AND (insert_counter < 10000)
+   START READ TRANSACTION "Find existing  Project"
+   is_removed = SELECT project_info.removeflag WHERE project_id = project_array[insert_counter,1]
+   IF (is_removed = EMPTY) THEN
+      START READ TRANSACTION "Add Project"
+      RESERVE ENTRY project_info, project_array[insert_counter,1], check_ok
+      IF (check_ok <> EMPTY) THEN
+         FLASH_MESSAGE(check_ok, TRUE)
+         EXIT
+      ENDIF
+      ASSIGN project_info.browse_description = project_array[insert_counter,2]
+      START WRITE TRANSACTION "Add Project"
+      UPDATE project_info
+      COMMIT
+      lines_inserted = lines_inserted + 1
+   ELSEIF (is_removed = TRUE) THEN
+      START READ TRANSACTION "Find Restore Project"
+      is_removed = SELECT project_info.removeflag FOR UPDATE 
+         WHERE project_id = project_array[insert_counter,1] 
+      ASSIGN project_info.removeflag = FALSE
+      START WRITE TRANSACTION "Do Restore Project"
+      UPDATE project_info
+      COMMIT
+      lines_restored = lines_restored + 1   
+   ENDIF
+   insert_counter = insert_counter + 1   
+ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE do_removal ( do_expiry_counter )
+
+DECLARE expired_project_id, expired_project_array, expire_counter, projects_to_expire, existing_id
+ARRAY   expired_project_array
+
+{Building array with inactive projects}
+expire_counter     = 0
+projects_to_expire = 0
+START READ TRANSACTION "Find projects"
+expired_project_id = SELECT proweb_projects.sap_number 
+WHERE status_id <> 1 
+AND sap_number > 0
+WHILE (expired_project_id <> EMPTY) AND (expire_counter < 10000)
+   expire_counter = expire_counter+1
+   existing_id = SELECT project_info.project_id WHERE project_id = expired_project_id AND removeflag = FALSE
+   IF (existing_id <> EMPTY) THEN
+      projects_to_expire = projects_to_expire + 1
+      expired_project_array[projects_to_expire] = STRIP(expired_project_id)
+   ENDIF
+   NEXT proweb_projects
+   expired_project_id = SELECT proweb_projects.sap_number
+ENDWHILE
+
+{Removing inactive projects}
+
+DECLARE old_remove_status
+
+
+WHILE (do_expiry_counter < projects_to_expire) AND (do_expiry_counter < 10000)
+   START READ TRANSACTION "Expire projects"
+   do_expiry_counter = do_expiry_counter + 1
+   old_remove_status = SELECT project_info.removeflag FOR UPDATE
+   WHERE project_id = expired_project_array[do_expiry_counter] 
+   AND removeflag <> TRUE 
+   IF (old_remove_status = FALSE) AND (old_remove_status <> EMPTY) THEN
+      ASSIGN project_info.removeflag = TRUE
+      START WRITE TRANSACTION "Do the expiry"
+      UPDATE project_info
+      COMMIT 
+   ENDIF
+ENDWHILE
+
+ENDROUTINE
+

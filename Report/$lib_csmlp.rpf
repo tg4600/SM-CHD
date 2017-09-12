@@ -1,0 +1,4673 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIB_CSMLP
+*
+* Purpose       : SMP library of functions to enable other VGL programs
+*                 (mainly users programs) to perform key compare sample to MLP
+*                 functions
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+{**AS 2003R1}
+{Mofidfications:}
+{**AS1042 HBe 8-6-00}
+{**MS1260 HBe 27-6-00}
+{**M1342: HBe 28-9-2001: MPS status selected at authorisation instead of comments}
+{**AE2003R1}
+{**MS 5-12-2007CH changes included in original SampleManager 9.2 file}
+
+ENABLE WINDOWS
+
+SET NOTPROTECTED
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY std_utils
+JOIN STANDARD_LIBRARY std_array
+JOIN STANDARD_LIBRARY std_login
+JOIN STANDARD_LIBRARY std_class
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $lib_mlps          { For mlp_get_levels }
+JOIN LIBRARY $lib_comp
+JOIN LIBRARY $lib_unit
+JOIN LIBRARY $csm_conf          { For user-defineable flags }
+JOIN LIBRARY $lib_csmlp_gen
+JOIN LIBRARY $mlps_const
+
+JOIN LIBRARY $lib_re_result
+
+{------------------------------------------------------------------------------}
+
+{ GLOBAL CONSTANTS }
+
+	GLOBAL CONSTANT BACKCSMLP_EXIT_FLAG = "TERMINATE"
+
+	CONSTANT BLANK_ANALYSIS      = "$NULL"
+	CONSTANT FULL_REPORT_TYPE    = "FULL"
+	CONSTANT SUMMARY_REPORT_TYPE = "SUMMARY"
+
+	CONSTANT GRID_INFO_COL = 1
+	CONSTANT GRID_BOLD_COL = 2
+
+	CONSTANT LEVEL_ID_COL   = 1
+	CONSTANT LEVEL_PASS_COL = 2
+
+	CONSTANT CSMLP_CLUSTER = "CSMLP"
+	CONSTANT CSMLP_GLOBAL =  "USER_1"
+
+{------------------------------------------------------------------------------}
+
+{ GLOBAL VARIABLE DECLARATIONS }
+
+	DECLARE success
+	DECLARE levels_data
+	DECLARE comp_list
+	DECLARE replicates
+	DECLARE sample_ok
+	DECLARE total_comp_test
+	DECLARE total_comps
+	DECLARE done_comparison
+	DECLARE current_format
+	DECLARE out_limits
+	DECLARE res_missing
+	DECLARE not_assigned
+	DECLARE emlp_sample  { Used for passing information back to ecsmlp code }
+	DECLARE emlp_product { Used for passing information back to ecsmlp code }
+{**AS2003R1}
+	DECLARE mps_status
+{**AE2003R1}
+{------------------------------------------------------------------------------}
+{ Compare single test with MLP level limits }
+
+GLOBAL ROUTINE CSMLP_test ( VALUE test_number,
+                            VALUE mlp_id,
+                            VALUE mlp_ver,
+                            VALUE level_id,
+                            VALUE report_required,
+                            VALUE full_report,        { If report required }
+				  output_grid,	      { Grid to put output on }
+                                  pass,
+                                  report_called )     { If report required }
+
+	RETURN( CSMLP_dynamic_test ( test_number     ,
+				     mlp_id          ,
+				     mlp_ver         ,
+				     NULL            ,
+				     level_id        ,
+				     report_required ,
+				     full_report     ,
+				     output_grid     ,
+				     pass            ,
+				     report_called   ) )
+	
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{ Compare single test with MLP level limits and Dynamic MLP limits }
+
+GLOBAL ROUTINE CSMLP_dynamic_test ( VALUE test_number,
+				    VALUE mlp_id,
+				    VALUE mlp_ver,
+				    VALUE dynamic_mlp,
+				    VALUE level_id,
+				    VALUE report_required,
+				    VALUE full_report,        { If report required }
+					  output_grid,	      { Grid to put output on }
+					  pass,
+					  report_called )     { If report required }
+
+	DECLARE anal_id, possible_comp, current_format, sample_id, spare,
+		success, report_type, not_assigned,
+		component_pass, component_count, mlp_components
+
+	success = TRUE  { No errors }
+	pass    = TRUE  { Pass comparison }
+
+	current_format = GLOBAL ("FORMAT_TEXT")
+	SET FORMAT "9999999999"
+
+	{ Format the passed parameters appropriately }
+
+	mlp_id  = STRIP ( TOUPPER ( mlp_id ) )
+	mlp_ver = STRING ( NUMERIC ( mlp_ver ) )
+
+	{ Define user variable so know when to do initialisation }
+
+	define_csmlp_global ()
+
+	IF ( read_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL )
+							<> "CSMLP_sample" ) THEN
+   		global_variables ()
+		get_levels_data ( mlp_id, mlp_ver, dynamic_mlp, level_id, levels_data )
+
+	ENDIF
+
+	IF (test_number = EMPTY) OR NOT NUMTEXT (test_number) THEN
+
+   		IF ( ( GLOBAL ("MODE") <> "INTERACTIVE" ) OR
+		     ( DEBUG_AS_BACKGROUND )               ) THEN
+      			errors (GET_USER_MESSAGE("LIB_CSMLP_ERR_1" ,1))
+   		ENDIF
+   		success = FALSE
+   		anal_id = EMPTY
+	ELSE
+
+   		{ get analysis id for test }
+
+   		anal_id = SELECT test.analysis_id
+             		WHERE test_number = test_number
+
+   		{ test number not on test file }
+
+   		IF anal_id = EMPTY THEN
+
+	      		IF ( ( GLOBAL ("MODE") <> "INTERACTIVE" ) OR
+		     	     ( DEBUG_AS_BACKGROUND )               ) THEN
+         			errors (GET_USER_MESSAGE("LIB_CSMLP_ERR_2" ,1) :
+					test_number)
+      			ENDIF
+
+      			success = FALSE
+   		ENDIF
+	ENDIF
+
+	lib_mlps_get_components_all ( mlp_id          ,
+				      mlp_ver         ,
+				      dynamic_mlp     ,
+				      anal_id         ,
+				      mlp_components  )
+
+	IF ( size_of_array ( mlp_components ) = 0 ) AND
+	   ( anal_id <> EMPTY                     ) THEN
+
+		anal_id = convert_null_analysis ( anal_id )
+
+   		IF ( ( GLOBAL ("MODE") <> "INTERACTIVE" ) OR
+		     ( DEBUG_AS_BACKGROUND )               ) THEN
+      			errors ( GET_USER_MESSAGE("LIB_CSMLP_ERR_3" ,1) :
+                 		 test_number :
+				 GET_USER_MESSAGE("LIB_CSMLP_ERR_4" ,1) :
+                 		 mlp_id : ".": STRIP(mlp_ver) :
+                 		 GET_USER_MESSAGE("LIB_CSMLP_ERR_5" ,1) :
+				 STRIP(anal_id) )
+   		ENDIF
+
+   		success = FALSE
+	ENDIF
+
+	component_count = 1
+
+	WHILE ( component_count <= size_of_array ( mlp_components ) ) AND
+	      ( success                                             ) DO
+
+		possible_comp = mlp_components [ component_count ]
+   		total_comps = total_comps + 1
+
+   		{ Optional if cancelled or suspended test to be compared }
+{M1742 HBe 25-10-2006: Also Rejected tests should be excluded}
+   		IF NOT CSM_ignore_cancelled OR
+      		   ( ( SELECT test.status <> "X" ) AND
+		     ( SELECT test.status <> "R" ) AND
+		     ( SELECT test.status <> "S" )) THEN
+
+                        compare_all_results ( anal_id        ,
+					      possible_comp  ,
+					      success        ,
+					      mlp_id         ,
+					      mlp_ver        ,
+					      dynamic_mlp    ,
+					      test_number    ,
+					      levels_data    ,
+					      comp_list      ,
+					      output_grid    ,
+					      component_pass ,
+					      pass           )
+
+    		ENDIF
+
+		component_count = component_count + 1
+
+	ENDWHILE
+
+	{ Note the total number of tests found }
+
+	IF ( report_required AND success ) THEN
+
+   		sample_id = " "
+   		spare = EMPTY
+
+   		IF full_report THEN
+			report_type = FULL_REPORT_TYPE
+		ELSE
+			report_type = SUMMARY_REPORT_TYPE
+		ENDIF
+
+		call_report_routine ( report_type,
+				      mlp_id,
+				      mlp_ver,
+				      sample_id,
+				      test_number,
+				      pass,
+				      not_assigned,
+				      out_limits,
+				      comp_list,
+				      levels_data,
+				      total_comps,
+				      dynamic_mlp,
+				      spare,
+				      report_called )
+	ENDIF
+
+	{ Only log outcome of test if doing a test comparison }
+
+	IF ( read_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL )
+							<> "CSMLP_sample" ) THEN
+   		{ Log comparison outcome }
+
+		log_outcome ( CSM_log_outcome,
+			      pass,
+			      test_number,
+			      SELECT test.sample_id,
+			      mlp_id,
+			      mlp_ver,
+			      level_id )
+	ENDIF
+
+	SET FORMAT current_format
+
+	RETURN ( success )
+
+ENDROUTINE   { end of CSMLP_test }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE compare_all_results ( VALUE anal_id         ,
+			      VALUE possible_comp   ,
+				    success         ,
+			      VALUE mlp_id          ,
+			      VALUE mlp_ver         ,
+			      VALUE dynamic_mlp     ,
+			      VALUE test_number     ,
+				    levels_data     ,
+				    comp_list       ,
+				    output_grid     ,
+				    component_pass  ,
+				    pass            )
+
+{
+*	Build an array of all result names - if there are replicates then
+*	do a like to find all possible names.
+*
+*******************************************************************************}
+
+	DECLARE replicate_like  ,
+		replicate_name  ,
+		results         ,
+		count           ,
+		next_element
+
+	ARRAY results ARRAY_SIZE ( 0 )
+
+	results [ 1 ] = possible_comp
+
+	IF global ( "RESULT_REPLICATES_ENABLED" ) THEN
+
+		count = 1
+
+		replicate_like = lib_comp_build_like_clause ( possible_comp )
+
+		replicate_name = SELECT result . name
+				 WHERE ( name LIKE replicate_like  ) AND
+				       ( test_number = test_number )
+				 ORDER ON order_number ,
+					  name
+
+                WHILE replicate_name <> EMPTY DO
+
+			results [ count ] = replicate_name
+
+			NEXT result
+
+			replicate_name = SELECT result . name
+			count = count + 1
+
+		ENDWHILE
+
+	ENDIF
+
+	count = 1
+
+	WHILE count <= size_of_array ( results ) DO
+
+		possible_comp = results [ count ]
+		total_comp_test = total_comp_test + 1
+
+      		next_element = size_of_array ( comp_list ) + 1
+
+
+      		comp_list [ next_element, 1 ] = anal_id
+      		comp_list [ next_element, 2 ] = possible_comp
+      		comp_list [ next_element, 3 ] =
+					SELECT test . test_count
+      		comp_list [ next_element, 4 ] = test_number
+      		comp_list [ next_element, 5 ] = EMPTY
+      		comp_list [ next_element, 6 ] = EMPTY
+      		comp_list [ next_element, 8 ] = EMPTY
+      		comp_list [ next_element, 9 ] = EMPTY    { Result }
+      		comp_list [ next_element, 10 ] = " "     { Units  }
+
+      		IF success THEN
+
+			compare_levels ( mlp_id,
+				         mlp_ver,
+					 dynamic_mlp,
+					 levels_data,
+					 comp_list,
+					 next_element,
+			       		 output_grid,
+					 component_pass )
+		ELSE
+
+			component_pass = TRUE
+
+		ENDIF
+
+		{ If one component fails, the whole test fails }
+
+		IF ( NOT component_pass ) THEN
+			pass = FALSE
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE build_unique_analysis_list ( VALUE mlp_id          ,
+				     VALUE mlp_ver         ,
+				     VALUE dynamic_mlp     ,
+				           analysis_list   )
+
+	DECLARE return_status
+
+	lib_mlps_get_analyses_all ( mlp_id          ,
+				    mlp_ver         ,
+				    dynamic_mlp     ,
+				    analysis_list   )
+
+
+	return_status = TRUE
+
+	IF (  size_of_array ( analysis_list ) = EMPTY ) THEN
+
+   		IF ( ( GLOBAL ("MODE") <> "INTERACTIVE" ) OR
+		     ( DEBUG_AS_BACKGROUND )             ) THEN
+
+      			errors ( GET_USER_MESSAGE( "LIB_CSMLP_ERR_6" ,1) :
+                  		 mlp_id : ".": STRIP (mlp_ver) )
+   		ENDIF
+
+   		return_status = FALSE
+	ENDIF
+
+	RETURN ( return_status )
+
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE define_csmlp_global
+
+	IF NOT user_cluster_exists ( CSMLP_CLUSTER ) THEN
+   		add_global_cluster ( CSMLP_CLUSTER )
+   		add_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL )
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE assign_csmlp_global ( VALUE user_value )
+
+	define_csmlp_global ()
+
+	assign_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL, user_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Compare all sample's tests with MLP level limits }
+
+GLOBAL ROUTINE CSMLP_sample ( VALUE id_num,           { sample id }
+                              VALUE mlp_id,
+                              VALUE mlp_ver,
+                              VALUE level_id,
+                              VALUE report_required,
+		              VALUE full_report,      { If report required }
+				    output_grid,      { Grid to put output on }
+                                    sample_pass,
+                                    report_called )   { If report required }
+
+
+	RETURN( CSMLP_dynamic_sample ( id_num          ,
+				       mlp_id          ,
+				       mlp_ver         ,
+				       NULL            ,
+				       level_id        ,
+				       report_required ,
+				       full_report     ,
+				       output_grid     ,
+				       sample_pass     ,
+				       report_called   ) )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE ECSMLP_sample (  VALUE id_num,           { sample id }
+				VALUE mlp_id,
+				VALUE mlp_ver,
+				VALUE dynamic_mlp,
+				VALUE level_id,
+				VALUE report_required,
+				VALUE full_report,      { If report required }
+				      output_grid,      { Grid to put output on }
+				      sample_pass,
+				      report_called ,
+				      emlp_samp_obj ,
+				      emlp_prod_obj )         
+					    
+	emlp_sample = emlp_samp_obj
+	
+	emlp_product = emlp_prod_obj
+	
+	CSMLP_dynamic_sample ( id_num          ,
+			       mlp_id          ,
+			       mlp_ver         ,
+			       NULL            ,
+			       level_id        ,
+			       report_required ,
+			       full_report     ,
+			       output_grid     ,
+			       sample_pass     ,
+			       report_called   )
+				       
+ENDROUTINE
+{------------------------------------------------------------------------------}
+{ Compare all sample's tests with MLP and dynamic MLP level limits }
+
+GLOBAL ROUTINE CSMLP_dynamic_sample ( VALUE id_num,           { sample id }
+				      VALUE mlp_id,
+				      VALUE mlp_ver,
+				      VALUE dynamic_mlp,
+				      VALUE level_id,
+				      VALUE report_required,
+				      VALUE full_report,      { If report required }
+					    output_grid,      { Grid to put output on }
+					    sample_pass,
+					    report_called )   { If report required }
+
+	DECLARE num, test_in_spec, spare, component
+	DECLARE analysis_list, current_user_1, current_format, report_type
+	DECLARE msg_window, mlp_components, component_count, pre_check_total_comp_test
+
+	ARRAY analysis_list     { analyses for MLP }
+
+	success     = TRUE      { Assume no errors occurred }
+	sample_pass = TRUE      { Assume sample passed comparison }
+
+	{ Define user variable so know when to do initialisation }
+
+	define_csmlp_global ()
+	current_user_1 = read_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL )
+	IF ( current_user_1 <> "BACK_CSMLP" ) THEN
+		assign_csmlp_global ( "CSMLP_sample" )
+	ENDIF
+
+	global_variables ()
+
+	current_format = GLOBAL ("FORMAT_TEXT")
+	SET FORMAT "9999999999"
+
+	{ Format the passed parameters appropriately }
+
+	id_num  = STRING ( NUMERIC ( id_num  ) )
+	mlp_id  = STRIP  ( TOUPPER ( mlp_id  ) )
+	mlp_ver = STRING ( NUMERIC ( mlp_ver ) )
+
+	put_csmlp_message ( "LIB_CSMLP_MESS_2", msg_window )
+
+	get_levels_data ( mlp_id      ,
+			  mlp_ver     ,
+			  dynamic_mlp ,
+			  level_id    ,
+			  levels_data )
+
+	success = build_unique_analysis_list ( mlp_id        ,
+			  		       mlp_ver       ,
+					       dynamic_mlp   ,
+				     	       analysis_list )
+
+	remove_csmlp_message ( msg_window )
+
+	{ Go through all possible analyses for product }
+
+	num = 1
+	WHILE ( analysis_list [ num ] <> EMPTY ) DO
+
+   		IF ( analysis_list [ num ] = BLANK_ANALYSIS ) THEN
+
+      			{ no analysis id - just component name }
+
+			lib_mlps_get_components_all ( mlp_id                ,
+						      mlp_ver               ,
+						      dynamic_mlp           ,
+						      analysis_list [ num ] ,
+						      mlp_components        )
+
+			component_count = 1
+
+			WHILE component_count <= size_of_array ( mlp_components ) DO
+
+				component = mlp_components [ component_count ]
+
+      				pre_check_total_comp_test = total_comp_test
+      				get_any_test_for_comp ( id_num,
+							mlp_id, mlp_ver,
+							dynamic_mlp,
+							component,
+				 			level_id,
+							levels_data,
+							output_grid,
+                             				test_in_spec )
+
+   				IF NOT test_in_spec THEN
+      					sample_pass = FALSE
+   				ENDIF
+   				
+   				IF( total_comp_test = pre_check_total_comp_test ) THEN
+   				
+   					emlp_sample_add_missing_test_comp( 
+   					GET_USER_MESSAGE( "LIB_ECSMLP_ERROR_NULL_ANALYSIS", 1 ) , 
+   					                                              component )
+
+   				ENDIF
+
+				component_count = component_count + 1
+
+ 			ENDWHILE
+
+   		ELSE
+
+      			get_every_test_for_anal ( id_num,
+						  mlp_id, mlp_ver,
+						  dynamic_mlp,
+						  analysis_list [ num ],
+						  level_id,
+						  levels_data,
+						  output_grid,
+                               			  test_in_spec )
+
+   			{ Analysis did not pass comparison so fail sample }
+
+   			IF NOT test_in_spec THEN
+      				sample_pass = FALSE
+   			ENDIF
+
+   		ENDIF
+
+   		num = num + 1
+
+	ENDWHILE
+
+	spare = EMPTY
+
+	{ Call automatic routine }
+
+	IF ( CSM_auto_routine_call = "ALWAYS" ) OR
+	   ( ( CSM_auto_routine_call = "PASS" ) AND sample_pass ) OR
+	   ( ( CSM_auto_routine_call = "FAIL" ) AND NOT sample_pass ) THEN
+
+   		CALL_ROUTINE CSM_comparison_rtn
+			USING mlp_id,
+			      mlp_ver,
+			      id_num,
+			      sample_pass,
+			      comp_list,
+			      levels_data,
+			      dynamic_mlp,
+			      spare
+			IN LIBRARY CSM_comparison_lib
+	ENDIF
+
+	{ Display whether sample failed comparison or not on output_grid }
+
+	display_sample_processing_info ( total_comp_test,
+					 sample_pass,
+					 out_limits,
+					 res_missing,
+					 not_assigned,
+					 output_grid )
+
+	{ Log comparison outcome }
+
+   	log_outcome ( CSM_log_outcome,
+		      sample_pass,
+		      " ",
+		      id_num,
+		      mlp_id,
+		      mlp_ver,
+		      level_id )
+
+	IF ( report_required AND success ) THEN
+
+   		IF full_report THEN
+			report_type = FULL_REPORT_TYPE
+		ELSE
+			report_type = SUMMARY_REPORT_TYPE
+		ENDIF
+
+		call_report_routine ( report_type,
+				      mlp_id,
+				      mlp_ver,
+				      id_num,
+		      		      " ",	{ test_id }
+				      sample_pass,
+				      not_assigned,
+				      out_limits,
+				      comp_list,
+				      levels_data,
+				      total_comps,
+				      dynamic_mlp,
+				      spare,
+				      report_called )
+	ENDIF
+
+	SET FORMAT current_format
+	assign_csmlp_global ( current_user_1 )
+
+	RETURN ( success )
+
+ENDROUTINE     { end of CSMLP_sample }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE create_csm_pipe ( pipe_name )
+
+	{ Create the pipe down which sample information will arrive }
+
+	DECLARE return_status, pipe_status
+
+	return_status = TRUE
+	pipe_name = csm_pipe_name
+
+	IF ( csm_pipe_type = "REMOTE" ) THEN
+		PIPE CREATE REMOTE pipe_name, pipe_status
+	ELSE
+		PIPE CREATE LOCAL pipe_name, pipe_status
+   	ENDIF
+
+	IF ( pipe_status <> EMPTY ) THEN
+   		errors ( pipe_status )
+		return_status = FALSE
+	ENDIF
+
+	RETURN ( return_status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE open_csm_pipe ( pipe_name )
+
+	DECLARE pipe_status, return_status
+
+	return_status = TRUE
+
+	IF ( CSM_pipe_type = "REMOTE" ) THEN
+
+   		pipe_name = remote_CSM_pipe_name
+   		PIPE OPEN REMOTE pipe_name, pipe_status
+	ELSE
+   		pipe_name = CSM_pipe_name
+   		PIPE OPEN LOCAL pipe_name, pipe_status
+
+	ENDIF
+
+	IF ( pipe_status <> EMPTY ) THEN
+		errors ( pipe_status )
+		return_status = FALSE
+	ENDIF
+
+	RETURN ( return_status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE send_csm_pipe_message ( VALUE message )
+
+	DECLARE pipe_being_used, pipe_status, return_status
+
+	return_status = TRUE
+
+	IF ( open_csm_pipe ( pipe_being_used ) ) THEN
+
+   		PIPE WRITE pipe_being_used, message, pipe_status
+
+   		IF ( pipe_status <> EMPTY ) THEN
+      			errors ( pipe_status )
+			return_status = FALSE
+   		ENDIF
+
+		PIPE CLOSE pipe_being_used, pipe_status
+
+		IF ( pipe_status <> EMPTY ) THEN
+      			errors ( pipe_status )
+			return_status = FALSE
+   		ENDIF
+	ELSE
+		return_status = FALSE
+	ENDIF
+
+	RETURN ( return_status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Background Comparison Activation routines }
+
+{ Compare single test with MLP and dynamic MLP level limits }
+
+GLOBAL ROUTINE CSMLP_back_test ( VALUE test_number,
+                                 VALUE mlp_id,
+                                 VALUE mlp_ver,
+                                 VALUE level_id,
+                                 VALUE report_required,
+                                 VALUE full_report,     { If report required }
+                                 VALUE printer_id )     { If report required }
+
+	RETURN( CSMLP_dynamic_back_test ( test_number      ,
+					  mlp_id           ,
+					  mlp_ver          ,
+					  FALSE            ,
+					  level_id         ,
+					  report_required  ,
+					  full_report      ,
+					  printer_id       ) )
+	
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Compare single test with MLP and dynamic MLP level limits }
+
+GLOBAL ROUTINE CSMLP_dynamic_back_test ( VALUE test_number,
+					 VALUE mlp_id,
+					 VALUE mlp_ver,
+					 VALUE use_dynamic_product, {boolean}
+					 VALUE level_id,
+					 VALUE report_required,
+					 VALUE full_report,     { If report required }
+					 VALUE printer_id )     { If report required }
+
+	DECLARE msg, current_format
+
+	success = TRUE
+
+	{ Validate the entries }
+
+	IF ( NOT NUMTEXT ( test_number ) ) THEN
+		success = FALSE
+
+	ELSEIF ( mlp_id = EMPTY ) THEN
+		success = FALSE
+
+	ELSEIF ( NOT NUMTEXT ( mlp_ver ) ) THEN
+		success = FALSE
+
+	ELSEIF ( ( report_required <> "TRUE"  ) AND
+		 ( report_required <> "FALSE" ) ) THEN
+		success = FALSE
+
+	ELSEIF ( ( full_report <> "TRUE"  ) AND
+		 ( full_report <> "FALSE" ) ) THEN
+		success = FALSE
+	ENDIF
+
+	IF ( success ) THEN
+
+		current_format = GLOBAL ("FORMAT_TEXT")
+		SET FORMAT "9999999999"
+
+		IF ( level_id = EMPTY ) THEN
+			level_id = " "
+		ENDIF
+
+		{ Set up message to write to pipe }
+
+		msg = "T" : PAD ( STRING (NUMERIC (test_number)), " ", 10 ) :
+			    PAD ( TOUPPER (mlp_id), " ", 10 ) :
+	       		    PAD ( STRING (NUMERIC (mlp_ver)), " ", 10 ):
+		            PAD ( TOUPPER (level_id), " ", 10 ) :
+			    PAD ( report_required, " ",5 ) :
+		            PAD ( full_report, " ", 5 ) :
+	      		    PAD ( TOUPPER (printer_id), " ", 10 ) :
+			    PAD ( use_dynamic_product, " ", 5 )
+
+		success = send_csm_pipe_message ( msg )
+
+		SET FORMAT current_format
+
+	ENDIF
+
+	RETURN ( success )
+
+ENDROUTINE   { End CSMLP_back_test }
+
+{------------------------------------------------------------------------------}
+
+{ Compare all sample's tests with MLP and dynamic MLP level limits }
+
+GLOBAL ROUTINE CSMLP_back_sample ( VALUE id_num,            { sample id }
+				   VALUE mlp_id,
+				   VALUE mlp_ver,
+				   VALUE level_id,
+				   VALUE report_required,
+				   VALUE full_report,   { If report required }
+				   VALUE printer_id )   { If report required }
+
+	RETURN( CSMLP_dynamic_back_sample ( id_num          ,
+					    mlp_id          ,
+					    mlp_ver         ,
+					    FALSE           ,
+					    level_id        ,
+					    report_required ,
+					    full_report     ,
+					    printer_id      ) )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Compare all sample's tests with MLP level limits }
+
+GLOBAL ROUTINE CSMLP_dynamic_back_sample ( VALUE id_num,            { sample id }
+					   VALUE mlp_id,
+					   VALUE mlp_ver,
+					   VALUE use_dynamic_product, {boolean}
+					   VALUE level_id,
+					   VALUE report_required,
+					   VALUE full_report,   { If report required }
+					   VALUE printer_id )   { If report required }
+
+	DECLARE msg, current_format
+
+	success = TRUE
+
+	{ Validate the entries }
+
+	IF ( NOT NUMTEXT ( id_num ) ) THEN
+		success = FALSE
+
+	ELSEIF ( mlp_id = EMPTY ) THEN
+		success = FALSE
+
+	ELSEIF ( NOT NUMTEXT ( mlp_ver ) ) THEN
+		success = FALSE
+
+	ELSEIF ( ( report_required <> "TRUE"  ) AND
+		 ( report_required <> "FALSE" ) ) THEN
+		success = FALSE
+
+	ELSEIF ( ( full_report <> "TRUE"  ) AND
+		 ( full_report <> "FALSE" ) ) THEN
+		success = FALSE
+	ENDIF
+
+	IF ( success ) THEN
+
+		IF level_id = EMPTY THEN
+   			level_id = " "
+		ENDIF
+
+		current_format = GLOBAL ("FORMAT_TEXT")
+		SET FORMAT "9999999999"
+
+		{ Set up message to write to pipe }
+
+		msg = "S" : PAD ( STRING (NUMERIC (id_num)), " ", 10 ) :
+			    PAD ( TOUPPER (mlp_id), " ", 10 ) :
+			    PAD ( STRING (NUMERIC (mlp_ver)), " ", 10 ) :
+			    PAD ( TOUPPER (level_id), " ", 10 ) :
+			    PAD ( report_required, " ",5 ) :
+			    PAD ( full_report, " ", 5 ) :
+			    PAD ( TOUPPER (printer_id), " ", 10 ) :
+			    PAD ( use_dynamic_product, " ", 5 )
+
+		success = send_csm_pipe_message ( msg )
+
+		SET FORMAT current_format
+
+	ENDIF
+
+	RETURN ( success )
+
+ENDROUTINE   { end of CSMLP_back_sample }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE CSMLP_back_terminate ( VALUE dummy_parameter )
+
+	{ Terminate $BACK_CSMLP by sending a terminate message to it }
+
+	DECLARE msg
+
+	msg = BACKCSMLP_EXIT_FLAG
+
+	success = send_csm_pipe_message ( msg )
+
+	RETURN ( success )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE CSMLP_result ( VALUE mlp_id,
+                              VALUE mlp_ver,
+                              VALUE anal_id,
+                              VALUE comp_name,
+                              VALUE level_id,
+                              VALUE result,
+                                    in_spec )
+
+	{ Check result against specificiation }
+	
+	RETURN( CSMLP_dynamic_result ( mlp_id      ,
+				       mlp_ver     ,
+				       NULL        ,
+				       anal_id     ,
+				       comp_name   ,
+				       level_id    ,
+				       result      ,
+				       in_spec     ) )
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE CSMLP_dynamic_result ( VALUE mlp_id      ,
+				      VALUE mlp_ver     ,
+				      VALUE dynamic_mlp ,
+				      VALUE anal_id     ,
+				      VALUE comp_name   ,
+				      VALUE level_id    ,
+				      VALUE result      ,
+					    in_spec     )
+
+	DECLARE mlp_operation ,
+		sample_object ,
+		test_object   ,
+		result_object ,
+		common_fields ,
+		count         ,
+		comp_id       ,
+		res_context   ,
+		result_part   ,
+		unit_part
+
+        global_variables ( )
+
+	CREATE OBJECT MLP_SAMPLE_CLASS, sample_object
+
+	CREATE OBJECT MLP_TEST_CLASS, test_object
+
+	CREATE OBJECT MLP_RESULT_CLASS, result_object
+
+	CREATE OBJECT MLP_OPERATION_CLASS, mlp_operation
+	
+	push_file_descriptor ( "RESULT", res_context )
+	
+	record_create ( "RESULT" )
+	
+	comp_id = SELECT component . name
+	          WHERE  ( analysis = anal_id ) AND
+	                 ( name     = comp_name )
+	                 
+	IF comp_id = comp_name THEN
+	
+		lib_re_result_get_common_fields ( common_fields )
+
+		count = 1
+
+		WHILE common_fields [ count ] <> EMPTY DO
+
+			ASSIGN result . 'common_fields [ count ]' =
+				  SELECT component . 'common_fields [ count ]'
+
+			count = count + 1
+
+		ENDWHILE
+
+	ENDIF
+
+	object_copy_current_table ( result_object, "RESULT" )
+
+	mlp_operation . mlp_identity             = mlp_id
+	mlp_operation . mlp_version              = mlp_ver
+	mlp_operation . dynamic_identity         = dynamic_mlp
+	mlp_operation . analysis                 = anal_id
+	mlp_operation . component                = comp_name
+	mlp_operation . perform_level_operations = FALSE
+	mlp_operation . compare_only_grade_code  = FALSE
+	mlp_operation . sample_row               = sample_object
+	mlp_operation . test_row                 = test_object
+	mlp_operation . result_row               = result_object
+	mlp_operation . result_value             = result
+
+	unit_split_result ( result      ,
+	                    result_part ,
+	                    unit_part   )
+
+	IF unit_part <> "" THEN
+
+		mlp_operation . result_value = result_part
+		ASSIGN result . units IN OBJECT result_object = unit_part
+
+	ENDIF
+
+	mlp_operation . compare ()
+
+	in_spec = ( mlp_operation . final_status = MLP_CONST_PASS )
+
+	pop_file_descriptor ( res_context )
+
+	RETURN ( TRUE )
+
+ENDROUTINE     { end of CSMLP_result }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE result_in_limits ( VALUE res_str,
+				  VALUE num_or_text,
+				  VALUE min_str,
+				  VALUE max_str,
+				  VALUE text_spec )
+
+	DECLARE ok, res_num, open_ended, level_min_num, level_max_num,
+		chevron
+
+	ok = TRUE
+
+	IF num_or_text= "N" THEN
+
+		{ Numeric limit }
+
+		chevron = " "
+
+		IF INDEX (res_str, "<") > 0 THEN
+			res_str = res_str # "<"
+			chevron = "<"
+		ELSEIF INDEX (res_str, ">") > 0 THEN
+			res_str = res_str # ">"
+			chevron = ">"
+		ENDIF
+
+		res_str = STRIP ( res_str )
+		IF NUMTEXT( res_str ) THEN
+			res_num = NUMERIC ( res_str )
+		ELSE
+			res_num = res_str
+		ENDIF
+
+		open_ended = GLOBAL ("DEFINE_OPEN_ENDED")
+
+		level_min_num = NUMERIC ( STRIP ( min_str ) )
+		level_max_num = NUMERIC ( STRIP ( max_str ) )
+
+		IF ( INDEX ( min_str, ">" ) > 0 ) THEN
+
+			IF ( res_num > level_min_num ) THEN
+				ok = FALSE
+			ELSEIF ( chevron = ">" ) AND
+			       ( res_num >= level_min_num ) THEN
+				ok = FALSE
+			ENDIF
+
+			IF ( open_ended = "IN_SPEC" ) THEN
+				ok = NOT ok
+			ENDIF
+
+		ELSEIF ( INDEX (min_str, "<") > 0 ) THEN
+
+			IF ( res_num < level_min_num ) THEN
+				ok = FALSE
+			ELSEIF ( chevron = "<" ) AND
+			       ( res_num <= level_min_num ) THEN
+				ok = FALSE
+			ENDIF
+
+			IF ( open_ended = "IN_SPEC" ) THEN
+				ok = NOT ok
+			ENDIF
+		ELSE
+			{ Note that a blank limit implies no checking,
+			  not a zero limit }
+
+			IF ( max_str <> " " ) THEN
+
+				IF ( res_num > level_max_num ) THEN
+					ok = FALSE
+				ELSEIF ( ( chevron = ">" ) AND
+				 	 ( res_num >= level_max_num ) ) THEN
+					ok = FALSE
+				ENDIF
+
+			ENDIF
+
+			IF ( min_str <> " " ) THEN
+				IF ( res_num < level_min_num ) THEN
+					ok = FALSE
+				ELSEIF ( ( chevron = "<" ) AND
+				 	 ( res_num <= level_min_num ) ) THEN
+					ok = FALSE
+				ENDIF
+			ENDIF
+
+		ENDIF
+
+	ELSE
+		{ Text validation }
+
+   		IF ( ( TOUPPER (STRIP (res_str) ) <>
+		       TOUPPER (STRIP (text_spec) ) ) AND
+	     	     ( text_spec <> " " ) ) THEN
+
+      			ok = FALSE
+   		ENDIF
+
+	ENDIF
+
+	RETURN (ok)
+
+ENDROUTINE     { end of result_in_limits }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE compare_levels ( VALUE mlp_id          ,
+			 VALUE mlp_ver         ,
+			 VALUE dynamic_mlp     ,
+			       levels_data     ,
+			       comp_list       ,
+			 VALUE comp_num        ,
+			       output_grid     ,
+			       component_pass  )
+
+	{ Compare the current component against all MLP levels specified }
+
+	DECLARE level_num       ,
+	        level_pass      ,
+		mlp_operation   ,
+		first_time      ,
+		sample_object   ,
+		test_object     ,
+		sample          ,
+	        array_index
+
+	CREATE OBJECT MLP_TEST_CLASS, test_object
+
+	sample = SELECT test . sample
+		 IN OBJECT test_object
+		 WHERE test_number = comp_list [ comp_num , 4 ]
+
+	CREATE OBJECT MLP_SAMPLE_CLASS, sample_object
+
+	IF sample <> EMPTY THEN
+
+		sample = SELECT sample . id_numeric
+			 IN OBJECT sample_object
+			 WHERE id_numeric = sample
+
+	ENDIF
+
+	CREATE OBJECT MLP_OPERATION_CLASS, mlp_operation
+
+	mlp_operation . mlp_identity     = mlp_id
+	mlp_operation . mlp_version      = mlp_ver
+	mlp_operation . dynamic_identity = dynamic_mlp
+	mlp_operation . analysis         = comp_list [ comp_num, 1 ]
+	mlp_operation . component        = comp_list [ comp_num, 2 ]
+	mlp_operation . perform_level_operations = FALSE
+	mlp_operation . compare_only_grade_code  = TRUE
+	mlp_operation . sample_row       = sample_object
+	mlp_operation . test_row         = test_object
+
+	level_pass = TRUE
+	first_time = TRUE
+	level_num  = 1
+
+	{ Now do comparison for all levels (if level_id not specified) }
+
+	WHILE ( levels_data [ level_num, LEVEL_ID_COL ] <> EMPTY ) DO
+
+   		do_comparison ( mlp_id,
+				mlp_ver,
+				comp_list [ comp_num, 1 ],
+				comp_list [ comp_num, 3 ],
+				comp_list [ comp_num, 4 ],
+				comp_list [ comp_num, 2 ],
+				comp_list [ comp_num, 5 ],
+				comp_list,
+				comp_num,
+				levels_data,
+				level_num,
+			        output_grid,
+				mlp_operation,
+				first_time,
+				not_assigned,
+				out_limits,
+                   		res_missing,
+				level_pass )
+
+		first_time = FALSE
+
+   		{ Comparison failed for this level for this test }
+
+   		IF NOT level_pass THEN
+      			levels_data [ level_num , LEVEL_PASS_COL ] = FALSE
+   		ENDIF
+
+   		level_num = level_num + 1
+
+	ENDWHILE
+
+	{ Work out the overall status of the compoennt }
+
+	component_pass = TRUE
+	level_num  = 1
+
+	WHILE ( levels_data [ level_num, LEVEL_ID_COL ] <> EMPTY ) DO
+{**AS1511 HBe 15-12-03: Open ended results give problems. This is temporary solution to avoid dumps...}
+                IF comp_list [ comp_num, 10 + level_num ] = EMPTY 
+                THEN comp_list [ comp_num, 10 + level_num ] = FALSE 
+                ENDIF
+{**AE1511}
+		ARRAY array_index ARRAYSIZE ( 0 )
+
+		array_index [ 1 ] = comp_num
+		array_index [ 2 ] = 10 + level_num
+
+		IF ARRAY_ELEMENT_EXISTS ( comp_list, array_index ) THEN
+
+			IF comp_list [ comp_num, 10 + level_num ] <> EMPTY THEN
+
+				IF NOT comp_list [ comp_num, 10 + level_num ] THEN
+					component_pass = FALSE
+				ENDIF
+
+			ENDIF
+
+		ENDIF
+		
+		level_num = level_num + 1
+
+	ENDWHILE
+
+	comp_list [ comp_num, 7 ] = component_pass
+	emlp_sample_set_comp_pass_status( comp_list[ comp_num, 4 ] ,
+	                                  comp_list[ comp_num, 2 ] ,
+	                                  component_pass           )
+
+ENDROUTINE      { end of compare_levels }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE fill_comp_list_array (       comp_list     ,
+			       VALUE comp_num      ,
+			             mlp_operation ,
+			       VALUE count	   )
+
+	comp_list [ comp_num ,5 ] = SELECT mlp_components . component_type
+				    IN OBJECT mlp_operation . components [count]
+
+	comp_list [ comp_num ,6 ] = SELECT mlp_components . entry_code
+			            IN OBJECT mlp_operation . components [count]
+
+	comp_list [ comp_num ,8 ] = strip ( SELECT mlp_components . typical_text
+					    IN OBJECT mlp_operation . components [count]
+								  )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE expand_comp_list_array (       comp_list      ,
+				       comp_num       ,
+				       mlp_operation  ,
+				 VALUE first_time     )
+
+	DECLARE count   ,
+		next_pos
+
+	count = 1
+
+	WHILE count <= size_of_array ( mlp_operation . components ) DO
+
+		IF ( count > 1 ) AND ( first_time ) THEN
+
+			next_pos = comp_num + count - 1
+
+			array_insert_slice ( comp_list  ,
+					     1          ,
+					     next_pos   )
+
+			comp_list [ next_pos , 1 ] =
+				comp_list [ comp_num    , 1 ]
+
+			comp_list [ next_pos , 2 ] =
+				comp_list [ comp_num , 2 ]
+
+			comp_list [ next_pos , 3 ] =
+				comp_list [ comp_num , 3 ]
+
+			comp_list [ next_pos , 4 ] =
+				comp_list [ comp_num , 4 ]
+
+			comp_list [ next_pos , 5 ] =
+				comp_list [ comp_num , 5 ]
+
+			comp_list [ next_pos , 6 ] =
+				comp_list [ comp_num , 6 ]
+
+			comp_list [ next_pos , 7 ] =
+				comp_list [ comp_num , 7 ]
+
+			comp_list [ next_pos , 8 ] =
+				comp_list [ comp_num , 8 ]
+
+			comp_list [ next_pos , 9 ] =
+				comp_list [ comp_num , 9 ]
+
+			comp_list [ next_pos , 10 ] =
+				comp_list [ comp_num , 10 ]
+
+		ENDIF
+
+		fill_comp_list_array ( comp_list            ,
+				       comp_num + count - 1 ,
+				       mlp_operation        ,
+				       count                )
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_pass_fail_status (         comp_list      ,
+				 VALUE comp_num       ,
+				 VALUE level_num      ,
+				       mlp_operation  ,
+				 VALUE force_status   )
+
+	DECLARE count     ,
+		is_pass
+
+	count = 1
+
+	WHILE count <= size_of_array ( mlp_operation . components ) DO
+
+		IF mlp_operation . limits [ count ] <> EMPTY THEN
+
+			IF force_status <> EMPTY THEN
+
+				is_pass = force_status
+
+       			ELSE
+
+				is_pass = mlp_operation .
+					       limits [ count ] . status =
+							MLP_CONST_PASS
+
+	 		ENDIF
+
+		ELSE
+
+			is_pass = TRUE
+
+       		ENDIF
+
+		comp_list [ comp_num + count - 1 , 10 + level_num ] = is_pass
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_result_text (        comp_list      ,
+			   VALUE comp_num       ,
+		           VALUE result_text    ,
+			   VALUE result_units   ,
+				 mlp_operation  )
+
+	DECLARE count
+
+	comp_list [ comp_num  , 9  ] = result_text
+	comp_list [ comp_num  , 10 ] = result_units
+
+	count = 1
+
+	WHILE count < size_of_array ( mlp_operation . limits ) DO
+
+		comp_list [ comp_num + count , 9  ] = NULL
+		comp_list [ comp_num + count , 10 ] = result_units
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE do_comparison ( VALUE mlp_id,
+			VALUE mlp_ver,
+			VALUE analysis_id,
+			VALUE replicate_count,
+			VALUE test_number,
+			VALUE component,
+			VALUE component_type,
+			      comp_list,
+			      comp_num,
+		              levels_data,
+			VALUE level_reached,
+			      output_grid,
+			      mlp_operation,
+			VALUE first_time,
+			      not_assigned,
+                              out_limits,
+			      res_missing,
+			      level_pass )
+
+	DECLARE level_id, display_level_id, result_object
+        DECLARE result_text, result_units
+        DECLARE raw_result, proc_result
+
+	CREATE OBJECT MLP_RESULT_CLASS , result_object
+
+	level_pass = TRUE
+
+	IF ( test_number = EMPTY ) THEN
+
+   		{ This test not assigned to sample.
+   		  Check to see if flag set before deciding to pass
+		  this unassigned test }
+
+   		IF CSM_pass_missing_test THEN
+			level_pass = TRUE
+   		ELSE
+			level_pass = FALSE
+      			not_assigned = TRUE
+   		ENDIF
+
+	ELSE
+
+		level_id = levels_data [ level_reached, LEVEL_ID_COL ]
+		mlp_operation . grade_code = level_id
+		mlp_operation . build ()
+
+		expand_comp_list_array ( comp_list     ,
+					 comp_num      ,
+					 mlp_operation ,
+					 first_time    )
+
+		IF ( levels_data [ 2, LEVEL_ID_COL ] = EMPTY ) THEN
+			display_level_id = ""
+		ELSE
+			display_level_id = level_id
+		ENDIF
+
+   		IF get_comp_result1 ( test_number,
+				      component,
+                       		      component_type,
+				      result_text,
+                       		      result_units,
+				      result_object ,
+				      raw_result    ,
+				      proc_result   ) THEN
+
+			set_result_text ( comp_list     ,
+					  comp_num      ,
+					  result_text   ,
+					  result_units  ,
+					  mlp_operation )
+
+			mlp_operation . result_row   = result_object
+			mlp_operation . result_value = result_text
+			mlp_operation . compare ()
+
+			IF mlp_operation . number_of_limits = 0 THEN
+
+				set_pass_fail_status ( comp_list     ,
+						       comp_num      ,
+						       level_reached ,
+						       mlp_operation ,
+						       TRUE          )
+
+         			IF ( ( GLOBAL ("MODE") <> "INTERACTIVE" ) OR
+		     		     ( DEBUG_AS_BACKGROUND )              ) THEN
+
+					analysis_id = convert_null_analysis (
+						     		  analysis_id )
+
+            				errors (
+					 GET_USER_MESSAGE("LIB_CSMLP_ERR_14",1):
+                       			 STRIP( component ) :
+					 GET_USER_MESSAGE("LIB_CSMLP_ERR_15",1):
+                       			 mlp_id : ".": STRIP(mlp_ver):
+					 GET_USER_MESSAGE("LIB_CSMLP_ERR_13",1):
+                       			 STRIP( analysis_id ) :
+					 GET_USER_MESSAGE("LIB_CSMLP_ERR_16",1):
+		       			 level_id )
+         			ENDIF
+
+      			ELSE
+
+				set_pass_fail_status ( comp_list     ,
+						       comp_num      ,
+						       level_reached ,
+						       mlp_operation ,
+						       EMPTY         )
+
+				IF mlp_operation . final_status = MLP_CONST_PASS THEN
+
+	            			level_pass = TRUE
+
+       				ELSE
+
+	            			level_pass = FALSE
+        	    			out_limits = TRUE
+
+	    				display_result_info ( analysis_id,
+							      display_level_id,
+							      replicate_count,
+							      component,
+							      result_text,
+				    			      result_units,
+							      output_grid )
+
+				ENDIF
+
+				emlp_sample_add_comp_level( test_number, analysis_id, component, level_id, level_pass, mlp_operation . limits, raw_result, proc_result )
+      			ENDIF
+
+   		ELSE  { no result or rejected result to be ignored
+			for this component }
+
+      			{ Check flag before deciding whether to pass
+			  missing result }
+			emlp_sample_add_missing_comp( test_number, analysis_id, component )
+
+      			IF ( SELECT result.status
+				IN OBJECT result_object = EMPTY ) OR
+			   ( SELECT result.status
+				IN OBJECT result_object = "U"   ) THEN
+
+         			IF CSM_pass_incomp_test THEN
+	    				level_pass = TRUE
+         			ELSE
+	    				level_pass = FALSE
+
+            				IF level_reached = 1 THEN
+
+	       					display_result_info (
+							       analysis_id,
+							       display_level_id,
+							       replicate_count,
+							       component,
+                                                               EMPTY,
+							       " ",
+							       output_grid )
+            				ENDIF
+            				res_missing = TRUE
+         			ENDIF
+
+				set_pass_fail_status ( comp_list     ,
+						       comp_num      ,
+						       level_reached ,
+						       mlp_operation ,
+						       level_pass    )
+
+      			ELSE
+
+         			{ Dont want to show rejected result on report }
+
+         			result_units =
+				     GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_2" ,1)
+
+         			IF level_reached = 1 THEN
+            				total_comp_test = total_comp_test - 1
+         			ENDIF
+
+		      	ENDIF
+
+   		ENDIF
+
+	ENDIF
+
+ENDROUTINE     { end of do_comparison }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE display_result_info ( VALUE anal_id,
+			      VALUE level_id,
+			      VALUE rep_num,
+			      VALUE comp,
+                              VALUE res,
+			      VALUE units,
+				    output_grid )
+
+	{ Are not displaying off spec results on screen
+	  for single test comparisons }
+
+	DECLARE line
+
+	IF ( read_user_global ( CSMLP_CLUSTER, CSMLP_GLOBAL )
+							<> "CSMLP_sample" ) THEN
+   		RETURN
+	ENDIF
+
+   	anal_id = convert_null_analysis ( anal_id )
+
+	IF ( ( level_id <> "" ) AND
+	     ( res <> EMPTY )    ) THEN
+
+   		line =  STRIP ( anal_id ) : "/" :
+			STRIP ( rep_num ) :
+      			GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_3" ,1 ) :
+			STRIP ( level_id )
+	ELSE
+   		line = STRIP ( anal_id ) : "/" : STRIP ( rep_num )
+ 	ENDIF
+
+	insert_processing_line ( line, TRUE, output_grid )
+
+	IF ( res = EMPTY ) THEN
+		res = GET_USER_MESSAGE( "LIB_CSMLP_DISPLAY_1",1 )
+	ENDIF
+
+	line = 	PAD ( STRIP ( LEFTSTRING ( comp, 26 ) ), " ",27) :
+               	":" : res : " " : units
+
+	insert_processing_line ( line, FALSE, output_grid )
+
+ENDROUTINE     { end of display_result_info }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_comp_result ( VALUE test_num,
+                          VALUE comp_name,
+                          VALUE expected_res_type,
+                          res_str,
+			  res_units )
+
+	DECLARE ok, temp_res
+
+	ok      = FALSE
+
+	res_str = RESULTSTRING ( SELECT test.sample_id, test_num, comp_name )
+
+	IF ( res_str <> EMPTY ) THEN
+
+   		res_str = STRIP (res_str)
+
+   		res_units = SELECT result.units
+               			WHERE ( ( test_number = test_num ) AND
+                     		        ( component_name = comp_name ) )
+
+   		{ Ignore rejected result ? }
+
+	   	IF NOT CSM_ignore_cancelled OR
+			(SELECT result.status <> "R") THEN
+
+      			IF ( expected_res_type = "N" ) THEN
+
+				{ Take out any chevrons and then check
+				  the result is numeric }
+
+            			temp_res = res_str # "<" # ">"
+         			ok = NUMTEXT ( temp_res )
+      			ELSE
+
+         			ok = TRUE
+      			ENDIF
+
+   		ENDIF
+
+	ELSE
+   		res_units = " "
+
+   		IF SELECT result.status <> EMPTY
+      			NEXT result
+   		ENDIF
+	ENDIF
+
+	IF ( res_units = EMPTY ) THEN
+   		res_units = " "
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE      { end of get_comp_result )
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_comp_result1 ( VALUE test_num,
+                           VALUE comp_name,
+                           VALUE expected_res_type,
+                                 res_str,
+			         res_units,
+				 result_object ,
+				 raw_result    ,
+				 proc_result   )
+
+	DECLARE ok, temp_res
+
+	ok      = FALSE
+
+	raw_result = get_comp_raw_result( test_num, comp_name, result_object )
+	
+	proc_result = get_comp_proc_result( test_num, comp_name, result_object )
+		
+	IF ( result_is_numeric( result_object ) ) THEN
+	
+		IF ( emlp_use_raw_results() ) THEN
+
+			res_str = raw_result
+
+		ELSE
+
+			res_str = proc_result
+
+		ENDIF
+		
+	ELSE
+	
+		res_str = proc_result
+		
+		raw_result = ""
+		
+	ENDIF
+	IF ( res_str <> EMPTY ) THEN
+
+   		res_str = STRIP (res_str)
+
+   		res_units = SELECT result.units
+			    IN OBJECT result_object
+
+   		{ Ignore rejected result ? }
+
+	   	IF ( NOT CSM_ignore_cancelled OR
+			( SELECT result.status IN OBJECT result_object <> "R" ) )  AND
+			( SELECT result.status IN OBJECT result_object <> "U" )    THEN
+
+      			IF ( expected_res_type = "N" ) THEN
+
+				{ Take out any chevrons and then check
+				  the result is numeric }
+
+            			temp_res = res_str # "<" # ">" # "="
+         			ok = NUMTEXT ( temp_res )
+      			ELSE
+
+         			ok = TRUE
+      			ENDIF
+
+   		ENDIF
+
+	ELSE
+   		res_units = " "
+
+   		IF SELECT result.status IN OBJECT result_object <> EMPTY
+      			NEXT result IN OBJECT result_object
+   		ENDIF
+	ENDIF
+
+	IF ( res_units = EMPTY ) THEN
+   		res_units = " "
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE      { end of get_comp_result )
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_every_test_for_anal ( VALUE samp_id,
+				  VALUE mlp_id,
+				  VALUE mlp_ver,
+				  VALUE dynamic_mlp,
+				  VALUE anal_id,
+				  VALUE level_id,
+					levels_data,
+					output_grid,
+				        in_spec )
+
+	DECLARE pass, report_called, num, count, tests_list
+
+	ARRAY tests_list
+
+	in_spec = TRUE
+
+	tests_list [ 1 ] = SELECT test.test_number
+           		      WHERE ( sample_id = samp_id ) AND
+                 	            ( analysis_id = anal_id )
+
+	{ No test in the test table for this analysis }
+
+	IF ( tests_list [ 1 ] = EMPTY ) THEN
+		emlp_sample_add_missing_test( anal_id )
+	
+		IF NOT CSM_pass_missing_test THEN
+
+   		in_spec = FALSE
+   		not_assigned = TRUE
+
+   		{ Update levels_data array }
+
+   		count = 1
+   		WHILE ( levels_data [ count, LEVEL_ID_COL ] <> EMPTY ) DO
+      			levels_data [ count, LEVEL_PASS_COL ] = FALSE
+      			count = count + 1
+   		ENDWHILE
+		ENDIF
+	ENDIF
+
+	{ Get all test replicates for analysis }
+
+	num = 1
+	WHILE ( tests_list [ num ] <> EMPTY ) DO
+  		num = num + 1
+  		NEXT test
+  		tests_list [ num ] = SELECT test.test_number
+	ENDWHILE
+
+	num = 1
+	WHILE ( tests_list [ num ] <> EMPTY ) DO
+
+   		{ Do comparison for this test }
+
+	   	CSMLP_dynamic_test ( tests_list [ num ],
+				     mlp_id,
+				     mlp_ver,
+				     dynamic_mlp,
+				     level_id,
+				     FALSE,
+				     FALSE,
+				     output_grid,
+				     pass,
+				     report_called )
+		emlp_sample_set_test_pass_status( tests_list[ num ] , pass )				     
+
+   		{ Test failed comparison so component fails comparison }
+
+   		IF NOT pass THEN
+      			in_spec = FALSE
+   		ENDIF
+
+   		anal_id = SELECT mlp_components.analysis_id
+             			WHERE ( product_id = mlp_id ) AND
+                   		      ( product_version = mlp_ver )
+   		num = num + 1
+
+	ENDWHILE
+
+ENDROUTINE      { end of get_every_test_for_anal }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_any_test_for_comp ( VALUE samp_id,
+				VALUE mlp_id,
+				VALUE mlp_ver,
+				VALUe dynamic_mlp,
+				VALUE comp_name,
+				VALUE level_id,
+				levels_data,
+				output_grid,
+				pass )
+
+	DECLARE test_num, possible_comp, analysis_id, component_pass
+
+	{ All levels must pass for test to pass then assume pass then
+	  if get level which fails comparison will fail. }
+
+	IF CSM_all_levels_pass THEN
+   		pass = TRUE
+	ELSE
+   		{ else assume fail then if one level passes whole test will pass }
+   		pass = FALSE
+	ENDIF
+
+	test_num  = SELECT test.test_number
+            	     WHERE sample_id = samp_id
+
+	WHILE test_num <> EMPTY DO
+
+   		total_comps = total_comps + 1
+
+   		{ Optional if cancelled or suspended test to be compared }
+{M1742 HBe 25-10-2006: Also Rejected tests should be excluded}
+   		IF NOT CSM_ignore_cancelled OR
+       		   ( ( SELECT test.status <> "X" ) AND
+       		     ( SELECT test.status <> "R" ) AND
+	             ( SELECT test.status <> "S" ) ) THEN
+
+                      	analysis_id = SELECT test . analysis_id
+
+      			possible_comp = SELECT component.name
+                      			WHERE analysis_id = analysis_id
+
+      			WHILE possible_comp <> EMPTY DO
+
+         			IF possible_comp = comp_name THEN
+            				total_comp_test = total_comp_test + 1
+
+            				comp_list [total_comp_test, 1] =
+						   	analysis_id
+
+            				comp_list [total_comp_test, 2] =
+						   	comp_name
+
+            				comp_list [total_comp_test, 3] =
+					    		SELECT test . test_count
+
+            				comp_list [total_comp_test, 4] =
+					   		test_num
+
+	            			comp_list [total_comp_test, 5] =
+					   SELECT mlp_components.component_type
+
+            				comp_list [total_comp_test, 6] =
+					   SELECT mlp_components.entry_code
+
+            				comp_list [total_comp_test, 8] =
+                  		      STRIP (SELECT mlp_components.typical_text)
+
+            				possible_comp = EMPTY
+
+      					IF success THEN
+         					compare_levels ( mlp_id,
+								mlp_ver,
+								dynamic_mlp,
+								levels_data,
+								comp_list,
+								total_comp_test,
+			       					output_grid,
+								component_pass )
+					ELSE
+	         				component_pass = TRUE
+      					ENDIF
+
+					{ If one component fails,
+					  the whole test fails }
+
+					IF ( NOT component_pass ) THEN
+						pass = FALSE
+					ENDIF
+
+      				ENDIF
+
+         			NEXT component
+         			possible_comp = SELECT component.name
+
+      			ENDWHILE
+
+   		ENDIF
+   		emlp_sample_set_test_pass_status( test_num, pass )
+
+   		NEXT test
+   		test_num = SELECT test.test_number
+
+	ENDWHILE
+
+ENDROUTINE     { end of get_any_test_for_comp )
+
+{------------------------------------------------------------------------------}
+
+ROUTINE global_variables
+
+	ARRAY comp_list   { [n, 1] = analysis                         }
+	                  { [n, 2] = component                        }
+	                  { [n, 3] = replicate count                  }
+	                  { [n, 4] = test number                      }
+	                  { [n, 5] = component type: N or T           }
+	                  { [n, 6] = entry code to link to mlp_values }
+	                  { [n, 7] = overall result on spec flag      }
+	                  { [n, 8] = typical value/text               }
+	                  { [n, 9] = result string                    }
+	                  { [n, 10] = result units                    }
+	                  { [n, 11 ..] = results on spec flag for other levels }
+	ARRAY replicates  { [n, 1] = analysis ID + component name    }
+	                  { [n, 2] = replicate count for combination }
+
+	{ Get all possible levels for test and validate product etc }
+
+	sample_ok    = TRUE  	{ sample on spec flag              }
+
+	total_comp_test  = 0  	{ total number of component/test combinations }
+	total_comps  = 0      	{ total number of components including those  }
+                              	{ for cancelled tests }
+
+	done_comparison  = FALSE { comparison performed or not }
+
+	current_format = GLOBAL ("FORMAT_TEXT")
+	SET FORMAT "9999999999"
+
+	out_limits     = FALSE { failed level limits              }
+	res_missing    = FALSE { results missing for sample       }
+	not_assigned   = FALSE { test in MLP but not in sample    }
+
+	lib_mlps_initialise ()
+	lib_comp_initialise ()
+
+ENDROUTINE     { end of global_variables }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_levels_data ( VALUE mlp_id          ,
+			  VALUE mlp_ver         ,
+			  VALUE dynamic_mlp     ,
+			  VALUE mlp_level       ,
+			        levels_data     )
+
+	{ Read the level information for the MLP given }
+
+	DECLARE levels_list, level_num
+
+	ARRAY levels_data
+	ARRAY levels_list       { mlp_get_levels reqs one-dimensional array }
+
+	lib_mlps_get_levels_all ( mlp_id      ,
+			          mlp_ver     ,
+				  dynamic_mlp ,
+			          levels_list )
+
+	{ Doing comparison for single level }
+
+	IF ( ( mlp_level <> " ") AND ( mlp_level <> EMPTY ) ) THEN
+
+	   	levels_data [ 1, LEVEL_ID_COL ] = PAD ( TOUPPER ( mlp_level ),
+							" ", 10 )
+   		levels_data [ 1, LEVEL_PASS_COL ] = TRUE
+   		levels_data [ 2, LEVEL_ID_COL ]   = EMPTY
+   		levels_data [ 2, LEVEL_PASS_COL ] = EMPTY
+	ELSE
+
+  		{ Transfer to two_dimensional array }
+
+   		level_num = 1
+   		WHILE ( levels_list[level_num] <> EMPTY ) DO
+
+      			levels_data [ level_num, LEVEL_ID_COL ] =
+						levels_list [ level_num ]
+      			levels_data [ level_num, LEVEL_PASS_COL ] = TRUE
+
+      			level_num = level_num + 1
+
+   		ENDWHILE
+
+      		levels_data [ level_num, LEVEL_ID_COL   ] = EMPTY
+      		levels_data [ level_num, LEVEL_PASS_COL ] = EMPTY
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE display_processing_grid_cell ( self,
+			    VALUE cell_column,
+			    VALUE cell_row,
+			          window,
+			    VALUE column,
+			    VALUE row,
+			    VALUE cell_width,
+			    VALUE cell_height )
+
+	DISPLAY self . user_info [ GRID_INFO_COL, cell_row ]
+		AT column, row
+		IN WINDOW window
+		TO column + cell_width - 1
+		BOLD = self . user_info [ GRID_BOLD_COL, cell_row ]
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE prompt_processing_grid_cell ( self,
+			    VALUE cell_column,
+			    VALUE cell_row,
+			          window,
+			    VALUE column,
+			    VALUE row,
+			    VALUE cell_width,
+			    VALUE cell_height )
+
+	DISPLAY self . user_info [ cell_column, cell_row ]
+		AT column, row
+		IN WINDOW window
+		TO column
+		BOLD INVERSE
+
+	GETKEY
+
+	DISPLAY self . user_info [ GRID_INFO_COL, cell_row ]
+		AT column, row
+		IN WINDOW window
+		TO column
+		BOLD = self . user_info [ GRID_BOLD_COL, cell_row ]
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE display_sample_processing_info ( VALUE total_comp_test,
+					 VALUE pass_flag,
+					 VALUE out_limits,
+					 VALUE res_missing,
+					 VALUE not_assigned,
+					       output_grid )
+
+	DECLARE a, b, c, d
+
+	a = " "
+	b = " "
+	c = " "
+
+	IF ( total_comp_test = 0 ) THEN
+   		a = GET_USER_MESSAGE("LIB_CSMLP_MESS_22" ,1)
+		insert_processing_line ( a, TRUE, output_grid )
+
+	ELSEIF pass_flag THEN
+   		a = GET_USER_MESSAGE("LIB_CSMLP_MESS_16" ,1)
+		insert_processing_line ( a, TRUE, output_grid )
+
+	ELSE
+   		{ Show why failed comparison }
+
+   		IF out_limits THEN
+      			a = GET_USER_MESSAGE("LIB_CSMLP_MESS_17" ,1)
+			insert_processing_line ( a, TRUE, output_grid )
+   		ENDIF
+
+   		IF res_missing THEN
+      			b = GET_USER_MESSAGE("LIB_CSMLP_MESS_20" ,1)
+			insert_processing_line ( b, TRUE, output_grid )
+   		ENDIF
+
+   		IF not_assigned THEN
+      			c = GET_USER_MESSAGE("LIB_CSMLP_MESS_21" ,1)
+			insert_processing_line ( c, TRUE, output_grid )
+   		ENDIF
+	ENDIF
+
+        d = STRIP ( total_comp_test ) :
+	    GET_USER_MESSAGE("LIB_CSMLP_MESS_23" ,1) :
+	    STRIP ( total_comps )
+
+	insert_processing_line ( d, TRUE, output_grid )
+
+	IF ( output_grid <> EMPTY ) THEN
+		output_grid . redisplay_contents ()
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE insert_processing_line ( VALUE line_buffer,
+				 VALUE bold_flag,
+				       output_grid )
+
+	{ Display a message in the scrolling window }
+
+	DECLARE new_line
+
+	IF ( output_grid <> EMPTY ) THEN
+
+		new_line = output_grid . cell_rows + 1
+
+		output_grid . user_info [ GRID_INFO_COL, new_line ]= line_buffer
+		output_grid . user_info [ GRID_BOLD_COL, new_line ]= bold_flag
+
+		output_grid . insert_row ( new_line, 1, GRID_SEPARATOR_NONE )
+
+		output_grid . set_position ( 1, new_line )
+
+		output_grid . cell_rows = new_line
+
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE generate_window ( w_name,
+			  VALUE x,
+			  VALUE y,
+			  VALUE hgt,
+			  VALUE wid,
+			  VALUE title_msg,
+			  VALUE footer_msg )
+
+	CREATE TEXT WINDOW w_name
+		HEIGHT hgt
+		WIDTH wid
+		HEADER = GET_USER_MESSAGE ( title_msg, 1 )
+		FOOTER = GET_USER_MESSAGE ( footer_msg, 1 )
+		BORDER
+    		HELP CONTEXT = "$LIB_CSMLP_NAME"
+
+   	PASTE TEXT WINDOW w_name AT x, y
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE update_sample ( VALUE id_num,
+			       VALUE mlp_id,
+			       VALUE mlp_ver,
+			       VALUE level_id,
+			       VALUE sample_ok,
+			       VALUE done_comparison )
+
+	update_sample_internal ( id_num          ,
+		                 mlp_id          ,
+		                 mlp_ver         ,
+		                 level_id        ,
+		                 sample_ok       ,
+		                 done_comparison ,
+		                 TRUE            )
+		                 
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE emlp_update_sample ( VALUE id_num,
+			            VALUE mlp_id,
+			            VALUE mlp_ver,
+			            VALUE level_id,
+			            VALUE sample_ok,
+			            VALUE done_comparison )
+
+	update_sample_internal ( id_num          ,
+		                 mlp_id          ,
+		                 mlp_ver         ,
+		                 level_id        ,
+		                 sample_ok       ,
+		                 done_comparison ,
+		                 FALSE           )
+		                 
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE update_sample_internal ( VALUE id_num          ,
+		                 VALUE mlp_id          ,
+		                 VALUE mlp_ver         ,
+		                 VALUE level_id        ,
+		                 VALUE sample_ok       ,
+		                 VALUE done_comparison ,
+		                 VALUE do_confirm      )
+	DECLARE res_count
+	DECLARE must_complete, test_done, msg_window
+
+	ARRAY test_done     { element reference by test number:            }
+	                    {   test_done [test_num] = last on spec status }
+	                    {                          of test             }
+
+	DECLARE continue, test_num, cur_audit
+
+	{ First look to see if we should do anything }
+
+	continue = TRUE
+
+	IF NOT sample_not_authorised ( id_num, must_complete ) THEN
+
+		continue = FALSE
+
+	ELSE
+
+		IF NOT done_comparison THEN
+			csmlp_message ( "LIB_CSMLP_MESS_29", TRUE )
+			continue = FALSE
+		ELSE
+
+			IF must_complete THEN
+				continue = TRUE
+			ELSEIF ( ( GLOBAL ( "MODE" ) <> "INTERACTIVE" ) OR
+			         ( DEBUG_AS_BACKGROUND )                OR
+			         ( NOT do_confirm )                    )  THEN
+				continue = TRUE
+			ELSE
+				continue = confirm()
+			ENDIF
+
+		ENDIF
+
+	ENDIF
+
+	{ Now we know if to bother doing anything or not }
+
+	IF ( continue ) THEN
+
+		put_csmlp_message ( "LIB_CSMLP_MESS_33", msg_window )
+
+		START WRITE TRANSACTION "Update dynamic data from lib_csmlp"
+
+		res_count = 0
+
+		WHILE ( res_count < total_comp_test ) AND continue DO
+
+			res_count = res_count + 1
+
+			continue = update_result_flag ( comp_list [res_count, 4],
+			                                comp_list [res_count, 2],
+			                                comp_list [res_count, 7] )
+
+			test_num = comp_list [res_count,4]
+
+			IF NOT continue THEN
+
+			ELSEIF ( test_done [ test_num ] = EMPTY) THEN
+
+				continue = update_test_flag ( test_num )
+
+				test_done[ test_num ] = comp_list [res_count, 7]
+
+			ELSEIF ( ( test_done [ test_num ] <>
+			                  comp_list [res_count, 7]) AND
+			         ( test_done [ test_num ] ) ) THEN
+
+				continue = update_test_flag ( test_num )
+
+				test_done [ test_num ] =
+						    comp_list [ res_count, 7 ]
+			ENDIF
+
+		ENDWHILE
+
+		IF continue THEN
+			continue = update_sample_flag ( id_num,
+			                                mlp_id,
+			                                mlp_ver,
+			                                level_id,
+			                                sample_ok )
+		ENDIF
+
+		IF continue THEN
+
+			{ Write all the updates on sample/test/result to the database }
+
+			cur_audit = GLOBAL ( "AUDITPROMPTSUPPRESS" )
+			SET GLOBAL "AUDITPROMPTSUPPRESS" TO TRUE
+
+			COMMIT
+
+	   		SET GLOBAL "AUDITPROMPTSUPPRESS" TO cur_audit
+
+		ENDIF
+
+		remove_csmlp_message ( msg_window )
+
+	ENDIF
+
+ENDROUTINE    { end of update_sample }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE update_sample_flag ( VALUE sample_id,
+			     VALUE mlp_id,
+			     VALUE mlp_ver,
+			     VALUE level_id,
+			     VALUE on_spec )
+
+	DECLARE cur_name, cur_ver, cur_grade, ok
+
+	ok = select_for_update ( "SAMPLE", "ID_NUMERIC", sample_id )
+
+	IF ok THEN
+
+		cur_name = SELECT sample . comp_prod_name
+
+		IF ( ( cur_name = EMPTY ) OR
+   	     	     ( cur_name = ERROR ) ) THEN
+
+	   		ASSIGN sample.product_name = mlp_id
+		ELSE
+	   		ASSIGN sample.comp_prod_name = mlp_id
+		ENDIF
+
+		cur_ver = SELECT sample . comp_prod_ver
+
+		IF ( ( cur_ver = EMPTY ) OR
+	   	     ( cur_ver = ERROR ) ) THEN
+
+	   		ASSIGN sample.product_version = mlp_ver
+		ELSE
+	   		ASSIGN sample.comp_prod_ver = mlp_ver
+		ENDIF
+
+		cur_grade = SELECT sample . comp_prod_grade
+
+		IF ( ( cur_grade = EMPTY ) OR
+	   	     ( cur_grade = ERROR ) ) THEN
+
+	     		ASSIGN sample.grade_name = level_id
+		ELSE
+	   		ASSIGN sample.comp_prod_grade = level_id
+		ENDIF
+
+		ASSIGN sample.on_spec  = on_spec
+		ASSIGN sample.compared = TRUE
+
+		UPDATE sample
+
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE     { end of update_sample_flag }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE update_result_flag ( VALUE test_num, VALUE comp, VALUE on_spec )
+
+	DECLARE status,
+	        record_free
+
+      	record_free = FALSE
+
+	status = SELECT result . test_number
+	         FOR UPDATE
+	         WHERE ( ( test_number = test_num ) AND
+	                 ( component_name = comp ) )
+
+	record_free = ( status <> LOCKED )
+
+	IF ( status <> EMPTY ) AND ( record_free ) THEN
+
+		IF ( SELECT result.test_number <> EMPTY ) THEN
+
+   			ASSIGN result.out_of_range = NOT on_spec
+
+		ENDIF
+
+		UPDATE result
+
+	ENDIF
+
+	RETURN ( record_free )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE update_test_flag ( VALUE test_num )
+
+	DECLARE count, on_spec, ok
+
+	ok = select_for_update ( "TEST", "TEST_NUMBER", test_num )
+
+	IF ok THEN
+
+		count = 1
+		on_spec = TRUE
+
+		WHILE ( comp_list [count, 1] <> EMPTY) AND on_spec DO
+
+		   	IF ( test_num = comp_list [count, 4] ) THEN
+
+	      			{ result failed comparison }
+
+	      			IF (comp_list [count, 7] = FALSE)
+	         			on_spec = FALSE
+	      			ENDIF
+
+	   		ENDIF
+
+		   	count = count + 1
+
+		ENDWHILE
+
+		ASSIGN test.on_spec = on_spec
+
+		UPDATE test
+
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE complete_sample_record ( VALUE sample_id )
+
+	DECLARE status, return_status
+
+	return_status = FALSE
+
+	IF ( select_for_update ( "SAMPLE", "ID_NUMERIC", sample_id ) ) THEN
+
+		START WRITE TRANSACTION "Update Sample Status"
+
+        	CHANGE SAMPLE STATUS TO "C", status
+
+        	IF ( status <> EMPTY ) THEN
+
+        		csmlp_message ( "LIB_CSMLP_DISPLAY_5", TRUE )
+        		ROLLBACK
+
+        	ELSE
+        		UPDATE SAMPLE
+        		COMMIT
+        		return_status = TRUE
+
+		ENDIF
+        ENDIF
+
+	RETURN ( return_status )
+
+ENDROUTINE    { end of complete_sample_record }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE authorise_sample ( VALUE id_num,
+				  VALUE done_comparison,
+				  VALUE pass,
+				  VALUE mlp_id,
+                                  VALUE mlp_ver,
+				  VALUE level_id )
+
+	DECLARE auth_id, auth_date, auth_notes, spare1, spare2, continue
+	DECLARE must_complete, ok_auth, conf_state, return_value
+	DECLARE msg_window
+
+	continue = TRUE
+
+        conf_state = GLOBAL ( "CONFIRMSUPPRESSED" )
+        SET GLOBAL "CONFIRMSUPPRESSED" TO TRUE
+
+	IF ( NOT sample_not_authorised ( id_num, must_complete ) ) THEN
+
+		continue = FALSE
+
+	ELSE
+   		IF ( NOT done_comparison ) THEN
+
+			continue = FALSE
+    			csmlp_message ( "LIB_CSMLP_MESS_29", TRUE )
+
+		ENDIF
+	ENDIF
+
+        SET GLOBAL "CONFIRMSUPPRESSED" TO conf_state
+
+	IF ( continue ) THEN
+
+      		{ Check valid to authorise }
+
+      		spare1 = EMPTY
+      		spare2 = EMPTY
+
+      		CALL_ROUTINE CSM_auth_check_rtn
+			USING mlp_id,
+			      mlp_ver,
+			      id_num,
+			      pass,
+			      comp_list,
+			      levels_data,
+			      spare1,
+			      spare2
+      			RETURNING ok_auth
+			IN LIBRARY CSM_auth_check_lib
+
+		{ Log pre_authorisation check outcome }
+
+        	log_outcome ( CSM_log_pre_auth,
+			      ok_auth,
+			      " ",
+			      SELECT sample.id_numeric,
+			      " ", " ", " " )
+
+      		IF ok_auth THEN
+
+        		{ Ask the user to confirm sample update }
+
+		        IF ( ( GLOBAL ("MODE") = "INTERACTIVE") AND
+		             ( NOT DEBUG_AS_BACKGROUND )          ) THEN
+				return_value = confirm_with_message (
+							"LIB_CSMLP_DISPLAY_4" )
+         		ELSE
+            			return_value = TRUE
+         		ENDIF
+
+         		IF return_value THEN
+
+           			conf_state = GLOBAL ( "CONFIRMSUPPRESSED" )
+
+           			SET GLOBAL "CONFIRMSUPPRESSED" TO TRUE
+
+           			update_sample ( id_num,
+						mlp_id,
+						mlp_ver,
+						level_id,
+                              			pass,
+						done_comparison )
+
+           			SET GLOBAL ( "CONFIRMSUPPRESSED" ) TO conf_state
+
+{**MS2003R1}
+{**M1342: MPS status included below}
+{**M1487: mlp_id, mlp_ver included below}
+
+           			IF get_authorisation_details( auth_id,
+ 							      auth_date,
+							      auth_notes,
+                                  mps_status,
+                                  mlp_id,
+                                  mlp_ver ) THEN
+{**ME 2003R1}
+              				put_csmlp_message ( "LIB_CSMLP_MESS_34",
+						             msg_window )
+
+              				IF must_complete THEN
+
+						IF ( NOT complete_sample_record(
+							     id_num )
+								    ) THEN
+
+							remove_csmlp_message (
+								    msg_window )
+							RETURN
+
+        					ENDIF
+        				ENDIF
+{**MS2003R1}
+{**M1342: MPS status included below}
+
+
+					authorise_sample_record ( id_num,
+								  auth_id,
+                		  				  auth_date,
+                		  				  auth_notes,
+                		  				  mps_status )
+{**ME2003R1}
+					remove_csmlp_message ( msg_window )
+
+           			ENDIF
+
+			ENDIF
+
+      		ELSE
+         		csmlp_message ( "LIB_CSMLP_MESS_30", TRUE )
+      		ENDIF
+	ENDIF
+
+ENDROUTINE    { end of authorise_sample }
+
+{------------------------------------------------------------------------------}
+{**MS2003R1}
+{**M1342: MPS status included below}
+ROUTINE authorise_sample_record ( VALUE sample_id,
+				  VALUE auth_id,
+                		  VALUE auth_date,
+                		  VALUE auth_notes,
+                		  VALUE mps_status )
+{**ME2003R1}
+
+	{ Authorise the currently selected sample }
+
+	DECLARE status, return_status
+
+	return_status = FALSE
+
+	IF ( select_for_update ( "SAMPLE", "ID_NUMERIC", sample_id ) ) THEN
+
+		START WRITE TRANSACTION "Update Sample Status"
+
+        	CHANGE SAMPLE STATUS TO "A", status
+
+        	IF ( status <> EMPTY ) THEN
+        		csmlp_message ( "LIB_CSMLP_DISPLAY_6", TRUE )
+			ROLLBACK
+		ELSE
+        		ASSIGN sample . authoriser_id = auth_id
+                	ASSIGN sample . authorise_date = auth_date
+                	ASSIGN sample . authorisation_notes = auth_notes
+{**AS2003R1}
+{**M1342: MPS status included below}
+                	ASSIGN sample . mps_status = mps_status
+{**AE2003R1}
+                	SET GLOBAL "AUDITPROMPTSUPPRESS" TO TRUE
+
+                	UPDATE sample
+	        	COMMIT
+
+			return_status = TRUE
+
+		ENDIF
+	ENDIF
+
+	RETURN ( return_status )
+
+ENDROUTINE  { end of authorise_sample_record }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE sample_not_authorised ( id_num, must_complete )
+
+	DECLARE sample_status, return_value
+
+	sample_status = SELECT sample.status
+                	WHERE id_numeric = id_num
+
+	must_complete = FALSE
+
+	IF INDEX ( "AXR", sample_status ) > 0 THEN
+
+   		csmlp_message ( GET_USER_MESSAGE( "LIB_CSMLP_MESS_28", 1 ) :
+				sample_status, TRUE )
+
+		return_value  = FALSE
+
+	ELSEIF sample_status = "C" THEN
+
+		return_value = TRUE
+
+   	ELSE
+   		must_complete = TRUE
+
+		IF ( ( GLOBAL ("MODE") = "INTERACTIVE" ) AND
+		     ( NOT DEBUG_AS_BACKGROUND )          ) THEN
+
+	   		return_value = confirm_with_text (
+				  GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_7" ,1) :
+				  sample_status :
+				  GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_8" ,1) )
+		ELSE
+	   		return_value = TRUE
+		ENDIF
+	ENDIF
+
+	RETURN ( return_value )
+
+ENDROUTINE   { end of sample_not_authorised }
+
+{------------------------------------------------------------------------------}
+{**MS 2003R1}
+{**M1342: MPS status included in call below}
+{**M1487: mlp_id, mlp_ver included below}
+ROUTINE get_authorisation_details ( operator_id, authorised_date, notes, mps_status, mlp_id, mlp_ver )
+{**ME2003R1}
+	DECLARE w_auth, w_auth_width, ok, w_auth_row
+	DECLARE msg_auth_id, msg_auth_date, msg_auth_notes
+{**MS2003R1: Notes_prompt no longer used, declaration removed
+	DECLARE msg_width, display_col, notes_prompt, exit_flag
+}
+	DECLARE msg_width, display_col, exit_flag
+{**ME2003R1}
+	DECLARE separator
+{**AS2003R1}
+{**AS1342}
+	DECLARE msg_mps_status
+	DECLARE mps_prompt
+{**AE1342}
+{**AS1487}
+        DECLARE status_accept
+        DECLARE allow_agrd
+{**AE1487}
+
+{**AE 2003R1}
+	ok = TRUE
+	operator_id     = OPERATOR
+	authorised_date = NOW
+
+	IF ( ( GLOBAL ("MODE") = "INTERACTIVE" ) AND
+             ( NOT DEBUG_AS_BACKGROUND )           ) THEN
+
+		w_auth_width = 60
+		w_auth_row = ( GLOBAL ( "SCREEN_WIDTH" ) - w_auth_width ) DIV 2
+
+		msg_auth_id 	= GET_USER_MESSAGE ( "LIB_CSMLP_MESS_25" ,1 )
+		msg_auth_date 	= GET_USER_MESSAGE ( "LIB_CSMLP_MESS_26" ,1 )
+		msg_auth_notes 	= GET_USER_MESSAGE ( "LIB_CSMLP_MESS_27" ,1 )
+{**AS2003R1}
+{**M1342: MPS status included below}
+		msg_mps_status 	= "MPS status"
+{**AE 2003R1}
+
+		msg_width = LENGTH ( msg_auth_notes )
+		separator = ""
+        	IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+			separator = ":"
+		ENDIF
+
+		msg_auth_id   = PAD ( msg_auth_id ," ", msg_width )  :separator
+		msg_auth_date = PAD ( msg_auth_date ," ", msg_width ):separator
+		msg_auth_notes = PAD ( msg_auth_notes," ", msg_width):separator
+{**AS 2003R1}
+{**M1342: MPS status included below}
+		msg_mps_status = PAD ( msg_mps_status," ", msg_width):separator
+{**AE2003R1}
+		display_col = msg_width + LENGTH ( separator ) + 2
+
+		PROMPT OBJECT w_auth
+			CLASS PROMPT_CLASS_FORM
+			WITH  ( column        = w_auth_row,
+				row           = 10,
+				height        = 3,
+				width         = w_auth_width,
+				border        = TRUE,
+				proportional  = TRUE,
+				help_context  = "$LIB_CSMLP_NAME",
+				header 	      = GET_USER_MESSAGE (
+						      "LIB_CSMLP_MESS_24", 1 ),
+				footer 	      = GET_USER_MESSAGE (
+						      "LIB_CSMLP_FOOT_2", 1 ) )
+
+		w_auth . add_display ( msg_auth_id,
+				       1,1,
+				       PROMPT_RENDITION_RAISED +
+				       PROMPT_RENDITION_BOLD )
+
+		w_auth . add_display ( msg_auth_date,
+				       1,2,
+				       PROMPT_RENDITION_RAISED +
+				       PROMPT_RENDITION_BOLD )
+
+{**MS 2003R1}
+{**DS1342 HBe 28-9-2001: Authorisation notes replaced by MPS status.
+
+		w_auth . add_display ( msg_auth_notes,
+				       1,3,
+				       PROMPT_RENDITION_RAISED +
+				       PROMPT_RENDITION_BOLD )
+
+		w_auth . add_display ( operator_id,
+				       display_col, 1,
+				       PROMPT_RENDITION_LOWERED )
+
+		w_auth . add_display ( authorised_date,
+				       display_col, 2,
+				       PROMPT_RENDITION_LOWERED )
+
+		PROMPT OBJECT notes_prompt
+			ON LINE 3 FROM display_col
+			FORMAT TEXT156
+
+		w_auth . add_prompt ( notes_prompt )
+
+		notes = " "
+		ok = TRUE
+
+		w_auth . start_prompt ()
+
+		REPEAT
+			w_auth . wait_prompt ()
+
+      			ok = ( w_auth . get_last_key() <> "EXIT" )
+
+        		IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+				exit_flag = TRUE
+			ELSE
+				exit_flag = confirm ()
+			ENDIF
+
+		UNTIL ( exit_flag )
+
+		w_auth . end_prompt ()
+
+		notes = w_auth . prompt_objects [ 1 ] . text
+
+	ELSE
+   		notes = GET_USER_MESSAGE("LIB_CSMLP_NOT" ,1)
+	ENDIF
+
+**DS 1342}
+{**AS 1342}
+		w_auth . add_display ( msg_mps_status,
+				       1,3,
+				       PROMPT_RENDITION_RAISED +
+				       PROMPT_RENDITION_BOLD )
+
+		w_auth . add_display ( operator_id,
+				       display_col, 1,
+				       PROMPT_RENDITION_LOWERED )
+
+		w_auth . add_display ( authorised_date,
+				       display_col, 2,
+				       PROMPT_RENDITION_LOWERED )
+
+
+		PROMPT OBJECT mps_prompt 
+			ON LINE 3 FROM display_col
+			BROWSE ON VALID_PHRASE_ID.MPS_STATUS
+
+		w_auth . add_prompt ( mps_prompt )
+
+		mps_status = EMPTY
+
+
+		ok = TRUE
+
+{**MS1487: CHECK if AGRD is allowed}
+
+                status_accept = FALSE
+
+                REPEAT
+
+		   w_auth . start_prompt ()
+
+		   REPEAT
+			w_auth . wait_prompt ()
+
+      			ok = ( w_auth . get_last_key() <> "EXIT" ) 
+
+        		IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+				exit_flag = TRUE
+
+			ELSE
+				exit_flag = confirm ()
+			ENDIF
+
+		   UNTIL ( exit_flag )
+
+		   w_auth . end_prompt ()
+
+		   mps_status = w_auth . prompt_objects [ 1 ] . text
+
+                  IF mps_status <> "AGRD" THEN 
+                      status_accept = TRUE
+                   ELSE
+                      allow_agrd = SELECT mlp_header.allow_agree
+                                   where identity = mlp_id
+
+
+
+                      IF allow_agrd THEN
+                         status_accept = TRUE
+                      ELSE
+                         FLASH_MESSAGE("AGRD not allowed for product " : STRIP(mlp_id), TRUE)
+                      ENDIF
+                   ENDIF
+
+                UNTIL (((mps_status <> EMPTY) AND NOT BLANK(mps_status) AND status_accept) OR (NOT ok))
+
+{**ME1487}
+		mps_status = w_auth . prompt_objects [ 1 ] . text
+		notes = " "
+
+	ELSE
+   		mps_status = " "
+		notes = w_auth . prompt_objects [ 1 ] . text
+	ENDIF
+
+{**AE1342}
+{**ME 2003R1}
+	RETURN ( ok )
+
+ENDROUTINE     { end of get_authorisation_details }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE do_report ( VALUE mlp_id,
+			   VALUE mlp_ver,
+			   VALUE dynamic_mlp,
+			   VALUE level_id,
+			   VALUE id_num,
+                           VALUE pass,
+			   VALUE done_comparison,
+			   VALUE print_reqd,
+			   VALUE report_type,
+                           w_report )
+
+	DECLARE report_array, report_called
+	DECLARE test_id, spare
+
+	ARRAY report_array
+
+	{ Check sample has been tested }
+
+	IF NOT done_comparison THEN
+   		csmlp_message ( "LIB_CSMLP_MESS_3", TRUE )
+   		RETURN
+	ENDIF
+
+	IF ( LEFTSTRING ( report_type, 1 ) = "F" ) THEN
+		report_type = FULL_REPORT_TYPE
+
+	ELSEIF ( LEFTSTRING ( report_type, 1 ) = "S" ) THEN
+		report_type = SUMMARY_REPORT_TYPE
+
+	ELSE
+		generate_window ( w_report, 20, 18, 4, 40,
+				  "LIB_CSMLP_MESS_4",
+				  "LIB_CSMLP_FOOT_3" )
+
+		report_array [1,1] = GET_USER_MESSAGE("LIB_CSMLP_REP_1" ,1)
+		report_array [1,2] = FULL_REPORT_TYPE
+		report_array [2,1] = GET_USER_MESSAGE("LIB_CSMLP_REP_2" ,1)
+		report_array [2,2] = SUMMARY_REPORT_TYPE
+
+		PROMPT FOR report_type
+			USING GET_USER_MESSAGE ( "LIB_CSMLP_PROM_1" ,1 )
+	                ON LINE 3 FROM 8
+			IN WINDOW w_report
+	                CHOOSE OUTOF report_array
+
+		UNPASTE TEXT WINDOW w_report
+
+		IF ( ( LASTKEY <> "DO" ) AND ( LASTKEY <> "RETURN" ) ) THEN
+			report_type = EMPTY
+		ENDIF
+	ENDIF
+
+	IF ( ( report_type = FULL_REPORT_TYPE ) OR
+	     ( report_type = SUMMARY_REPORT_TYPE ) ) THEN
+
+		test_id = " "
+		report_called = EMPTY
+		spare = EMPTY
+
+		call_report_routine ( report_type,
+				      mlp_id,
+				      mlp_ver,
+				      id_num,
+				      test_id,
+				      pass,
+				      not_assigned,
+				      out_limits,
+				      comp_list,
+				      levels_data,
+				      total_comps,
+				      dynamic_mlp,
+				      spare,
+				      report_called )
+
+		IF ( report_called <> EMPTY ) THEN
+			IF report_called THEN
+				FLUSH_LITERAL
+			ENDIF
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE call_report_routine ( VALUE report_type,
+			      VALUE mlp_id,
+			      VALUE mlp_ver,
+			      VALUE id_num,
+			      VALUE test_id,
+			      VALUE pass,
+			      VALUE not_assigned,
+			            out_limits,
+			            comp_list,
+			            levels_data,
+			            total_comps,
+			      VALUE dynamic_mlp,
+			            spare,
+			            report_called )
+
+	{ Call the appropriate routine for either Summary or full report }
+
+	DECLARE routine_name, library_name
+
+	report_called = EMPTY
+	library_name = EMPTY
+
+	IF ( report_type = FULL_REPORT_TYPE ) THEN
+
+		routine_name = CSM_rpt_rtn_full
+		library_name = CSM_rpt_lib_full
+
+	ELSEIF ( report_type = SUMMARY_REPORT_TYPE ) THEN
+
+   		routine_name = CSM_rpt_rtn_summary
+		library_name = CSM_rpt_lib_summary
+
+	ENDIF
+
+	IF ( library_name <> EMPTY ) THEN
+
+		CALL_ROUTINE routine_name
+			USING mlp_id,
+			      mlp_ver,
+			      id_num,
+			      test_id,
+			      pass,
+			      not_assigned,
+			      out_limits,
+			      comp_list,
+			      levels_data,
+			      total_comps,
+			      dynamic_mlp,
+			      spare
+			RETURNING report_called
+			IN LIBRARY library_name
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Routine called by $CSMLP depending on global CSM_rpt_rtn_full           }
+
+ROUTINE full_rep ( VALUE mlp_id,	{ Product id      }
+                   VALUE mlp_ver,	{ Product version }
+                   VALUE sample_id,	{ If sample report }
+   		   VALUE test_id,       { If for just one test }
+                   VALUE pass,		{ Comparison pass or fail, BOOLEAN }
+                   VALUE not_assigned,  { Test(s) in MLP not in sample BOOLEAN}
+                   VALUE out_limits,    { Result(s) out of spec, BOOLEAN }
+		   	 comp_list,	{ Array of components }
+		   	 levels_data,	{ Array of level info }
+                   VALUE total_comps,   { Number of components on MLP }
+ 		   VALUE dynamic_mlp,	{ Dynamic Product identity }
+		         spare_param )	{ Reserved for future use }
+
+	DECLARE a, a_msg, element, tab_1, units, analysis_id,
+	        old_anal_id, old_rep
+
+	SET PRINTERCODES TRUE
+
+	{ Make filename lowercase for Unix }
+
+	SET NAME "DEFER/"
+
+	do_header ( sample_id,
+		    test_id,
+		    mlp_id,
+		    mlp_ver,
+		    dynamic_mlp,
+		    levels_data,
+		    FALSE )
+
+      	tab_1=GET_USER_MESSAGE("LIB_CSMLP_TAB_1" ,1)
+
+LITERAL
+
+$tab_1_________________________________________________________________________________________________
+$ENDLITERAL
+
+	element = 1
+
+	old_anal_id = EMPTY
+	old_rep = EMPTY
+
+	{ Display typicals etc for all components on MLP }
+
+	WHILE ( comp_list [ element, 1 ] <> EMPTY ) DO
+
+   		IF ( comp_list [ element, 10 ] <> "Rejected" ) AND
+		   ( comp_list [ element, 9  ] <> NULL       ) THEN
+                     { NULL means appears twice or more on a schedule }
+
+      			units = comp_list [element, 10]
+
+      			{ Dont want to show analysis/rep if previous component
+			  had same analysis/rep}
+
+      			IF ( old_anal_id <> comp_list [ element, 1] ) OR
+         		   ( old_rep <> comp_list [ element, 3 ] ) THEN
+
+				analysis_id = convert_null_analysis (
+							comp_list [element, 1] )
+         			a = analysis_id : "/" :
+						STRIP (comp_list [element, 3])
+      			ENDIF
+
+      			a = PAD (a, " ", 15)
+      			a = a : comp_list [element,2]
+      			a = PAD (a, " ", 48)
+
+      			{ Show result }
+
+      			IF (comp_list [element, 9] = EMPTY) THEN
+         			a = a : " " :
+				      GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_9" ,1)
+      			ELSE
+         			a = a : " " : STRIP (comp_list [element, 9]) :
+							" " : STRIP (units)
+      			ENDIF
+
+      			a = PAD (a, " ", 70) : " "
+      			IF ( levels_data [ 2, LEVEL_ID_COL ] = EMPTY ) THEN
+
+         			IF (comp_list [element, 7] = TRUE) THEN
+            				a_msg = "LIB_CSMLP_DISPLAY_10"
+         			ELSE
+            				a_msg = "LIB_CSMLP_DISPLAY_11"
+         			ENDIF
+            			a = a : GET_USER_MESSAGE( a_msg, 1 )
+
+      			ENDIF
+
+LITERAL
+
+$a________________________________________________________________________________
+$ENDLITERAL
+
+      			{ Now do levels information if more than
+			  one level to report on }
+
+      			IF ( levels_data [ 2, LEVEL_ID_COL ] <> EMPTY ) THEN
+
+				full_rep_levels_info ( element,
+						       levels_data,
+						       comp_list )
+
+      			ENDIF
+
+      			old_anal_id   = comp_list [element, 1]
+      			old_rep       = comp_list [element, 3]
+
+   		ENDIF
+
+		element = element + 1
+
+	ENDWHILE
+
+	do_footer ( sample_id, levels_data )
+
+	RETURN ( TRUE )
+
+ENDROUTINE     { end of full_rep }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE full_rep_levels_info ( element,
+			       levels_data,
+			       comp_list )
+
+	{ Do levels information as more than one level to report on }
+
+	DECLARE a, a_msg, count
+	DECLARE level_id, min_str, max_str, text_str, text_phrase
+
+	count = 1
+      	level_id = levels_data [ count, LEVEL_ID_COL ]
+
+        a = PAD (" ", " ", 15)
+
+        IF ( ( comp_list [ element, 8 ] = EMPTY ) OR
+	     ( STRIP ( comp_list[element,8] ) = " " ) ) THEN
+
+		a = a : GET_USER_MESSAGE ( "LIB_CSMLP_MESS_15" , 1 )
+	ELSE
+        	a = a : GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_12" ,1 ) :
+						  comp_list [ element, 8 ]
+	ENDIF
+
+        WHILE ( level_id <> EMPTY ) DO
+
+		a = PAD ( a, " ", 38 ) : level_id
+
+            	a = PAD ( a, " ", 49 )
+
+		{ Get the actual min and max limits }
+
+		min_str = SELECT mlp_values.min_limit
+                	    WHERE ( ( entry_code = comp_list [element, 6] ) AND
+                            	    ( level_id = level_id ) )
+
+            	IF ( comp_list [ element, 5 ] = "N" ) OR
+		   ( comp_list [ element, 5 ] = "I" ) THEN
+
+			IF ( min_str <> EMPTY ) THEN
+
+				max_str = SELECT mlp_values . max_limit
+
+				IF ( min_str = "" ) THEN
+					a_msg = "LIB_CSMLP_MAX_ONLY"
+				ELSEIF ( max_str = "" ) THEN
+					a_msg = "LIB_CSMLP_MIN_ONLY"
+				ELSE
+					a_msg = "LIB_CSMLP_MIN_AND_MAX"
+				ENDIF
+
+                  		a = a : STRIP ( min_str ) :
+                     			GET_USER_MESSAGE ( a_msg ,1 ) :
+					STRIP ( max_str )
+               		ELSE
+                  		a = a : GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_14" ,1)
+               		ENDIF
+
+		ELSEIF ( comp_list [ element, 5 ] = "B" ) THEN
+
+			IF ( min_str <> EMPTY ) THEN
+
+                                a = a : STRIP ( SELECT mlp_values . boolean_pass )
+
+               		ELSE
+                  		a = a : GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_14" ,1)
+               		ENDIF
+
+            	ELSE { Text result }
+
+                  	text_str    = SELECT mlp_values . text_spec
+			text_phrase = SELECT mlp_values . text_phrase
+
+			IF   (( text_str = EMPTY    )    OR
+			     (( blank ( text_str    ))   AND
+			      ( blank ( text_phrase )))) THEN
+
+                  		a = a : GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_15" ,1)
+               		ELSEIF blank ( text_str ) THEN
+                  		a = a : STRIP ( text_phrase )
+			ELSE
+                  		a = a : STRIP ( text_str )
+               		ENDIF
+            	ENDIF
+
+            	a = PAD (a, " ", 70) : " "
+
+            	IF ( comp_list [element, 10+count] ) THEN
+			a_msg = "LIB_CSMLP_DISPLAY_10"
+            	ELSE
+			a_msg = "LIB_CSMLP_DISPLAY_11"
+          	ENDIF
+
+		a = a : GET_USER_MESSAGE( a_msg, 1 )
+LITERAL
+$a________________________________________________________________________________
+$ENDLITERAL
+
+		count = count + 1
+
+      		level_id = levels_data [ count, LEVEL_ID_COL ]
+
+		a = PAD (" ", " ", 38)
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE summary_rep ( VALUE mlp_id,	 { Product id      }
+                      VALUE mlp_ver,	 { Product version }
+                      VALUE sample_id,	 { If sample report }
+		      VALUE test_id,     { If for just one test }
+                      VALUE pass,	 { Comparison pass or fail, BOOLEAN }
+                      VALUE not_assigned,{ Test(s) in MLP not in sample BOOLEAN}
+                      VALUE out_limits,  { Result(s) out of spec, BOOLEAN }
+		            comp_list,	 { Array of components }
+		            levels_data,		 { Array of level info }
+                      VALUE total_comps, { Number of components on MLP }
+		      VALUE dynamic_mlp,	 { Reserved for future use }
+		            spare_param ) 	 { Reserved for future use }
+
+	{ Routine called by $CSMLP depending on global CSM_rpt_rtn_summary }
+
+	DECLARE a, element, comp_count , finished_loop , this_level_passed
+
+	SET PRINTERCODES TRUE
+
+	{ Make filename lowercase for Unix }
+
+	SET NAME "DEFER/"
+
+	do_header ( sample_id,
+		    test_id,
+		    mlp_id,
+		    mlp_ver,
+		    dynamic_mlp,
+		    levels_data,
+		    TRUE )
+
+LITERAL
+
+              !ULevel ID!U               !UOutcome!U
+
+$ENDLITERAL
+
+	element = 1
+
+	WHILE ( levels_data [ element, LEVEL_ID_COL ] <> EMPTY ) DO
+
+  		a = PAD (" ", " ", 14) : levels_data [ element, LEVEL_ID_COL ]
+
+		comp_count        = 1
+		finished_loop     = FALSE
+		this_level_passed = TRUE
+
+		WHILE ( comp_list [ comp_count , 1 ] != EMPTY ) AND
+		      ( ! finished_loop                       ) DO
+
+			IF ! comp_list [ comp_count , 10 + element ] THEN
+				this_level_passed = FALSE
+				finished_loop = TRUE
+			ENDIF
+			comp_count = comp_count + 1
+
+		ENDWHILE
+  		IF ( ! this_level_passed ) THEN
+     			a = PAD (a, " ", 37) :
+				GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_11" , 1 )
+  		ELSE
+     			a = PAD (a, " ", 37) :
+				GET_USER_MESSAGE ( "LIB_CSMLP_DISPLAY_10" , 1 )
+  		ENDIF
+
+		{ Old code - this only checks the last component for the level,
+		  not all the components for the level
+
+  		IF ( levels_data [ element, LEVEL_PASS_COL ] = FALSE) THEN
+     			a = PAD (a, " ", 40) :
+				GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_11" ,1)
+  		ELSE
+     			a = PAD (a, " ", 37) :
+				GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_10" ,1)
+  		ENDIF
+		}
+
+  		element = element + 1
+
+LITERAL
+$a________________________________________________________________________________
+$ENDLITERAL
+
+	ENDWHILE
+
+	do_footer ( sample_id, levels_data )
+
+	RETURN ( TRUE )
+
+ENDROUTINE      { end of summary_rep }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE do_header ( VALUE sample_id,
+		    VALUE test_id,
+		    VALUE mlp_id,
+		    VALUE mlp_ver,
+		    VALUE dynamic_mlp,
+			  levels_data,
+		    VALUE summary )
+
+	{ Do header for comparison reports }
+
+	DECLARE a1, a2, a, b, c, count, description, analysis_id, level_id
+	DECLARE level_type, id_text, product_name, samp_info
+	DECLARE msg_page, msg_prod_info, msg_test_info, msg_samp_prod,
+		msg_samp_id2, msg_status
+	{**AS  2003R1 / 1342}
+	DECLARE sample_comment, auth_comment
+	{**AE 2003R1 / 1342}
+
+	SET WIDTH 100
+
+	msg_page = GET_USER_MESSAGE("LIB_CSMLP_MESS_7" ,1)
+
+	IF ( sample_id <> " " ) THEN
+
+   		SET HEADER LEFTSTRING (NOW, 17) :
+			   GET_USER_MESSAGE("LIB_CSMLP_HEAD_1" ,1) : " " :
+			   STRIP( sample_id ) :
+                  	   PAD (" ", " ", 18) : msg_page : " ##"
+	ELSE
+
+   		analysis_id = SELECT test.analysis_id
+                 		WHERE test_number = test_id
+		analysis_id = convert_null_analysis ( analysis_id )
+
+   		SET HEADER LEFTSTRING (NOW, 17) :
+				GET_USER_MESSAGE("LIB_CSMLP_HEAD_2" ,1):" " :
+             			STRIP (analysis_id) :
+				PAD (" ", " ", 17) : msg_page : " ##"
+	ENDIF
+
+	a1 = ""
+
+	IF NOT BLANK( mlp_id ) THEN
+
+		IF NOT BLANK ( mlp_ver ) THEN
+			description = SELECT mlp_header.description
+			                     WHERE identity = mlp_id AND
+			                           product_version = mlp_ver
+		ENDIF
+
+		IF description = EMPTY THEN
+			description = SELECT mlp_header.description
+			                     WHERE identity = mlp_id
+			                     ORDER ON product_version DESCENDING
+		ENDIF
+
+		IF description = EMPTY THEN
+			description = ""
+		ENDIF
+
+		a1 = mlp_id : "." : STRIP ( mlp_ver ) :
+		              ", ": STRIP ( description ) : "  "
+	ENDIF
+
+	a2 = ""
+
+	IF dynamic_mlp <> NULL THEN
+		description = SELECT mlp_header.description
+				WHERE identity = dynamic_mlp
+
+		a2 = dynamic_mlp : "." : STRIP( PACKED_DECIMAL(1) ) :
+			", ": STRIP( description )
+	ENDIF
+
+	msg_prod_info = GET_USER_MESSAGE("LIB_CSMLP_MESS_8" ,1)
+
+LITERAL
+!L80HO!L
+
+$msg_prod_info__________________________________________________________________
+
+$a1_____________________________________________________________________________
+$a2_____________________________________________________________________________
+
+
+$ENDLITERAL
+
+	count = 1
+
+	level_id = levels_data [ count, LEVEL_ID_COL ]
+
+	WHILE ( level_id <> EMPTY ) DO
+
+  		level_type = SELECT mlp_levels . level_type
+             		      WHERE level_id = level_id
+
+  		a = GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_3" ,1) :
+		    	STRIP ( level_id )
+
+  		IF ( level_type <> " " ) THEN
+     			a = a : " (" : STRIP ( level_type ) : ")"
+  		ENDIF
+
+  		a = a : ", ": STRIP ( SELECT mlp_levels . description )
+
+  		IF ( ( ( levels_data[ 2, LEVEL_ID_COL ] = EMPTY ) OR
+		       ( summary ) ) AND
+		     ( count > 1   ) ) THEN
+LITERAL
+
+$ENDLITERAL
+
+  		ENDIF
+
+LITERAL
+$a____________________________________________________________________________
+$ENDLITERAL
+
+  		{ Report just for single level or summary report}
+
+  		IF ( levels_data[ 2, LEVEL_ID_COL ] = EMPTY) OR summary THEN
+
+			{ Display max. min etc for all components for level }
+
+     			level_info ( count, levels_data )
+
+  		ENDIF
+
+  		count = count + 1
+		level_id = levels_data [ count, LEVEL_ID_COL ]
+
+	ENDWHILE
+
+	msg_status = GET_USER_MESSAGE("LIB_CSMLP_MESS_5" ,1)
+	msg_status = PAD (" ", " ", 20 - LENGTH ( msg_status ) ) :
+		     msg_status : ": "
+	msg_samp_id2 = GET_USER_MESSAGE("LIB_CSMLP_MESS_11" ,1)
+
+	IF sample_id <> " " THEN
+
+   		id_text = SELECT sample . id_text
+               			WHERE id_numeric = sample_id
+{**AS 2003R1 / 1042  HBe 8-6-00}
+		sample_comment = SELECT sample . sample_comment
+            auth_comment   = SELECT sample . authorisation_notes
+{**AE 2003R1 / 1042 HBe 8-6-00}
+
+
+   		a = msg_samp_id2 :
+		    STRIP ( sample_id ) : ", ":
+       		    STRIP ( id_text ) :
+		    msg_status :
+		    SELECT sample . status
+
+{**MS 2003R1}
+{**MS1260 HBe 27-6-00
+   		b = " Description: "  : SELECT sample . description
+}
+		b = " Product before Sample: "  : SELECT sample . description
+{**ME1260 HBe 27-6-00}
+{**ME 2003R1}
+
+   		product_name = SELECT sample . product_name
+
+		msg_samp_prod = GET_USER_MESSAGE("LIB_CSMLP_MESS_14" ,1)
+
+   		IF ( product_name = " " ) OR
+		   ( product_name = EMPTY ) THEN
+
+      			c = msg_samp_prod :
+			    	GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_16" ,1)
+   		ELSE
+      			c = msg_samp_prod :
+			    	STRIP ( product_name ) : "." :
+                            	STRIP ( SELECT sample.product_version ) :
+                            	", Grade (level): ":
+                            	STRIP ( SELECT sample.grade_name )
+   		ENDIF
+		samp_info = GET_USER_MESSAGE("LIB_CSMLP_MESS_10" ,1)
+
+LITERAL
+
+$samp_info_____________________________________________________________________
+
+$a______________________________________________________________________________
+$b______________________________________________________________________________
+$c______________________________________________________________________________
+
+$ENDLITERAL
+{**AS 2003R1}
+{**AS1042 HBe 8-6-00}
+            IF NOT ((strip(sample_comment) = "") OR
+                   (Strip(sample_comment) = EMPTY)) THEN
+               do_some_comment (sample_comment, "Sample Comment:")
+            ENDIF
+
+LITERAL
+
+$ENDLITERAL
+
+            IF NOT ((strip(auth_comment) = "") OR
+                   (Strip(auth_comment) = EMPTY)) THEN
+               do_some_comment (auth_comment, "Authorisation Comment:")
+            ENDIF
+{**AE1042 HBe 8-6-00}
+{**AE2003R1}
+LITERAL
+!L80HO!L
+$ENDLITERAL
+
+	ELSE
+
+   		a = GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_17" ,1) :
+		    	STRIP ( analysis_id ) :
+       		    	GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_18" ,1) :
+        	    	STRIP ( SELECT test.test_count ) : " " :
+		    	msg_status :
+		    	SELECT test.status
+
+   		b = GET_USER_MESSAGE("LIB_CSMLP_DISPLAY_19" ,1) :
+		    	SELECT test.operator_id
+
+   		c = msg_samp_id2 : STRIP ( SELECT test.sample_id )
+
+		msg_test_info = GET_USER_MESSAGE("LIB_CSMLP_MESS_12" ,1)
+LITERAL
+
+$msg_test_info__________________________________________________________________
+
+$a______________________________________________________________________________
+$b______________________________________________________________________________
+$c______________________________________________________________________________
+
+!L80HO!L
+$ENDLITERAL
+
+	ENDIF
+
+ENDROUTINE      { end of do_header }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE do_footer ( VALUE sample_id,
+		    	  levels_data )
+
+	{ Do footer for comparison reports }
+
+	DECLARE a, b, c, d, a_msg, pass, count, res_missing
+	DECLARE num_comps
+
+	a = " "
+	b = " "
+	c = " "
+
+	{ Work out number of components }
+
+	num_comps = 0
+	count    = 1
+	res_missing = FALSE
+
+	WHILE ( comp_list [count, 2] <> EMPTY ) DO
+
+   		{ See if there is a result }
+
+   		IF ( comp_list [ count, 9 ] = EMPTY ) AND
+		     NOT CSM_pass_incomp_test THEN
+      			res_missing = TRUE
+   		ENDIF
+
+		IF count <> 1 THEN
+
+			IF ( comp_list [ count , 2 ] =
+				comp_list [ count - 1 , 2 ] ) AND
+			   ( comp_list [ count , 4 ] =
+				comp_list [ count - 1 , 4 ] ) THEN
+
+				{ Already counted this one }
+
+			ELSE
+
+		   		num_comps = num_comps + 1
+
+			ENDIF
+
+		ELSE
+
+			num_comps = num_comps + 1
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+	IF ( num_comps = 0 ) THEN
+   		a = GET_USER_MESSAGE("LIB_CSMLP_MESS_22" ,1)
+	ELSE
+
+  		count = 1
+
+  		{ All levels must pass to pass so assume pass then
+		  if get level which fails, comparison will fail. }
+
+  		IF CSM_all_levels_pass THEN
+     			pass = TRUE
+  		ELSE
+     			{ else assume fail then if one level passes, will pass }
+     			pass = FALSE
+  		ENDIF
+
+  		WHILE ( levels_data [ count, LEVEL_ID_COL ] <> EMPTY ) DO
+
+     			IF ( NOT levels_data [ count, LEVEL_PASS_COL ] ) THEN
+
+	     			{ comparison failed because a level failed }
+
+        			IF CSM_all_levels_pass THEN
+           				pass = FALSE
+        			ENDIF
+     			ELSE
+
+        			{ comparison passed because a level passed }
+
+        			IF NOT CSM_all_levels_pass THEN
+           				pass = TRUE
+        			ENDIF
+
+     			ENDIF
+     			count = count + 1
+  		ENDWHILE
+
+		IF pass THEN
+     			IF sample_id <> " " THEN
+        			a_msg = "LIB_CSMLP_MESS_16"
+     			ELSE
+        			a_msg = "LIB_CSMLP_MESS_18"
+     			ENDIF
+        		a = GET_USER_MESSAGE ( a_msg, 1 )
+  		ELSE
+
+     			{ Show why failed comparison }
+
+     			IF out_limits THEN
+        			IF sample_id <> " " THEN
+           				a_msg = "LIB_CSMLP_MESS_17"
+        			ELSE
+           				a_msg = "LIB_CSMLP_MESS_19"
+        			ENDIF
+        			a = GET_USER_MESSAGE ( a_msg, 1 )
+     			ENDIF
+
+     			IF res_missing THEN
+        			b = GET_USER_MESSAGE("LIB_CSMLP_MESS_20" ,1)
+     			ENDIF
+
+			IF not_assigned THEN
+        			c = GET_USER_MESSAGE("LIB_CSMLP_MESS_21" ,1)
+     			ENDIF
+  		ENDIF
+	ENDIF
+
+	d = STRIP ( num_comps ) :
+	    GET_USER_MESSAGE("LIB_CSMLP_MESS_23" ,1) :
+	    STRIP ( total_comps )
+
+LITERAL
+
+$a______________________________________________________________________________
+$b______________________________________________________________________________
+$c______________________________________________________________________________
+$d______________________________________________________________________________
+
+$ENDLITERAL
+FLUSH_LITERAL
+
+ENDROUTINE      { end of do_footer }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE level_info ( VALUE level_num, levels_data )
+
+	{ Routine to display level information in report header }
+
+	DECLARE min_str, tab_2, count, a, analysis_id, unit
+
+     	tab_2 = GET_USER_MESSAGE ( "LIB_CSMLP_TAB_2" ,1 )
+
+LITERAL
+
+$tab_2__________________________________________________________________________________________________
+
+$ENDLITERAL
+
+	count = 1
+	WHILE ( comp_list [count, 1] <> EMPTY ) DO
+
+  		{ Dont repeat information for replicates }
+
+  		IF ( comp_list [ count, 3] = 1 ) THEN
+
+			unit = select mlp_components . units
+			       WHERE entry_code = comp_list [ count, 6 ]
+
+     			a = " "
+
+			analysis_id = convert_null_analysis (
+						     comp_list [ count, 1 ] )
+
+     			a = a : analysis_id : " " :
+			         	STRIP ( comp_list [ count, 2 ])
+     			a = PAD (a, " ", 34)
+     			a = a : " " : strip ( unit )
+     			a = PAD (a, " ", 44) : " "
+
+     			IF ( ( comp_list [ count, 8 ] = EMPTY ) OR
+			     ( comp_list [ count, 8 ] = " " ) ) THEN
+        			a = a : GET_USER_MESSAGE("LIB_CSMLP_MESS_15" ,1)
+     			ELSE
+        			a = a : STRIP ( comp_list [ count, 8 ] )
+     			ENDIF
+
+     			a = PAD (a, " ", 55) : " "
+
+     			min_str = SELECT mlp_values.min_limit
+               			WHERE ( entry_code = comp_list [ count, 6 ]) AND
+                     		      ( level_id = levels_data [ level_num,
+								 LEVEL_ID_COL] )
+
+     			{ Numeric/Interval components }
+
+     			IF (( comp_list [ count, 5 ] = "N" )  OR
+			    ( comp_list [ count, 5 ] = "I" )) THEN
+
+        			IF ( SELECT mlp_values.min_limit <> EMPTY ) THEN
+
+           				a = a : STRIP ( min_str)
+           				a = PAD (a, " ", 66) : " "
+           				IF (SELECT mlp_values.max_limit > 0
+									) THEN
+              					a = a :
+						    STRIP ( SELECT mlp_values .
+								max_limit )
+           				ENDIF
+
+        			ENDIF
+
+     			ELSEIF ( comp_list [ count, 5 ] = "B" ) THEN
+
+    	  			IF ( SELECT mlp_values.boolean_pass <> EMPTY ) THEN
+           				a = a :
+					   STRIP ( SELECT mlp_values.boolean_pass )
+        			ENDIF
+
+			ELSEIF ( SELECT mlp_values.text_spec <> EMPTY ) THEN
+
+				IF blank ( SELECT mlp_values . text_spec ) THEN
+
+           				a = a :
+					   STRIP ( SELECT mlp_values.text_phrase )
+
+				ELSE
+
+           				a = a :
+					   STRIP ( SELECT mlp_values.text_spec )
+        			ENDIF
+
+     			ENDIF
+LITERAL
+$a______________________________________________________________________________
+$ENDLITERAL
+
+  		ENDIF
+  		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE    { end of level_info }
+
+{------------------------------------------------------------------------------}
+
+ROUTINE convert_null_analysis ( VALUE analysis )
+
+	{ Null analyses are noted as $NULL but are displayed as " ".
+	  Convert an analysis in here }
+
+	IF ( analysis = BLANK_ANALYSIS ) THEN
+		analysis = " "
+	ENDIF
+
+	RETURN ( analysis )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{**AS2003R1}
+{**AS1042}
+GLOBAL ROUTINE handle_sample_comment ( VALUE id_num )
+
+     DECLARE wh, ww, wr, wc, ht, ft, get_comment, comment_text, sample_comment
+
+     IF ( select_for_update ( "SAMPLE", "ID_NUMERIC", id_num ) )
+     THEN
+
+        sample_comment = SELECT sample . sample_comment
+
+        CREATE OBJECT PROMPT_CLASS_FORM, get_comment
+
+        ww = GLOBAL ( "SCREEN_WIDTH" ) - 4
+
+        wh = 5
+        wr = 16
+        wc = 3
+
+        ht = "Enter Sample Comment"
+        ft = "Press DO to accept comment / Exit to quit"
+
+        get_comment . height   =  wh
+        get_comment . width    =  ww
+        get_comment . row      =  wr
+        get_comment . column   =  wc
+        get_comment . border   =  TRUE
+        get_comment . header   =  ht
+        get_comment . footer   =  ft
+
+        PROMPT   OBJECT comment_text
+                 FORMAT text234
+                 ON    LINE 2 FROM 1
+                 IN    WINDOW get_comment . window
+
+        get_comment . add_prompt ( comment_text )
+
+        get_comment . start_prompt ()
+
+        comment_text.value = sample_comment
+
+        REPEAT
+
+           get_comment . wait_prompt()
+
+           IF (get_comment . get_lastkey () = "DO") THEN
+               START WRITE TRANSACTION "Update Comment"
+               ASSIGN sample.sample_comment = comment_text.value
+               UPDATE sample
+               COMMIT
+           ENDIF
+
+        UNTIL (get_comment . get_lastkey () = "EXIT") OR
+              (get_comment . get_lastkey () = "DO"  )
+            
+        get_comment . end_prompt ()
+ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE do_some_comment ( VALUE smp_aut_text, VALUE comment_title )
+
+   DECLARE pg_wid, aut_lin, line_count, pr_str, aut_str
+
+   ARRAY aut_str
+
+   pg_wid = 75
+   aut_lin = 1
+
+   split_lines (smp_aut_text, pg_wid, aut_str, aut_lin )
+
+
+LITERAL
+ $comment_title________
+$ENDLITERAL
+
+line_count = 1
+
+   WHILE line_count <= aut_lin DO
+
+      pr_str = aut_str [line_count]
+
+LITERAL
+ $pr_str________________________________________________________________________
+$ENDLITERAL
+
+      line_count = line_count + 1
+
+   ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+
+GLOBAL ROUTINE split_lines (VALUE in_str ,
+                     VALUE col_wid ,
+                     line_str ,  
+                     line_count )
+
+
+declare len_in_str , rest, rest_str, len_line_str
+
+ARRAY line_str
+
+len_in_str = LENGTH(in_str)
+
+rest_str = in_str 
+
+WHILE len_in_str <> 0 DO
+   
+   line_str [ line_count ] = STRIP(SPLITWORDS(rest_str , col_wid))
+   len_line_str = LENGTH( line_str[line_count])
+   rest = len_in_str - len_line_str 
+   rest_str = STRIP(SUBSTRING(rest_str ,(len_line_str + 1),rest))
+   
+   IF rest < col_wid THEN
+                     
+     col_wid = rest
+
+   ENDIF
+
+   len_in_str = LENGTH(rest_str)
+
+   line_count = line_count + 1
+
+
+ENDWHILE
+
+line_count = line_count - 1
+
+ENDROUTINE
+
+{**AE1042}
+{**AE2003R1}
+
+ROUTINE emlp_sample_exists
+
+
+DECLARE variable_exists
+
+	variable_exists = FALSE
+
+	IF ( variable_is_assigned( emlp_sample ) ) THEN
+	
+		IF ( emlp_sample <> EMPTY ) THEN
+		
+			variable_exists = TRUE
+			
+		ENDIF
+		
+	ENDIF
+	
+	RETURN( variable_exists )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_product_exists
+
+
+DECLARE variable_exists
+
+	variable_exists = FALSE
+
+	IF ( variable_is_assigned( emlp_product ) ) THEN
+	
+		IF ( emlp_product <> EMPTY ) THEN
+		
+			variable_exists = TRUE
+			
+		ENDIF
+		
+	ENDIF
+	
+	RETURN( variable_exists )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE add_test_to_emlp_sample
+
+	IF ( emlp_sample_exists() ) THEN
+	
+		emlp_sample . add_test()
+		
+	ENDIF
+	
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_current_test_number( VALUE test_number )
+
+DECLARE current_test
+
+	IF( emlp_sample_exists() ) THEN
+	
+		current_test = emlp_sample . get_last_test()
+		
+		IF( current_test <> EMPTY ) THEN
+		
+			current_test . set_test_number( test_number )
+			
+		ENDIF
+		
+	ENDIF
+	
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE set_current_test_anal_id( VALUE anal_id )
+
+DECLARE current_test
+
+	IF( emlp_sample_exists() ) THEN
+	
+		current_test = emlp_sample . get_last_test()
+		
+		IF( current_test <> EMPTY ) THEN
+		
+			current_test . set_anal_id( anal_id )
+			
+		ENDIF
+		
+	ENDIF
+	
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_add_comp_level( VALUE test_number  ,
+                                    VALUE anal_id      ,
+                                    VALUE comp_name    ,
+                                    VALUE level_id     ,
+                                    VALUE level_status ,
+                                          limits_array ,
+                                    VALUE raw_result   ,
+                                    VALUE proc_result  )
+DECLARE min_limit, max_limit 
+
+	IF( emlp_sample_exists() ) THEN
+	
+		emlp_sample_find_limits( level_id, limits_array, max_limit, min_limit )
+	
+		emlp_sample . add_comp_level( test_number, anal_id, comp_name, level_id, level_status, min_limit, max_limit, raw_result, proc_result )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_add_missing_comp( VALUE test_number  ,
+                                      VALUE anal_id      ,
+                                      VALUE comp_name    )
+
+	IF( emlp_sample_exists() ) THEN
+	
+		emlp_sample . add_missing_comp( test_number, anal_id, comp_name )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_find_limits( level_id, limits_array, max_limit, min_limit )
+
+DECLARE counter
+
+	max_limit = EMPTY
+	min_limit = EMPTY
+	
+	counter = 1
+	
+	WHILE ( counter <= size_of_array( limits_array ) ) DO
+	
+		IF emlp_sample_lev_lims_found( level_id, limits_array[ counter ] ) THEN
+		
+			emlp_get_limts_for_type( limits_array[ counter ], min_limit, max_limit )
+			
+			counter = size_of_array( limits_array )
+			
+		ENDIF
+
+		counter = counter + 1
+			
+	ENDWHILE			
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_get_limts_for_type( limits_object, min_limit, max_limit )
+
+	min_limit = ""
+	max_limit = ""
+	
+	IF( variable_is_assigned( limits_object . min_limit ) ) THEN
+	
+		min_limit = limits_object . min_limit
+		
+		IF( variable_is_assigned( limits_object . max_limit ) ) THEN
+
+			max_limit = limits_object . max_limit
+			
+		ENDIF			
+	
+	ELSEIF( variable_is_assigned( limits_object . text_spec) ) THEN
+	
+		min_limit = limits_object . text_spec
+		
+		IF( variable_is_assigned( limits_object . text_phrase ) ) THEN
+		
+			max_limit = limits_object . text_phrase
+			
+		ENDIF
+	
+	ELSEIF( variable_is_assigned( limits_object . boolean_pass ) ) THEN
+	
+		min_limit = limits_object . boolean_pass
+		
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_lev_lims_found( level_id, limit_obj )
+
+DECLARE limit_found, local_level_id
+
+	limit_found = FALSE
+	
+	local_level_id = STRIP( level_id )
+	
+	IF ( limit_obj <> EMPTY ) THEN
+
+		IF( INDEX( limit_obj . object_name, local_level_id ) > 0 ) THEN
+
+			limit_found = TRUE
+
+		ENDIF
+	
+	ENDIF
+
+RETURN( limit_found )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_comp_raw_result( VALUE test_num, VALUE comp_name, result_object )
+
+DECLARE res_str, res_val, prefix, raw_result
+
+	res_str = SELECT result . text IN OBJECT result_object
+	          WHERE test_number = test_num AND
+	                name = comp_name
+	
+	res_val = SELECT result.value IN OBJECT result_object
+	
+	prefix = get_res_str_prefix( res_str )
+	
+	raw_result = prefix: real_to_string( res_val )
+	
+	RETURN( raw_result )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_res_str_prefix( VALUE res_str )
+
+DECLARE prefix
+
+	prefix = ""
+
+	IF( INDEX( res_str, ">=" ) > 0 ) THEN
+	
+		prefix = ">="
+		
+	ELSEIF( INDEX( res_str, "<=" ) > 0 ) THEN
+	
+		prefix = "<="
+		
+	ELSEIF( INDEX( res_str, ">" ) > 0 ) THEN
+	
+		prefix = ">"
+		
+	ELSEIF( INDEX( res_str, "<" ) > 0 ) THEN
+	
+		prefix = "<"
+	
+	ENDIF
+	
+	RETURN( prefix )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_comp_proc_result( VALUE test_num, VALUE comp_name, result_object )
+
+DECLARE proc_result
+
+	IF( emlp_use_custom_rounding() AND result_is_numeric( result_object ) ) THEN 
+	
+		proc_result = emlp_custom_round_result( test_num, comp_name, result_object )
+	
+	ELSE
+	
+		proc_result = SELECT result.text IN OBJECT result_object
+		              WHERE  test_number = test_num AND
+		                     name = comp_name
+		
+	ENDIF
+	
+	RETURN( proc_result )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE real_to_string ( real_val )
+
+{ 
+
+* Parameters   : real_val, the real to be converted.
+*
+* Return Value : real_string, string representation of real_val.
+*
+*******************************************************************************}
+
+DECLARE real_string, current_format
+
+        current_format = GLOBAL ("FORMAT_TEXT")
+
+	SET FORMAT "99.99999999999999E999"
+	
+	real_string = STRING( real_val )
+	
+	SET FORMAT current_format
+	
+RETURN( real_string )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_add_missing_test( VALUE anal_id )
+
+	IF( emlp_sample_exists() ) THEN
+	
+		emlp_sample . add_missing_test( anal_id )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_set_test_pass_status( VALUE test_number, VALUE pass_status )
+
+	IF( emlp_sample_exists() ) THEN
+	
+		emlp_sample . set_test_pass_status( test_number, pass_status )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_set_comp_pass_status( VALUE test_number, VALUE comp_name, VALUE pass_status )
+
+	IF( emlp_sample_exists() ) THEN
+	
+		emlp_sample . set_comp_pass_status( test_number, comp_name, pass_status )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_use_raw_results
+
+DECLARE use_raw
+
+	use_raw = FALSE
+
+	IF( emlp_product_exists() ) THEN
+	
+		use_raw = emlp_product . is_raw_mode()
+		
+	ENDIF
+	
+	RETURN( use_raw )
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_use_custom_rounding
+
+DECLARE custom_round
+
+	custom_round = FALSE
+
+	IF( emlp_product_exists() ) THEN
+	
+		custom_round = emlp_product . use_custom_rounding()
+		
+	ENDIF
+	
+	RETURN( custom_round )
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_custom_round_result( VALUE test_num, VALUE comp_name, result_object )
+
+DECLARE res_str, res_val, prefix, proc_res, sig_figs_lib, dec_places, old_format,
+        sig_figs_number, sig_figs_rounding
+
+	res_str = SELECT result . text IN OBJECT result_object
+	          WHERE  test_number = test_num AND
+	                 name        = comp_name
+	
+	res_val = SELECT result . value IN OBJECT result_object
+	
+	prefix = get_res_str_prefix( res_str )
+	
+	res_str = prefix: real_to_string( res_val )
+	
+	proc_res = res_str
+	
+	sig_figs_lib = emlp_product . get_sig_figs_filter()
+	
+	IF( NOT BLANK( sig_figs_lib ) ) THEN
+	
+		IF GLOBAL ( "SIG_FIGS_ENABLED" ) THEN
+
+			sig_figs_number = emlp_product . get_sig_figs_number()
+			sig_figs_rounding = emlp_product . get_sig_figs_rounding()
+			dec_places = emlp_product . get_decimal_places()
+
+			CALL_ROUTINE "SIG_FIGS_FILTER"
+
+			  IN SIGFIGSLIBRARY( sig_figs_lib )
+
+			  NEW CONTEXT
+
+
+			  USING sig_figs_number   ,
+				sig_figs_rounding ,
+				dec_places        ,
+				res_str           ,
+				res_val
+
+			  RETURNING proc_res
+
+		ENDIF
+		
+	ELSE
+	
+		dec_places = emlp_product . get_decimal_places()
+		
+		IF( dec_places >= 0 ) THEN
+		
+		old_format = GLOBAL ( "FORMAT_TEXT" )
+		
+		emlp_set_custom_format( dec_places )
+		
+		proc_res = prefix: NUMERIC( res_val )
+		
+		SET FORMAT old_format
+		
+		ENDIF
+		
+	ENDIF		
+	
+	RETURN( proc_res )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_set_custom_format( VALUE dec_places )
+
+    IF dec_places > 0 THEN
+
+        SET FORMAT pad ( "9", "9", find_max_number ( 10 - dec_places - 1, 1 )) :
+                   "." : pad ( "9", "9", dec_places )
+
+    ELSEIF dec_places = 0 THEN
+
+        SET FORMAT pad ( "9", "9", 10 )
+
+    ENDIF
+    
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE emlp_sample_add_missing_test_comp( VALUE anal_id, VALUE comp_name )
+
+DECLARE missing_test_object
+
+	IF( emlp_sample_exists() ) THEN
+	
+		missing_test_object = emlp_sample . add_missing_test( anal_id )
+		
+		missing_test_object . add_missing_comp( comp_name )
+
+	ENDIF
+	
+ENDROUTINE                                    
+
+{------------------------------------------------------------------------------}
+
+ROUTINE result_is_numeric( result_object )
+
+DECLARE numeric_result, res_type, res_str
+
+	res_type = SELECT result . result_type IN OBJECT result_object
+	
+	IF ( res_type = "N" ) THEN
+	
+		numeric_result = TRUE
+		
+	ELSEIF( res_type = "K" ) THEN
+	
+		res_str = SELECT result . text IN OBJECT result_object
+		
+		IF( NUMTEXT( res_str ) ) THEN
+		
+			numeric_result = TRUE
+			
+		ELSE
+		
+			numeric_result = FALSE
+			
+		ENDIF
+	
+	ELSE
+	
+		numeric_result = FALSE
+		
+	ENDIF
+
+	RETURN( numeric_result )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}

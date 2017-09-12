@@ -1,0 +1,896 @@
+{******************************************************************************
+*
+* Module Name   : $LTE_INVENTORY
+*
+* Purpose       : 
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+SET NAME "DISPLAY/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LABTABLIB
+JOIN LIBRARY $LIB_INVENTORY
+JOIN LIBRARY $LIB_INVENTORY_ITEM
+JOIN LIBRARY $LIB_LIST_VIEWER
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIST_EDITOR
+JOIN LIBRARY $PROMPT_QTY_UNIT
+JOIN LIBRARY $PROMPT_TOOLBAR
+JOIN LIBRARY $ROLE_LIB
+
+modify_option( EMPTY )
+
+DECLARE list_editor, has_items, allocation_array
+
+{******************************************************************************}
+
+ROUTINE get_labtable_grid
+{
+* Returns the line editor grid on the labtable front page
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    DECLARE labtable, grid, form
+
+    labtablib_get_labtable( labtable )
+    labtablib_get_form( form )
+    
+    grid = form . prompt_objects [ labtable . editor_prompt ]
+
+    RETURN( grid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE validation_routine
+{
+* Called to check validity of data before saving
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    RETURN( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE read_data_routine (       labtable  ,
+                            VALUE operation )
+
+{
+* Called after the record has been selected / reserved but before the editor
+* screen has been built.
+*
+* Parameters : labtable  , the labtable object.
+*              operation , the current LTE operation eg ADD, MODIFY, DISPLAY
+*
+******************************************************************************}
+
+    DECLARE identity
+
+    identity = SELECT inventory_header . identity
+
+    has_items = ( SELECT COUNT inventory_item WHERE inventory_id = identity ) > 0
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE allocation_item_find( VALUE entry_number )
+
+{ Returns the position of the passed entry number in the array
+*
+* Parameters : entry_number , Allocation entry number
+*
+******************************************************************************}
+
+    DECLARE pos, found_pos
+    
+    found_pos = -1
+    
+    pos = 1    
+    WHILE ( pos <= size_of_array( allocation_array ) ) AND ( found_pos = -1 ) DO
+    
+        IF allocation_array[ pos , 1 ] = entry_number THEN
+            
+            found_pos = pos
+            
+        ENDIF
+    
+        pos = pos + 1
+        
+    ENDWHILE
+
+    RETURN( found_pos )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE allocation_item_decrement_count( VALUE entry_number )
+
+{ Decrements the count for the allocation header identified by the passed
+* entry number
+*
+* Parameters : entry_number , Allocation entry number
+*
+******************************************************************************}
+
+    DECLARE pos
+
+    pos = allocation_item_find( entry_number )
+
+    IF pos = -1 THEN
+        pos = size_of_array( allocation_array ) + 1
+    
+        allocation_array[ pos , 1 ] = entry_number
+        allocation_array[ pos , 2 ] = 0
+        
+    ENDIF
+
+    allocation_array[ pos , 2 ] = allocation_array[ pos , 2 ] - 1
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE allocation_set_count( VALUE entry_number, VALUE count )
+
+{ Sets the count for the allocation header identified by the passed entry number
+*
+* Parameters : entry_number , Allocation entry number
+*              count        , the count to set
+*
+******************************************************************************}
+
+    DECLARE pos
+
+    pos = allocation_item_find( entry_number )
+
+    IF pos = -1 THEN
+        pos = size_of_array( allocation_array ) + 1
+    
+        allocation_array[ pos , 1 ] = entry_number
+        allocation_array[ pos , 2 ] = count
+        
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE allocation_count( VALUE inventory_id )
+
+{ Makes a note of the number of inventory item allocations for each allocation
+* header
+*
+* Parameters : inventory_id , Inventory id
+*
+******************************************************************************}
+
+    DECLARE item_id, entry_number, count, context
+
+    ARRAY allocation_array ARRAYSIZE( 0 , 2 )
+
+    list_editor . collection . set_first( )
+    
+    WHILE ( list_editor . collection . current <> EMPTY ) DO
+    
+        IF list_editor . collection . current . deleted THEN
+        
+            item_id = SELECT inventory_item . item_id
+                          IN OBJECT list_editor . collection . current
+        
+            entry_number = SELECT inventory_alloc_item . entry_number
+                              WHERE inventory_id = inventory_id
+                              AND   item_id      = item_id
+
+            WHILE entry_number <> EMPTY DO
+
+                push_file_descriptor( "INVENTORY_ALLOC_ITEM", context )
+
+                count = SELECT COUNT inventory_alloc_item
+                            WHERE inventory_id = inventory_id
+                            AND   entry_number = entry_number
+                
+                pop_file_descriptor( context )
+                
+                allocation_set_count( entry_number, count )
+                
+
+                NEXT inventory_alloc_item
+
+                entry_number = SELECT inventory_alloc_item . entry_number
+
+            ENDWHILE
+        
+        ENDIF
+    
+        list_editor . collection . set_next( )
+        
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE allocation_delete_empty( VALUE inventory_id )
+
+{ Delete any allocation header records that no longer have any allocation items
+*
+* Parameters : inventory_id , Inventory id
+*
+******************************************************************************}
+
+    DECLARE pos, entry_number, errors
+
+    errors = EMPTY
+
+    pos = 1
+    WHILE ( pos <= size_of_array( allocation_array ) ) AND ( errors = EMPTY ) DO
+        
+        IF allocation_array[ pos , 2 ] <= 0 THEN
+        
+            entry_number = SELECT inventory_allocation . entry_number
+                             FOR UPDATE
+                             WHERE inventory_id = inventory_id
+                             AND   entry_number = allocation_array[ pos , 1 ]
+
+            IF( entry_number <> EMPTY ) THEN
+   
+                IF ( entry_number = LOCKED ) THEN
+        
+                    errors = "Locked INVENTORY_ALLOCATION Record"
+
+                ENDIF
+        
+                IF errors = EMPTY THEN
+                
+                    DELETE inventory_allocation, errors
+                
+                ENDIF
+            
+            ENDIF
+        
+        ENDIF
+        
+        pos = pos + 1
+        
+    ENDWHILE
+
+    RETURN( errors )
+    
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE delete_item_allocation ( VALUE inventory_id  ,
+                                 VALUE item_id       )
+
+{ Deletes all allocation data related to the passed inventory item
+* If no errors occur EMPTY is returned otherwise the error text is returned
+*
+* Parameters : inventory_id     , Inventory id
+*              item_id          , Item id
+*
+******************************************************************************}
+    
+    DECLARE entry_number, errors
+    
+    errors = EMPTY
+       
+    entry_number = SELECT inventory_alloc_item . entry_number
+                      FOR UPDATE
+                      WHERE inventory_id = inventory_id
+                      AND   item_id = item_id
+
+    WHILE ( entry_number <> EMPTY  ) AND
+          ( errors = EMPTY         ) DO
+   
+        IF ( entry_number = LOCKED ) THEN
+        
+            errors = "Locked INVENTORY_ALLOC_ITEM Record"
+            
+        ENDIF
+    
+        IF errors = EMPTY THEN
+
+            DELETE inventory_alloc_item, errors
+
+            allocation_item_decrement_count( entry_number )
+
+        ENDIF
+
+        NEXT inventory_alloc_item
+        entry_number = SELECT inventory_alloc_item . entry_number
+
+    ENDWHILE
+    
+    RETURN( errors )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE update_routine ( labtable )
+
+{ Called on pressing the DO key to save LTE screen.
+* Called after the LTE write transaction has been started.
+* Removes any allocation records that belonged to a newly removed item
+*
+* Parameters : labtable , the labtable object.
+*
+* Returns : TRUE  - if updates have been performed
+*           FALSE - if updates have NOT been performed
+*           EMPTY - the systems checks for updates
+*
+******************************************************************************}
+
+    DECLARE errors, done_updates, item_id, inventory_id
+
+    inventory_id = list_editor . inventory_id
+    
+    done_updates = FALSE
+    
+    allocation_count( inventory_id )
+    
+    errors = EMPTY
+
+    list_editor . collection . set_first( )
+    WHILE ( list_editor . collection . current <> EMPTY ) AND ( errors = EMPTY ) DO
+    
+        IF list_editor . collection . current . deleted THEN
+        
+            item_id = SELECT inventory_item . item_id
+                          IN OBJECT list_editor . collection . current
+        
+            
+            errors = delete_item_allocation ( inventory_id , item_id )
+
+            done_updates = TRUE
+        
+        ENDIF
+    
+        list_editor . collection . set_next( )
+        
+    ENDWHILE
+    
+    IF errors = EMPTY THEN
+    
+        errors = allocation_delete_empty( inventory_id )
+    
+    ENDIF
+    
+    IF errors <> EMPTY THEN
+    
+        flash_message( errors, TRUE )
+        
+    ENDIF
+
+    RETURN ( done_updates )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_base_unit ( VALUE column     ,
+                           VALUE row        ,
+                           VALUE cell_width ,
+                                 window     ,
+                           VALUE is_display )
+{
+* Prompt for the header reporting unit. Prompt is display only if any items
+* have been added
+*
+******************************************************************************}
+
+    DECLARE unit, display_only
+   
+    unit = SELECT inventory_header . base_unit
+
+    IF ( is_display ) THEN
+
+        DISPLAY unit
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window
+    ELSE
+
+        display_only = has_items
+
+        PROMPT FOR unit
+            BROWSE ON unit_header
+            WITH ( display_only = display_only ,
+                   column       = column       ,
+                   row          = row          ,
+                   window       = window       ,
+                   width        = cell_width   )
+
+        IF NOT display_only THEN
+        
+            ASSIGN inventory_header . base_unit = unit
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_low_unallocated_level ( VALUE column     ,
+                                       VALUE row        ,
+                                       VALUE cell_width ,
+                                             window     ,
+                                       VALUE is_display )
+{
+* Prompt for the low unallocated level quantity and unit. The quantity entered is
+* always converted to header units for display and storage
+*
+******************************************************************************}
+
+    DECLARE qty, header_unit, qty_unit_prompt, grid
+
+    qty         = SELECT inventory_header . low_unallocated_level
+    header_unit = SELECT inventory_header . base_unit
+    
+    PROMPT OBJECT qty_unit_prompt
+        CLASS "PROMPT_QTY_UNIT"
+        WITH ( column         = column        ,
+               row            = row           ,
+               window         = window        ,
+               width          = cell_width    ,
+               value          = qty           ,
+               base_unit      = header_unit   ,
+               display_unit   = header_unit   ,
+               minimum_value  = 0             )
+
+    qty_unit_prompt . start_prompt( )
+
+    IF NOT is_display THEN
+    
+        qty_unit_prompt . wait_prompt( )
+
+        ASSIGN inventory_header . low_unallocated_level = qty_unit_prompt . value
+
+        grid = get_labtable_grid( )
+        grid . redisplay_contents( )
+
+    ENDIF
+
+    qty_unit_prompt . end_prompt( )
+
+    qty_unit_prompt . set_globals( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE do_the_work  ( VALUE operation )
+{
+* 
+*
+*******************************************************************************}
+
+    DECLARE prompt_details, fields_to_output, name_of_table, header_mess
+    DECLARE footer_mess, display_footer_mess, displayed_name_of_table
+    DECLARE directory, extn, input_mess, default_value, special_actions_report
+    DECLARE labtable_messages, help_context, count
+
+    prompt_qty_unit_initialisation( )
+
+    ARRAY prompt_details ARRAYSIZE    ( 0 , 6 ) 
+    ARRAY fields_to_output ARRAYSIZE ( 0 )
+
+    name_of_table = "INVENTORY_HEADER"
+
+    header_mess = "Inventory Class"
+
+    footer_mess = GET MESSAGE ( 2560,1)
+
+    display_footer_mess = GET MESSAGE ( 2559 ,1 )
+
+    count = 1
+
+    prompt_details [ count , MESSAGE_POSITION    ] = "Description"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "DESCRIPTION"
+    
+    count = count + 1
+ 
+    prompt_details [ count , TYPE_POSITION       ] = "ROUTINE"
+    prompt_details [ count , MESSAGE_POSITION    ] = "Base Unit"
+    prompt_details [ count , ROUTINE_POSITION    ] = "PROMPT_BASE_UNIT"
+    prompt_details [ count , LIBRARY_POSITION    ] = GLOBAL( "CURRENT_LIBRARY" )
+    
+    count = count + 1
+    
+    prompt_details [ count , TYPE_POSITION       ] = "ROUTINE"
+    prompt_details [ count , MESSAGE_POSITION    ] = "Low Unallocated Level"
+    prompt_details [ count , ROUTINE_POSITION    ] = "PROMPT_LOW_UNALLOCATED_LEVEL"
+    prompt_details [ count , LIBRARY_POSITION    ] = GLOBAL( "CURRENT_LIBRARY" )
+ 
+    count = count + 1
+ 
+    prompt_details [ count , MESSAGE_POSITION    ] = "Callback Library"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "CALLBACK_LIBRARY"
+
+    count = count + 1
+ 
+    prompt_details [ count , MESSAGE_POSITION    ] = "Low Unallocated Routine"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "LOW_UNALLOCATED_ROUTINE"
+
+    count = count + 1
+ 
+    prompt_details [ count , MESSAGE_POSITION    ] = "MLP Spec"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "PRODUCT_ID"
+
+    count = count + 1
+   
+    prompt_details [ count , MESSAGE_POSITION    ] = "Modifiable"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "MODIFIABLE"
+
+    count = count + 1
+
+    prompt_details [ count , MESSAGE_POSITION    ] = "Group Name"
+    prompt_details [ count , FIELD_NAME_POSITION ] = "GROUP_ID"
+    
+    count = count + 1
+
+
+    displayed_name_of_table = "Inventory Class"
+
+    directory = EMPTY
+    extn = EMPTY
+
+    input_mess = "Enter Inventory Id"
+
+    default_value = EMPTY
+
+    fields_to_output [ 1 ]  = 1
+    fields_to_output [ 2 ]  = 2
+    fields_to_output [ 3 ]  = 3
+    fields_to_output [ 4 ]  = 4
+    fields_to_output [ 5 ]  = 5
+    fields_to_output [ 6 ]  = 6
+
+    ARRAY special_actions_report ARRAYSIZE ( 0 , 4 ) 
+
+    count = 1
+
+    special_actions_report [ count , CHARACTER_POSITION ] = "*"
+    special_actions_report [ count , TITLE_POSITION     ] = GET MESSAGE ( 784 , 1 )
+
+    count = count + 1
+
+    special_actions_report [ count, CHARACTER_POSITION ] = "1"
+    special_actions_report [ count, TITLE_POSITION ] = "Items..."
+    special_actions_report [ count, LIBRARY_POSITION ] = GLOBAL( "CURRENT_LIBRARY" )
+    special_actions_report [ count, ROUTINE_POSITION ] = "INVENTORY_ITEM"
+
+    count = count + 1
+
+    ARRAY labtable_messages ARRAYSIZE ( 0 )
+
+    labtable_messages [ IDENTITY_MESSAGE ] = get message ( 2545 , 1 )
+    labtable_messages [ MOD_ON_MESSAGE   ] = get message ( 2546 , 1 )
+    labtable_messages [ MOD_BY_MESSAGE   ] = get message ( 2547 , 1 )
+    labtable_messages [ READ_MESSAGE     ] = "Labtable Read Transaction"
+    labtable_messages [ WRITE_MESSAGE    ] = "Labtable Write Transaction"
+
+    help_context = EMPTY
+
+    smp_lte_perform_option  ( name_of_table               ,
+                              displayed_name_of_table     ,
+                              prompt_details              ,
+                              labtable_messages           ,
+                              default_value               ,
+                              input_mess                  ,
+                              header_mess                 ,
+                              footer_mess                 ,
+                              display_footer_mess         ,
+                              directory                   ,
+                              extn                        ,
+                              help_context                ,
+                              GLOBAL( "CURRENT_LIBRARY" ) ,
+                              fields_to_output            ,
+                              special_actions_report      ,
+                              operation                   )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "add_ident" )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE copy_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "copy_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE modify_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "modify_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE display_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "display_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE remove_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "remove_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE restore_option ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "restore_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_option  ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "list_idents" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_option  ( VALUE option )
+{
+* 
+*
+*******************************************************************************}
+
+    do_the_work ( "print_ident" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_inventory_items( VALUE identity )
+{
+* Prints the inventory item records for the passed identity
+*
+* Parameters : identity , Inventory id
+*
+*******************************************************************************}
+
+    DECLARE field_details, count
+
+    ARRAY field_details ARRAYSIZE ( 0 , 2 )
+
+    count = 1
+
+    field_details [ count , 1 ] = "ITEM_ID"
+    field_details [ count , 2 ] = "Item id"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "ITEM_CODE"
+    field_details [ count , 2 ] = "Item code"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "QUANTITY"
+    field_details [ count , 2 ] = "Quantity"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "LOCATION"
+    field_details [ count , 2 ] = "Location"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "ENTERED_ON"
+    field_details [ count , 2 ] = "Entered On"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "ENTERED_BY"
+    field_details [ count , 2 ] = "Entered by"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "LAST_TESTED_ON"
+    field_details [ count , 2 ] = "Last tested On"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "LAST_TESTED_BY"
+    field_details [ count , 2 ] = "Last tested by"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "EXPIRY_DATE"
+    field_details [ count , 2 ] = "Expiry date"
+
+    count = count + 1
+
+    field_details [ count , 1 ] = "DESCRIPTION"
+    field_details [ count , 2 ] = "Description"
+
+
+    print_fields ( "INVENTORY_ITEM"           ,
+                    identity                  ,
+                    ""                        ,
+                    ""                        ,
+                    2                         ,
+                    28                        ,
+                    field_details             )
+                    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_item ( VALUE identity        ,
+                         VALUE copied_identity ,
+                         VALUE operation       )
+{
+* Items Back Page LTE callback
+* 
+* Parameters : identity        , header id
+*              copied_identity , id of copied inventory or EMPTY
+*              operation       , the lte mode
+*
+*******************************************************************************}
+
+    DECLARE return_value, unit, continue
+
+    return_value = TRUE
+
+    unit = STRIP( SELECT inventory_header . base_unit )
+
+    IF ( operation = "MODIFY" ) AND BLANK( unit ) AND NOT has_items THEN
+    
+        continue = NOT confirm_with_text( "You have not specified a unit." :
+                                          ASCII( 13 ) :
+                                          "Once you have added items to the inventory you will not be able to go back and change the unit." :
+                                          ASCII( 13 ) :
+                                          "Do you want to set a unit now?" )
+    ELSE
+    
+        continue = TRUE
+        
+    ENDIF
+    
+    IF continue THEN
+
+        IF operation = "PRINT" THEN
+
+            print_inventory_items( identity )
+
+        ELSE
+
+
+            IF ( NOT variable_is_assigned ( list_editor ) ) OR
+               ( list_editor = EMPTY                      ) THEN
+
+                inventory_item_list_editor_initialise ( )
+
+                CREATE OBJECT "INVENTORY_ITEM_LIST_EDITOR", list_editor
+
+            ENDIF
+
+            list_editor . header_unit  = unit
+            list_editor . inventory_id = identity
+
+            list_editor . set_default_prompt_details( )
+            
+            return_value = list_editor . operation ( identity        ,
+                                                     copied_identity ,
+                                                     operation       )
+
+            IF ( operation = "MODIFY" ) THEN
+                        
+                has_items = ( list_editor . get_item_count( ) > 0 )
+            
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+    
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_status_option ( VALUE option )
+{
+* Menu Procedure option to provide summary information on an inventory class
+* 
+* Parameters : option , calling procedure number
+*
+*******************************************************************************}
+
+    DECLARE unallocated, allocated, total, unit, identity
+
+    IF get_identity( identity                ,
+                     "Inventory Class"       ,
+                     "Inventory Class Status",
+                     "inventory_header"      ,
+                     ""                      )  THEN
+
+        unit = inventory_get_unit( identity )
+
+        unallocated = inventory_get_quantity_unallocated( identity )
+        allocated   = inventory_get_quantity_allocated( identity )
+        total       = inventory_get_quantity_total( identity )
+
+        flash_message( "Quantity allocated "   : ASCII( 9 ) : "= " :  allocated   : " " : unit : ASCII( 13 ) :
+                       "Quantity unallocated " : ASCII( 9 ) : "= " :  unallocated : " " : unit : ASCII( 13 ) :
+                       "Total in inventory "   : ASCII( 9 ) : "= " :  total       : " " : unit , TRUE )
+
+    ENDIF
+
+ENDROUTINE
+

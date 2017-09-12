@@ -1,0 +1,3952 @@
+{***********************************************************************
+*
+* Module Name   : SAP_TRANSFER2
+*
+* Purpose       : Handles data to and from MES.
+*
+* Document Ref  : LIMS Design Specifications related to MES, version .2
+*
+* Specification : N/a
+*
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2010-08-26      Tommy Bøgeskov      Created
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $SP_LOGIN
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $LIMSML_PROCESS
+JOIN LIBRARY $SP_LOGIN_JOB
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY BIZ_TRANSFER
+JOIN LIBRARY CH_COMMIT
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+CONSTANT LF = ASCII(10):"                                 "
+
+{*************************************************************************
+* Section for temporarily testing
+*************************************************************************}
+DECLARE sample, child_array
+
+    sample = "   1230806"
+    ARRAY child_array    ARRAY_SIZE(0, 2)
+
+    NewGetSAPCharChilds(sample, child_array)
+    WriteToLog(GetArray(child_array))
+    
+    EXIT
+
+
+{*************************************************************************
+* Section for testing
+*************************************************************************}
+{WriteToLog("SAP_TRANSFER Main Routine - Manual sample login by ":STRIP(OPERATOR))}
+DECLARE CreateJobForm, Material, Batch, Plant, WorkCenter, ProdDate, key, nr, mlp_ver, mlp_status, ProcessOrder, LogTxt, CIA, InspType, InspLot,
+        sps, ver, c, confirm_mess, dynamic_sql, mps_template, assign_group, JobStatus, OrgJob, JobID
+
+SET DATE FORMAT "DZ-MZ-YYYY" {H24:MI:SS}
+
+Plant = SELECT personnel.default_group WHERE identity = GLOBAL("Operator")
+
+WHILE (NOT NUMTEXT(plant)) AND (INDEX("HOR-PIM,RDA-GENERA", STRIP(plant)) = 0)DO
+    plant = SELECT group_header.parent_group WHERE identity = plant
+ENDWHILE
+
+IF Plant = "2004" THEN
+    WorkCenter = LEFTSTRING(SELECT personnel.location_id,3)
+ELSEIF Plant = "2001" THEN
+    WorkCenter = "GRA"
+ELSEIF Plant = "2020" THEN
+    WorkCenter = "SGA"
+ELSEIF Plant = "2200" THEN
+    WorkCenter = "NIE"
+ELSEIF Plant = "2210" THEN
+    WorkCenter = "PLH"
+ELSEIF Plant = "2500" THEN
+    WorkCenter = "HUS"
+ELSEIF Plant = "4000" THEN
+    WorkCenter = "MKE"
+ELSEIF Plant = "4400" THEN
+    WorkCenter = "VAL"
+ELSEIF Plant = "9000" THEN
+    WorkCenter = "HOR"
+ELSE
+    WorkCenter = ""
+ENDIF
+
+InspType = "04"
+
+create_form(CreateJobForm, Material, Batch, Plant, WorkCenter, ProdDate, CIA, InspType, InspLot)
+key = CreateJobForm.get_lastkey()
+
+IF INDEX("AVE, SUW, GRE, DFD, HUS, NIE, VAL, GRA, ", WorkCenter) > 0 THEN
+    CIA = TRUE
+ELSE
+    CIA = FALSE
+ENDIF
+
+CIA = TRUE
+
+LogTxt = EMPTY
+LogTxt = LF:LogTxt:"Material:           ":Material
+LogTxt = LF:LogTxt:"Batch:              ":Batch
+LogTxt = LF:LogTxt:"Inspection Type:    ":InspType
+LogTxt = LF:LogTxt:"Inspection Lot:     ":InspLot
+LogTxt = LF:LogTxt:"Plant:              ":Plant
+LogTxt = LF:LogTxt:"WorkCenter:         ":WorkCenter
+LogTxt = LF:LogTxt:"ProdDate:           ":ProdDate
+LogTxt = LF:LogTxt:"CIA:                ":CIA
+
+IF key = "DO" THEN
+    IF (Material = "") OR (Material = EMPTY) THEN
+        fm("No valid material selected":ASCII(10):ASCII(10):
+           "Aborting")
+        RETURN (TRUE)
+    ELSEIF (Plant = "") OR (Plant = EMPTY) THEN
+        fm("No valid login plant selected":ASCII(10):ASCII(10):
+           "Aborting")
+        RETURN (TRUE)
+    {ELSEIF (WorkCenter = "") OR (WorkCenter = EMPTY) THEN
+        fm("No valid WorkCenter selected":ASCII(10):ASCII(10):
+           "Aborting")
+        RETURN (TRUE)}
+    ELSEIF (ProdDate = "") OR (ProdDate = EMPTY) THEN
+        ProdDate = TODAY {+ INTERVAL("0000 01:00:00.00")}
+        ProdDate = ProdDate
+    ENDIF
+
+    mlp_ver = SELECT max_active_mlp_ver.max_version WHERE identity = Material
+    IF (mlp_ver = "") OR (mlp_ver = EMPTY) THEN
+        mlp_ver = SELECT max_mlp_version.max_version WHERE identity = Material
+        mlp_status = SELECT mlp_header.version_status WHERE identity = Material
+        fm("No active MLP Version for ":Material:",":ASCII(10):ASCII(10):
+           "The highest version (":mlp_ver:") has status '":mlp_status:"'.":ASCII(10):ASCII(10):
+           "Aborting")
+        RETURN (TRUE)
+    ENDIF
+
+    IF (Batch = "") OR (Batch = EMPTY) THEN
+        nr = INCREMENT ( "SAP_TRANSFER", "IDENTITY")
+        nr = JUSTIFY(PAD(STRIP(nr)," ",5),"RIGHT")
+        nr = SUBSTITUTE ( nr, " ", "0" )
+        Batch = strip(GLOBAL("OPERATOR")):nr
+    ENDIF
+
+    ProcessOrder = Batch
+
+    StatusBar("Create job: ":Material:"/":Batch:"  ":Plant:"/":WorkCenter)
+
+    LogTxt = EMPTY
+
+{**************************************************************************************************************
+    IF NOT user_global_exists("Logfile", "JobName") THEN
+        add_global_cluster("Logfile")
+        add_user_global("Logfile", "JobName")
+    ENDIF
+    assign_user_global("Logfile", "JobName", "SAP_TRANSFER\":SUBSTITUTE(STRIP(Material):"/":STRIP(Batch),"/","_"))
+ 
+***************************************************************************************************************}
+    CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+
+
+    ARRAY sps
+    ver = SELECT max_active_mlp_ver.max_version
+           WHERE identity = Material
+
+    IF (0 = SELECT COUNT prod_sched
+            WHERE  product_name      = Material
+              AND  product_version   = ver
+              AND  group_id          = Plant
+              AND  inspection_type   = InspType) THEN
+        InspType = LEFTSTRING(InspType, 2)
+    ENDIF
+
+    c   = SELECT COUNT prod_sched
+           WHERE  product_name      = Material
+             AND  product_version   = ver
+             AND  group_id          = Plant
+             AND  sampling_point like WorkCenter:"%"
+
+
+    IF ver <> EMPTY THEN
+
+        dynamic_sql.add_to_sql_statement     (" SELECT sampling_point, test_schedule ")
+        dynamic_sql.add_to_sql_statement     (" FROM prod_sched ")
+        dynamic_sql.add_to_sql_statement     (" WHERE product_name = '":Material:"'")
+        dynamic_sql.add_to_sql_statement     (" AND product_version =":ver)
+        dynamic_sql.add_to_sql_statement     (" AND group_id = '":Plant:"'")
+        dynamic_sql.add_to_sql_statement     (" AND (inspection_type = '":InspType:"' OR inspection_type = '')")
+        IF NOT CIA THEN
+            dynamic_sql.add_to_sql_statement (" AND test_schedule <> 'NONE'")
+        ENDIF
+        IF InspType = "09" THEN
+            {dynamic_sql.add_to_sql_statement (" AND sampling_point like '%REC-%'") }
+        ELSE
+            dynamic_sql.add_to_sql_statement (" AND sampling_point not like '%REC-%'")
+        ENDIF
+        IF c > 0 THEN
+            dynamic_sql.add_to_sql_statement (" AND sampling_point like '":WorkCenter:"%'")
+        ENDIF
+        dynamic_sql.add_select_field         ( "prod_sched", "sampling_point" )
+        dynamic_sql.add_select_field         ( "prod_sched", "test_schedule" )
+        dynamic_sql.execute ()
+        {fm(dynamic_sql.select_string)}
+
+        WHILE dynamic_sql.select (1) <> EMPTY DO
+            sps[size_of_array(sps) + 1, 1] = Material:"/":Batch:"/":dynamic_sql.select (1)
+            IF TOUPPER(dynamic_sql.select (2)) = "NONE" THEN
+                sps[size_of_array(sps), 2] = ""
+            ELSE
+                sps[size_of_array(sps), 2] = dynamic_sql.select (2)
+            ENDIF
+            dynamic_sql.next ()
+        ENDWHILE
+
+        confirm_mess = ("Create job?":ASCII(10):ASCII(10):
+                        Material:"/":Batch:ASCII(10):
+                        "Plant: ":Plant:"/":WorkCenter:ASCII(10):
+                        "Insp:  ":InspType:"/":InspLot:ASCII(10):
+                        "ProdDate: ":ProdDate:ASCII(10):
+                        {"CIA:    ":CIA:ASCII(10): }
+                         ASCII(10):
+                         "With following samples":ASCII(10):
+                         GetArray(sps))
+
+        IF confirm_with_text(confirm_mess) THEN
+            JobID = TestCreateJob(Material, Batch, Plant, WorkCenter, ProdDate, ProcessOrder, LogTxt, CIA, InspType, InspLot)
+        ELSE
+            window_set_status("")
+            RETURN
+        ENDIF
+    ELSE
+        fm("MLP: ":Material:" er ikke tilgængelig")
+    ENDIF
+
+    JobStatus = SELECT job_header.job_status 
+                WHERE product_name = Material
+                  AND batch_name = Batch
+                  AND job_name <> JobID
+                ORDER ON date_created  
+    OrgJob = SELECT job_header.job_name 
+    
+    IF (JobStatus = "V") OR (JobStatus = "C") THEN
+        SendEndDate(OrgJob)
+    ELSEIF (JobStatus = "A")
+        SendJobStatus(OrgJob) 
+    ENDIF
+
+
+ELSEIF key = "EXIT" THEN
+    {fm("Aborting, key: ":key)}
+ELSE
+    fm("UNKNOWN, key: '":key:"'")
+ENDIF
+
+window_set_status("")
+RESTORE DATE FORMAT
+
+EXIT
+
+{***********************************************
+Routine: create_form
+Purpuse: Create incidents form
+Parameters: Job string Value for header
+***********************************************}
+ROUTINE create_form(CreateJobForm, Material, Batch, Plant, WorkCenter, ProdDate, CIA, InspType, InspLot)
+
+CREATE OBJECT PROMPT_CLASS_FORM, CreateJobForm
+DECLARE  choices_array, i
+
+    CreateJobForm.header    = "Create a job ..."
+    CreateJobForm.column    = 5
+    CreateJobForm.row       = 10
+    CreateJobForm.height    = 10
+    CreateJobForm.width     = 50
+    CreateJobForm.return_behaviour = FORM_RETURN_LEAVE
+
+    CreateJobForm.add_display("Material: ", 2, 1, PROMPT_RENDITION_BOLD)
+    PROMPT OBJECT Material
+           BROWSE ON MLP_HEADER.IDENTITY
+           AT 25, 1
+    CreateJobForm.add_prompt (Material)
+
+    CreateJobForm.add_display("Batch: ", 2, 2, PROMPT_RENDITION_BOLD)
+    PROMPT OBJECT Batch
+           AT 25, 2
+           FORMAT job_header.batch_name
+    CreateJobForm.add_prompt (Batch)
+
+    CreateJobForm.add_display ("Inspection Type / Lot: ", 2, 3,PROMPT_RENDITION_NORMAL)
+        ARRAY choices_array
+        i = 1
+            choices_array [i,1] = "01"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "01P"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "03"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "04"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "08"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "09"
+            choices_array [i,2] = i
+
+    PROMPT OBJECT InspType
+           {AT 25, 3}
+           ON LINE 3 FROM 25 TO 30
+           {CHOOSE OUTOF choices_array }
+           BROWSE ON VALID_PHRASE_ID.SAP_INSP 
+           WITH (VALUE = InspType)
+    CreateJobForm.add_prompt (InspType)
+
+    PROMPT OBJECT InspLot
+           ON LINE 3 FROM 35 TO 45
+           FORMAT IDENTITY10
+    CreateJobForm.add_prompt (InspLot)
+
+    CreateJobForm.add_display ("Production plant: ", 2, 4,PROMPT_RENDITION_NORMAL)
+        ARRAY choices_array
+        i = 1
+            choices_array [i,1] = Plant
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2001 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2004 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2020 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2200 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2210 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2500 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "2735 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "4000 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "4400 "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "9000"
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "HOR-PIM "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "RDA-GENERA "
+            choices_array [i,2] = i
+    PROMPT OBJECT Plant
+           AT 25, 4
+           CHOOSE OUTOF choices_array
+           WITH (VALUE = Plant)
+    CreateJobForm.add_prompt (Plant)
+
+    CreateJobForm.add_display ("Work center: ", 2, 5,PROMPT_RENDITION_NORMAL)
+        ARRAY choices_array
+        i = 1
+            choices_array [i,1] = WorkCenter
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "AVE "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "HOR "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "GRA "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "HUS "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "MKE "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "NIE "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "PLH "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "ROS "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "SGA "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "DFD "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "GRE "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "SUW "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "VAL "
+            choices_array [i,2] = i
+        i = i + 1
+            choices_array [i,1] = "    "
+            choices_array [i,2] = i
+    PROMPT OBJECT WorkCenter
+           AT 25, 5
+           CHOOSE OUTOF choices_array
+               WITH (VALUE = "")
+    CreateJobForm.add_prompt (WorkCenter)
+
+    CreateJobForm.add_display ("Production date (UTC): ", 2, 6,PROMPT_RENDITION_NORMAL)
+    PROMPT OBJECT ProdDate
+           AT 25, 6
+           FORMAT DATE
+    CreateJobForm.add_prompt (ProdDate)
+
+    CreateJobForm.add_display ("(For test-purpose, leave 'Batch' and 'Production date' empty)", 2, 9,PROMPT_RENDITION_NORMAL)
+
+    CreateJobForm.start_prompt()
+    CreateJobForm.wait_prompt()
+        Material    = STRIP(Material.text)
+        Batch       = STRIP(Batch.text)
+        Plant       = STRIP(Plant.text)
+        WorkCenter  = STRIP(WorkCenter.text)
+        ProdDate    = STRIP(ProdDate.text)
+        InspType    = STRIP(InspType.text)
+        InspLot     = STRIP(InspLot.text)
+    CreateJobForm.end_prompt()
+
+ENDROUTINE
+
+{***********************************************}
+
+
+{*************************************************************************
+END For testing
+*************************************************************************}
+
+{*******************************************************************************}
+ROUTINE TestCreateJob(Material, Batch, LoginPlant, WorkCenter, ProdDate, ProcessOrder, LogTxt, CIA, InspectionType, InspectionLotID )
+{
+*
+* Purpose      : Test creates a new job when sent via webservice
+*
+* Parameters   :
+*
+* Return Value : None
+*
+*******************************************************************************}
+
+DECLARE JobCreated {, InspectionType, InspectionLotID
+
+    InspectionType    = "04"
+    InspectionLotID     = EMPTY}
+    LogTxt = ""
+
+    JobCreated = CreateJob(WorkCenter, Material, Batch, ProdDate, LoginPlant, ProcessOrder, ProdDate, LogTxt, CIA, InspectionType, InspectionLotID)
+    WriteToLog("JobCreated: '":STRIP(JobCreated):"' Manual by: ":GLOBAL("OPERATOR"))
+    RESTORE DATE FORMAT
+
+    StatusBar("Job created: ":Material:"/":Batch:"  ":LoginPlant:"/":WorkCenter)
+
+    LogTxt = LF:"Job created...":
+             LF:"Material:        '":Material:"'":
+             LF:"Batch:           '":Batch:"'":
+             LF:"Inspection Type: '":InspectionType:"'":
+             LF:"Inspection Lot:  '":InspectionLotID:"'":
+             LF:"Plant:           '":Plant:"'":
+             LF:"WorkCenter:      '":WorkCenter:"'":
+             LF:"Production date: '":ProdDate:"'":ASCII(10)
+
+    AddSamples (JobCreated, CIA, InspectionType, LogTxt)
+
+    {WriteImportLog(LogTxt)}
+
+    RETURN (JobCreated)
+
+ENDROUTINE
+
+{*************************************************************************
+END For testing
+*************************************************************************}
+{*************************************************************************
+*
+* This file is devided into three different sections:
+*
+* 1.    Routines transferring data from SAP to LIMS.
+*       Likley to contain code to create xml-files.
+*
+* 2.    Routines transferring data from LIMS to SAP
+*       Likley to contain code how to process xml-files
+*       sent to SM via webservice.
+*
+* 3.    Misc routines.
+*       Routines used by both or that have no specific relevance
+*       to either of the two previous sections (i.e write to log).
+*
+* 4.    Transaction handeling.
+*       Routines used to create, store and connect transaction identities
+*
+*
+*************************************************************************}
+
+{*************************************************************************
+*
+*   SECTION 1: Transferring data from SAP to LIMS
+*
+**************************************************************************}
+
+GLOBAL ROUTINE PRODUCTION_ORDER(par_array)
+{
+* Purpose      : Creates a new job when sent via webservice
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+* Return Value : None
+*******************************************************************************}
+DECLARE i, Parameter, ProcessOrderID, BatchID, EndTime, PlantID, SiteID, BasicStartDate,
+        StatusFlag, Material, LogTxt, XML_ID, FileName, samples, Date_Created, CountryCode, Country,
+        JobCreated, CIA_Equipment, CIA, rc, JobID, InspectionType, InspectionLotID, JobStatus, OldStatus, PrevLog
+        {, Description, StartTime, OrderType, ActualReleaseDate, SAPVersion, MRPController}
+  SET DATE FORMAT "DZ-MZ-YYYY"
+
+  LogTxt = EMPTY
+  ProcessOrderID    = EMPTY
+  BatchID           = EMPTY
+  EndTime           = EMPTY
+  PlantID           = EMPTY
+  SiteID            = EMPTY
+  BasicStartDate    = EMPTY
+  StatusFlag        = EMPTY
+  Material          = EMPTY
+  CIA_Equipment     = EMPTY
+
+    i = 1
+    WHILE i <= size_of_array(par_array) DO
+        Parameter = TOUPPER(par_array[i,1])
+        IF Parameter = "FILENAME"
+            FileName    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("FileName:                   ",1,20): FileName
+        ELSEIF     Parameter = "ID"
+            XML_ID      = par_array[i,2]
+            SET DATE FORMAT "YYYYMZDZH24MISSCC"
+            IF IS_DATE(XML_ID)
+                XML_ID = DATE(XML_ID)
+            ELSE
+                XML_ID = NOW
+            ENDIF
+            RESTORE DATE FORMAT
+            LogTxt = LogTxt:LF:SUBSTRING("XML_ID:                   ",1,20):XML_ID
+        ELSEIF Parameter = "PROCESSORDERID"
+            ProcessOrderID    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("ProcessOrderID:                   ",1,20):ProcessOrderID
+        ELSEIF Parameter = "BATCHID"
+            BatchID           = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("BatchID:                   ",1,20):BatchID
+        ELSEIF Parameter = "ENDTIME"
+            EndTime           = (par_array[i,2])
+            IF EndTime <> "" THEN
+               EndTime = ConvertDateFromXML(EndTime)
+               SET DATE FORMAT "H24:MI"
+               IF STRIP(EndTime) = "00:00" THEN
+                   RESTORE DATE FORMAT
+                   EndTime = EndTime + INTERVAL("0000 00:00:01")
+               ELSE
+                   RESTORE DATE FORMAT
+               ENDIF
+            ELSE
+               EndTime  = NULL
+            ENDIF
+            LogTxt = LogTxt:LF:SUBSTRING("EndTime:                   ",1,20):EndTime
+        ELSEIF Parameter = "PLANTID"
+            PlantID           = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("PlantID:                   ",1,20):PlantID
+            IF PlantID = "2004" THEN
+                CountryCode = "DK"
+                Country     = "Denmark"
+            ELSEIF PlantID = "2020" THEN
+                CountryCode = "FR"
+                Country     = "France"
+            ELSEIF (PlantID = "2210") OR (PlantID = "2200") THEN
+                CountryCode = "DE"
+                Country     = "Germany"
+            ELSEIF PlantID = "2500" THEN
+                CountryCode = "CZ"
+                Country     = "Czech Republic"
+            ELSEIF PlantID = "2735" THEN
+                CountryCode = "IT"
+                Country     = "Italy"
+            ELSEIF PlantID = "4000" THEN
+                CountryCode = "US"
+                Country     = "USA"
+            ELSEIF PlantID = "4400" THEN
+                CountryCode = "BR"
+                Country     = "Brazil"
+            ELSE
+                CountryCode = ""
+                Country     = ""
+            ENDIF
+        ELSEIF Parameter = "SITEID"
+            SiteID            = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("SiteID:                   ",1,20):SiteID
+        ELSEIF Parameter = "BASICSTARTDATE"
+            BasicStartDate    = (par_array[i,2])
+            IF BasicStartDate <> "" THEN
+               BasicStartDate = ConvertDateFromXML(BasicStartDate)
+            ELSE
+                BasicStartDate    = NULL
+            ENDIF
+            LogTxt = LogTxt:LF:SUBSTRING("BasicStartDate:                   ",1,20):BasicStartDate
+        ELSEIF Parameter = "STATUSFLAG"
+            StatusFlag        = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("StatusFlag:                   ",1,20):StatusFlag
+        ELSEIF Parameter = "MATERIALTOPRODUCE"
+            Material          = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("Material:                   ",1,20):Material
+        ELSEIF Parameter = "USINGCIAEQUIPMENT"
+            CIA_Equipment     = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("CIA_Equipment:                   ",1,20):CIA_Equipment
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+  RESTORE DATE FORMAT
+
+  IF (SiteID = EMPTY) OR (STRIP(SiteID) = "") THEN
+    IF PlantID = "2001" THEN
+        SiteID = "GRA"
+    ELSEIF PlantID = "2500" THEN
+        SiteID = "HUS"
+    ELSEIF PlantID = "2200" THEN
+        SiteID = "NIE"
+    ENDIF
+  ENDIF
+
+  IF (INDEX("AVE, SUW, GRE, DFD, HUS, NIE, VAL, GRA, ", SiteID) > 0) THEN
+      CIA = TRUE
+      {WriteImportLog("Set CIA = TRUE, based on Work Center")}
+  ELSEIF TOUPPER(CIA_Equipment) = "TRUE" THEN
+    CIA = TRUE
+  ELSE
+    CIA = FALSE
+  ENDIF
+
+  CIA = TRUE
+
+  IF (BatchID = EMPTY) OR (BatchID = "") OR (Material = EMPTY) OR (Material = "") THEN
+    WriteImportLog("No material/batch id in ":FileName)
+    RETURN(TRUE)
+  ENDIF
+
+    LogTxt = EMPTY
+
+{**************************************************************************************************************
+    IF NOT user_global_exists("Logfile", "JobName") THEN
+        add_global_cluster("Logfile")
+        add_user_global("Logfile", "JobName")
+    ENDIF
+    assign_user_global("Logfile", "JobName", "SAP_TRANSFER\":SUBSTITUTE(STRIP(Material):"/":STRIP(BatchID),"/","_"))
+ 
+***************************************************************************************************************}
+  JobCreated = FALSE
+  InspectionType = "04"
+  InspectionLotID = SELECT job_header.inspection_lot WHERE job_name = Material:"/":BatchID {EMPTY}
+
+
+  mlp_ver = SELECT max_active_mlp_ver.max_version WHERE identity = Material
+  IF mlp_ver = EMPTY
+  WriteErrorLog("No Active MLP    : ":JUSTIFY(PAD(Material," ",6),"RIGHT"):"/  /":PlantID:"/":InspectionType)
+    RETURN(TRUE)
+  ENDIF
+  samples = SELECT COUNT prod_sched WHERE product_name = Material AND product_version = mlp_ver AND group_id = PlantID
+  IF samples = 0 THEN
+    WriteErrorLog("No Login Schedule: ":JUSTIFY(PAD(Material," ",6),"RIGHT"):"/":JUSTIFY(PAD(STRIP(mlp_ver)," ",2),"RIGHT"):"/":PlantID:"/":InspectionType)
+    RETURN(TRUE)
+  ENDIF
+
+  RESTORE DATE FORMAT
+
+  IF TOUPPER(StatusFlag) = "RELEASED" THEN
+    JobCreated = SELECT job_header.job_name WHERE job_name = Material:"/":BatchID
+    JobStatus  = SELECT job_header.job_status WHERE job_name = JobCreated
+    Date_Created = SELECT job_header.date_created
+    IF Date_Created <> EMPTY THEN
+        IF Date_Created > NOW - INTERVAL("0000 00:0:30") THEN
+            WriteImportLog("Another iDoc, is working on this job")
+            RETURN (FALSE)
+        ENDIF
+    ENDIF
+
+    IF JobCreated = EMPTY THEN
+        JobCreated = CreateJob(SiteID, Material, BatchID, BasicStartDate, PlantID, ProcessOrderID, EndTime, LogTxt, CIA, InspectionType, InspectionLotID)
+        WriteImportLog(Material:"/":BatchID:" ":SiteID:"  No update, committed")
+    ELSEIF JobStatus = "X" THEN
+        JobStatus = SELECT job_header.job_status FOR UPDATE
+                    WHERE job_name = Material:"/":BatchID
+        OldStatus = SELECT job_header.old_status            
+        JobId     = SELECT job_header.job_name
+        START WRITE TRANSACTION "Reactivate Job"
+        CHANGE JOB STATUS TO OldStatus
+        UPDATE job_header
+        COMMIT
+        REACTIVATE_SMP(JobId)
+    ELSEIF JobStatus = "A" THEN
+        WriteImportLog(Material:"/":BatchID:" ":SiteID:"  No update, authorised")
+        RETURN
+    ENDIF
+
+    JobID = SELECT job_header.job_name FOR UPDATE WHERE job_name = JobCreated
+
+    IF JobID = LOCKED THEN
+        {Hmm, try again ?}
+        WriteImportLog(JobCreated:" was locked for update, try next time.")
+    ELSEIF JobID = EMPTY THEN
+        {WriteImportLog(JobCreated:" doesn't exist (in active db).")}
+        RETURN (TRUE)
+    ELSE
+        {Update}
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION "Update Production Order"
+        ENDIF
+        LogTxt = STRIP(JobID):" ":STRIP(SiteID):" "
+        IF (SELECT job_header.process_order   <> ProcessOrderID) THEN
+            LogTxt = LogTxt:LF:"Process_Order:   ":STRIP(SELECT job_header.process_order):" -> ":ProcessOrderID
+            ASSIGN job_header.process_order   = ProcessOrderID
+        ENDIF
+        IF (SELECT job_header.product_name      <> Material) THEN
+            LogTxt = LogTxt:LF:"Product Name:      ":STRIP(SELECT job_header.batch_name):" -> ":Material
+            ASSIGN job_header.product_name      = Material
+        ENDIF
+        IF (SELECT job_header.batch_name      <> BatchID) THEN
+            LogTxt = LogTxt:LF:"Batch_Name:      ":STRIP(SELECT job_header.batch_name):" -> ":BatchID
+            ASSIGN job_header.batch_name      = BatchID
+        ENDIF
+        IF (SELECT job_header.login_plant     <> PlantID) THEN
+        LogTxt = LogTxt:LF:"Login_Plant:     ":STRIP(SELECT job_header.login_plant):" -> ":PlantID
+        ASSIGN job_header.login_plant     = PlantID
+        ENDIF
+        IF (SELECT job_header.work_center     <> SiteID) THEN
+            LogTxt = LogTxt:LF:"Work_Center:     ":STRIP(SELECT job_header.work_center):" -> ":SiteID
+            ASSIGN job_header.work_center     = SiteID
+        ENDIF
+        IF (SELECT job_header.countrycode     <> CountryCode) THEN
+            LogTxt = LogTxt:LF:"Country Code:    ":STRIP(SELECT job_header.countrycode):" -> ":CountryCode
+            ASSIGN job_header.countrycode     = CountryCode
+        ENDIF
+        IF (SELECT job_header.country     <> Country) THEN
+            LogTxt = LogTxt:LF:"Country :        ":STRIP(SELECT job_header.country):" -> ":Country
+            ASSIGN job_header.country     = Country
+        ENDIF
+        IF (SELECT job_header.production_date <> EndTime) AND (EndTime <> NULL) AND (SELECT job_header.sap_batch_update = NULL) THEN
+            LogTxt = LogTxt:LF:"Production_Date: ":STRIP(SELECT job_header.production_date):" -> ":EndTime
+            ASSIGN job_header.production_date = EndTime
+        ENDIF
+        IF (SELECT job_header.date_to_start <> BasicStartDate) AND (BasicStartDate <> NULL) THEN
+            LogTxt = LogTxt:LF:"Date_to_Start: ":STRIP(SELECT job_header.date_to_start):" -> ":BasicStartDate
+            ASSIGN job_header.date_to_start = BasicStartDate
+        ENDIF
+
+        IF (SELECT job_header.product_description = " ") THEN
+            mlp_ver = SELECT max_active_mlp_ver.MAX_VERSION WHERE identity = Material
+            ASSIGN job_header.product_description = STRIP(SELECT mlp_header.description WHERE identity = Material AND product_version = mlp_ver)
+            ASSIGN job_header.browse_description  = STRIP(SELECT mlp_header.description WHERE identity = Material AND product_version = mlp_ver):" /": OPERATOR
+            ASSIGN job_header.product_appl_group  = STRIP(SELECT mlp_header.product_appl_group WHERE identity = Material AND product_version = mlp_ver)
+        ENDIF
+
+        IF (LogTxt = STRIP(JobID):" ":STRIP(SiteID):" ") THEN
+            LogTxt = LogTxt:" No Update"
+            WriteImportLog(LogTxt)
+        ELSE
+            {LogTxt = LogTxt:LF:"Updated"}
+        ENDIF
+        ASSIGN job_header.sap_p_ord_update = XML_ID
+        UPDATE JOB_HEADER
+        COMMIT
+
+        PrevLog = LogTxt
+        AddSamples (JobID, CIA, InspectionType, LogTxt)
+        IF PrevLog <> LogTxt THEN
+            WriteImportLog(LogTxt)
+        ENDIF
+
+      ENDIF
+
+  ELSEIF StatusFlag = "CANCELLED" THEN
+    {Cancel Job}
+    {JobCreated = CreateJob(SiteID, Material, BatchID, BasicStartDate, PlantID, ProcessOrderID, EndTime, LogTxt, CIA, InspectionType, InspectionLotID)}
+    JobID = SELECT job_header.job_name FOR UPDATE where job_name = STRIP(Material):"/":STRIP(BatchID) {JobCreated}
+    IF JobID <> EMPTY THEN
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION "Job cancelled by SAP"
+        ENDIF
+        CHANGE JOB STATUS TO "X", rc
+        IF   rc = EMPTY
+        THEN WriteImportLog("Job '":JobID:"' cancelled by SAP")
+            UPDATE job_header
+            COMMIT
+            JobCreated = FALSE
+        ELSE WriteImportLog("ERROR: Could not cancel Job. Return code:":rc)
+        ENDIF
+    ENDIF
+  ENDIF
+
+  RETURN (TRUE)
+
+ENDROUTINE
+{*******************************************************************************}
+
+GLOBAL ROUTINE INSPECTION_LOT(par_array)
+{* Purpose      : Creates a new job when sent via webservice
+ * Parameters   : processor , [LIMSML_PROCESS]
+ *                entity    , [HELPER_ENTITY]
+ *                action    , [HELPER_ACTIONML]
+ *                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+ * Return Value : None
+ *******************************************************************************}
+    DECLARE i, Parameter, XML_ID, SiteID, PlantID, BatchID, ProcessOrderID, MaterialID, InspectionLotID, InspectionType,
+            ScheduledStart, ScheduledFinish, InspStatus, CIA, samples, OldInspectionLot, OldInspectionType, FileName,
+            JobId, LogTxt, JobCreated, sample, sample_array, ReturnEndDate, OrgJob, Status, s_templ, s_count,
+            MPS_Status, date_first, job_status, aut_commen, SampleLog, id, sample_point
+
+    ARRAY sample_array ARRAYSIZE (0, 1)
+
+    LogTxt = EMPTY
+    ReturnEndDate = FALSE
+
+    SET DATE FORMAT "DZ-MON-YYYY"
+
+    SiteID            = EMPTY
+    PlantID           = EMPTY
+    BatchID           = EMPTY
+    ProcessOrderID    = EMPTY
+    MaterialID        = EMPTY
+    InspectionLotID   = EMPTY
+    InspectionType    = EMPTY
+    ScheduledStart    = EMPTY
+    ScheduledFinish   = EMPTY
+    InspStatus        = EMPTY
+{
+    OrderType         = EMPTY
+}
+
+    i = 0
+    WHILE i <= size_of_array(par_array) DO
+        Parameter = TOUPPER(par_array[i,1])
+        IF Parameter = "FILENAME"
+            FileName    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("FileName:                   ",1,20):FileName
+        ELSEIF     Parameter = "ID"
+            XML_ID      = par_array[i,2]
+            SET DATE FORMAT "YYYYMZDZH24MISSCC"
+            IF IS_DATE(XML_ID)
+                XML_ID = DATE(XML_ID)
+            ELSE
+                XML_ID = NOW
+            ENDIF
+            RESTORE DATE FORMAT
+            LogTxt = LogTxt:LF:SUBSTRING("XML_ID:                   ",1,20):XML_ID
+        ELSEIF Parameter = "SITEID"
+            SiteID            = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("SiteID:                   ",1,20):SiteID
+        ELSEIF Parameter = "PLANTID"
+            PlantID           = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("PlantID:                   ",1,20):PlantID
+        ELSEIF Parameter = "BATCHID"
+            BatchID           = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("BatchID:                   ",1,20):BatchID
+        ELSEIF Parameter = "PROCESSORDERID"
+            ProcessOrderID    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("ProcessOrderID:                   ",1,20):ProcessOrderID
+        ELSEIF Parameter = "MATERIALID"
+            MaterialID        = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("MaterialID:                   ",1,20):MaterialID
+        ELSEIF Parameter = "INSPECTIONLOTID"
+            InspectionLotID   = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("InspectionLotID:                   ",1,20):InspectionLotID
+        ELSEIF Parameter = "TYPE"
+            InspectionType    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("InspectionType:                   ",1,20):InspectionType
+        ELSEIF Parameter = "SCHEDULEDSTART"
+            ScheduledStart    = par_array[i,2]
+            IF ScheduledStart <> "" THEN
+               ScheduledStart = ConvertDateFromXML(ScheduledStart)
+               ScheduledStart = DATE(ScheduledStart)
+            ELSE
+                ScheduledStart = NULL
+            ENDIF
+            LogTxt = LogTxt:LF:SUBSTRING("ScheduledStart:                   ",1,20):ScheduledStart
+        ELSEIF Parameter = "SCHEDULEDFINISH"
+            ScheduledFinish   = par_array[i,2]
+            IF ScheduledFinish <> "" THEN
+               ScheduledFinish = ConvertDateFromXML(ScheduledFinish)
+               ScheduledFinish = DATE(ScheduledFinish)
+               SET DATE FORMAT "H24:MI"
+               IF STRIP(ScheduledFinish) = "00:00" THEN
+                   RESTORE DATE FORMAT
+                   ScheduledFinish = ScheduledFinish + INTERVAL("0000 00:00:01")
+               ELSE
+                   RESTORE DATE FORMAT
+               ENDIF
+            ELSE
+                ScheduledFinish = NULL
+            ENDIF
+            LogTxt = LogTxt:LF:SUBSTRING("ScheduledFinish:                   ",1,20):ScheduledFinish
+        ELSEIF Parameter = "INSP_STATUS"
+            InspStatus    = par_array[i,2]
+            LogTxt = LogTxt:LF:SUBSTRING("InspStatus:                        ",1,20):InspStatus
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    IF (INDEX("03;04;", LEFTSTRING(InspectionType, 2)) > 0) AND 
+       ((SiteID = EMPTY) OR (STRIP(SiteID) = "")) THEN
+        IF PlantID = "2500" THEN
+            SiteID = "HUS"
+        ELSEIF PlantID = "4400" THEN
+            SiteID = "VAL"
+        ENDIF
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+    IF InspStatus = "LTCA" THEN
+        CancelInspLot (InspectionType, InspectionLotID, InspStatus)
+        RETURN (TRUE)
+    ENDIF
+
+    LogTxt            = EMPTY
+    CIA               = TRUE {FALSE }
+    
+    {Find most recent recurring inspection}
+    OrgJob = SELECT all_job_header.job_name 
+             WHERE product_name = MaterialID 
+               AND batch_name = BatchID 
+               AND job_status <> "X"
+               AND inspection_type = "09"
+             ORDER ON date_created DESCENDING
+    IF OrgJob = EMPTY THEN
+        {Or find original process order}
+        OrgJob = SELECT all_job_header.job_name 
+                 WHERE product_name = MaterialID 
+                   AND batch_name = BatchID 
+                   AND job_status <> "X"
+                   AND inspection_type = "04"
+                   AND inspection_lot <> InspectionLotID
+                 ORDER ON date_created
+        IF OrgJob = EMPTY THEN
+            {Or find first inspection of other inspection types}
+            OrgJob = SELECT all_job_header.job_name 
+                    WHERE product_name = MaterialID 
+                      AND batch_name = BatchID 
+                      AND job_status <> "X"
+                      AND inspection_lot <> InspectionLotID
+                    ORDER ON date_created
+        ENDIF
+    ENDIF
+    OldInspectionLot  = SELECT all_job_header.inspection_lot 
+    OldInspectionType = SELECT all_job_header.inspection_type
+
+    mlp_ver = SELECT max_active_mlp_ver.max_version WHERE identity = MaterialID
+    IF mlp_ver = EMPTY
+      WriteErrorLog("No Active MLP    : ":JUSTIFY(PAD(MaterialID," ",6),"RIGHT"):"/  /":PlantID:"/":InspectionType)
+      RETURN(TRUE)
+    ENDIF
+
+    samples = SELECT COUNT prod_sched 
+               WHERE product_name = MaterialID 
+                 AND product_version = mlp_ver 
+                 AND group_id = PlantID 
+                 AND (inspection_type = InspectionType
+                   OR inspection_type = "")
+    IF (samples = 0) THEN
+        samples = SELECT COUNT prod_sched 
+                   WHERE product_name = MaterialID 
+                     AND product_version = mlp_ver 
+                     AND group_id = PlantID 
+                     AND (inspection_type = LEFTSTRING(InspectionType, 2) 
+                       OR inspection_type = "")
+    ENDIF
+    IF (samples = 0) AND 
+       (INDEX("03;04;", LEFTSTRING(InspectionType, 2)) > 0) THEN
+        WriteErrorLog("No Login Schedule: ":JUSTIFY(PAD(MaterialID," ",6),"RIGHT"):"/":JUSTIFY(PAD(STRIP(mlp_ver)," ",2),"RIGHT"):"/":PlantID:"/":InspectionType)
+        RETURN(TRUE)
+    ELSEIF (samples = 0) AND 
+           (INDEX("01;08;", LEFTSTRING(InspectionType, 2)) > 0) AND 
+           (OrgJob = EMPTY) AND 
+           (PlantID <> "2735") THEN
+            {OR (EMPTY <> (SELECT all_job_header.job_name WHERE product_name = MaterialID AND batch_name = BatchID AND inspection_lot = InspectionLotID)) } 
+        RETURN(TRUE) 
+    ENDIF
+
+    JobCreated = EMPTY
+    IF (INDEX("03;04;", LEFTSTRING(InspectionType, 2)) > 0) THEN
+        JobCreated = SELECT all_job_header.job_name  WHERE job_name = MaterialID:"/":BatchID
+        IF (JobCreated <> EMPTY) AND 
+           (JobCreated = (SELECT c_job_header.job_name WHERE job_name = JobCreated)) THEN
+            JobCreated = "COMMITTED"       
+            RETURN(TRUE)
+        ENDIF
+    ELSE
+        JobCreated = SELECT all_job_header.job_name WHERE product_name = MaterialID AND batch_name = BatchID AND inspection_lot = InspectionLotID
+        IF (JobCreated <> EMPTY) AND 
+           (JobCreated = (SELECT c_job_header.job_name WHERE job_name = JobCreated)) THEN
+            JobCreated = "COMMITTED"       
+            RETURN(TRUE)
+        ENDIF
+    ENDIF
+
+    job_status = SELECT job_header.job_status WHERE job_name = JobCreated
+    IF job_status = "X" THEN
+        job_status = SELECT job_header.job_status FOR UPDATE WHERE job_name = JobCreated
+        START WRITE TRANSACTION "Reactivate Job"
+        CHANGE JOB STATUS TO "C"
+        UPDATE job_header
+        COMMIT
+        REACTIVATE_SMP(JobCreated)
+    ELSEIF job_status = "A" THEN
+        WriteImportLog("Job ":MaterialID:"/":BatchID:" (":ProcessOrderID:") {":InspectionType:"/":InspectionLotID:"} was authorised, ":SELECT job_header.date_authorised:" no update")
+        RETURN(TRUE)
+    ENDIF
+
+    IF (JobCreated = EMPTY) AND
+       (INDEX("01;03;04;08;09;", LEFTSTRING(InspectionType, 2)) > 0) THEN
+        JobCreated = CreateJob(SiteID, MaterialID, BatchID, ScheduledStart, PlantID, ProcessOrderID, ScheduledFinish, LogTxt, CIA, InspectionType, InspectionLotID)
+        WriteImportLog("JobCreated: '":STRIP(JobCreated):"' from InspectionType: ":STRIP(InspectionType):", InspectionLot: ":STRIP(InspectionLotID))
+    ENDIF
+
+    IF JobCreated = EMPTY THEN
+        RETURN (TRUE)
+    ELSEIF JobCreated = "COMMITTED" THEN
+        RETURN (FALSE)
+    ELSEIF samples > 0 THEN
+        AddSamples (JobCreated, CIA, InspectionType, LogTxt)
+        IF (LogTxt <> "") AND (LogTxt <> EMPTY) THEN
+            WriteImportLog(LogTxt)
+        ENDIF
+    ELSEIF (INDEX("01;08;", LEFTSTRING(InspectionType, 2)) > 0) AND 
+           (EMPTY = SELECT sample.id_numeric WHERE job_name = JobCreated {AND sampling_point = "SAP-QI"}) THEN
+        {Add TRADE/COMPLETE sample}
+        SampleLog = LF:     "Assigning samples to ":JobCreated:LF:
+                         "Sample ID  | SamplePoint | LoginSchedule | Analysis ":LF:
+                         "-----------+-------------+---------------+----------":LF
+        CreateNewSample(JobCreated, BatchID, "S-SAP-QI", "SAP-QI", MaterialID, mlp_ver, PlantID {assign_group}, PlantID, SampleLog)
+        SampleLog = SampleLog: "-----------+-------------+---------------+----------"
+    ENDIF
+
+    JobID = SELECT job_header.job_name FOR UPDATE WHERE job_name = JobCreated
+    IF JobID = LOCKED THEN
+        RETURN (FALSE)
+    ELSEIF NOT transaction_is_write ( ) THEN
+        START WRITE TRANSACTION "Update inspection lot"
+    ENDIF
+
+    IF JobID = LOCKED THEN
+        {Hmm, try again ?}
+        WriteImportLog(JobCreated:" was locked for update, try next time.")
+        RETURN (FALSE)
+    ELSEIF JobID = EMPTY THEN
+        WriteImportLog("Job ":MaterialID:"/":BatchID:" (":ProcessOrderID:") {":InspectionType:"/":InspectionLotID:"} not found (in active db).")
+        EXIT
+    ELSE
+        {Update}
+        LogTxt = STRIP(JobID):" (":ProcessOrderID:") {":InspectionType:"/":InspectionLotID:"} "
+
+        IF INDEX("03;04;", LEFTSTRING(SELECT job_header.inspection_type, 2)) > 0 THEN
+            IF (SELECT job_header.date_to_start   = NULL) AND (ScheduledStart <> NULL) THEN
+                LogTxt = LogTxt:LF:"Date_To_Start:   ":STRIP(SELECT job_header.date_to_start):" -> ":ScheduledStart
+                ASSIGN job_header.date_to_start   = ScheduledStart
+            ENDIF
+            IF (SELECT job_header.production_date = NULL) AND (ScheduledFinish <> NULL) THEN
+                LogTxt = LogTxt:LF:"Production_Date: ":STRIP(SELECT job_header.production_date):" -> ":ScheduledFinish
+                IF ScheduledFinish <> NULL  THEN
+                    ASSIGN job_header.production_date = ScheduledFinish
+                ENDIF
+            ENDIF
+            IF (STRING(SELECT job_header.inspection_lot)  <> STRING(InspectionLotID)) THEN
+                LogTxt = LogTxt:LF:"Inspection_Lot:  ":STRIP(SELECT job_header.inspection_lot):" -> ":InspectionLotID
+                ASSIGN job_header.inspection_lot  = InspectionLotID
+            ENDIF
+        ELSEIF OrgJob <> EMPTY THEN
+            ASSIGN job_header.original_job = OrgJob
+        ELSE
+            ReturnEndDate = TRUE
+        ENDIF
+
+        {IF (SELECT job_header.inspection_type <> InspectionType) THEN
+            LogTxt = LogTxt:LF:"Inspection_Type  ":STRIP(SELECT job_header.inspection_type):" -> ":InspectionType
+            ASSIGN job_header.inspection_type = InspectionType
+        ENDIF }
+        IF (SELECT job_header.work_center     <> SiteID) THEN
+            LogTxt = LogTxt:LF:"Work_Center      ":STRIP(SELECT job_header.work_center):" -> ":SiteID
+            ASSIGN job_header.work_center     = SiteID
+        ENDIF
+        IF (SELECT job_header.login_plant     <> PlantID) THEN
+            LogTxt = LogTxt:LF:"Login_Plant      ":STRIP(SELECT job_header.login_plant):" -> ":PlantID
+            ASSIGN job_header.login_plant     = PlantID
+        ENDIF
+        IF (SELECT job_header.inspection_status <> InspStatus) THEN
+            LogTxt = LogTxt:LF:"Insp_Status      ":STRIP(SELECT job_header.inspection_status):" -> ":InspStatus
+            ASSIGN job_header.inspection_status     = InspStatus
+        ENDIF
+
+        IF (LogTxt = STRIP(JobID):" (":ProcessOrderID:") {":InspectionType:"/":InspectionLotID:"} ") THEN
+            LogTxt = LogTxt:" No Update"
+        ENDIF
+        WriteImportLog(LogTxt)
+
+        ASSIGN job_header.sap_insp__update = XML_ID
+        UPDATE job_header
+        COMMIT
+        IF ReturnEndDate THEN
+            SendEndDate(JobID)
+        ENDIF
+    ENDIF
+
+{**************************************************************************************************************}
+    sample = SELECT sample.id_numeric 
+             WHERE job_name = JobCreated
+               AND ((inspection_type = OldInspectionType) OR (inspection_type = ""))
+               AND ((inspection_lot  = OldInspectionLot) OR (inspection_lot = ""))
+    WHILE sample <> EMPTY DO
+        i = size_of_array(sample_array) + 1
+        sample_array[i,1] = sample
+    NEXT sample
+        sample = SELECT sample.id_numeric
+    ENDWHILE
+
+    IF size_of_array(sample_array) > 0 THEN
+        i = 1
+        WHILE i <= size_of_array(sample_array) DO
+            sample = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = sample_array[i,1]
+            IF sample = LOCKED THEN
+                RETURN (FALSE)
+            ELSEIF NOT transaction_is_write ( ) THEN
+                START WRITE TRANSACTION "Update inspection lot"
+            ENDIF
+            ASSIGN sample.inspection_type = InspectionType
+            ASSIGN sample.inspection_lot = InspectionLotID
+            UPDATE sample
+        i = i + 1
+        ENDWHILE
+    ENDIF
+{***************************************************************************************************************}
+
+    IF ((SELECT COUNT sample WHERE job_name = JobID AND status <> "C") = 0) AND
+       ((SELECT COUNT sample WHERE job_name = JobID AND status  = "C") = 1) THEN
+        sample_point = SELECT  sample.sampling_point WHERE job_name = Job_ID
+        IF (sample_point = "SAP-QI") OR (sample_point = "MKE-TRADE") OR (sample_point = "AVE-TRADE") THEN
+            samples = 0
+        ENDIF
+    ENDIF
+    
+    IF (samples = 0) AND
+       (LEFTSTRING(InspectionType, 2) <> "09") THEN
+        IF (OrgJob <> EMPTY) AND (OrgJob <> JobCreated) THEN
+            MPS_Status = SELECT all_job_header.mps_status where job_name = OrgJob
+            date_first = SELECT all_job_header.date_first_authorised
+            job_status = SELECT all_job_header.job_status
+            aut_commen = STRIP(SELECT all_job_header.authorisation_notes)
+            IF aut_commen <> "" THEN
+                aut_commen = " (":aut_commen:")"
+            ENDIF
+            CancelSamples(JobID)
+            IF job_status <> "V" THEN
+                IF NOT(transaction_is_write()) THEN
+                    START WRITE TRANSACTION "Automatic job authorization"
+                ENDIF
+                JobID = SELECT job_header.job_name FOR UPDATE WHERE job_name = JobID
+                ASSIGN job_header.date_exp              = SELECT all_job_header.date_exp
+                ASSIGN job_header.mps_status            = MPS_Status
+                ASSIGN job_header.date_first_authorised = date_first
+                SET GLOBAL ("JOBAUTHNOTE") TO "Authorized according to ":STRIP(OrgJob):aut_commen
+                CHANGE JOB STATUS TO job_status, status
+                IF status <> EMPTY THEN
+                    ASSIGN job_header.job_status = job_status 
+                    ASSIGN job_header.authorisation_notes = STRIP(aut_commen)
+                    id = SELECT sample.id_numeric FOR UPDATE WHERE job_name = JobID AND status = "C"
+                    WHILE id <> EMPTY
+                        CHANGE SAMPLE STATUS TO JobStatus, status
+                        IF status <> EMPTY THEN
+                            fm(status)
+                        ENDIF
+                        UPDATE sample
+                    NEXT sample
+                        id = SELECT sample.id_numeric 
+                    ENDWHILE
+                ENDIF
+                UPDATE job_header
+                COMMIT
+            ENDIF    
+        ENDIF
+
+        s_templ = ""
+        s_count = SELECT COUNT sample WHERE job_name = JobID
+        IF s_count = 1 THEN
+            s_templ = SELECT sample.template_id WHERE job_name = JobID
+        ENDIF
+
+        IF (s_count = 0) OR
+          ((s_count = 1) AND 
+          ((INDEX(s_templ, "TRADE") > 0) OR (INDEX(s_templ, "SAP-QI") > 0))) THEN
+            IF job_status = "A" THEN
+                SendJobStatus(JobId)
+            ELSE
+                SendEndDate(JobID)
+            ENDIF
+        ENDIF    
+    ENDIF
+
+    RETURN (TRUE)
+
+ENDROUTINE
+{*******************************************************************************}
+
+GLOBAL ROUTINE BATCH_TRACE(par_array, child_array)
+{* Purpose      : Update BATCH_TRACE with values received from SAP
+ * Parameters   : par_array, child_array
+ * Return Value : None
+ *******************************************************************************}
+DECLARE XML_ID, iDocID, i_NUMBER, i_COUNT, BatchName, Material, Movement, ChildMaterial, ChildBatch, SAP_Amount, SAP_Unit, Sign,
+        i, Parameter, Records, Amount, Unit, strSQL, Material_type, Description, Version, FileName, index_array
+
+ARRAY index_array      
+
+index_array[1] = 2 {row}
+index_array[2] = 1 {column}
+WHILE (array_element_exists(child_array, index_array)) DO
+    child_array[2, index_array[2]] = LTrimZero(child_array[2, index_array[2]])
+    index_array[2] = index_array[2] + 1
+ENDWHILE
+
+    LogTxt = EMPTY
+    iDoc_ID       = ""
+    i_COUNT       = ""
+    BatchName     = ""
+    Material      = ""
+    ChildMaterial = ""
+
+i = 1
+WHILE i <= size_of_array(par_array) DO
+    Parameter = TOUPPER(par_array[i,1])
+    IF Parameter = "FILENAME"
+            FileName    = par_array[i,2]
+            array_remove_slice(par_array, 1, i)
+            i = i - 1
+            window_set_status("Processing: ":FileName)
+    ELSEIF     Parameter = "ID"
+        XML_ID      = par_array[i,2]
+        SET DATE FORMAT "YYYYMZDZH24MISSCC"
+        IF IS_DATE(XML_ID)
+            XML_ID = DATE(XML_ID)
+        ELSE
+            XML_ID = NOW
+        ENDIF
+        RESTORE DATE FORMAT
+    ELSEIF Parameter     = "IDOC_ID"
+    iDoc_ID       = par_array[i,2]
+    ELSEIF Parameter = "I_COUNT"
+       i_COUNT       = par_array[i,2]
+    ELSEIF Parameter = "BATCHNAME"
+       BatchName     = par_array[i,2]
+    ELSEIF Parameter = "MATERIAL"
+       Material      = par_array[i,2]
+    ELSEIF Parameter = "CHILDMATERIAL"
+       ChildMaterial = par_array[i,2]
+    ELSEIF Parameter = "CHILDBATCH"
+       ChildBatch    = par_array[i,2]
+    ELSEIF Parameter = "SAP_AMOUNT"
+       SAP_Amount    = par_array[i,2]
+    ELSEIF Parameter = "SAP_UNIT"
+       SAP_Unit      = par_array[i,2]
+    ELSEIF Parameter = "SIGN"
+       Sign          = par_array[i,2]
+    ELSEIF Parameter = "I_NUMBER"
+       i_NUMBER      = par_array[i,2]
+    ELSEIF Parameter = "MOVEMENT"
+       Movement      = par_array[i,2]
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+    ChildMaterial = LTrimZero(ChildMaterial)
+    Material      = LTrimZero(Material)
+
+    {WriteImportLog(LogTxt)}
+    LogTxt = EMPTY
+
+{**************************************************************************************************************
+    IF NOT user_global_exists("Logfile", "JobName") THEN
+        add_global_cluster("Logfile")
+        add_user_global("Logfile", "JobName")
+    ENDIF
+    assign_user_global("Logfile", "JobName", "SAP_TRANSFER\":SUBSTITUTE(STRIP(Material):"/":STRIP(BatchName),"/","_"))
+ 
+***************************************************************************************************************}
+DECLARE r, columns, rows, remove, k
+
+    rows    = STRIP(size_of_array(child_array))
+    rows    = NUMERIC(rows)
+    r = 1
+    columns = 0
+
+
+    IF rows >= 1 THEN
+        index_array[1] = 1
+        index_array[2] = 1
+        WHILE (array_element_exists(child_array, index_array)) AND
+              (index_array[2] < 999) DO
+            columns = index_array[2]
+            index_array[2] = index_array[2] + 1
+        ENDWHILE
+
+        r = 1
+
+        IF columns > 1 THEN
+            Remove = TRUE
+            WHILE r <= rows DO
+                IF NOT (child_array[r,columns] = EMPTY) THEN
+                    Remove = FALSE
+                ENDIF
+                r = r + 1
+            ENDWHILE
+
+            IF Remove = TRUE THEN
+                Columns = Columns - 1
+            ENDIF
+        ENDIF
+    ENDIF
+
+    IF columns < 2
+        WriteImportLog("No data in child_array")
+    ENDIF
+
+WriteImportLog(ASCII(10):"      ":STRIP(Material):"/":STRIP(BatchName):ASCII(10):GetArray(Child_Array))
+
+k = 2
+WHILE (k <= columns) OR (k = 0)
+
+    GetChild(child_array, k, i_Number, Movement, ChildMaterial, ChildBatch, SAP_Amount, SAP_Unit, Sign)
+    Records = SELECT COUNT BATCH_TRACE WHERE product_name_master = Material
+                                         AND batch_name_master   = BatchName
+                                         AND IDOC_ID             < iDoc_ID
+{                                         AND valid               = TRUE}
+
+    IF Records > 0 THEN
+        strSQL = "DELETE BATCH_TRACE WHERE product_name_master = '":Material:"' AND batch_name_master = '":BatchName:"' AND IDOC_ID < '":iDoc_ID:"'"  {AND VALID = 'T'}
+        {WriteImportLog(strSQL)}
+        SQL(strSQL)
+    ENDIF
+
+    {Prepare calculated values}
+
+    Amount = NUMERIC(Sign:SAP_Amount)
+    Unit   = SAP_Unit
+    IF SAP_Unit = "G" THEN
+        Amount = Amount / 1000
+        Unit    = "KG"
+    ELSEIF SAP_Unit = "ML" THEN
+        Amount = Amount / 1000
+        Unit    = "L"
+    ENDIF
+
+    Material_type   = "NONE"
+    Description     = "Material unknown in LIMS"
+    Version         = SELECT max_active_mlp_ver.max_version WHERE identity = ChildMaterial
+    IF Version <> EMPTY THEN
+        Material_type   = SELECT mlp_header.material_type WHERE identity = ChildMaterial AND product_version = Version
+        Description     = STRIP(SELECT mlp_header.description)
+        Description     = SUBSTITUTE(Description, "'", "-")
+    ENDIF
+
+    Records = SELECT COUNT BATCH_TRACE WHERE product_name_master = Material
+                                       AND batch_name_master = BatchName
+                                       AND IDOC_ID = iDoc_ID
+                                       AND i_NUMBER = i_NUMBER
+
+    {WriteImportLog("IF Records = 0 THEN INSERT (Records = ":Records:"); i_NUMBER = ":i_NUMBER)}
+    IF Records = 0 THEN
+        strSQL = "INSERT INTO BATCH_TRACE (idoc_id, i_number, i_count, product_name_master, batch_name_master, product_name_child, batch_name_child, movement, sign, sap_amount, sap_unit, amount,unit, material_type, description, sap_update) "
+        strSQL = strSQL: "VALUES ('":idoc_id:"', '":i_number:"', '":i_count:"', '":material:"', '":batchname:"', '":childmaterial:"', '":childbatch:"', '":movement:"', '":sign:"', '":sap_amount:"', '":sap_unit:"', '":amount:"', '":unit:"', '":material_type:"', '":description:"', (GetDate()))"
+        {WriteImportLog(strSQL)}
+        SQL(strSQL)
+    ENDIF
+
+    Records = SELECT COUNT BATCH_TRACE WHERE product_name_master = Material AND batch_name_master = BatchName AND IDOC_ID = iDoc_ID
+
+    {WriteImportLog("IF Records = i_COUNT THEN set VALID = T (Records: ":Records:" = i_COUNT: ":i_COUNT:")")}
+    IF Records = i_COUNT THEN
+        strSQL = "UPDATE BATCH_TRACE SET VALID = 'T' WHERE product_name_master = '":Material:"' AND batch_name_master = '":BatchName:"' AND IDOC_ID = '":iDoc_ID:"'"
+        {WriteImportLog(strSQL)}
+       SQL(strSQL)
+
+        strSQL = "DELETE BATCH_TRACE WHERE product_name_master = '":Material:"' AND batch_name_master = '":BatchName:"' AND IDOC_ID < '":iDoc_ID:"'"{:" AND VALID = 'T'"}
+        {WriteImportLog(strSQL)}
+        SQL(strSQL)
+
+    ENDIF
+
+    k = k + 1
+
+ENDWHILE
+
+RETURN (TRUE)
+
+ENDROUTINE
+{*******************************************************************************}
+
+GLOBAL ROUTINE BATCH_INFO(par_array)
+{* Purpose      : Creates a new job when sent via webservice
+ * Parameters   : processor , [LIMSML_PROCESS]
+ *                entity    , [HELPER_ENTITY]
+ *                action    , [HELPER_ACTIONML]
+ *                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+ * Return Value : None
+ *******************************************************************************}
+DECLARE i, Parameter, XML_ID, BatchID, Material, Version, SAP_Status, ProductionDate, ShelfLifeExpiration,
+        SiteID, PlantID, InspectionLotID, ScheduledStart, ScheduledEnd, MaterialBefore, BatchBefore, VendorBatch, UnitWeight,
+        Country, CountryCode, JobID, JobArray, JobCreated, FileName, UsageDecisionCode
+
+  SET DATE FORMAT "DZ-MON-YYYY"
+
+  LogTxt = EMPTY
+  BatchID                 = ""
+  Material                = ""
+  SAP_Status              = ""
+  ProductionDate          = EMPTY
+  ShelfLifeExpiration     = EMPTY
+  SiteID                  = ""
+  PlantID                 = ""
+  InspectionLotID         = ""
+  ScheduledStart          = EMPTY
+  ScheduledEnd            = EMPTY
+  MaterialBefore          = ""
+  BatchBefore             = ""
+  VendorBatch             = ""
+  UnitWeight              = ""
+  Country                 = ""
+  CountryCode             = ""
+  UsageDecisionCode       = ""
+{
+  UsageDecision           = EMPTY
+  UsageDecisionText       = EMPTY
+}
+
+i = 0
+WHILE i <= size_of_array(par_array) DO
+    Parameter = TOUPPER(par_array[i,1])
+    IF Parameter = "FILENAME"
+            FileName    = par_array[i,2]
+            array_remove_slice(par_array, 1, i)
+            i = i - 1
+            window_set_status("Processing: ":FileName)
+           {WriteImportLog(ASCII(10):GetArray(par_array))}
+    ELSEIF     Parameter = "ID"
+        XML_ID      = par_array[i,2]
+        SET DATE FORMAT "YYYYMZDZH24MISSCC"
+        IF IS_DATE(XML_ID)
+            XML_ID = DATE(XML_ID)
+        ELSE
+            XML_ID = NOW
+        ENDIF
+        RESTORE DATE FORMAT
+    ELSEIF Parameter     = "BATCHID"
+      BatchID = par_array[i,2]
+    ELSEIF Parameter = "MATERIALID"
+      Material            = par_array[i,2]
+    ELSEIF Parameter = "APPROVALSTATUS"
+      SAP_Status          = par_array[i,2]
+    ELSEIF Parameter = "PRODUCTIONDATE"
+      ProductionDate      = par_array[i,2]
+        IF ProductionDate <> "" THEN
+           ProductionDate = ConvertDateFromXML(ProductionDate)
+           ProductionDate = DATE(ProductionDate)
+        ELSE
+            ProductionDate = NULL
+        ENDIF
+    ELSEIF Parameter = "SHELFLIFEEXPIRATION"
+      ShelfLifeExpiration      = par_array[i,2]
+        IF ShelfLifeExpiration <> "" THEN
+           ShelfLifeExpiration = ConvertDateFromXML(ShelfLifeExpiration)
+            ShelfLifeExpiration = DATE(ShelfLifeExpiration)
+        ELSE
+            ShelfLifeExpiration = NULL
+        ENDIF
+    ELSEIF Parameter = "SITEID"
+      SiteID              = par_array[i,2]
+      IF SiteID = "MISSING" THEN
+        SiteID = ""
+      ENDIF
+    ELSEIF Parameter = "PLANTID"
+      PlantID             = par_array[i,2]
+    ELSEIF Parameter = "INSPECTIONLOTID"
+      InspectionLotID     = par_array[i,2]
+      InspectionLotID     = LTrimZero(InspectionLotID)
+      ELSEIF Parameter = "SCHEDULEDSTART"
+      ScheduledStart      = par_array[i,2]
+        IF ScheduledStart <> "" THEN
+           ScheduledStart = ConvertDateFromXML(ScheduledStart)
+           ScheduledStart = DATE(ScheduledStart)
+        ELSE
+            ScheduledStart = NULL
+        ENDIF
+    ELSEIF Parameter = "SCHEDULEDEND"
+      ScheduledEnd      = par_array[i,2]
+        IF ScheduledEnd <> "" THEN
+           ScheduledEnd = ConvertDateFromXML(ScheduledEnd)
+           ScheduledEnd = DATE(ScheduledEnd)
+           SET DATE FORMAT "H24:MI"
+           IF STRIP(ScheduledEnd) = "00:00" THEN
+               RESTORE DATE FORMAT
+               ScheduledEnd = ScheduledEnd + INTERVAL("0000 00:00:01")
+           ELSE
+               RESTORE DATE FORMAT
+           ENDIF
+        ELSE
+            ScheduledEnd = NULL
+        ENDIF
+    ELSEIF Parameter = "MATERIAL_BEFORE"
+      MaterialBefore     = par_array[i,2]
+    ELSEIF Parameter = "BATCH_BEFORE"
+      BatchBefore        = par_array[i,2]
+    ELSEIF Parameter = "VENDORBATCH"
+      VendorBatch        = par_array[i,2]
+    ELSEIF Parameter = "UNITWEIGHT"
+      UnitWeight         = par_array[i,2]
+      UnitWeight = STRIP(SUBSTITUTE(UnitWeight,",","."))
+      WHILE NOT NUM_TEXT(UnitWeight) DO
+          UnitWeight     = SUBSTRING(UnitWeight, 1,LENGTH(UnitWeight)-1)
+      ENDWHILE
+      UnitWeight = STRIP(UnitWeight)
+    ELSEIF Parameter = "COUNTRYX"
+       Country           = par_array[i,2]
+    ELSEIF Parameter = "COUNTRY"
+       CountryCode       = par_array[i,2]
+    ELSEIF Parameter = "USAGEDECISIONCODE"
+       UsageDecisionCode = par_array[i,2]
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+RESTORE DATE FORMAT
+
+    Material              = LTrimZero(Material)
+    InspectionLotID       = LTrimZero(InspectionLotID)
+
+    {WriteImportLog(Material:"/":BatchID)}
+    LogTxt = EMPTY
+
+{**************************************************************************************************************
+    IF NOT user_global_exists("Logfile", "JobName") THEN
+        add_global_cluster("Logfile")
+        add_user_global("Logfile", "JobName")
+    ENDIF
+    assign_user_global("Logfile", "JobName", "SAP_TRANSFER\":SUBSTITUTE(STRIP(Material):"/":STRIP(BatchID),"/","_"))
+ 
+***************************************************************************************************************}
+  IF LEFTSTRING(SAP_Status, 6) = "APPSTA" THEN
+      SAP_Status        = STRIP(SUBSTRING(SAP_Status, 7, LENGTH(SAP_Status)))
+  ENDIF
+
+    JobCreated = Material:"/":BatchID
+
+    IF STRIP(BatchID) = "" THEN
+        WriteImportLog("Skipped. No BatchId")
+        RETURN (TRUE)
+    ENDIF
+
+
+    IF ProductionDate = EMPTY THEN
+        ProductionDate = ScheduledEnd
+        WriteImportLog("'ProductionDate' was EMPTY, using 'ScheduledEnd'")
+    ENDIF
+
+    JobID = SELECT job_header.job_name WHERE product_name = Material AND batch_name = BatchID AND inspection_lot = InspectionLotID AND template_id = "P-BULK-ROS"
+
+    ARRAY JobArray
+    i = 0
+    WHILE JobID <> EMPTY
+        i = i + 1
+        JobArray[i,1] = jobID
+    NEXT job_header
+        JobID = SELECT job_header.job_name
+    ENDWHILE
+
+    InspectionLotID = RIGHTSTRING("000000000000":InspectionLotID,12)
+
+    JobID = SELECT job_header.job_name WHERE product_name = Material AND batch_name = BatchID AND inspection_lot = InspectionLotID AND template_id = "P-BULK-ROS"
+
+    WHILE JobID <> EMPTY
+        i = i + 1
+        JobArray[i,1] = jobID
+    NEXT job_header
+        JobID = SELECT job_header.job_name
+    ENDWHILE
+
+    IF i = 0 THEN
+        JobID = SELECT job_header.job_name WHERE product_name = Material AND batch_name = BatchID AND inspection_lot = "            " AND template_id = "P-BULK-ROS"
+        WHILE JobID <> EMPTY
+            i = i + 1
+            JobArray[i,1] = jobID
+        NEXT job_header
+            JobID = SELECT job_header.job_name
+        ENDWHILE
+    ENDIF
+
+    IF i = 0 THEN
+        JobID = SELECT job_header.job_name WHERE product_name = Material AND batch_name = BatchID AND template_id = "P-BULK-ROS"
+        WHILE JobID <> EMPTY
+            i = i + 1
+            JobArray[i,1] = jobID
+        NEXT job_header
+            JobID = SELECT job_header.job_name
+        ENDWHILE
+    ENDIF
+
+    IF size_of_array(JobArray) = 0 THEN
+        JobID = SELECT c_job_header.job_name WHERE product_name = Material AND batch_name = BatchID AND template_id = "P-BULK-ROS"
+        IF JobID = EMPTY THEN
+            Material = SELECT MAX_ACTIVE_MLP_VER.IDENTITY WHERE identity = Material
+            IF Material <> EMPTY THEN
+                Version  = SELECT max_active_mlp_ver.max_version
+                c   = SELECT COUNT prod_sched
+                       WHERE  product_name      = STRIP(Material)
+                         AND  product_version   = Version
+                         AND  group_id          = STRIP(PlantID)
+            ENDIF
+            IF (Material = EMPTY) OR (c = 0) THEN
+                WriteImportLog("No active MLP setup for Plant ":STRIP(PlantID):"...  ":JobCreated )
+                RETURN (TRUE)
+            ENDIF
+            WriteImportLog("Job not found...  ":JobCreated )
+            RETURN (FALSE)
+        ELSE
+            WriteImportLog(JobID:"Found ":STRIP(SELECT COUNT c_job_header WHERE product_name = Material AND batch_name = BatchID AND template_id = "P-BULK-ROS"):" committed jobs, no update")
+            RETURN (TRUE)
+        ENDIF
+    ENDIF
+
+    fm("Jobs to update:":ASCII(10):GetArray(JobArray))
+    WriteToLog("UsageDecisionCode/InspectionLotID: ":UsageDecisionCode:"/":InspectionLotID)
+
+    i = 1
+    WHILE i <= size_of_array(JobArray) DO
+        {WriteImportLog("Update ":JobArray[i,1])}
+        UpdateBatchInfo(JobArray[i,1], XML_ID, ScheduledStart, ProductionDate, ShelfLifeExpiration, SiteID, PlantID, material_before, batch_before, VendorBatch, UnitWeight, SAP_Status, Country, CountryCode, LogTxt)
+        IF INDEX(TOUPPER(LogTxt),"NO UPDATE") = 0 THEN
+            WriteImportLog(LogTxt)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN (TRUE)
+
+ENDROUTINE
+
+ROUTINE UpdateBatchInfo(JobID, XML_ID, ScheduledStart, ProductionDate, ShelfLifeExpiration, SiteID, PlantID, material_before, batch_before, VendorBatch, UnitWeight, SAP_Status, Country, CountryCode, LogTxt)
+{
+* Purpose      : Update the selected job
+* Parameters   : JobId and values to be updated...
+* Return Value : None
+*******************************************************************************}
+    DECLARE JobCreated, OldBatchBefore, OldMaterialBefore
+    JobCreated = JobID
+
+    JobID = SELECT job_header.job_name FOR UPDATE WHERE job_name = JobCreated
+    IF JobID = LOCKED THEN
+        {Hmm, try again ?}
+        WriteImportLog(JobCreated:" was locked for update, try next time.")
+    ELSE
+        {Update}
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION "Update Batch Info"
+            {WriteImportLog("START WRITE TRANSACTION 'Update Batch Info'")}
+        ENDIF
+
+        LogTxt = STRIP(JobID)
+        IF (SELECT job_header.date_to_start   <> ScheduledStart) AND (ScheduledStart <> NULL) THEN
+            LogTxt = LogTxt:LF:"Date_To_Start     : ":STRIP(SELECT job_header.date_to_start):" -> ":ScheduledStart
+            ASSIGN job_header.date_to_start         = ScheduledStart
+        ENDIF
+        IF (SELECT job_header.production_date <> ProductionDate) AND (ProductionDate <> NULL) THEN
+            LogTxt = LogTxt:LF:"Production_Date   : ":STRIP(SELECT job_header.production_date):" -> ":ProductionDate
+            ASSIGN job_header.production_date       = ProductionDate
+        ENDIF
+        IF (SELECT job_header.shelflife_exp_date  <> ShelfLifeExpiration) AND (ShelfLifeExpiration <> NULL) THEN
+            LogTxt = LogTxt:LF:"Shelflife_Exp_Date: ":STRIP(SELECT job_header.shelflife_exp_date):" -> ":ShelfLifeExpiration
+            ASSIGN job_header.shelflife_exp_date    = ShelfLifeExpiration
+        ENDIF
+        IF (SELECT job_header.work_center     <> SiteID) AND (SiteID <> "") AND (SiteID <> "MISSING") THEN
+            LogTxt = LogTxt:LF:"Work_Center       : ":STRIP(SELECT job_header.work_center):" -> ":SiteID
+            ASSIGN job_header.work_center           = SiteID
+        ENDIF
+        {IF (SELECT job_header.login_plant     <> PlantID) THEN
+            LogTxt = LogTxt:LF:"Login_Plant       : ":STRIP(SELECT job_header.login_plant):" -> ":PlantID
+            ASSIGN job_header.login_plant           = PlantID
+        ENDIF}
+        OldMaterialBefore = STRIP(SELECT job_header.material_before)
+        IF LEFTSTRING(OldMaterialBefore,5) = "-----" THEN
+            OldMaterialBefore = EMPTY
+        ENDIF
+        IF (OldMaterialBefore  <> material_before) THEN
+            LogTxt = LogTxt:LF:"Material_Before   : ":OldMaterialBefore:" -> ":material_before
+            ASSIGN job_header.material_before       = material_before
+        ENDIF
+        OldBatchBefore = STRIP(SELECT job_header.batch_before)
+        IF LEFTSTRING(OldBatchBefore,5) = "-----" THEN
+            OldBatchBefore = EMPTY
+        ENDIF
+        IF (OldBatchBefore <> batch_before) THEN
+            LogTxt = LogTxt:LF:"Batch_Before      : ":OldBatchBefore:" -> ":batch_before
+            ASSIGN job_header.batch_before          = batch_before
+        ENDIF
+        IF (SELECT job_header.vendor_batch   <> VendorBatch) THEN
+            LogTxt = LogTxt:LF:"Vendor Batch      : ":STRIP(SELECT job_header.vendor_batch):" -> ":VendorBatch
+            ASSIGN job_header.vendor_batch          = VendorBatch
+        ENDIF
+        IF (SELECT job_header.potency   <> UnitWeight) AND (UnitWeight <> "") THEN
+            LogTxt = LogTxt:LF:"Potency           : ":STRIP(SELECT job_header.potency):" -> ":UnitWeight
+            ASSIGN job_header.potency          = UnitWeight
+        ENDIF
+        IF (SELECT job_header.SAP_Status     <> SAP_Status) THEN
+            LogTxt = LogTxt:LF:"SAP_Status        : ":STRIP(SELECT job_header.SAP_Status):" -> ":SAP_Status
+            ASSIGN job_header.SAP_Status            = SAP_Status
+        ENDIF
+
+        IF (SELECT job_header.country        <> Country) AND 
+           (SELECT job_header.inspection_type <> "03") AND
+           (SELECT job_header.inspection_type <> "04") THEN
+            LogTxt = LogTxt:LF:"Country           : ":STRIP(SELECT job_header.country):" -> ":Country
+            ASSIGN job_header.country               = Country
+        ENDIF
+        IF (SELECT job_header.CountryCode    <> CountryCode) AND
+           ((SELECT job_header.inspection_type <> "03") AND
+            (SELECT job_header.inspection_type <> "04")) THEN
+            LogTxt = LogTxt:LF:"CountryCode       : ":STRIP(SELECT job_header.CountryCode):" -> ":CountryCode
+            ASSIGN job_header.CountryCode           = CountryCode
+        ENDIF
+
+
+        IF (LogTxt = STRIP(JobID)) THEN
+            LogTxt = LogTxt:" No Update"
+            WriteImportLog(LogTxt)
+        ELSE
+            {LogTxt = LogTxt:LF:"Updated"}
+        ENDIF
+        ASSIGN job_header.sap_batch_update = XML_ID
+        UPDATE job_header
+        COMMIT
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE CreateJobFromSAP(processor, entity, action, response)
+{
+* Purpose      : Creates a new job when sent via webservice
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+* Return Value : None
+*******************************************************************************}
+
+DECLARE workcenter, product, batch, date_to_start, login_plant, process_order, production_date, InspectionType, InspectionLotID, JobCreated
+
+    {Get the parameters from the procecced xml-file}
+    workcenter        = STRIP(action.get_param_default ( "WORK_CENTER", EMPTY ))
+    product           = STRIP(action.get_param_default ( "PRODUCT_NAME", EMPTY ))
+    batch             = STRIP(action.get_param_default ( "BATCH_NAME", EMPTY ))
+    date_to_start     = ConvertDateFromXML(STRIP(action.get_param_default ( "DATE_TO_START", EMPTY)))
+    production_date   = ConvertDateFromXML(STRIP(action.get_param_default ( "PRODUCTION_DATE", EMPTY)))
+    loginplant        = STRIP(action.get_param_default ( "LOGIN_PLANT", EMPTY ))
+    process_order     = STRIP(action.get_param_default ( "PROCESS_ORDER", EMPTY ))
+    InspectionType    = "04"
+    InspectionLotID   = EMPTY
+
+    IF INDEX("AVE, DFD, ROS, POH, PLH, SGA, MKE, HUS, NIE, VAL", workcenter) > 0 THEN
+        JobCreated = CreateJob(workcenter, product, batch, date_to_start, loginplant, process_order, production_date, LogTxt, TRUE, InspectionType, InspectionLotID)
+    ELSE
+        WriteImportLog("'":STRIP(product):"/":STRIP(batch):"' - WorkCenter: ":STRIP(workcenter))
+        WriteImportLog("Not creating job for workcenter ":STRIP(workcenter))
+        EXIT
+    ENDIF
+
+    RETURN (JobCreated)
+
+
+ENDROUTINE
+{*******************************************************************************}
+
+ROUTINE CreateJob(VALUE workcenter, VALUE product, VALUE batch, VALUE date_to_start, VALUE login_plant,
+                  VALUE process_order, VALUE production_date, LogTxt, VALUE CIA, VALUE InspectionType, VALUE InspectionLotID)
+{* Purpose      : Adds sample to createjob xml
+ * Parameters   : JobName
+                  SampleTemplate
+                  Product
+ * Return Value : JobName
+ *******************************************************************************}
+{WriteImportLog("CreateJob(workcenter, product, batch, date_to_start, login_plant, process_order, production_date, LogTxt, CIA, InspectionType, InspectionLotID)")
+WriteImportLog("CreateJob(":workcenter:", ":product:", ":batch:", ":date_to_start:", ":login_plant:", ":process_order:", ":production_date:", LogTxt, ":CIA:", ":InspectionType:", ":InspectionLotID:")")}
+
+DECLARE NumOfJobs, NumOfCommittedJobs, new_job_name, mlp_ver, JobCreated,
+    isWrite, a_new_job_name, job_template, job_header_browse_description,
+    job_header_product_appl_group, job_header_product_description, sample_type,
+    group_id, check_mlp, Inc
+
+    check_mlp = SELECT COUNT mlp_header WHERE identity = product
+                                          AND approval_status = "A"
+                                          AND removeflag = FALSE
+    IF check_mlp = 0 THEN
+        WriteImportLog("No MLP setup for material: ":STRIP(product))
+        fm("No MLP setup for material: ":STRIP(product))
+        RETURN (FALSE)
+    ENDIF
+
+    IF InspectionLotID = EMPTY THEN
+       InspectionLotID = "            "
+    ENDIF
+
+    {Set defult values}
+    a_new_job_name  = STRIP(product) : "/" : STRIP(batch)
+    group_id = login_plant
+    job_template    = "P-BULK-ROS"
+    JobCreated  = TRUE
+
+    {Create new job}
+    SET FORMAT "999999999"
+
+    date_to_start = date_to_start
+    production_date = production_date
+
+    NumOfJobs = SELECT COUNT JOB_HEADER WHERE JOB_NAME = a_new_job_name AND inspection_type = InspectionType
+    NumOfJobs = STRIP(NumOfJobs)
+
+    NumOfCommittedJobs = SELECT COUNT C_JOB_HEADER WHERE JOB_NAME = a_new_job_name AND inspection_type = InspectionType
+    NumOfCommittedJobs = STRIP(NumOfCommittedJobs)
+
+    IF (inspection_type = "01") OR (InspectionType = "01P") OR (inspection_type = "08") THEN
+        NumOfJobs = SELECT COUNT ALL_JOB_HEADER WHERE JOB_NAME = a_new_job_name {AND inspection_type = InspectionType AND inspection_lot = InspectionLotID}
+        NumOfJobs = STRIP(NumOfJobs)
+        JobCreated = (SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE INSPECTION_LOT = InspectionLotID)
+        IF (JobCreated = EMPTY) THEN
+            Inc = RIGHTSTRING("000":STRIP(INCREMENT(STRIP(product), STRIP(batch))),2)
+            a_new_job_name = a_new_job_name:"/":Inc
+        ENDIF
+    ELSEIF (inspection_type = "09") THEN
+        NumOfJobs = SELECT COUNT ALL_JOB_HEADER WHERE JOB_NAME = a_new_job_name {AND inspection_type = InspectionType AND inspection_lot = InspectionLotID}
+        NumOfJobs = STRIP(NumOfJobs)
+        JobCreated = (SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE INSPECTION_LOT = InspectionLotID)
+        IF (JobCreated = EMPTY) THEN
+            Inc = RIGHTSTRING("000":STRIP(INCREMENT(STRIP(product), STRIP(batch))),2)
+            a_new_job_name = a_new_job_name:"/":Inc
+        ENDIF
+    ELSEIF ((inspection_type = "03") OR
+            (inspection_type = "04")) THEN
+        IF (NumOfJobs <> 0) THEN
+            new_job_name = "JobNameAlreadyEXIST"
+            LogTxt = "Job " : STRIP(product) : "/" : STRIP(batch) : " already exist"
+            {Add code for updating existing job_header}
+            JobCreated = SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE JOB_NAME = a_new_job_name AND INSPECTION_LOT = InspectionLotID
+            IF JobCreated = EMPTY THEN
+                JobCreated = SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE JOB_NAME = a_new_job_name
+            ENDIF
+            {WriteImportLog("JobCreated: ":JobCreated)}
+        ELSEIF (NumOfCommittedJobs <> 0) THEN
+            JobCreated = FALSE
+            WriteImportLog("Job " : STRIP(product) : "/" : STRIP(batch) : " is committed, have done nothing")
+            new_job_name = "JobNameAlreadyEXIST"
+            RETURN ("COMMITTED") {(TRUE)}
+        ELSE
+            JobCreated = (SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE JOB_NAME = a_new_job_name AND inspection_lot = InspectionLotID)
+        ENDIF
+    ENDIF
+
+    IF (JobCreated = EMPTY) THEN
+        IF (GLOBAL("MODE") = "INTERACTIVE") THEN
+            new_job_name = CreateNewJob(job_template, a_new_job_name)
+            new_job_name = STRIP(a_new_job_name)
+            {sp_login_job_SAP (a_new_job_name)
+            WriteImportLog("Created job, interactive: ":new_job_name)}
+            JobCreated = TRUE
+        ELSE
+            new_job_name = NEW_JOB( job_template, a_new_job_name)
+            {WriteImportLog("Created job, webservice: ":new_job_name)}
+            JobCreated = TRUE
+        ENDIF
+    ELSE
+        new_job_name = STRIP(JobCreated)
+        JobCreated = TRUE
+    ENDIF
+
+    IF JobCreated = TRUE THEN
+        {WriteImportLog("JobCreated: ":new_job_name)}
+        JobCreated = SELECT JOB_HEADER.JOB_NAME FOR UPDATE WHERE JOB_NAME = new_job_name
+
+        mlp_ver = SELECT max_active_mlp_ver.MAX_VERSION WHERE identity = product
+
+        job_header_browse_description  = SELECT mlp_header.description WHERE identity = product AND product_version = mlp_ver
+        job_header_product_appl_group  = SELECT mlp_header.product_appl_group
+        job_header_product_description = SELECT mlp_header.description
+        job_header_browse_description  = STRIP(job_header_browse_description):" /": OPERATOR
+        sample_type = SELECT mlp_header.sample_type
+
+
+        IF (JobCreated = new_job_name) AND (JobCreated <> EMPTY) THEN
+
+        isWrite = transaction_is_write ( )
+        IF NOT IsWrite THEN
+            START WRITE TRANSACTION "Create job"
+        ENDIF
+
+        SET DATE FORMAT "DZ-MZ-YYYY"
+
+            ASSIGN job_header.work_center        = workcenter
+            ASSIGN job_header.product_name       = product
+            ASSIGN job_header.batch_name         = batch
+            IF  (inspection_type = "03") OR 
+                (inspection_type = "04") THEN
+                ASSIGN job_header.date_to_start      = date_to_start
+            ELSEIF (SELECT job_header.date_to_start = NULL)
+                ASSIGN job_header.date_to_start      = NOW
+            ENDIF
+            ASSIGN job_header.production_date    = production_date
+            ASSIGN job_header.shelflife_exp_date = NULL
+            ASSIGN job_header.login_plant        = login_plant
+            ASSIGN job_header.process_order      = process_order
+            ASSIGN job_header.group_id           = group_id
+            ASSIGN job_header.inspection_lot     = InspectionLotID
+            ASSIGN job_header.inspection_type    = InspectionType
+            IF (inspection_type <> "04") AND
+               (inspection_type <> "03")THEN
+                ASSIGN job_header.production_date    = production_date
+                ASSIGN job_header.shelflife_exp_date = NULL
+            ENDIF
+            ASSIGN job_header.product_description = job_header_product_description
+            ASSIGN job_header.browse_description  = job_header_browse_description
+            ASSIGN job_header.product_appl_group  = job_header_product_appl_group
+            ASSIGN job_header.sample_type = sample_type
+
+            UPDATE JOB_HEADER
+            COMMIT
+
+        RESTORE DATE FORMAT
+
+        RETURN (new_job_name) {(TRUE)}
+
+            {Ok, so now we have a job. Lets add sample to that job.}
+            {AddSamples (JobCreated, CIA, InspectionType, LogTxt)}
+
+    ELSEIF JobCreated = EMPTY THEN
+        WriteImportLog("Job " : STRIP(new_job_name) : " doesn't exist,")
+        RETURN (new_job_name)
+    ELSE
+        WriteImportLog("Job " : STRIP(new_job_name) : " already exist,")
+        RETURN (new_job_name)
+    ENDIF
+
+    IF JobCreated THEN
+        {Select created job for update and add values}
+    ELSE
+        WriteImportLog(new_job_name:" is NOT selected for update. Select did return: ":JobCreated)
+    ENDIF
+
+    ELSE
+        WriteImportLog("Could not create job")
+        RETURN (FALSE)
+
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE AddSamples (VALUE JobID, VALUE CIA, VALUE InspectionType, LogTxt)
+{*******************************************************************************
+* Purpose      : Adds sample to createjob xml
+* Parameters   : JobName, SampleTemplate, Product
+* Return Value : IdNumeric
+*******************************************************************************}
+DECLARE {sp,LogInput, } sps, product, batch, mlp_ver, login_plant, mlp_splogin, job_splogin, assign_group, AddedSamples, mps_template, i, idNumeric, SampleLog, WorkCenter, job_group
+
+{LogInput        = LogTxt}
+product         = STRIP(SELECT job_header.product_name WHERE job_name = JobID)
+batch           = STRIP(SELECT job_header.batch_name)
+mlp_ver         = SELECT max_active_mlp_ver.MAX_VERSION WHERE identity = product
+login_plant     = STRIP(SELECT job_header.login_plant)
+WorkCenter      = STRIP(SELECT job_header.work_center)
+
+CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+
+ARRAY sps ARRAY_SIZE (0,3)
+mlp_ver = SELECT max_active_mlp_ver.max_version
+          WHERE identity = product
+
+IF mlp_ver = EMPTY THEN
+    RETURN(FALSE)
+ENDIF
+
+c   = SELECT COUNT prod_sched
+       WHERE  product_name      = STRIP(product)
+         AND  product_version   = mlp_ver
+         AND  group_id          = STRIP(login_plant)
+         AND  sampling_point like STRIP(WorkCenter):"%"
+
+
+IF mlp_ver <> EMPTY THEN
+
+    dynamic_sql.add_to_sql_statement     (" SELECT sampling_point, assigned_group ")
+    dynamic_sql.add_to_sql_statement     (" FROM prod_sched ")
+    dynamic_sql.add_to_sql_statement     (" WHERE product_name = '":product:"'")
+    dynamic_sql.add_to_sql_statement     (" AND product_version =":mlp_ver)
+    dynamic_sql.add_to_sql_statement     (" AND group_id = '":login_plant:"'")
+    dynamic_sql.add_to_sql_statement     (" AND (inspection_type = '":LEFTSTRING(InspectionType,2):"' OR inspection_type = '')")
+    IF NOT CIA THEN
+        dynamic_sql.add_to_sql_statement (" AND test_schedule <> 'NONE'")
+    ENDIF
+    IF LEFTSTRING(InspectionType, 2) = "09" THEN
+        dynamic_sql.add_to_sql_statement (" AND sampling_point like '%REC-%'")
+    ELSE
+        dynamic_sql.add_to_sql_statement (" AND sampling_point not like '%REC-%'")
+    ENDIF
+    IF c > 0 THEN
+        dynamic_sql.add_to_sql_statement (" AND sampling_point like '":WorkCenter:"%'")
+    ENDIF
+    dynamic_sql.add_to_sql_statement (" ORDER BY sampling_point")
+    dynamic_sql.add_select_field         ( "prod_sched", "sampling_point" )
+    dynamic_sql.add_select_field         ( "prod_sched", "assigned_group" )
+    dynamic_sql.execute ()
+    {fm(dynamic_sql.select (1):" <= ":dynamic_sql.select_string)}
+    {WriteToLog(dynamic_sql.select_string)}
+    WHILE dynamic_sql.select (1) <> EMPTY DO
+        sps[size_of_array(sps) + 1, 1] = dynamic_sql.select (1)
+
+        assign_group = dynamic_sql.select (2)
+        IF (assign_group = NULL) THEN
+            assign_group = SELECT parameters_view.val4
+                            WHERE parm_id = "MPS_TMPL"
+                              AND primary_key = product
+                              AND secondary_key = STRIP(mlp_ver)
+                              AND val2 = "P"
+        ENDIF
+        mps_template = SELECT SAMPLE_POINT.MPS_TEMPLATE WHERE IDENTITY = sps[size_of_array(sps), 1]
+        IF (mps_template = EMPTY) or (mps_template = NULL) THEN
+            mps_template = "NOINPUT"
+        ENDIF
+        sps[size_of_array(sps), 2] = STRIP(mps_template)
+        sps[size_of_array(sps), 3] = STRIP(assign_group)
+        dynamic_sql.next ()
+    ENDWHILE
+    ENDIF
+
+i = 1
+AddedSamples = FALSE
+SampleLog = LF:     "Assigning samples to ":JobId:LF:
+                 "Sample ID  | SamplePoint | LoginSchedule | Analysis":LF:
+                 "-----------+-------------+---------------+----------":LF
+
+WHILE sps[i, 1] <> EMPTY DO
+    {Not a supertemplate. Just add new sample out of template}
+    idNumeric = SELECT sample.id_numeric WHERE job_name = job_id AND sampling_point = sps[i,1] {(template_id = sps[i, 2] OR template_id = "BLANK")}
+
+    IF idNumeric = EMPTY THEN
+        idNumeric = CreateNewSample(JobId, batch, sps[i, 2], sps[i, 1], product, mlp_ver, sps[i, 3], login_plant, SampleLog)
+        AddedSamples = TRUE
+        StatusBar("Create job: ":product:"/":Batch:"  ":login_plant:"/":WorkCenter:"  ":strip(i):" samples")
+
+    ELSE
+            {WriteImportLog("Sample exists : (":STRIP(idNumeric):") with template: ":sps[i, 2])}
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+SampleLog = SampleLog: "-----------+-------------+---------------+----------"
+
+IF AddedSamples THEN
+    LogTxt = LogTxt:SampleLog
+ENDIF
+
+mlp_splogin = SELECT mlp_header.do_splan_login WHERE identity = product and product_version = mlp_ver
+job_splogin = STRIP(SELECT job_header.node_trigger_path)
+
+IF job_splogin = "" THEN
+    job_splogin = FALSE
+ELSE
+    job_splogin = TRUE
+ENDIF
+
+IF mlp_splogin AND NOT job_splogin THEN
+    LogTxt = LogTxt:LF:"Adding Sample Plan Login"
+    StatusBar("Job created: ":product:"/":Batch:"  ":login_plant:"/":WorkCenter:"  Adding Sample Plan Login.")
+    do_splan_login(JobID, LogTxt)
+ENDIF
+
+IF AddedSamples THEN
+    WriteImportLog("Samples Added:     ":AddedSamples:" Send sample plan for '":STRIP(JobId):"' to MES")
+    JobToMES(JobId)
+ELSEIF (mlp_splogin AND NOT job_splogin) THEN
+    WriteImportLog("Sample plan login: ":mlp_splogin:" Send sample plan for '":STRIP(JobId):"' to MES")
+    JobToMES(JobId)
+ENDIF
+
+i         = 1
+job_group = ""
+
+WHILE i <= size_of_array(sps) 
+    IF (INDEX(job_group, sps[i, 3]) = 0) AND (sps[i, 3] <> EMPTY) THEN
+        job_group = job_group:sps[i, 3]:";"
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+IF LENGTH(job_group) > 0 THEN
+    job_group = LEFTSTRING(job_group, LENGTH(job_group) - 1)
+    IF job_group <> EMPTY THEN
+        IF (job_group = SELECT group_header.identity WHERE identity = job_group) THEN
+            IF (job_id = SELECT job_header.job_name FOR UPDATE WHERE job_name = job_id AND group_id <> job_group) THEN
+                START WRITE TRANSACTION "Set job_header group_id"
+                ASSIGN job_header.group_id = job_group
+                UPDATE job_header
+                COMMIT
+            ENDIF
+        ENDIF
+    ENDIF
+ENDIF
+
+ENDROUTINE
+
+
+
+ROUTINE CreateNewSample (VALUE NewJobName, VALUE BatchName, VALUE SampleTemplate, VALUE SamplePoint,
+                         VALUE Product, VALUE ProductVersion, VALUE GroupID, VALUE login_plant, LogTxt)
+{*******************************************************************************
+* Purpose      : Adds sample to createjob xml
+* Parameters   : JobName, SampleTemplate, Product
+* Return Value : IdNumeric
+*******************************************************************************}
+
+DECLARE limsml, entity, action, transaction, request_xml, error_xml, counter
+DECLARE findone, idNumeric, startposition, ts, {ts1, } TestsToAdd, arrTs, i, aid{, check_ok}
+DECLARE test_entity, response_xml, {change_status,} AddTestS, AddTestSchedule{, TestScheduleToAdd } 
+DECLARE SampleDescription, SampleType, SampleProduct_Appl_Group
+DECLARE AddedTS, AddedAID, point_location, inspection_type
+
+idNumeric = SELECT sample.id_numeric WHERE ID_TEXT = NewJobName:"/":SamplePoint
+IF (idNumeric <> EMPTY) THEN
+    RETURN (idNumeric)
+ENDIF
+
+inspection_type = LEFTSTRING(SELECT job_header.inspection_type WHERE job_name = NewJobName,2)
+AddedTS  = ""
+AddedAID = ""
+
+ARRAY TestsToAdd ARRAY_SIZE(0,4)
+ARRAY arrTs ARRAY_SIZE(0,1)
+
+IF STRIP(SampleTemplate) = "" THEN SampleTemplate = "DEFAULT" ENDIF  {was "NOINPUT"}
+
+    {change_status      = FALSE}
+    AddTestSchedule     = FALSE
+    {TestScheduleToAdd   = " "  }
+    {LoginSchedule       = " " EMPTY}
+    Plant               = SELECT job_header.login_plant WHERE job_name = NewJobName
+    WorkCenter          = SELECT job_header.work_center
+
+    {Find test for sample point and product and add to array}
+
+    ts = SELECT PROD_SCHED.TEST_SCHEDULE
+         WHERE SAMPLING_POINT = SamplePoint
+         AND PRODUCT_NAME = Product
+         AND PRODUCT_VERSION = ProductVersion
+         AND (inspection_type = inspection_type OR inspection_type = "")
+         AND GROUP_ID = login_plant
+
+    IF (ts = EMPTY) AND (SamplePoint = "SAP-QI") THEN
+        ts = "COMPLETE"
+        AddedTS = "SAP-QI"
+    ELSEIF (ts <> EMPTY) THEN
+        AddedTS = ts
+    ENDIF
+
+    {ts1 = ts }
+    
+    WHILE ts <> EMPTY DO
+        StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   Test Schedule: ":ts)
+        arrTs[size_of_array(arrTs)+ 1, 1] = ts
+    NEXT PROD_SCHED
+        ts = SELECT PROD_SCHED.TEST_SCHEDULE
+    ENDWHILE
+
+    i = 1
+    {Find analyses and/or test schedules for given prod sched and add to array}
+    WHILE arrTs[i, 1] <> EMPTY DO
+    {WriteImportLog("Login schedule: ":i:") ":arrTs[i, 1])}
+        StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   Test Schedule: ":arrTs[i, 1])
+        IF ((SELECT TEST_SCHED_HEADER.IDENTITY
+             WHERE IDENTITY = arrTs[i, 1]
+               AND REMOVEFLAG = FALSE) <> EMPTY) THEN
+            {LoginSchedule = arrTs[i, 1] }
+            aid = SELECT TEST_SCHED_ENTRY.ANALYSIS_ID
+                  WHERE IDENTITY = arrTs[i, 1]
+                  ORDER ON ORDER_NUM
+
+            AddedAID = ""
+            WHILE aid <> EMPTY DO
+                IF (AddedAID <> "") THEN
+                    AddedAID = AddedAID:"; "
+                ENDIF
+                counter = size_of_array(TestsToAdd) + 1
+                TestsToAdd[counter, 1] = AID
+                TestsToAdd[counter, 2] = SELECT TEST_SCHED_ENTRY.IS_ANALYSIS
+                TestsToAdd[counter, 3] = NUMERIC(SELECT TEST_SCHED_ENTRY.REPLICATE_COUNT)
+                TestsToAdd[counter, 4] = SELECT TEST_SCHED_ENTRY.COMPONENT_LIST
+                AddedAID = AddedAID:STRIP(AID)
+                StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   Analysis: ":AddedAID)
+            NEXT TEST_SCHED_ENTRY
+                AID = SELECT TEST_SCHED_ENTRY.ANALYSIS_ID
+            ENDWHILE
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    {Define class and object along with default values}
+    StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   limsml_helper_define_class")
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    limsml.setresponse ( "SYSTEM" )
+    entity = limsml.addentity ("SAMPLE")
+
+    SampleDescription           = SELECT MLP_HEADER.DESCRIPTION        WHERE IDENTITY = Product AND PRODUCT_VERSION = ProductVersion
+    SampleProduct_Appl_Group    = SELECT MLP_HEADER.PRODUCT_APPL_GROUP WHERE IDENTITY = Product AND PRODUCT_VERSION = ProductVersion
+    SampleType                  = SELECT template_fields.default_value WHERE template_id = SampleTemplate
+                                                                       AND   table_name = "SAMPLE"
+                                                                       AND   field_name = "SAMPLE_TYPE"
+    IF (SampleType = EMPTY) OR BLANK(SampleType) THEN
+        SampleType = SELECT sample_point.sample_type   WHERE identity = SampleType
+        SampleType = SELECT phrase.phrase_id WHERE phrase_type = "SAMP_TYPE" and phrase_text = SampleType
+        IF (SampleType = EMPTY) OR BLANK(SampleType) THEN
+            SampleType = SELECT mlp_header.sample_type   WHERE identity = Product AND product_version = ProductVersion
+        ENDIF
+    ENDIF
+    
+    point_location              = SELECT template_fields.default_value WHERE template_id = SampleTemplate
+                                                                       AND   table_name = "SAMPLE"
+                                                                       AND   field_name = "LOCATION_ID"
+    IF (point_location = EMPTY) OR BLANK(point_location) THEN
+        point_location          = SELECT sample_point.point_location   WHERE identity = SamplePoint
+    ENDIF    
+    action = entity.addaction ("CREATE_BY_TEMPLATE")
+    action.add_parameter ( "TEMPLATE", SampleTemplate )
+    action.add_parameter ( "JOB_NAME", NewJobName)
+    entity.field_out("ID_NUMERIC")
+    entity.field_in("PRIORITY", 2)
+    entity.field_in("ID_TEXT",  NewJobName:"/":SamplePoint)
+    entity.field_in("PRODUCT_NAME", Product)
+    entity.field_in("PRODUCT_VERSION", ProductVersion)
+    entity.field_in("BATCH_NAME", BatchName)
+    entity.field_in("DESCRIPTION", SampleDescription)
+    entity.field_in("GROUP_ID", GroupID)
+    entity.field_in("LOGIN_PLANT", login_plant)
+    entity.field_in("PRODUCT_APPL_GROUP", SampleProduct_Appl_Group)
+    entity.field_in("SAMPLING_POINT", SamplePoint)
+    {entity.field_in("TEST_SCHEDULE", AddedTS) }
+    entity.field_in("SAMPLE_TYPE", SampleType)
+    entity.field_in("LOCATION_ID", point_location)
+    entity.field_in("SAMPLED_DATE", NULL)
+    entity.field_in("RECD_DATE", NULL)
+    {entity.field_in("TEST_SCHEDULE", ts1)}
+    entity.field_in("INSPECTION_TYPE", inspection_type)
+    
+    i = 1
+    AddTests = ""
+    WHILE TestsToAdd[i, 1] <> EMPTY DO
+        {change_status = FALSE}
+        IF TestsToAdd[i, 2] = TRUE THEN
+            test_entity = entity.addchild ( "TEST" )
+                IF (SELECT max_active_anal_ver.max_version where identity = TestsToAdd[i, 1]) = EMPTY THEN
+                    test_entity.field_inout( "ANALYSIS", "MISSING" )
+                    test_entity.field_inout( "ANALYSIS_VERSION", SELECT max_active_anal_ver.max_version where identity = "MISSING" )
+                    test_entity.field_inout( "INSTRUMENT_TYPE", "") 
+                    test_entity.field_inout( "TEST_COUNT", TestsToAdd[i, 3])
+{***************************************** TEST_SCHED_ENTRY.COMPONENT_LIST ***********************************}                    
+                    IF NOT(BLANK(TestsToAdd[i, 4])) THEN
+                        test_entity.field_inout( "COMPONENT_LIST", TestsToAdd[i, 4])
+                    ENDIF    
+                    WriteImportLog(TestsToAdd[i, 1]:", MISSING")
+                    fm("No active analysis version found for '":TestsToAdd[i, 1]:"'")
+                ELSE
+                    test_entity.field_inout( "ANALYSIS", TestsToAdd[i, 1] )
+                    test_entity.field_inout( "ANALYSIS_VERSION", SELECT max_active_anal_ver.max_version WHERE identity = TestsToAdd[i, 1])
+                    test_entity.field_inout( "INSTRUMENT_TYPE", SELECT versioned_analysis.insttype_id WHERE identity = TestsToAdd[i, 1] 
+                                                                  AND analysis_version = (SELECT max_active_anal_ver.max_version WHERE identity = TestsToAdd[i, 1])) 
+                    test_entity.field_inout( "TEST_COUNT", TestsToAdd[i, 3])
+{***************************************** TEST_SCHED_ENTRY.COMPONENT_LIST ***********************************}                    
+                    IF NOT(BLANK(TestsToAdd[i, 4])) THEN
+                        test_entity.field_inout( "COMPONENT_LIST", TestsToAdd[i, 4])
+                    ENDIF    
+                    AddTests = AddTests:STRIP(TestsToAdd[i, 1]):", "
+                ENDIF
+        ELSE
+            IF (NOT AddTestSchedule) AND (TestsToAdd[i,1] <> EMPTY) THEN
+                {AddTestSchedule = TRUE }
+                {TestScheduleToAdd = TestsToAdd[i,1] }
+{                fm("Error adding '":TestsToAdd[i,1]:"'":ASCII(10):
+                   "to '":Product:"/":BatchName:"/":SamplePoint:"'":ASCII(10):
+                   "with sample template '":SampleTemplate:"'") }
+            ENDIF
+            GetAnalysisInTestSched(TestsToAdd[i,1], TestsToAdd)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    IF AddTests <> "" THEN
+        WHILE (RIGHTSTRING(AddTests, 1) = " ") OR
+              (RIGHTSTRING(AddTests, 1) = ",") DO
+            AddTests = LEFTSTRING(AddTests, LENGTH(AddTests) - 1)
+            WriteImportLog(SampleTemplate:": ":AddTests)
+        ENDWHILE
+    ENDIF
+    transaction = limsml.gettransaction ( 0 )
+    StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   request_xml")
+    request_xml = transaction.returnxml ()
+
+    DECLARE filename
+    SET DATE FORMAT "YYYZMZDZH24MISSCC"
+        filename = "smp$textreports:":NOW:"_":STRIP(OPERATOR):".xml"
+    RESTORE DATE FORMAT
+
+    IF (FILE EXISTS (filename)) FILE DELETE filename ENDIF
+    FILE CREATE filename
+    FILE EXTEND file_name
+    FILE WRITE filename, request_xml
+    FILE CLOSE filename
+
+    StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   Adding test for ":SamplePoint)
+
+    i = 0
+    REPEAT
+        i = i + 1
+        process_transaction ( request_xml, response_xml, error_xml )
+        IF (error_xml <> EMPTY) AND (STRIP(error_xml) <> "") THEN
+            DECLARE p1, p2, summary
+            p1 = INDEX(error_xml, "<summary>") + 10
+            p2 = INDEX(error_xml, "</summary>") - p1
+            summary = SUBSTRING(error_xml, p1, p2)
+            WHILE (INDEX(summary, ".") > 0) DO
+                summary = STRIP(LEFTSTRING(summary, INDEX(summary, ".")):ASCII(10):SUBSTRING(summary, INDEX(summary, ".") + 1, LENGTH(summary)))
+            ENDWHILE
+            WriteImportLog(summary)
+            SLEEP FOR INTERVAL("    0 00:00:01")
+        ENDIF
+    UNTIL (error_xml = EMPTY) OR (STRIP(error_xml) = "") OR (i >= 10)
+    
+    IF (error_xml <> EMPTY) AND (STRIP(error_xml) <> "") THEN
+        error_xml = ASCII(10):error_xml
+        WHILE (INDEX(error_xml, "><") > 0) DO
+            error_xml = STRIP(LEFTSTRING(error_xml, INDEX(error_xml, "><")):ASCII(10):SUBSTRING(error_xml, INDEX(error_xml, "><") + 1, LENGTH(error_xml)))
+        ENDWHILE
+        WriteImportLog("error_xml":ASCII(10):error_xml)
+    ENDIF
+
+    IF GLOBAL("MODE") <> "INTERACTIVE" THEN
+        IF (FILE EXISTS (filename)) FILE DELETE filename ENDIF
+    ENDIF
+
+    findone = "Text"
+    startposition   = INDEX ( response_xml, findone )
+    idNumeric = SUBSTRING( response_xml, startposition + 6, 10 )
+
+{**************************************************************************************************************
+    IF AddTestSchedule THEN
+        START READ TRANSACTION "Set TestSched on Sample"
+
+        idNumeric = SELECT SAMPLE.ID_NUMERIC FOR UPDATE
+                    WHERE ID_NUMERIC = idNumeric
+        START WRITE TRANSACTION "Set TestSched on Sample"
+
+        ASSIGN SAMPLE.TEST_SCHEDULE = TestScheduleToAdd
+
+        UPDATE SAMPLE
+
+        COMMIT
+    ENDIF
+***************************************************************************************************************}
+
+    START READ TRANSACTION "Set SamplingPoint on Sample"
+
+    idNumeric = SELECT SAMPLE.ID_NUMERIC FOR UPDATE WHERE ID_NUMERIC = idNumeric
+    StatusBar("Job created: ":Product:"/":BatchName:"  ":Plant:"/":WorkCenter:"   Update Sample")
+
+
+    IF idNumeric <> EMPTY THEN
+        START WRITE TRANSACTION "Set SamplingPoint on Sample"
+            ASSIGN SAMPLE.TEST_SCHEDULE       = AddedTS
+        UPDATE SAMPLE
+
+        COMMIT
+{**************************************************************************************************************
+        IF ((TestScheduleToAdd = EMPTY) OR BLANK(TestScheduleToAdd)) THEN
+            IF ((LoginSchedule <> EMPTY) OR NOT BLANK(LoginSchedule)) THEN
+                TestScheduleToAdd = LoginSchedule
+            ELSE
+                TestScheduleToAdd = " "
+            ENDIF
+        ENDIF
+
+        IF SampleTemplate = "NOINPUT" THEN
+            ASSIGN sample.id_text = STRIP(NewJobName):"/":STRIP(SamplePoint)
+        ENDIF
+
+        IF (SampleType = EMPTY) OR (STRIP(SampleType) = "") THEN
+            SampleType                  = SELECT MLP_HEADER.SAMPLE_TYPE        WHERE IDENTITY = Product AND PRODUCT_VERSION = ProductVersion
+        ENDIF
+        
+
+        START WRITE TRANSACTION "Set SamplingPoint on Sample"
+            ASSIGN sample.id_text             = STRIP(NewJobName):"/":STRIP(SamplePoint)
+            ASSIGN SAMPLE.BATCH_NAME          = BatchName
+            ASSIGN SAMPLE.DESCRIPTION         = SampleDescription
+            ASSIGN SAMPLE.GROUP_ID            = GroupID
+            ASSIGN SAMPLE.LOGIN_PLANT         = login_plant
+            ASSIGN SAMPLE.PRODUCT             = Product
+            ASSIGN SAMPLE.PRODUCT_VERSION     = ProductVersion
+            ASSIGN SAMPLE.PRODUCT_APPL_GROUP  = SampleProduct_Appl_Group
+            ASSIGN SAMPLE.SAMPLE_TYPE         = SampleType
+            ASSIGN SAMPLE.SAMPLING_POINT      = SamplePoint
+            ASSIGN SAMPLE.LOCATION_ID         = point_location
+            ASSIGN SAMPLE.SAMPLED_DATE        = NULL
+            ASSIGN SAMPLE.RECD_DATE           = NULL
+            ASSIGN SAMPLE.TEST_SCHEDULE       = AddedTS
+        UPDATE SAMPLE
+
+        COMMIT
+***************************************************************************************************************}
+        LogTxt = LogTxt:idNumeric:" | ":SamplePoint:"  | ":AddedTS: "    | ":AddedAID:LF
+    ELSE
+        LogTxt = LogTxt:" ** ERROR ":" | ":SamplePoint:"  | ":AddedTS: "    | ":AddedAID:LF
+        fm("        *** ERROR ***":ASCII(10):ASCII(10):
+           "No sample added to '":NewJobName:"'":ASCII(10):
+           "for sample point '":STRIP(SamplePoint):"'":ASCII(10):ASCII(10):
+           "Try adding sample and test schedule manually!")
+    ENDIF
+
+    RETURN (idNumeric)
+
+ENDROUTINE
+
+{*******************************************************************************}
+ROUTINE GetAnalysisInTestSched(VALUE TestSchedule, TestsToAdd)
+{
+*
+* Purpose      : Gets analyses within given testschedule
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+{WriteImportLog("ROUTINE GetAnalysisInTestSched(VALUE TestSchedule, TestsToAdd)")}
+
+DECLARE aid, counter
+
+    aid = SELECT TEST_SCHED_ENTRY.ANALYSIS_ID
+        WHERE IDENTITY = TestSchedule
+        ORDER ON ORDER_NUM
+
+    WHILE aid <> EMPTY DO
+        counter = size_of_array(TestsToAdd) + 1
+        TestsToAdd[counter, 1] = AID
+        TestsToAdd[counter, 2] = SELECT TEST_SCHED_ENTRY.IS_ANALYSIS
+        TestsToAdd[counter, 3] = NUMERIC(SELECT TEST_SCHED_ENTRY.REPLICATE_COUNT)
+    NEXT TEST_SCHED_ENTRY
+        aid = SELECT TEST_SCHED_ENTRY.ANALYSIS_ID
+    ENDWHILE
+
+ENDROUTINE
+
+{*******************************************************************************}
+ROUTINE CreateNewJob (VALUE JobTemplate, VALUE NewJobName)
+{
+*
+* Purpose      : Update sample status when sent via webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+{WriteImportLog("ROUTINE CreateNewJob (VALUE JobTemplate, VALUE NewJobName)")}
+
+DECLARE limsml, entity, action, transaction, request_xml, response_xml, error_xml
+{WriteImportLog("Start CreateNewJob (VALUE ":JobTemplate:", VALUE ":NewJobName:")")}
+
+    {Define class and object along with default values}
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    limsml.setresponse ( "SYSTEM" )
+    entity = limsml.addentity ("JOB")
+
+    action = entity.addaction ("CREATE_BY_TEMPLATE")
+    action.add_parameter ( "TEMPLATE", JobTemplate )
+    action.add_parameter ( "JOB_NAME", NewJobName)
+
+    transaction = limsml.gettransaction ( 0 )
+    request_xml = transaction.returnxml ()
+
+    process_transaction ( request_xml, response_xml, error_xml )
+
+    IF LENGTH(STRIP(error_xml)) = 0 THEN
+        RETURN (TRUE)
+    ELSE
+        WriteImportLog("    Error in CreateNewJob. Error_XML:" :ASCII(10): error_xml)
+        WriteImportLog("    Error in CreateNewJob. Request_XML:" :ASCII(10): request_xml)
+        NewJobName = "smp$userfiles:XML_INBOUND\Error\":SUBSTITUTE(NewJobName, "/", "_"):".xml"
+{        FILE CREATE NewJobName
+        FILE EXTEND NewJobName, "request_xml":ASCII(10):request_xml:ASCII(10):ASCII(10):"response_xml":ASCII(10):response_xml
+        FILE CLOSE  NewJobName}
+        RETURN (FALSE)
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 2: Transferring data from LIMS to SAP
+*
+**************************************************************************}
+
+
+{*************************************************************************
+*
+*   SECTION 3: Misc
+*
+**************************************************************************}
+
+
+
+{*************************************************************************
+ROUTINE GetFileName(VALUE FilePath)
+* Purpose      : Gets file name from given path
+* Parameters   : FilePath - full path to file
+* Return Value : N/A
+*
+**************************************************************************
+WriteToLog("ROUTINE GetFileName(VALUE FilePath)")
+
+DECLARE Answer, i, j
+
+i = INDEX(FilePath, ":")
+j = LENGTH(FilePath) - (i + 4)
+
+Answer = SUBSTRING(FilePath, i + 1, j)
+
+RETURN (Answer)
+
+ENDROUTINE}
+
+{*************************************************************************
+*
+*   SECTION 4: Transaction handeling
+*
+**************************************************************************}
+
+
+{*************************************************************************}
+GLOBAL ROUTINE SaveTransaction (VALUE LimsTransId, VALUE MesTransId, VALUE FunctionName)
+{
+*
+* Purpose      : Saves transaction in database
+*
+* Parameters   : LimsTransId - TransactionId created by and for LIMS
+*                MesTransId  - Transaction from MES
+*                FunctionName- What did just happen?
+*
+* Return Value : None
+*
+**************************************************************************}
+WriteToLog("ROUTINE SaveTransaction (VALUE LimsTransId, VALUE MesTransId, VALUE FunctionName)")
+
+    DECLARE sqlstmt
+
+    sqlstmt = "INSERT INTO MES_TRANSFER_LOG VALUES ('" : LimsTransId : "','" : MesTransId : "', '" : FunctionName : "', SYSDATE, '" : GLOBAL("OPERATOR") : "')"
+    execute_sql ( sqlstmt)
+    execute_sql ( "commit")
+
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE LTrimZero(Input)
+DECLARE i, l, Output
+  i = 1
+  l = LENGTH(Input)
+  WHILE (GET_CHARACTER_AT ( Input , i ) = "0") AND
+        (i < l) DO
+    i = i + 1
+  ENDWHILE
+
+  Output = RIGHTSTRING(Input, l - i + 1)
+
+  RETURN (Output)
+ENDROUTINE
+
+ROUTINE SQL(VALUE SQL_string)
+{*************************************************************************
+* Purpose      : Execute oracle SQL string
+* Parameters   : SQL string
+* Return Value : None
+**************************************************************************}
+{        WriteToLog(SQL_String)}
+        execute_sql(SQL_string)
+        execute_sql("commit")
+ENDROUTINE
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteImportLog(VALUE Msg)
+
+    WriteLog(Msg, STRIP(global("current_library")):"_Download")
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteErrorLog(VALUE Msg)
+
+    WriteLog(Msg, STRIP(global("current_library")):"_Error")
+
+ENDROUTINE
+
+GLOBAL ROUTINE SendJobStatus (VALUE JobId)
+{*************************************************************************
+* Purpose      : Send job staus to SAP via BizTalk
+* Parameters   : Jobname
+* Return Value : N/A
+**************************************************************************}
+    DECLARE Product, BatchName, ProcessOrder, LoginPlant, InspType, InspLot, NextLot, InspStatus, qc_status, qc_comment, job_status, export_array,
+            sample_array, sample,  File, LogTxt, WebService, WebServiceAction, XMLSchema, i, child_array, TransactionId, 
+            FileName, XmlDoc, Transaction, Request_XML, InspLots, aut_commen, OrgJob, status, date_first 
+
+    ARRAY export_array    ARRAY_SIZE(0, 2)
+
+    OrgJob          = STRIP(SELECT job_header.job_name WHERE job_name = JobId)
+    Product         = STRIP(SELECT job_header.product_name)
+    BatchName       = STRIP(SELECT job_header.batch_name)
+    ProcessOrder    = STRIP(SELECT job_header.process_order)
+    LoginPlant      = STRIP(SELECT job_header.login_plant)
+    InspType        = STRIP(SELECT job_header.inspection_type)
+    InspLot         = STRIP(SELECT job_header.inspection_lot)
+    InspStatus      = STRIP(SELECT job_header.inspection_status)
+    qc_status       = STRIP(SELECT job_header.mps_status)
+    qc_comment      = STRIP(SELECT job_header.authorisation_notes)
+    job_status      = STRIP(SELECT job_header.job_status)
+
+    {Find most recent recurring inspection}
+    OrgJob = SELECT all_job_header.job_name 
+             WHERE product_name = Product 
+               AND batch_name = BatchName 
+               AND job_status <> "X"
+               AND inspection_type = "09"
+               {AND inspection_lot <> InspLot }
+               AND inspection_lot <> ""
+             ORDER ON date_created DESCENDING
+    IF OrgJob = EMPTY THEN
+        {Or find original process order}
+        OrgJob = SELECT all_job_header.job_name 
+                 WHERE product_name = Product 
+                   AND batch_name = BatchName 
+                   AND job_status <> "X"
+                   AND inspection_type = "04"
+                   {AND inspection_lot <> InspLot }
+                   AND inspection_lot <> ""
+                 ORDER ON date_created
+        IF OrgJob = EMPTY THEN
+            {Or find first inspection of other inspection types}
+            OrgJob = SELECT all_job_header.job_name 
+                    WHERE product_name = Product 
+                      AND batch_name = BatchName 
+                      AND job_status <> "X"
+                      {AND inspection_lot <> InspLot }
+                      AND inspection_lot <> ""
+                    ORDER ON date_created
+        ENDIF
+    ENDIF
+
+    IF (OrgJob <> EMPTY) AND (OrgJob <> JobID) THEN
+        aut_commen      = STRIP(SELECT all_job_header.authorisation_notes WHERE job_name = OrgJob)
+        date_first      = SELECT all_job_header.date_first_authorised
+        IF aut_commen <> "" THEN
+            aut_commen = " (":aut_commen:")"
+        ENDIF
+    ENDIF
+    
+    IF (STRIP(InspLot) = "")  OR (InspLot = EMPTY) THEN
+        FM("The selected job (":STRIP(JobID):"), has no inspection lot associated.")
+        RETURN {Missing details, don't send to SAP}
+    ENDIF
+
+    IF InspStatus = "LKD" THEN
+        fm("The inspection lot is marked as LOCKED in SAP.":ASCII(10):
+           "Data may not be transferred correct.")
+    ENDIF
+
+    IF InspStatus = "LTCA" THEN
+        fm("The inspection lot has been cancelled in SAP":ASCII(10):
+           "No data transferred.")
+         RETURN
+    ENDIF
+
+    i = 1
+        export_array[i,1] = "Identity"
+        export_array[i,2] =  STRIP(JobId)
+    i = i + 1
+        export_array[i,1] = "INSPECTIONLOT"
+        export_array[i,2] =  STRIP(InspLot)
+    i = i + 1
+        export_array[i,1] = "MATERIAL"
+        export_array[i,2] =  STRIP(Product)
+    i = i + 1
+        export_array[i,1] = "BATCHNAME"
+        export_array[i,2] =  STRIP(BatchName)
+    i = i + 1
+        export_array[i,1] = "PLANT_ID"
+        export_array[i,2] =  STRIP(LoginPlant)
+    i = i + 1
+        export_array[i,1] = "PROCESSORDER"
+        export_array[i,2] =  STRIP(ProcessOrder)
+
+    i = i + 1
+        IF (LEFTSTRING(qc_status,1) = "Q") AND (qc_status <> "QUAR") THEN
+            export_array[i,1] = "QCSTATUS"
+            export_array[i,2] =  STRIP(qc_status)
+        ELSE
+            export_array[i,1] = "APP_STA"
+            export_array[i,2] =  STRIP(qc_status)
+        ENDIF
+    i = i + 1
+        export_array[i,1] = "QC_COMMENT"
+        export_array[i,2] =  STRIP(qc_comment)
+
+    ARRAY sample_array ARRAY_SIZE(0,2)
+    sample = SELECT all_sample.id_numeric WHERE (job_name = JobId) OR (job_name = OrgJob)
+
+    WHILE sample <> EMPTY DO
+        sample_array[size_of_array(sample_array) + 1, 1] = sample
+    NEXT all_sample
+        sample = SELECT all_sample.id_numeric
+    ENDWHILE
+
+    ARRAY child_array    ARRAY_SIZE(0, 2)
+
+    i = 1
+    WHILE i <= size_of_array(sample_array) DO
+        GetSAPCharChilds(sample_array[i,1], child_array)
+        i = i + 1
+    ENDWHILE
+
+    WriteToLog(GetArray(child_array))
+
+    ARRAY InspLots
+    IF InspType = "09" THEN
+        NextLot = InspLot
+    ELSE
+        NextLot     = SELECT job_header.inspection_lot 
+                      WHERE product_name = Product
+                        AND batch_name = BatchName
+                        AND inspection_type <> "09"
+                        AND inspection_status <> "LTCA"
+                        AND inspection_lot <> ""
+                       {AND inspection_lot <> InspLot
+                        AND (sap_update_date < NOW - INTERVAL("   0 00:01:00")
+                          OR sap_update_date = NULL) }
+                      ORDER ON inspection_lot
+    ENDIF
+    WHILE NextLot <> EMPTY
+        InspLots[size_of_array(InspLots) + 1, 1] = NextLot 
+    NEXT job_header
+        NextLot = SELECT job_header.inspection_lot
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= size_of_array(InspLots) DO
+        InspLots[i, 2] = SELECT job_header.job_name WHERE inspection_lot = InspLots[i, 1]
+        IF InspLot = InspLots[i, 1] THEN
+            InspLots[i, 3] = " <=="
+        ELSE
+            InspLots[i, 3] = " "
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    IF size_of_array(InspLots) > 1 THEN
+        fm("--> ":InspLot:" <--":ASCII(10):
+           "Selected Inspection Lots:":ASCII(10):GetArray(InspLots))
+    ENDIF
+    
+    i = 1
+    WHILE i <= size_of_array(InspLots) DO
+        NextLot = InspLots[i, 1]
+        jobID      = STRIP(SELECT job_header.job_name WHERE inspection_lot = NextLot)
+        job_status = STRIP(SELECT job_header.job_status)
+        {date_first = SELECT job_header.date_first_authorised }
+        IF (JobID <> EMPTY) AND (STRIP(JobID) <> "") THEN
+            SendEndDate(JobID)
+            IF (NextLot <> InspLot) AND (job_status = "C") THEN 
+                CancelSamples(JobID)
+                status = SELECT job_header.inspection_lot FOR UPDATE WHERE inspection_lot = NextLot
+                IF status = NextLot THEN
+                    START WRITE TRANSACTION "Automatic job authorization"
+                    ASSIGN job_header.mps_status = qc_status
+                    {IF (date_first = NULL) OR (date_first = "") THEN }
+                        ASSIGN job_header.date_first_authorised = date_first
+                    {ENDIF }
+                    IF (OrgJob <> EMPTY) {AND (aut_commen <> STRIP(SELECT job_header.authorisation_notes)) } THEN
+                        SET GLOBAL ("JOBAUTHNOTE") TO "Authorized according to ":STRIP(OrgJob):aut_commen
+                    ENDIF
+                    CHANGE JOB STATUS TO "A", status
+                    IF NOT(transaction_is_write()) THEN
+                        START WRITE TRANSACTION "Automatic job authorization"
+                    ENDIF
+                    UPDATE job_header
+                    COMMIT
+                ENDIF
+            ENDIF
+
+            export_array[1,2] =  jobID 
+            export_array[2,2] =  STRIP(NextLot)
+            {DisplayArray(export_array) }
+
+            File            = "SAP_CHARS"
+            TransactionId   = GenerateTransactionId()
+            FileName        = File:"_":TransactionId
+            XmlDoc          = CreateXMLChild(export_array, Child_Array, FileName, TransactionId)
+            Transaction     = XmlDoc.gettransaction ( 0 )
+            Request_XML     = Transaction.returnxml ()
+            WriteXMLFile(FileName, Request_XML)
+            WebService          = GLOBAL("BIZTALK_WEBSERVICE")
+            WebServiceAction    = "SAP_CHARS"
+            XMLSchema           = "http://www.chr-hansen.com/LIMS/":WebServiceAction
+            ChangeXMLNameSpace(FileName, XMLSchema)
+
+            LogTxt = JobId
+            SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+            WriteToLog(LogTxt:" (":FileName:")":ASCII(10):GetArray(export_array):ASCII(10):GetArray(Child_Array))
+            fm(LogTxt:" (":FileName:")":ASCII(10):GetArray(export_array):ASCII(10):GetArray(Child_Array))
+            jobID = SELECT job_header.job_name FOR UPDATE WHERE job_name = jobID
+            IF (jobID <> EMPTY) AND (jobID <> LOCKED) THEN
+                IF NOT transaction_is_write ( ) THEN
+                    START WRITE TRANSACTION "Send Job Status"
+                ENDIF
+                ASSIGN job_header.sap_update_date = NOW
+                UPDATE job_header
+                COMMIT
+            ENDIF
+        ENDIF        
+        i = i + 1
+    ENDWHILE
+    
+ENDROUTINE
+
+GLOBAL ROUTINE SendSampleStatus(VALUE sample)
+{*************************************************************************
+* Purpose      : Send sample results to SAP via BizTalk
+* Parameters   : Sample
+* Return Value : N/A
+**************************************************************************}
+
+    DECLARE child_array, export_array, Product, BatchName, InspLot, InspectionType, MPSStatus, Job, JobStatus,
+            i, TransactionId, File, FileName, XMLdoc, Transaction, Request_XML, WebService, XMLSchema, WebServiceAction, LogTxt
+            {, QCComment}
+    ARRAY export_array    ARRAY_SIZE(0, 2)
+
+    sample = JUSTIFY(PAD(sample, " ", 10),"RIGHT")
+
+    Product         = STRIP(SELECT sample.product WHERE id_numeric = sample)
+    BatchName       = STRIP(SELECT sample.batch_name)
+    InspLot         = STRIP(SELECT sample.inspection_lot)
+    InspectionType  = STRIP(SELECT sample.inspection_type)
+    MPSStatus       = STRIP(SELECT sample.mps_status)
+
+{**************************************************************************************************************
+    IF NOT user_global_exists("Logfile", "JobName") THEN
+        add_global_cluster("Logfile")
+        add_user_global("Logfile", "JobName")
+    ENDIF
+    assign_user_global("Logfile", "JobName", "SAP_TRANSFER\":SUBSTITUTE(STRIP(Product):"/":STRIP(BatchName),"/","_"))
+ 
+***************************************************************************************************************}
+{
+    QCComment       = STRIP(SELECT sample.authorisation_notes)
+}
+    Job             = STRIP(SELECT sample.job_name)
+
+    IF Job <> EMPTY THEN
+        JobStatus = SELECT job_header.job_status WHERE job_name = Job
+        IF JobStatus = "A" THEN
+            RETURN {Details to be sent with job_status}
+        ENDIF
+    ENDIF
+
+    ARRAY child_array    ARRAY_SIZE(0, 2)
+
+    GetSAPCharChilds(sample, child_array)
+
+    WriteToLog(GetArray(child_array))
+
+    IF     (size_of_array(child_array) = 0    )
+        OR (STRIP(MPSStatus)           = ""   )
+        OR (MPSStatus                  = EMPTY)
+        OR (STRIP(InspLot)             = ""   )
+        OR (InspLot                    = EMPTY) THEN
+        WriteToLog(STRIP(sample):" no status sent. MPSStatus:":STRIP(MPSStatus):"; InspLot":STRIP(InspLot):"; SAP_CHARS:":STRIP(size_of_array(child_array)))
+        RETURN {Missing details, don't send to SAP}
+    ENDIF
+
+    i = 1
+        export_array[i,1] = "Identity"
+        export_array[i,2] =  STRIP(Sample):" - ":STRIP(SELECT sample.id_text WHERE id_numeric = sample)
+    i = i + 1
+        export_array[i,1] = "MATERIAL"
+        export_array[i,2] =  STRIP(Product)
+    i = i + 1
+        export_array[i,1] = "BATCHNAME"
+        export_array[i,2] =  STRIP(BatchName)
+    i = i + 1
+        export_array[i,1] = "INSPECTIONTYPE"
+        export_array[i,2] =  STRIP(InspectionType)
+    i = i + 1
+        export_array[i,1] = "INSPECTIONLOT"
+        export_array[i,2] =  STRIP(InspLot)
+
+    File            = "SAP_CHARS"
+    TransactionId   = GenerateTransactionId()
+    FileName        = File:"_":TransactionId
+    XmlDoc          = CreateXMLChild(export_array, Child_Array, FileName, TransactionId)
+    Transaction     = XmlDoc.gettransaction ( 0 )
+    Request_XML     = Transaction.returnxml ()
+    WriteXMLFile(FileName, Request_XML)
+    WebService          = GLOBAL("BIZTALK_WEBSERVICE")
+    WebServiceAction    = "SAP_CHARS"
+    XMLSchema           = "http://www.chr-hansen.com/LIMS/":WebServiceAction
+    ChangeXMLNameSpace(FileName, XMLSchema)
+
+    LogTxt = Sample
+    SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+    WriteToLog(LogTxt:" (":FileName:")":ASCII(10):GetArray(export_array):ASCII(10):GetArray(Child_Array))
+
+ENDROUTINE
+
+GLOBAL ROUTINE SendEndDate(Job)
+{*************************************************************************
+* Purpose      : Send the Expected End Date to SAP
+* Parameters   : job_name
+* Return Value : None
+**************************************************************************}
+    DECLARE FileName, InspLot, Product, BatchName, LoginPlant, EndDate, InspLots, enddate_array, i, File, status,
+            WebService, XMLSchema, WebServiceAction, Child_Array, TransactionId, XmlDoc, Transaction, Request_XML, LogTxt
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+    IF (job = EMPTY) OR (STRIP(job) = "") THEN
+        RETURN(TRUE)
+    ENDIF
+
+    InspLot     = SELECT job_header.inspection_lot 
+                   WHERE job_name = job 
+    Product     = SELECT job_header.product_name
+    BatchName   = SELECT job_header.batch_name
+    LoginPlant  = SELECT job_header.login_plant
+    InspType    = SELECT job_header.inspection_type
+    EndDate     = SELECT job_header.date_exp 
+    
+    IF EndDate = "" THEN
+        EndDate = SELECT job_header.date_exp
+                  WHERE product_name = product
+                    AND batch_name = batchname
+                    AND date_exp <> ""
+                  ORDER ON date_exp DESCENDING
+    ENDIF
+
+    IF (STRIP(InspLot) = "") OR (InspLot = EMPTY) THEN
+        FM("The selected job (":STRIP(job):"), has no inspection lot associated.")
+        RESTORE DATE FORMAT
+        RETURN(FALSE)
+    ENDIF
+
+    ARRAY InspLots
+    IF InspType = "09" THEN
+        InspLot = EMPTY
+    ELSE
+        InspLot     = SELECT all_job_header.inspection_lot 
+                      WHERE product_name = Product
+                        AND batch_name = BatchName
+                        AND inspection_type <> "09"
+                        AND inspection_lot <> ""
+                        {AND inspection_lot <> InspLot }
+                        AND inspection_status <> "LTCA"
+                        AND (sap_update_date < NOW - INTERVAL("   0 00:01:00")
+                          OR sap_update_date = NULL)
+                      ORDER ON date_created
+    ENDIF
+    WHILE InspLot <> EMPTY
+        InspLots[size_of_array(InspLots) + 1, 1] = InspLot 
+    NEXT all_job_header
+        InspLot = SELECT all_job_header.inspection_lot
+    ENDWHILE
+    InspLot     = SELECT job_header.inspection_lot 
+    
+    {fm(GetArray(InspLots)) }
+
+    i = 1
+    WHILE (i <= size_of_array(InspLots)) AND (EndDate <> EMPTY) DO
+        InspLot = InspLots[i, 1]
+        ARRAY enddate_array    ARRAY_SIZE(0, 2)
+
+        enddate_array[1,1] = "INSPECTIONLOT"
+        enddate_array[1,2] =  STRIP(InspLot)
+        enddate_array[2,1] = "MATERIAL"
+        enddate_array[2,2] =  STRIP(Product)
+        enddate_array[3,1] = "BATCHNAME"
+        enddate_array[3,2] =  STRIP(BatchName)
+        enddate_array[4,1] = "PLANT_ID"
+        enddate_array[4,2] =  STRIP(LoginPlant)
+        enddate_array[5,1] = "ENDDATE"
+        enddate_array[5,2] =  STRIP(EndDate)
+
+        IF InspLot <> InspLots[1, 1] THEN
+            status = SELECT job_header.inspection_lot FOR UPDATE WHERE inspection_lot = InspLot
+            IF status = InspLot THEN
+                START WRITE TRANSACTION "Set Job Date Exp"
+                ASSIGN job_header.date_exp = EndDate
+                UPDATE job_header
+                COMMIT
+            ENDIF
+        ENDIF
+
+
+        ARRAY Child_Array ARRAY_SIZE(0,2)
+
+        File            = "END_DATE"
+        TransactionId   = GenerateTransactionId()
+        FileName        = File:"_":TransactionId
+        XmlDoc          = CreateXMLChild(enddate_array, Child_Array, FileName, TransactionId)
+        Transaction     = XmlDoc.gettransaction ( 0 )
+        Request_XML     = Transaction.returnxml ()
+        WriteXMLFile(FileName, Request_XML)
+        WebService          = GLOBAL("BIZTALK_WEBSERVICE")
+        WebServiceAction    = "END_DATE"
+        XMLSchema           = "http://www.chr-hansen.com/LIMS/":WebServiceAction
+        ChangeXMLNameSpace(FileName, XMLSchema)
+
+        job = SELECT all_job_header.job_name WHERE inspection_lot = InspLot
+        LogTxt = STRIP(Job):" ":LEFTSTRING(STRIP(SELECT all_job_header.work_center),3)
+        SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+        WriteToLog(EndDate:" - ":Job:" (":FileName:")")
+        fm(LogTxt:" - ":EndDate:" (":FileName:")")
+        job = SELECT job_header.job_name FOR UPDATE WHERE inspection_lot = InspLot
+        IF job = LOCKED THEN
+            RETURN(FALSE)
+        ENDIF
+        IF job <> EMPTY THEN
+            IF NOT transaction_is_write ( ) THEN
+                START WRITE TRANSACTION "Send End Date"
+            ENDIF
+            ASSIGN job_header.sap_update_date = NOW
+            ASSIGN job_header.date_exp = EndDate
+            IF i > 1 THEN
+                
+            ENDIF
+            UPDATE job_header
+            COMMIT
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RESTORE DATE FORMAT
+    
+    RETURN(TRUE)
+
+ENDROUTINE
+
+ROUTINE NewGetSAPCharChilds(sample, child_array)
+{*************************************************************************
+* Purpose      : Create the array fo SAP_CHARS to transfer via BizTalk
+* Parameters   : sample, child_array
+* Return Value : N/A
+**************************************************************************}
+    DECLARE i, sap_charac, res_txt, ComponentName, units, result_type, pre_fix, phrase_type, pass_fail     
+
+    i = size_of_array(child_array) 
+    sample = SELECT exp_res_sap_view.id_numeric WHERE id_numeric = sample
+    WHILE sample <> EMPTY DO
+
+        sap_charac      = STRIP(SELECT exp_res_sap_view.sap_charac)
+        res_txt         = STRIP(SELECT exp_res_sap_view.text)
+        pass_fail       = STRIP(SELECT exp_res_sap_view.pass_fail)
+        ComponentName   = STRIP(SELECT exp_res_sap_view.name)
+        units           = STRIP(SELECT exp_res_sap_view.units)
+        result_type     = STRIP(SELECT exp_res_sap_view.result_type)
+        pre_fix         = ""
+
+        IF result_type = "O" THEN
+            phrase_type = SELECT exp_res_sap_view.calculation
+            res_txt = STRIP(SELECT phrase.phrase_id WHERE phrase_type = phrase_type AND phrase_text = res_txt)
+        ELSEIF (INDEX("<>",SUBSTRING(res_txt,1,1)) <> 0)
+            WHILE (INDEX("<>=",SUBSTRING(res_txt,1,1)) <> 0) DO
+                pre_fix = pre_fix:SUBSTITUTE(SUBSTRING(res_txt,1,1), "=", "")
+                res_txt = STRIP(SUBSTRING(res_txt,2,LENGTH(res_txt)))
+            ENDWHILE
+        ENDIF
+
+        IF res_txt <> EMPTY THEN
+            IF EMPTY = (SELECT sap_char.char WHERE char = sap_charac) THEN
+                i = i + 1
+                    child_array[i,1] = "AddChild"
+                    child_array[i,2] = "SAP_CHARAC"
+                i = i + 1
+                    child_array[i,1] = "ComponentName"
+                    child_array[i,2] = ComponentName
+                i = i + 1
+                    child_array[i,1] = "SAP_CHARAC"
+                    child_array[i,2] =  sap_charac
+                i = i + 1
+                    child_array[i,1] = "PRE_FIX"
+                    child_array[i,2] = pre_fix
+                i = i + 1
+                    child_array[i,1] = "TEXT"
+                    child_array[i,2] = res_txt
+                i = i + 1
+                    child_array[i,1] = "UNITS"
+                    child_array[i,2] = units
+             ELSE
+                i = i + 1
+                    child_array[i,1] = "AddChild"
+                    child_array[i,2] = "SAP_CHARAC"
+                i = i + 1
+                    child_array[i,1] = "ComponentName"
+                    child_array[i,2] = ComponentName
+                i = i + 1
+                    child_array[i,1] = "SAP_CHARAC"
+                    child_array[i,2] =  sap_charac
+                i = i + 1
+                    child_array[i,1] = "PRE_FIX"
+                    child_array[i,2] = pre_fix
+                i = i + 1
+                    child_array[i,1] = "TEXT"
+                    child_array[i,2] = pass_fail
+                i = i + 1
+                    child_array[i,1] = "RESULT"
+                    child_array[i,2] = res_txt
+                i = i + 1
+                    child_array[i,1] = "UNITS"
+                    child_array[i,2] = units
+             ENDIF
+        ENDIF
+
+    NEXT exp_res_sap_view
+        sample = SELECT exp_res_sap_view.id_numeric
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE GetSAPCharChilds(sample, child_array)
+{*************************************************************************
+* Purpose      : Create the array fo SAP_CHARS to transfer via BizTalk
+* Parameters   : sample, child_array
+* Return Value : N/A
+**************************************************************************}
+    DECLARE res_array, id, j, i, res_txt, pre_fix, sap_char, sap_charac, result_type, phrase_type,
+            ComponentName, units
+
+    ID = SELECT exp_res_sap_view.ID WHERE id_numeric = sample
+
+    WHILE id <> EMPTY DO
+        j = size_of_array(res_array) + 1
+        res_array[j,1] = sample
+        res_array[j,2] = ID
+    NEXT exp_res_sap_view
+    ID = SELECT exp_res_sap_view.ID
+    ENDWHILE
+
+    j = 1
+    WHILE (j <= size_of_array(res_array)) DO
+        res_array[j,3] = SELECT exp_res_sap_view.sap_charac WHERE ID_NUMERIC = sample AND ID = res_array[j,2]
+        j = j + 1
+    ENDWHILE
+
+    WriteToLog(GetArray(res_array))
+
+{*** If multiple results are present for the same SAP_CHARAC, then all results must be removed, to avoid risky update in SAP ***}
+    j = 1
+    WHILE (j <= size_of_array(res_array)) DO
+        i = j +1
+        WHILE (i <= size_of_array(res_array)) DO
+            IF (res_array[j,3] = res_array[i,3]) THEN
+                sap_char = res_array[j,3]
+                i = 1
+                WHILE (i <= size_of_array(res_array)) DO
+                    IF res_array[i,3] = sap_char THEN
+                        array_remove_slice(res_array, 1, i)
+                        IF i <= j THEN
+                            j = j - 1
+                        ENDIF
+                    ELSE
+                        i = i + 1
+                    ENDIF
+                ENDWHILE
+        i = size_of_array(res_array)
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        j = j + 1
+    ENDWHILE
+
+    j = 1
+    i = size_of_array(child_array)
+
+    WHILE (j <= size_of_array(res_array)) DO
+
+        sap_charac      = STRIP(SELECT exp_res_sap_view.sap_charac WHERE ID_NUMERIC = sample AND ID = res_array[j,2])
+        res_txt         = STRIP(SELECT exp_res_sap_view.text)
+        ComponentName   = STRIP(SELECT exp_res_sap_view.name)
+        units           = STRIP(SELECT exp_res_sap_view.units)
+
+        result_type     = SELECT exp_res_sap_view.result_type
+
+        pre_fix         = ""
+
+        IF result_type = "O" THEN
+            phrase_type = SELECT exp_res_sap_view.calculation
+            res_txt = STRIP(SELECT phrase.phrase_id WHERE phrase_type = phrase_type AND phrase_text = res_txt)
+        ELSEIF (INDEX("<>",SUBSTRING(res_txt,1,1)) <> 0)
+            {pre_fix = pre_fix:SUBSTRING(res_txt,1,1)
+            res_txt = STRIP(SUBSTRING(res_txt,2,LENGTH(res_txt))) }
+            {WHILE (INDEX("<>+-",SUBSTRING(res_txt,1,1)) <> 0) DO }
+            WHILE (INDEX("<>=",SUBSTRING(res_txt,1,1)) <> 0) DO
+                pre_fix = pre_fix:SUBSTITUTE(SUBSTRING(res_txt,1,1), "=", "")
+                res_txt = STRIP(SUBSTRING(res_txt,2,LENGTH(res_txt)))
+            ENDWHILE
+        ENDIF
+
+        IF res_txt <> EMPTY THEN
+            i = i + 1
+                child_array[i,1] = "AddChild"
+                child_array[i,2] = "SAP_CHARAC"
+            i = i + 1
+                child_array[i,1] = "ComponentName"
+                child_array[i,2] = ComponentName
+            i = i + 1
+                child_array[i,1] = "SAP_CHARAC"
+                child_array[i,2] =  sap_charac
+            i = i + 1
+                child_array[i,1] = "PRE_FIX"
+                child_array[i,2] = pre_fix
+            i = i + 1
+                child_array[i,1] = "TEXT"
+                child_array[i,2] = res_txt
+            i = i + 1
+                child_array[i,1] = "UNITS"
+                child_array[i,2] = units
+        ENDIF
+
+        j = j + 1
+    ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE GetChild(child_array, k, i_Number, Movement, ChildMaterial, ChildBatch, SAP_Amount, SAP_Unit, Sign)
+{*************************************************************************
+* Purpose      : Retrieve variables from child_array, column = k
+* Parameters   : child_array, k
+* Return Value : Movement, ChildMaterial, ChildBatch, SAP_Amount, SAP_Unit, Sign
+**************************************************************************}
+    DECLARE i, Parameter
+
+        i_NUMBER      = EMPTY
+        Movement      = EMPTY
+        ChildMaterial = EMPTY
+        ChildBatch    = EMPTY
+        SAP_Amount    = EMPTY
+        SAP_Unit      = EMPTY
+        Sign          = EMPTY
+
+    i = 1
+    WHILE i <= size_of_array(child_array) DO
+        Parameter = TOUPPER(child_array[i,1])
+        IF     Parameter     = "I_NUMBER"
+               i_Number      = child_array[i,k]
+        ELSEIF Parameter     = "MOVEMENT"
+               Movement      = child_array[i,k]
+        ELSEIF Parameter     = "CHILDMATERIAL"
+               ChildMaterial = child_array[i,k]
+        ELSEIF Parameter     = "CHILDBATCH"
+               ChildBatch    = child_array[i,k]
+        ELSEIF Parameter     = "SAP_AMOUNT"
+               SAP_Amount    = child_array[i,k]
+        ELSEIF Parameter     = "SAP_UNIT"
+               SAP_Unit      = child_array[i,k]
+        ELSEIF Parameter     = "SIGN"
+               Sign          = child_array[i,k]
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    IF i_Number = EMPTY THEN
+         i_Number = k - 1
+    ENDIF
+
+    ChildMaterial = LTrimZero(ChildMaterial)
+ENDROUTINE
+
+
+ROUTINE do_splan_login (JobID, LogTxt)
+{*************************************************************************
+* Purpose      : Run sample plan login for a job
+* Parameters   : JobName and Log-txt
+* Return Value : N/A
+**************************************************************************}
+DECLARE product_name, batch_name, {date_created,} mlp_ver, sample_type, group_id, login_plant,
+        insp_lot, insp_type, batch_before, material_before, mlp_ver_before, product_code_before,
+        splan_select_array, batch_login_object, name_of_table, name_block, sample_for_update, i, check_ok, size_block,
+        sample, oldsamples, newsamples, s, n, idNumeric, SamplePoint, AddedTS, AddedAID, Analysis, sample_exist
+ARRAY oldsamples
+ARRAY newsamples
+
+sample  = SELECT sample.id_numeric WHERE job_name = JobID
+s       = 0
+WHILE sample <> EMPTY DO
+    s = s + 1
+    oldsamples[s,1] = sample
+NEXT sample
+    sample = SELECT sample.id_numeric
+ENDWHILE
+
+ DECLARE field1  {product}
+ DECLARE field2  {batch_name}
+ DECLARE field4  {product_version}
+ DECLARE field5  {sample_type}
+ DECLARE field6  {group_id}
+ DECLARE field7  {test_schedule}
+ DECLARE field8  {login_plant}
+ DECLARE field9  {inspection_lot}
+ DECLARE field10 {inspection_type}
+ DECLARE field11 {date_completed}
+ DECLARE field12 {batch_before}
+ DECLARE field13 {product_before}
+
+batch_login_initialise ( )
+
+
+CREATE OBJECT "BATCH_LOGIN" , batch_login_object
+
+batch_login_object.login_table           = "job_header"
+batch_login_object.login_identity        = JobID
+batch_login_object.job                   = JobID
+batch_login_object.rule_only_based_count = GLOBAL ( "SP_RULES_MODE" )
+batch_login_object.trigger_max_one_rule  = GLOBAL ( "SP_RULES_MODE" )
+batch_login_object.output_to_literal     = global("MODE") = "INTERACTIVE"
+batch_login_object.check_rules           = TRUE
+batch_login_object.pre_login_edit        = FALSE
+batch_login_object.output_to_literal     = FALSE  {Avoid sampleplan login report}
+{**************************************************************************************************************
+WriteImportLog("batch_login_object.output_to_file = ":batch_login_object.output_to_file)
+WriteImportLog("batch_login_object.output_to_literal = ":batch_login_object.output_to_literal)
+***************************************************************************************************************}
+
+
+batch_login_object.login ( )
+
+
+product_name        = SELECT job_header.product_name WHERE job_name = JobID
+batch_name          = SELECT job_header.batch_name
+mlp_ver             = SELECT max_active_mlp_ver.max_version WHERE identity = product_name
+sample_type         = SELECT job_header.sample_type
+group_id            = SELECT job_header.group_id
+login_plant         = SELECT job_header.login_plant
+insp_lot            = SELECT job_header.inspection_lot
+insp_type           = SELECT job_header.inspection_type
+batch_before        = SELECT job_header.batch_before
+material_before     = SELECT job_header.material_before
+mlp_ver_before      = SELECT max_active_mlp_ver.max_version WHERE identity = material_before
+IF mlp_ver_before <> EMPTY THEN
+    product_code_before = SELECT mlp_header.product_code WHERE identity = material_before and product_version = mlp_ver_before
+ELSE
+    product_code_before = material_before:" ?"
+ENDIF
+
+sample_for_update = SELECT SAMPLE.id_numeric
+                  WHERE job_name = JobID
+                  AND product_version = "0"
+
+
+IF (sample_for_update <> EMPTY) AND (NOT BLANK(sample_for_update)) THEN
+    {Updating the sample header for samples logged in by sample plan}
+
+    ARRAY splan_select_array
+    name_of_table = "SAMPLE"
+    name_block    = "SAMPLEPLAN_BLOCK"
+
+    splan_select_array[1,1] = ARRAY_SELECT_EQ
+    splan_select_array[1,2] = "JOB_NAME"
+    splan_select_array[1,3] = JobID
+    splan_select_array[2,1] = ARRAY_SELECT_AND
+    splan_select_array[2,2] = ""
+    splan_select_array[2,3] = ""
+    splan_select_array[3,1] = ARRAY_SELECT_EQ
+    splan_select_array[3,2] = "PRODUCT_VERSION"
+    splan_select_array[3,3] = "0"
+
+    block_row_initialise ( name_block , name_of_table)
+    check_ok = block_row_select ( name_block, splan_select_array, TRUE)
+
+    IF check_ok <> TRUE THEN
+        LogTxt = LogTxt : " Unable to update sample header for samples logged in using SamplePlan"
+        RETURN
+    ENDIF
+
+
+    size_block = block_row_size (name_block)
+    block_row_first (name_block)
+
+    i = 0
+    WHILE  i < size_block
+
+        i = i + 1
+
+        field1        = "PRODUCT"
+        field2        = "BATCH_NAME"
+        field4        = "PRODUCT_VERSION"
+        field5        = "SAMPLE_TYPE"
+        field6        = "GROUP_ID"
+        field7        = "TEST_SCHEDULE"
+        field8        = "LOGIN_PLANT"
+        field9        = "INSPECTION_LOT"
+        field10       = "INSPECTION_TYPE"
+        field11       = "DATE_COMPLETED"
+        field12       = "BATCH_BEFORE"
+        field13       = "PRODUCT_BEFORE"
+
+
+        block_row_field_assign (name_block , field1    , product_name )
+        block_row_field_assign (name_block , field2    , batch_name )
+        block_row_field_assign (name_block , field4    , mlp_ver )
+        block_row_field_assign (name_block , field5    , sample_type )
+        block_row_field_assign (name_block , field6    , group_id )
+        block_row_field_assign (name_block , field7    , PAD("","-",255))
+        block_row_field_assign (name_block , field8    , login_plant )
+        block_row_field_assign (name_block , field9    , insp_lot )
+        block_row_field_assign (name_block , field10   , insp_type )
+        block_row_field_assign (name_block , field11   , DATE(""))
+        block_row_field_assign (name_block , field12   , batch_before )
+        block_row_field_assign (name_block , field13   , product_code_before )
+        block_row_next (name_block)
+
+    ENDWHILE
+
+    START WRITE TRANSACTION "save_transaction"
+    BLOCK_ROW_UPDATE  (name_block)
+    COMMIT
+    BLOCK_ROW_RELEASE (name_block)
+ENDIF
+
+sample  = SELECT sample.id_numeric WHERE job_name = JobID
+n       = 0
+WHILE sample <> EMPTY DO
+    s = 1
+    sample_exist = FALSE
+    WHILE s <= size_of_array(oldsamples) DO
+        IF sample = oldsamples[s,1] THEN
+            sample_exist = TRUE
+        ENDIF
+        s = s + 1
+    ENDWHILE
+    IF NOT sample_exist THEN
+        n = n + 1
+        newsamples[n,1] = sample
+    ENDIF
+NEXT sample
+    sample = SELECT sample.id_numeric
+ENDWHILE
+
+n = 1
+IF size_of_array(newsamples) > 0 THEN
+    idNumeric = newsamples[n,1]
+    LogTxt = LogTxt:"Sample Plan Login: ":LF
+    SamplePoint = SELECT sample.sampling_point WHERE id_numeric = idNumeric
+    AddedTS     = SELECT sample.test_schedule
+    Analysis    = SELECT test.analysis WHERE sample = idNumeric
+    AddedAID = ""
+    WHILE Analysis <> EMPTY DO
+        IF AddedAID = "" THEN
+            AddedAID    = Analysis
+        ELSE
+            AddedAID    = AddedAID:"; ":Analysis
+        ENDIF
+    NEXT test
+        Analysis    = SELECT test.analysis
+    ENDWHILE
+    LogTxt = LogTxt:idNumeric:" | ":SamplePoint:"  | ":AddedTS: "    | ":AddedAID:LF
+ENDIF
+
+ENDROUTINE {do_splan_login}
+
+ROUTINE StatusBar(VALUE msg)
+
+    IF GLOBAL("MODE") = "INTERACTIVE" THEN
+        window_set_status(msg)
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE CancelInspLot (VALUE inspection_type, VALUE insp_lot, VALUE InspStatus)
+{*************************************************************************
+* Purpose      : Cancel job based on InspStatus
+* Parameters   : inspection_type, insp_lot, InspStatus
+* Return Value : N/A
+**************************************************************************}
+DECLARE job1, product, batchname, job, jobs, i, status, KeepInspLot, KeepInspStatus,
+        sample, samples, s
+ARRAY jobs
+ARRAY samples
+
+    job1      = SELECT job_header.job_name WHERE inspection_type = inspection_type AND inspection_lot = insp_lot
+
+    IF NOT JobInProgress(job1) THEN
+        status = SELECT job_header.job_name FOR UPDATE where job_name = Job1 AND inspection_type = inspection_type AND inspection_lot = insp_lot
+        IF (status = Job1) AND (status <> EMPTY) THEN
+            START WRITE TRANSACTION "Cancel Job"
+            ASSIGN job_header.inspection_status = InspStatus
+            CHANGE JOB STATUS TO "X"
+            UPDATE job_header
+            COMMIT
+            RETURN(TRUE)
+        ELSE
+            RETURN(FALSE)
+        ENDIF
+    ENDIF
+
+    product   = SELECT job_header.product_name
+    batchname = SELECT job_header.batch_name
+
+    job = SELECT job_header.job_name WHERE product_name = product AND batch_name = batchname AND inspection_type = inspection_type and job_name <> job1
+    WHILE job <> EMPTY DO
+        jobs[size_of_array(jobs) + 1, 1] = job
+    NEXT job_header
+        job = SELECT job_header.job_name
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(jobs) DO
+        job = jobs[i, 1]
+        IF NOT JobInProgress(job) THEN
+            KeepInspLot     = SELECT job_header.inspection_lot {FOR UPDATE} WHERE job_name = job
+            KeepInspStatus  = SELECT job_header.inspection_status
+            START WRITE TRANSACTION "Cancel Job"
+
+            sample = SELECT sample.id_numeric WHERE job_name = job
+            WHILE sample <> EMPTY DO
+                samples[size_of_array(samples) + 1, 1] = sample
+            NEXT sample
+                sample = SELECT sample.id_numeric
+            ENDWHILE
+
+            s = 1
+            WHILE s <= size_of_array(samples) DO
+                sample = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = samples[s, 1]
+                ASSIGN sample.inspection_lot = insp_lot
+                UPDATE sample
+                s = s + 1
+            ENDWHILE
+
+            KeepInspLot     = SELECT job_header.inspection_lot FOR UPDATE WHERE job_name = job
+            ASSIGN job_header.inspection_lot = insp_lot
+            ASSIGN job_header.inspection_status = InspStatus
+            CHANGE JOB STATUS TO "X"
+            UPDATE job_header
+            COMMIT
+
+            START WRITE TRANSACTION "Change InspectionLot"
+            insp_lot = SELECT job_header.inspection_lot FOR UPDATE WHERE job_name = job1
+            ASSIGN job_header.inspection_lot    = KeepInspLot
+            ASSIGN job_header.inspection_status = KeepInspStatus
+
+            sample = SELECT sample.id_numeric WHERE job_name = job1
+            WHILE sample <> EMPTY DO
+                samples[size_of_array(samples) + 1, 1] = sample
+            NEXT sample
+                sample = SELECT sample.id_numeric
+            ENDWHILE
+
+            s = 1
+            WHILE s <= size_of_array(samples) DO
+                sample = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = samples[s, 1]
+                ASSIGN sample.inspection_lot = KeepInspLot
+                UPDATE sample
+                s = s + 1
+            ENDWHILE
+
+            UPDATE job_header
+            COMMIT
+
+            i = size_of_array(jobs)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE JobInProgress(VALUE JobID)
+{*************************************************************************
+* Purpose      : Check if any sample/test has been started
+* Parameters   : jobs (ARRAY)
+* Return Value : TRUE/FALSE
+**************************************************************************}
+DECLARE InProgress , sample, samples, test, tests, i
+ARRAY samples
+ARRAY tests
+
+    InProgress = FALSE
+    sample = SELECT sample.id_numeric WHERE job_name = JobID AND (status = "V" OR status = "C" OR status = "A")
+
+    WHILE sample <> EMPTY DO
+        samples[size_of_array(samples) + 1, 1] = sample
+    NEXT sample
+        sample = SELECT sample.id_numeric
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(samples) DO
+        test = SELECT test.test_number WHERE sample = samples[i, 1] AND (status = "P" OR status = "C" OR status = "A")
+        IF test <> EMPTY THEN
+            InProgress = TRUE
+            i = size_of_array(samples)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN(InProgress)
+
+ENDROUTINE
+
+GLOBAL ROUTINE JobToMES(job)
+{*************************************************************************
+* Purpose      : Send sample details to MES
+* Parameters   : JobName
+* Return Value : N/A
+**************************************************************************}
+DECLARE job_array, sample_array, s_array, inspection_type, work_center, i, j, id_numeric
+
+ARRAY job_array
+ARRAY s_array
+ARRAY sample_array
+
+inspection_type = STRIP(SELECT job_header.inspection_type WHERE job_name = job)
+work_center     = STRIP(SELECT job_header.work_center)
+
+    IF (inspection_type <> "03") AND
+       (inspection_type <> "04") THEN
+        RETURN (FALSE)
+    ENDIF
+
+
+    i = 1
+    job_array[i,1] = "PRODUCT_NAME"
+    job_array[i,2] = SELECT job_header.product_name WHERE job_name = job
+    i = i + 1
+    job_array[i,1] = "BATCH_NAME"
+    job_array[i,2] = SELECT job_header.batch_name
+    i = i + 1
+    job_array[i,1] = "PROCESS_ORDER"
+    job_array[i,2] = SELECT job_header.process_order
+    i = i + 1
+    job_array[i,1] = "WORK_CENTER"
+    job_array[i,2] = SELECT job_header.work_center
+    i = i + 1
+    job_array[i,1] = "PRODUCTION_DATE"
+    job_array[i,2] = SELECT job_header.production_date
+    i = i + 1
+    job_array[i,1] = "JOB_NAME"
+    job_array[i,2] = SELECT job_header.job_name
+
+    id_numeric = SELECT sample.id_numeric
+                 WHERE job_name = job
+                 ORDER ON id_numeric ASCENDING
+
+    WHILE id_numeric <> EMPTY DO
+        IF (EMPTY <> (SELECT prod_label_view.label_count WHERE sample = id_numeric)) THEN
+            s_array[size_of_array(s_array) + 1, 1] = id_numeric
+        ENDIF    
+    NEXT sample
+        id_numeric = SELECT sample.id_numeric
+    ENDWHILE
+
+    i = 1
+    j = 1
+    WHILE j <= size_of_array(s_array) DO
+        sample_array [i,1] = "AddChild"
+        sample_array [i,2] = "SAMPLE"
+        i = i + 1
+        sample_array [i, 1] = "ID_NUMERIC"
+        sample_array [i, 2] = s_array[j, 1]
+        i = i + 1
+        sample_array [i, 1] = "SAMPLING_POINT"
+        sample_array [i, 2] = STRIP(SELECT sample.sampling_point WHERE id_numeric = s_array[j, 1])
+        i = i + 1
+        sample_array [i, 1] = "MES_SP"
+        sample_array [i, 2] = STRIP(SELECT sample_point.mes_sp WHERE identity = sample_array [i - 1, 2])
+        i = i + 1
+        sample_array [i, 1] = "DESCRIPTION"
+        sample_array [i, 2] = STRIP(SUBSTITUTE(SELECT sample_point.description, ASCII(10), ""))
+        i = i + 1
+        sample_array [i, 1] = "DELIV_LOCATION"
+        sample_array [i, 2] = STRIP(SELECT sample_point.deliv_location)
+        i = i + 1
+        sample_array [i, 1] = "LABEL_COUNT"
+        sample_array [i, 2] = STRIP(SELECT sample_point.label_count)
+        i = i + 1
+        sample_array [i, 1] = "VOLUME"
+        sample_array [i, 2] = STRIP(SELECT sample_point.volume)
+    {
+        i = i + 1
+        sample_array [i, 1] = "Operation"
+        sample_array [i, 2] = "N/A"
+        i = i + 1
+        sample_array [i, 1] = "Sequence"
+        sample_array [i, 2] = "N/A"
+    }
+        i = i + 1
+        sample_array [i, 1] = "GLOBAL_SP"
+        sample_array [i, 2] = STRIP(SELECT sample_point.global_sp)
+    j = j + 1
+    ENDWHILE
+
+        i = 1
+        WHILE i <= size_of_array(s_array) DO
+            s_array[i, 1] = s_array[i, 1] :" - ": SELECT sample.sampling_point WHERE id_numeric = s_array[i, 1]
+        i = i + 1
+        ENDWHILE
+
+    DECLARE TransactionId, FileName, XmlDoc, Transaction, Request_XML, WebService, WebServiceAction, XMLSchema, Status
+
+    TransactionId   = GenerateTransactionId()
+    FileName        = "SampleOrder_":TransactionId
+    XmlDoc          = CreateXMLChild(job_array, sample_array, FileName, TransactionId)
+    Transaction     = XmlDoc.gettransaction ( 0 )
+    Request_XML     = Transaction.returnxml ()
+    WriteXMLFile(FileName, Request_XML)
+    WebService          = GLOBAL("BIZTALK_WEBSERVICE")
+    WebServiceAction    = "SAMPLEORDER"
+    XMLSchema           = "http://www.chr-hansen.com/LIMS/":WebServiceAction
+
+    IF (ChangeXMLNameSpace(FileName, XMLSchema)) THEN
+        {FILE COPY "smp$userfiles\BizTalk\":FileName:".txt", "smp$userfiles\BizTalk\":FileName:".limsml"}
+        LogTxt = Job
+        Status = SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+        LogTxt = LogTxt:" ":STRIP(Job):", ":STRIP(SELECT job_header.work_center WHERE job_name = job)
+        WriteImportLog(LogTxt:" (":Status:")")
+    ENDIF
+
+    IF (GLOBAL("MODE")  = "INTERACTIVE") AND
+       (INDEX("AVE;", work_center) > 0) THEN
+{**************************************************************************************************************
+        fm("Sent to MES:":ASCII(10):ASCII(10):
+           "    Job details     ":ASCII(10):GetArray(job_array):ASCII(10):ASCII(10):
+           "    Samples details ":ASCII(10):GetArray(s_array):ASCII(10):ASCII(10):
+           "Status: ":Status)
+***************************************************************************************************************}    
+    ENDIF
+ 
+    IF INDEX(LogTxt, "OK") > 0 THEN
+        RETURN(TRUE)
+    ELSE
+        RETURN(FALSE)
+    ENDIF
+ENDROUTINE
+
+
+{**************************************************************************************************************
+Removed, as no known use
+
+GLOBAL ROUTINE LTCA( option )
+DECLARE insp, insp_array, i, type, status
+ARRAY insp_array
+
+    status = "LTCA"
+    insp = SELECT job_header.inspection_lot WHERE inspection_status = "LTCA" and job_status <> "X"
+
+    WHILE insp <> EMPTY DO
+        insp_array[size_of_array(insp_array) + 1, 1] = insp
+    NEXT job_header
+        insp = SELECT job_header.inspection_lot
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(insp_array) DO
+        type = SELECT job_header.inspection_type WHERE inspection_lot = insp_array[i,1]
+        CancelInspLot (type, insp_array[i,1], Status)
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+ 
+***************************************************************************************************************}
+ROUTINE REACTIVATE_SMP(VALUE Job)
+DECLARE ID, SMP, i, old_status , status
+ARRAY SMP
+
+    ID = SELECT sample.id_numeric WHERE job_name = Job
+    WHILE ID <> EMPTY DO
+        SMP[size_of_array(SMP) + 1, 1] = ID
+    NEXT sample
+        ID = SELECT sample.id_numeric 
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(SMP)
+        ID = SMP[i, 1]
+        old_status  = SELECT sample.old_status WHERE id_numeric = ID
+        status      = SELECT sample.status
+        IF (ID = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = ID) THEN
+            REACTIVATE_TEST(ID)
+            START WRITE TRANSACTION "Reactivate sample"
+            CHANGE SAMPLE STATUS TO old_status, status
+            IF status <> EMPTY THEN
+                WriteToLog("CHANGE SAMPLE STATUS TO ":old_status:" FROM ":status)
+                ASSIGN sample.old_status = SELECT sample.status
+                ASSIGN sample.status = old_status
+            ENDIF
+            ASSIGN sample.tests_to_do = (SELECT COUNT test WHERE sample = ID AND (status = "U" OR status = "V" OR status = "P"))
+            UPDATE sample
+            COMMIT
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE REACTIVATE_TEST(VALUE smp)
+DECLARE ID, TST, i, old_status , status
+ARRAY TST
+
+    ID = SELECT test.test_number WHERE sample = smp
+    WHILE ID <> EMPTY DO
+        TST[size_of_array(TST) + 1, 1] = ID
+    NEXT test
+        ID = SELECT test.test_number
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(TST)
+        ID = TST[i, 1]
+        old_status  = SELECT test.old_status WHERE test_number = ID
+        status      = SELECT test.status
+        IF (ID = SELECT test.test_number FOR UPDATE WHERE test_number = ID) THEN
+            START WRITE TRANSACTION "Reactivate test"
+            CHANGE TEST STATUS TO old_status, status
+            IF status <> EMPTY THEN
+                WriteToLog("CHANGE TEST STATUS TO ":old_status:" FROM ":status)
+                ASSIGN test.old_status = SELECT sample.status
+                ASSIGN test.status = old_status
+            ENDIF
+            UPDATE test
+            COMMIT
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE CancelSamples(VALUE JobID)
+
+    DECLARE s, s_arr, status
+    ARRAY s_arr
+
+    IF (0 = SELECT COUNT sample WHERE job_name = JobID AND status = "C" OR status = "A") THEN
+        RETURN
+    ENDIF
+    
+    s = SELECT sample.id_numeric WHERE job_name = JobID
+        AND status <> "V" AND status <> "C" AND status <> "A" 
+
+    WHILE (s <> EMPTY) DO
+        s_arr[size_of_array(s_arr) + 1] = s
+    NEXT sample
+        s = SELECT sample.id_numeric
+    ENDWHILE
+
+    s = 1
+    WHILE (s <= size_of_array(s_arr)) DO
+        status = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = s_arr[s]
+        IF status = s_arr[s] THEN
+            IF NOT(transaction_is_write()) THEN
+                START WRITE TRANSACTION "Cancel samples"
+            ENDIF
+            CHANGE SAMPLE STATUS TO "X", status
+            UPDATE sample
+            COMMIT
+        ENDIF
+        s = s + 1
+    ENDWHILE
+    
+ENDROUTINE

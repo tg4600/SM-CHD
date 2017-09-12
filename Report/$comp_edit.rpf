@@ -1,0 +1,4314 @@
+{******************************************************************************
+*
+* Module Name   : $COMP_EDIT.RPF
+*
+* Purpose       : Component editor as a grid.
+*
+* Document Ref. :
+*
+* Specification : N/A
+*
+* Portability   : USQL/SSQL
+*
+* Re-entrant    : N/A
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NOT_PROTECTED
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_UTILS
+
+JOIN LIBRARY $LABTABLIB
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $COMP_LIST
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LAB_USER
+JOIN LIBRARY $LIB_RE_FORMULA
+JOIN LIBRARY $FORMULA_SCRIPT
+JOIN LIBRARY $CALC_FORMULA
+JOIN LIBRARY $LAB
+JOIN LIBRARY $PROMPT_TOOLBAR
+
+JOIN LIBRARY $COMP_MATRIX
+
+{* LOCAL CONSTANTS ************************************************************}
+
+CONSTANT NAME            = 1
+CONSTANT RESULT_TYPE     = 2
+CONSTANT FLAG            = 3
+CONSTANT MIN             = 4
+CONSTANT CALC_ID         = 4
+CONSTANT MAX             = 5
+CONSTANT DILUTION_FACTOR = 6
+CONSTANT UNITS           = 7
+CONSTANT DP              = 8
+CONSTANT NO_SIG_FIGS     = 9
+CONSTANT BASE            = 10
+CONSTANT SIG_FIGS_FORMAT = 11
+CONSTANT FORMULA         = 12
+CONSTANT MIN_PQL         = 13
+CONSTANT MAX_PQL         = 14
+CONSTANT PQL_CALC        = 15
+{**AS1775 HBe 5-3-2007}
+CONSTANT PRINT_LABEL     = 16
+CONSTANT LABEL_TEXT      = 17
+{**AE1775}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+CONSTANT EXPORT          = 19
+CONSTANT SAP_CHARAC      = 18
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+CONSTANT COMP_EDIT_CLASS       = "STD_COMP_EDIT"
+CONSTANT COMP_EDIT_FIELD_CLASS = "STD_COMP_EDIT_FIELD"
+CONSTANT DELETED_ORDER_NUM     = 999999999
+
+{* VARIABLES ******************************************************************}
+
+DECLARE column_definition_array     ,
+    places_browse_array         ,
+    global_field_collection     ,
+    comp_edit_prompt_on_insert  ,
+    comp_edit_create_categories ,
+	comp_list_enabled           ,
+	valid_tables
+
+DECLARE operation,
+    global_matrix_collection
+
+
+{******************************************************************************}
+
+    ROUTINE labtable_input ( VALUE analysis_id     ,
+                     VALUE old_analysis_id ,
+                     VALUE operation       )
+
+{
+*
+*   Called from $LTE_ANAL.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    comp_edit_prompt_on_insert = FALSE
+
+    comp_list_enabled = GLOBAL ( "COMPONENT_LIST_ENABLED" )
+
+    IF ( operation = "PRINT" ) THEN
+
+        return_value = comp_edit_print ( analysis_id )
+
+    ELSE
+
+        comp_edit_initialise ( )
+
+        return_value = global_field_collection .
+                 ? "LABTABLE_" : operation ? ( analysis_id ,
+                              old_analysis_id  )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_print ( VALUE analysis_id )
+
+{
+*   Prints the components for the analysis
+*
+*******************************************************************************}
+
+    DECLARE head_mess, foot_mess, field_details, next_pos
+
+    ARRAY field_details ARRAY_SIZE ( 0 , 2 )
+
+    head_mess = GET_USER_MESSAGE("COMP_EDIT_HEAD_1",1):"(":analysis_id:")"
+    foot_mess = " "
+
+    field_details [ 1 , 1 ] = "NAME"
+    field_details [ 1 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_1" ,1)
+
+    field_details [ 2 , 1 ] = "RESULT_TYPE"
+    field_details [ 2 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_2" ,1)
+
+    field_details [ 3 , 1 ] = "REP_CONTROL"
+    field_details [ 3 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_3" ,1)
+
+    field_details [ 4 , 1 ] = "MINIMUM"
+    field_details [ 4 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_4" ,1)
+
+    field_details [ 5 , 1 ] = "MAXIMUM"
+    field_details [ 5 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_5" ,1)
+
+    field_details [ 6 , 1 ] = "TRUE_WORD"
+    field_details [ 6 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_6" ,1)
+
+    field_details [ 7 , 1 ] = "FALSE_WORD"
+    field_details [ 7 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_7" ,1)
+
+    field_details [ 8 , 1 ] = "ALLOWED_CHARACTERS"
+    field_details [ 8 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_8" ,1)
+
+    field_details [ 9 , 1 ] = "CALCULATION"
+    field_details [ 9 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_9" ,1)
+
+    {2009-02-02 ATØ PlantVision Start}
+    field_details [ 10 , 1 ] = "DILUTION_FACTOR"
+    field_details [ 10 , 2 ] = "Dilution Factor"
+
+    {2009-02-02 ATØ PlantVision End}
+
+    field_details [ 11 , 1 ] = "UNITS"
+    field_details [ 11 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_10" ,1)
+
+    field_details [ 12 , 1 ] = "PLACES"
+    field_details [ 12 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_11" ,1)
+
+    field_details [ 13 , 1 ] = "REPLICATES"
+    field_details [ 13 , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_12" ,1)
+
+    IF ( FIELD_NAME_TO_NUMBER ( "SIG_FIGS_NUMBER"     ,
+                                "VERSIONED_COMPONENT" ) <> 0 ) THEN
+
+        field_details [ 14 , 1 ] = "SIG_FIGS_NUMBER"
+        field_details [ 14 , 2 ]
+            = GET_USER_MESSAGE("COMP_EDIT_FIEL_13" ,1)
+
+        field_details [ 15 , 1 ] = "SIG_FIGS_ROUNDING"
+        field_details [ 15 , 2 ]
+            = GET_USER_MESSAGE("COMP_EDIT_FIEL_14" ,1)
+
+        field_details [ 16 , 1 ] = "SIG_FIGS_FILTER"
+        field_details [ 16 , 2 ]
+            = GET_USER_MESSAGE("COMP_EDIT_FIEL_15" ,1)
+
+        next_pos = 17
+
+    ELSE
+
+        next_pos = 14
+
+    ENDIF
+
+    field_details [ next_pos , 1 ] = "FORMULA"
+    field_details [ next_pos , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_16" ,1)
+
+    next_pos = next_pos + 1
+
+    field_details [ next_pos , 1 ] = "MINIMUM_PQL"
+    field_details [ next_pos , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_17" ,1)
+
+    next_pos = next_pos + 1
+
+    field_details [ next_pos , 1 ] = "MAXIMUM_PQL"
+    field_details [ next_pos , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_18" ,1)
+
+    next_pos = next_pos + 1
+
+    field_details [ next_pos , 1 ] = "PQL_CALCULATION"
+    field_details [ next_pos , 2 ] = GET_USER_MESSAGE("COMP_EDIT_FIEL_19" ,1)
+
+    next_pos = next_pos + 1
+
+{**AS1775 HBe 5-3-2007}
+    field_details [ next_pos , 1 ] = "PRINT_LABEL"
+    field_details [ next_pos , 2 ] = "Print Label"
+
+    next_pos = next_pos + 1
+
+    field_details [ next_pos , 1 ] = "LABEL_TEXT"
+    field_details [ next_pos , 2 ] = "Label Text"
+
+    next_pos = next_pos + 1
+{**AE1775}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+    field_details [ next_pos , 1 ] = "EXPORT"
+    field_details [ next_pos , 2 ] = "Export"
+
+    next_pos = next_pos + 1
+
+    field_details [ next_pos , 1 ] = "SAP_CHARAC"
+    field_details [ next_pos , 2 ] = "SAP Char"
+
+    next_pos = next_pos + 1
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+
+    print_fields ( "VERSIONED_COMPONENT" ,
+            analysis_id          ,
+            head_mess            ,
+            foot_mess            ,
+            12                   ,
+            30                   ,
+            field_details        )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_initialise
+
+{
+*   Initialise the module. Declare classes and create a global object to
+*   use for the screen.
+*
+*******************************************************************************}
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+        std_comp_edit_class_declare ( )
+        std_comp_edit_field_class_declare ( )
+
+
+        unit_prompt_initialise ( )
+        lib_comp_initialise ()
+            lib_re_formula_initialise ()
+
+        ARRAY comp_edit_create_categories = FALSE
+
+        CREATE OBJECT COMP_EDIT_CLASS , global_field_collection
+
+        global_field_collection . add_index ( "ORDER_NUMBER" )
+
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+        global_matrix_collection = EMPTY
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_class_declare
+
+{
+*   Declare the class to use to hold information about the second screen
+*   on the analysis LTE. This class is a sub class of an object database
+*   which is extended to include actions for the labtable editor.
+*
+*******************************************************************************}
+
+    prompt_toolbar_initialise ( )
+
+    DEFINE CLASS COMP_EDIT_CLASS
+
+        INHERIT "STD_OBJECT_DATABASE"
+
+        PROPERTIES "EDITABLE"   ,
+                   "IDENTITY"
+
+        ACTIONS "LABTABLE_ADD"              ,
+                "LABTABLE_COPY"             ,
+                "LABTABLE_READ_FOR_MODIFY"  ,
+                "LABTABLE_READ_FOR_DISPLAY" ,
+                "LABTABLE_MODIFY"           ,
+                "LABTABLE_DISPLAY"          ,
+                "LABTABLE_SAVE"             ,
+                "LABTABLE_QUIT"             ,
+                "LOAD_ALL_COMPONENTS"       ,
+                "DO_THE_GRID"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_class_initialisation ( self )
+
+{
+*   Initialise a new object in the class.
+*
+*******************************************************************************}
+
+    self . class_to_use = COMP_EDIT_FIELD_CLASS
+
+    self . initialise ( "VERSIONED_COMPONENT" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_field_class_declare
+
+{
+*   Declare the class to use to hold information about the second screen
+*   on the analysis LTE.
+*
+*******************************************************************************}
+
+    DEFINE CLASS COMP_EDIT_FIELD_CLASS
+
+        INHERIT "STD_OBJECT_RECORD"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_field_class_initialisation ( self )
+
+{
+*   Initialisation routine for the database collected class.
+*
+*******************************************************************************}
+
+    { Do nothing }
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_add (       self     ,
+                                                VALUE identity ,
+                                                VALUE copy_id  )
+
+{
+*   The add option has been called for the LTE.
+*
+*******************************************************************************}
+
+    { Do nothing }
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_copy (       self     ,
+                                                 VALUE identity ,
+                                                 VALUE copy_id  )
+
+{
+*   The copy option has been called for the LTE. Create an object database
+*   with the new records in it.
+*
+*******************************************************************************}
+
+    DECLARE field_name , new_record , new_key0 , select_array, matrix_no
+
+    formula_script_copy_script ( identity  ,
+                     copy_id   )
+
+
+    select_array = array_select_key0_to_array ( "VERSIONED_COMPONENT" ,
+                                                 copy_id              )
+
+    matrix_no = 0
+    array_select_add ( select_array        ,
+                       ARRAY_SELECT_AND    ,
+                       EMPTY               ,
+                       EMPTY               )
+
+    array_select_add ( select_array        ,
+                       ARRAY_SELECT_EQ     ,
+                       "matrix_no"         ,
+                           matrix_no           )
+
+    array_select_in_object ( self                  ,
+                             "VERSIONED_COMPONENT" ,
+                             FALSE                 ,
+                             select_array          )
+
+    field_name = SELECT versioned_component . name IN OBJECT self
+
+    WHILE ( field_name <> EMPTY ) DO
+
+        CREATE OBJECT self . class_to_use , new_record
+
+        object_add_table ( new_record   ,
+                   self . table )
+
+        new_record . table = self . table
+
+        new_key0 = identity : PAD ( field_name , " " , 50 )
+
+        { Don't trap errors - just let it crash }
+
+        RESERVE ENTRY versioned_component
+                IN OBJECT new_record , new_key0
+
+        comp_edit_copy_all_fields ( self       ,
+                        new_record )
+
+        self . add ( new_record )
+
+        NEXT versioned_component IN OBJECT self
+        field_name = SELECT versioned_component . name IN OBJECT self
+
+    ENDWHILE
+
+    { copy matrix components  }
+    comp_edit_matrix (  identity             ,
+                copy_id              ,
+                global_matrix_collection ,
+                operation                ,
+                0                        )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_copy_all_fields ( self       ,
+                                        new_record )
+
+{
+*   Assigns all the old fields into the new record.
+*
+*
+*******************************************************************************}
+
+    ASSIGN versioned_component . order_number IN OBJECT new_record =
+             SELECT versioned_component . order_number IN OBJECT self
+
+    ASSIGN versioned_component . result_type IN OBJECT new_record =
+             SELECT versioned_component . result_type IN OBJECT self
+
+    ASSIGN versioned_component . units IN OBJECT new_record =
+             SELECT versioned_component . units IN OBJECT self
+
+    ASSIGN versioned_component . minimum IN OBJECT new_record =
+             SELECT versioned_component . minimum IN OBJECT self
+
+    ASSIGN versioned_component . maximum IN OBJECT new_record =
+             SELECT versioned_component . maximum IN OBJECT self
+
+    ASSIGN versioned_component . true_word IN OBJECT new_record =
+             SELECT versioned_component . true_word IN OBJECT self
+
+    ASSIGN versioned_component . false_word IN OBJECT new_record =
+             SELECT versioned_component . false_word IN OBJECT self
+
+    ASSIGN versioned_component . allowed_characters IN OBJECT new_record =
+             SELECT versioned_component . allowed_characters IN OBJECT self
+
+    ASSIGN versioned_component . calculation IN OBJECT new_record =
+             SELECT versioned_component . calculation IN OBJECT self
+
+    ASSIGN versioned_component . places IN OBJECT new_record =
+             SELECT versioned_component . places IN OBJECT self
+
+    ASSIGN versioned_component . rep_control IN OBJECT new_record =
+             SELECT versioned_component . rep_control IN OBJECT self
+
+    ASSIGN versioned_component . replicates IN OBJECT new_record =
+             SELECT versioned_component . replicates IN OBJECT self
+
+    ASSIGN versioned_component . sig_figs_number IN OBJECT new_record =
+             SELECT versioned_component . sig_figs_number IN OBJECT self
+
+    ASSIGN versioned_component . sig_figs_rounding IN OBJECT new_record =
+             SELECT versioned_component . sig_figs_rounding IN OBJECT self
+
+    ASSIGN versioned_component . sig_figs_filter IN OBJECT new_record =
+             SELECT versioned_component . sig_figs_filter IN OBJECT self
+
+    ASSIGN versioned_component . formula IN OBJECT new_record =
+             SELECT versioned_component . formula IN OBJECT self
+
+    ASSIGN versioned_component . minimum_pql IN OBJECT new_record =
+             SELECT versioned_component . minimum_pql IN OBJECT self
+
+    ASSIGN versioned_component . maximum_pql IN OBJECT new_record =
+             SELECT versioned_component . maximum_pql IN OBJECT self
+
+    ASSIGN versioned_component . pql_calculation IN OBJECT new_record =
+             SELECT versioned_component . pql_calculation IN OBJECT self
+
+    ASSIGN versioned_component . matrix_no IN OBJECT new_record =
+             SELECT versioned_component . matrix_no IN OBJECT self
+
+    ASSIGN versioned_component . matrix_name IN OBJECT new_record =
+             SELECT versioned_component . matrix_name IN OBJECT self
+
+    ASSIGN versioned_component . row_no IN OBJECT new_record =
+             SELECT versioned_component . row_no  IN OBJECT self
+
+    ASSIGN versioned_component . row_name IN OBJECT new_record =
+             SELECT versioned_component . row_name IN OBJECT self
+
+    ASSIGN versioned_component . column_no IN OBJECT new_record =
+             SELECT versioned_component . column_no IN OBJECT self
+
+    ASSIGN versioned_component . column_name IN OBJECT new_record =
+             SELECT versioned_component .  column_name IN OBJECT self
+
+{**AS1775 HBe 5-3-2007}
+    ASSIGN versioned_component . print_label IN OBJECT new_record =
+             SELECT versioned_component . print_label IN OBJECT self
+
+    ASSIGN versioned_component . label_text IN OBJECT new_record =
+             SELECT versioned_component . label_text IN OBJECT self
+{**AE1775}
+{2009-02-02 ATØ PlantVision Start}
+    ASSIGN versioned_component . dilution_factor IN OBJECT new_record =
+             SELECT versioned_component . dilution_factor IN OBJECT self
+{2009-02-02 ATØ PlantVision End}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+    ASSIGN versioned_component . export IN OBJECT new_record =
+             SELECT versioned_component . export IN OBJECT self
+
+    ASSIGN versioned_component . sap_charac IN OBJECT new_record =
+             SELECT versioned_component . sap_charac IN OBJECT self
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_read_for_modify (
+                                                                 self     ,
+                                                           VALUE identity ,
+                                                           VALUE copy_id  )
+
+{
+*   Read all the information to display and lock it.
+*
+*******************************************************************************}
+
+    self . load_all_components ( identity                   ,
+                                 "SELECT_FOR_UPDATE"        )
+
+
+    { copy matrix components  }
+    comp_edit_matrix (  identity             ,
+                copy_id              ,
+                global_matrix_collection ,
+                operation                ,
+                0                        )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_read_for_display (
+                                                                 self     ,
+                                                           VALUE identity ,
+                                                           VALUE copy_id  )
+
+{
+*   Read all the information to display.
+*
+*******************************************************************************}
+
+    self . load_all_components ( identity                    ,
+                                 "SELECT"                    )
+
+
+    { copy matrix components  }
+    comp_edit_matrix (  identity             ,
+                copy_id              ,
+                global_matrix_collection ,
+                operation                ,
+                0                        )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_load_all_components (        self       ,
+                                                        VALUE identity   ,
+                                                        VALUE select_act )
+
+{
+*   Load all the information into the object database.
+*
+*******************************************************************************}
+
+    DECLARE select_array, matrix_no
+
+    select_array = array_select_key0_to_array ( "VERSIONED_COMPONENT" ,
+                                                identity              )
+
+
+    matrix_no = 0
+    array_select_add ( select_array        ,
+                       ARRAY_SELECT_AND    ,
+                       EMPTY               ,
+                       EMPTY               )
+
+    array_select_add ( select_array        ,
+                       ARRAY_SELECT_EQ     ,
+                       "matrix_no"         ,
+                           matrix_no           )
+
+    array_select_add ( select_array           ,
+                       ARRAY_SELECT_ORDER     ,
+                       "ORDER_NUMBER"         ,
+                       ARRAY_SELECT_ASCENDING )
+
+    self . ? select_act ? ( select_array )
+
+    self . re_index ( "ORDER_NUMBER" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_save (       self     ,
+                                                      VALUE identity ,
+                                                      VALUE copy_id  )
+
+{
+*   Save the information in the object_database.
+*
+*******************************************************************************}
+
+    DECLARE init_order
+
+    self . set_first ()
+    init_order = 0
+    WHILE self . current <> EMPTY DO
+
+        IF NOT ( self . current . deleted ) THEN
+
+            init_order = init_order + 1
+
+        ENDIF
+
+        self . set_next ()
+
+    ENDWHILE
+
+    self . invoke_all ( "UPDATE" )
+
+    IF ( global_matrix_collection <> EMPTY ) THEN
+
+        comp_edit_matrix (identity         ,
+                  copy_id                  ,
+                  global_matrix_collection ,
+                  operation                ,
+                  init_order               )
+
+    ENDIF
+
+    CREATE OBJECT COMP_EDIT_CLASS , global_field_collection
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_quit (       self     ,
+                                                      VALUE identity ,
+                                                      VALUE copy_id  )
+
+{
+*   Throw away the information in the object_database.
+*
+*******************************************************************************}
+
+    IF ( global_matrix_collection <> EMPTY ) THEN
+
+        comp_edit_matrix (identity         ,
+                  copy_id                  ,
+                  global_matrix_collection ,
+                  operation                ,
+                  0            )
+
+
+    ENDIF
+
+
+    CREATE OBJECT COMP_EDIT_CLASS , global_field_collection
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_display (       self     ,
+                                                         VALUE identity ,
+                                                         VALUE copy_id  )
+
+{
+*   Display the information.
+*
+*******************************************************************************}
+
+    RETURN ( self . do_the_grid ( identity , FALSE ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_labtable_modify (       self     ,
+                                                        VALUE identity ,
+                                                        VALUE copy_id  )
+
+{
+*   Modify the information.
+*
+*******************************************************************************}
+
+    RETURN ( self . do_the_grid ( identity , TRUE ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE std_comp_edit_action_do_the_grid (       self       ,
+                                               VALUE identity   ,
+                                               VALUE allow_edit )
+
+{
+*   Actually do the grid. Flag indicates display/modify mode.
+*
+*******************************************************************************}
+
+    DECLARE the_form , the_grid , header_mess , footer_mess ,
+        message , saved, loop, no_of_columns, grid_height
+
+    self . identity = identity
+
+    message_fetch ( "COMP_EDIT_HEAD_1" , message )
+
+    message_add_parameter(message, "(":lib_utils_contract_version(identity):")")
+
+    header_mess = message_get_text ( message , 1 )
+
+    IF ( allow_edit ) THEN
+        footer_mess =
+              GET_USER_MESSAGE ( "COMP_EDIT_FOOTMESS_2" , 1 )
+    ELSE
+        footer_mess =
+              GET_USER_MESSAGE ( "COMP_EDIT_FOOTMESS_2" , 1 )
+    ENDIF
+
+    ARRAY column_definition_array ARRAY_SIZE ( 0 , 6 )
+
+    load_column_definition_array ( column_definition_array )
+
+    ARRAY places_browse_array ARRAY_SIZE ( 11 , 2 )
+
+    load_places_browse_array ( places_browse_array )
+
+    no_of_columns = size_of_array ( column_definition_array )
+
+    PROMPT OBJECT the_form
+           CLASS PROMPT_CLASS_FORM
+           AT 7, 6
+           WITH ( column = 3                                    ,
+                  row = 6                                       ,
+                  height = GLOBAL ( "SCREEN_HEIGHT" ) - 9       ,
+                  width = GLOBAL ( "SCREEN_WIDTH" ) - 4         ,
+                  vgl_library = GLOBAL("CURRENT_LIBRARY")       ,
+                  header = header_mess                          ,
+                  footer = footer_mess                          ,
+                  proportional = TRUE                           ,
+                  help_context = "$COMP_EDIT_LIST"              ,
+                  use_top_line = TRUE                           ,
+                  button_style = FORM_BUTTON_NONE               ,
+                  prompt_id    = "$COMP_EDIT_LIST"              ,
+                  display_only = NOT allow_edit                 )
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+        grid_height = the_form . height - 3
+        the_form . width = GLOBAL ( "GUI_WIDTH" ) / 2
+
+    ELSE
+        grid_height = the_form.height
+    ENDIF
+
+    PROMPT OBJECT the_grid
+            CLASS  PROMPT_CLASS_GRID
+            WITH ( height                = grid_height           ,
+                   column                = 1                     ,
+                   row                   = 2                     ,
+                   width                 = the_form . width      ,
+                   current_column        = RESULT_TYPE           ,
+                   cell_columns          = no_of_columns         ,
+                   fixed_columns_left    = 2                     ,
+                   border                = FALSE                 ,
+                   vgl_library           = GLOBAL("CURRENT_LIBRARY") ,
+                   display_cell_routine  = "DISPLAY_GRID_CELL"   ,
+                   prompt_cell_routine   = "PROMPT_GRID_CELL"    ,
+                   check_move_routine    = "CHECK_MOVE"          ,
+                   remove_routine        = "REMOVE_CELL"         ,
+                   validation_routine    = "VALIDATE_GRID"       ,
+                   insert_routine        = "INSERT_CELL"         ,
+                   select_routine        = "COMP_EDIT_PROPAGATE" ,
+                   return_behaviour      = GRID_RETURN_RIGHT     ,
+                   title_size_top        = 1                     ,
+                   title_separator_top   = GRID_SEPARATOR_BOTH   ,
+                   title_rendition_top   = PROMPT_RENDITION_BOLD ,
+                   user_info             = self                  )
+
+    loop = 0
+
+    WHILE loop < no_of_columns DO
+
+        loop = loop + 1
+
+        the_grid . column_size [ loop ]
+            = column_definition_array [ loop, 2 ]
+
+        the_grid . title_text_top [ loop, 1 ]
+            = column_definition_array [ loop, 3 ]
+
+    ENDWHILE
+
+    the_form . add_prompt ( the_grid )
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        {the_grid . column = the_grid . column + 1}
+
+        comp_edit_add_buttons ( the_form )
+
+    ENDIF
+
+    comp_edit_find_cell_rows ( self , the_grid )
+
+    the_grid . cell_rows = lib_grid_number_of_lines ( NOT allow_edit      ,
+                              the_grid . cell_rows )
+
+
+    self . editable = allow_edit
+
+    the_form . prompt_id = GLOBAL ("CURRENT_LIBRARY") : "_COMPS_GRID"
+    the_form . start_prompt ( )
+    the_form . wait_prompt  ( )
+
+    saved = ( the_form . get_lastkey ( ) = "DO" )
+
+    the_form . end_prompt ( )
+
+{
+    IF ( allow_edit ) AND NOT ( saved ) THEN
+
+        self . reset        ( )
+        self . re_index_all ( )
+
+    ENDIF
+}
+    RETURN ( saved )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_add_buttons ( the_form )
+
+{
+*   Add the buttons to the form
+*
+*******************************************************************************}
+
+    DECLARE toolbar, item, button_object
+
+    CREATE OBJECT TOOLBAR_CLASS , toolbar
+    toolbar . column = 1
+    toolbar . height = 0.9
+
+    the_form . add_prompt( toolbar )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_INSERT", 1 ) :" (F5)"
+    item . send_lastkey = "INSERT HERE"
+    item . enabled      = ( NOT the_form . display_only )
+    item . set_icon( "INT_NEW_ITEM" )
+
+    toolbar . add_item ( item )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_REMOVE", 1 ) : " (F6)"
+    item . send_lastkey = "REMOVE"
+    item . enabled      = ( NOT the_form . display_only )
+    item . set_icon( "INT_DELETE_ITEM" )
+
+    toolbar . add_item ( item )
+
+    toolbar . add_separator( )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "COMP_EDIT_PROP_BUTTON", 1 ) : " (F3)"
+    item . send_lastkey = "SELECT"
+    item . enabled      = ( NOT the_form . display_only )
+    item . set_icon( "INT_ARROW_ALL" )
+
+    toolbar . add_item ( item )
+
+    toolbar . add_separator( )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . set_icon  ( "INT_HELP_BUBBLE" )
+    item . identity      = "HELP"
+    item . send_last_key = "HELP"
+    item . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+    toolbar . add_item ( item )
+
+
+    PROMPT OBJECT button_object
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( row         = the_form . height - 0.5 ,
+               column      = 1    ,
+               caption     = GET_USER_MESSAGE ("SMP_MATRIX_ANAL_BUTT", 1) ,
+               width       = 14 ,
+               vgl_library = GLOBAL ( "CURRENT_LIBRARY" ),
+               mouse_click_routine = "Matrix_button" )
+
+    the_form . add_prompt ( button_object )
+
+    PROMPT OBJECT button_object
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( row          = the_form . height - 0.5 ,
+               column       = the_form . width - 9   ,
+               caption      = GET_USER_MESSAGE ( "SMP_PROMPT_BUTTON_CLOSE" , 1 ) ,
+               width        = 10   ,
+               send_lastkey = "DO" )
+
+    the_form . add_prompt ( button_object )
+
+    the_form . add_panel( 15                      ,
+                          the_form . height - 0.3 ,
+                          1                       ,
+                          the_form . width - 14   ,
+                          PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_find_cell_rows ( self     ,
+                       the_grid )
+
+{
+*   Determines the number of rows in the grid. This is the number of
+*   non deleted records in the object database.
+*
+*******************************************************************************}
+
+    DECLARE loop, the_record, count
+
+    loop = 0
+    count = 0
+
+    WHILE loop < self . size () DO
+
+        loop = loop + 1
+
+        the_record = self . get_by_number ( loop )
+
+        IF NOT the_record . deleted THEN
+            count = count +1
+        ENDIF
+
+    ENDWHILE
+
+    the_grid . cell_rows = count
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_build_order (       self   ,
+                    VALUE insert ,
+                    VALUE row    )
+
+{
+*   Fill in the array relating the row in the collection to the grid.
+*
+*******************************************************************************}
+
+    DECLARE count, the_record
+
+    IF NOT insert THEN
+        count = row + 1
+    ELSE
+        count = row
+    ENDIF
+
+    REPEAT
+
+        the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                                   count          )
+
+        IF the_record = EMPTY THEN
+
+        ELSEIF NOT insert THEN
+            ASSIGN versioned_component . order_number
+                    IN OBJECT the_record = count - 1
+
+        ELSE
+            ASSIGN versioned_component . order_number
+                    IN OBJECT the_record = count + 1
+        ENDIF
+
+        count = count + 1
+
+    UNTIL ( the_record = EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE load_column_definition_array ( column_definition_array )
+
+{
+*
+*   Loads the column definition array
+*
+*******************************************************************************}
+
+    column_definition_array [ NAME           , 1 ] = "NAME"
+    column_definition_array [ NAME           , 2 ] = 30
+    column_definition_array [ NAME           , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_FIEL_1",1)
+
+    column_definition_array [ RESULT_TYPE    , 1 ] = "RESULT_TYPE"
+    column_definition_array [ RESULT_TYPE    , 2 ] = 2
+    column_definition_array [ RESULT_TYPE    , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_RT_HEADER",1)
+
+    column_definition_array [ FLAG           , 1 ] = "REP_CONTROL"
+    column_definition_array [ FLAG           , 2 ] = 5
+    column_definition_array [ FLAG           , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_FIEL_3",1)
+
+    column_definition_array [ MIN            , 1 ] = "MINIMUM"
+    column_definition_array [ MIN            , 2 ] = 10
+    column_definition_array [ MIN            , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_FIEL_4",1)
+    column_definition_array [ MIN            , 4 ] = "TRUE_WORD"
+    column_definition_array [ MIN            , 5 ] = "ALLOWED_CHARACTERS"
+    column_definition_array [ MIN            , 6 ] = "CALCULATION"
+
+    column_definition_array [ MAX            , 1 ] = "MAXIMUM"
+    column_definition_array [ MAX            , 2 ] = 10
+    column_definition_array [ MAX            , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_FIEL_5",1)
+    column_definition_array [ MAX            , 4 ] = "FALSE_WORD"
+
+    column_definition_array [ UNITS          , 1 ] = "UNITS"
+    column_definition_array [ UNITS          , 2 ] = 10
+    column_definition_array [ UNITS          , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_FIEL_10",1)
+
+    column_definition_array [ DILUTION_FACTOR, 1 ] = "DILUTION_FACTOR"
+    column_definition_array [ DILUTION_FACTOR, 2 ] = 10
+    column_definition_array [ DILUTION_FACTOR, 3 ] = "Dilution Factor"
+
+    column_definition_array [ DP             , 1 ] = "PLACES"
+    column_definition_array [ DP             , 2 ] = 3
+    column_definition_array [ DP             , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_DP_HEADER",1)
+
+    column_definition_array [ NO_SIG_FIGS    , 1 ] = "SIG_FIGS_NUMBER"
+    column_definition_array [ NO_SIG_FIGS    , 2 ] = 3
+    column_definition_array [ NO_SIG_FIGS    , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_NUM_SF_HEADER",1)
+
+    column_definition_array [ BASE           , 1 ] = "SIG_FIGS_ROUNDING"
+    column_definition_array [ BASE           , 2 ] = 5
+    column_definition_array [ BASE           , 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_SF_ROUND_HEADER",1)
+
+    column_definition_array [ SIG_FIGS_FORMAT, 1 ] = "SIG_FIGS_FILTER"
+    column_definition_array [ SIG_FIGS_FORMAT, 2 ] = 10
+    column_definition_array [ SIG_FIGS_FORMAT, 3 ] =
+            GET_USER_MESSAGE("COMP_EDIT_SF_FORMAT_HEADER",1)
+
+    column_definition_array [ FORMULA, 1 ] = "FORMULA"
+    column_definition_array [ FORMULA, 2 ] = 30
+    column_definition_array [ FORMULA, 3 ] =
+                    GET_USER_MESSAGE("COMP_EDIT_FORMULA",1)
+
+{**AS1775 HBe 5/3-2007}
+    column_definition_array [ PRINT_LABEL, 1 ] = "PRINT_LABEL"
+    column_definition_array [ PRINT_LABEL, 2 ] = 10
+    column_definition_array [ PRINT_LABEL, 3 ] = "Print Label ?"
+
+    column_definition_array [ LABEL_TEXT, 1 ] = "LABEL_TEXT"
+    column_definition_array [ LABEL_TEXT, 2 ] = 20
+    column_definition_array [ LABEL_TEXT, 3 ] = "Label Text"
+{**AE1775}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+    column_definition_array [ EXPORT, 1 ] = "EXPORT"
+    column_definition_array [ EXPORT, 2 ] = 10
+    column_definition_array [ EXPORT, 3 ] = ".. to CHEOPS"
+
+    column_definition_array [ SAP_CHARAC, 1 ] = "SAP_CHARAC"
+    column_definition_array [ SAP_CHARAC, 2 ] = 20
+    column_definition_array [ SAP_CHARAC, 3 ] = "Export to SAP"
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+
+    IF global ( "PQL_ENABLE" ) THEN
+
+        column_definition_array [ MIN_PQL, 1 ] = "MINIMUM_PQL"
+        column_definition_array [ MIN_PQL, 2 ] = 10
+        column_definition_array [ MIN_PQL, 3 ] =
+                GET_USER_MESSAGE("COMP_EDIT_MIN_PQL",1)
+
+        column_definition_array [ MAX_PQL, 1 ] = "MAXIMUM_PQL"
+        column_definition_array [ MAX_PQL, 2 ] = 10
+        column_definition_array [ MAX_PQL, 3 ] =
+                GET_USER_MESSAGE("COMP_EDIT_MAX_PQL",1)
+
+
+        column_definition_array [ PQL_CALC, 1 ] = "PQL_CALCULATION"
+        column_definition_array [ PQL_CALC, 2 ] = 10
+        column_definition_array [ PQL_CALC, 3 ] =
+                GET_USER_MESSAGE("COMP_EDIT_PQL_CALC",1)
+
+    ENDIF
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        column_definition_array [ RESULT_TYPE , 2 ] = 6
+        column_definition_array [ DP          , 2 ] = 5
+        column_definition_array [ NO_SIG_FIGS , 2 ] = 5
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+    GLOBAL
+
+    ROUTINE load_places_browse_array ( places_browse_array )
+
+{
+*
+*   Loads the column definition array
+*
+*******************************************************************************}
+
+    places_browse_array [ 1 , 1 ] = "X"
+    places_browse_array [ 1 , 2 ] = "X"
+
+    places_browse_array [ 2 , 1 ] = "0"
+    places_browse_array [ 2 , 2 ] = "0"
+
+    places_browse_array [ 3 , 1 ] = "1"
+    places_browse_array [ 3 , 2 ] = "1"
+
+    places_browse_array [ 4 , 1 ] = "2"
+    places_browse_array [ 4 , 2 ] = "2"
+
+    places_browse_array [ 5 , 1 ] = "3"
+    places_browse_array [ 5 , 2 ] = "3"
+
+    places_browse_array [ 6 , 1 ] = "4"
+    places_browse_array [ 6 , 2 ] = "4"
+
+    places_browse_array [ 7 , 1 ] = "5"
+    places_browse_array [ 7 , 2 ] = "5"
+
+    places_browse_array [ 8 , 1 ] = "6"
+    places_browse_array [ 8 , 2 ] = "6"
+
+    places_browse_array [ 9 , 1 ] = "7"
+    places_browse_array [ 9 , 2 ] = "7"
+
+    places_browse_array [ 10 , 1 ] = "8"
+    places_browse_array [ 10 , 2 ] = "8"
+
+    places_browse_array [ 11 , 1 ] = "9"
+    places_browse_array [ 11 , 2 ] = "9"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE display_grid_cell (       self        ,
+                    VALUE cell_column ,
+                    VALUE cell_row    ,
+                          window      ,
+                    VALUE column      ,
+                    VALUE row         ,
+                    VALUE cell_width  ,
+                    VALUE cell_height )
+{
+*
+*   Loads the column definition array
+*
+*******************************************************************************}
+
+    IF ( comp_edit_prompt_on_insert ) OR
+       ( lib_grid_is_insert_line ( self                             ,
+                       cell_row                         ,
+                       NOT self . user_info . editable )) THEN
+
+        DISPLAY " "
+            AT column , row
+            IN WINDOW window
+            TO column + cell_width - 1
+
+    ELSE
+
+        comp_edit_display_old ( self        ,
+                            cell_column ,
+                            cell_row    ,
+                            window      ,
+                            column      ,
+                            row         ,
+                            cell_width  ,
+                            cell_height )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_display_old (       self        ,
+                                    VALUE cell_column ,
+                                    VALUE cell_row    ,
+                                          window      ,
+                                    VALUE column      ,
+                                    VALUE row         ,
+                                    VALUE cell_width  ,
+                                    VALUE cell_height )
+
+{
+*   Displays for an old cell in the component list.
+*
+*******************************************************************************}
+
+    DECLARE the_field, the_result_type, the_record, field_value,
+        decimal_places
+
+    the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                            cell_row      )
+
+    the_result_type = SELECT  versioned_component .
+                             'column_definition_array [ RESULT_TYPE, 1 ]'
+                      IN OBJECT the_record
+
+    IF comp_edit_field_is_valid ( the_result_type ,
+                      the_field       ,
+                      cell_column     ) THEN
+
+        field_value = SELECT versioned_component . ' the_field '
+                IN OBJECT the_record
+
+        IF ( cell_column > UNITS) AND
+           ( cell_column < SIG_FIGS_FORMAT ) THEN
+
+            IF (  field_value = -1 ) THEN
+
+                DISPLAY "X"
+                  AT column , row
+                  IN WINDOW window
+                  TO column + 1
+
+            ELSE
+
+                DISPLAY STRIP ( field_value )
+                  AT column , row
+                  IN WINDOW window
+                  TO column + 1
+
+            ENDIF
+
+        ELSEIF ( the_result_type = "N"   ) AND
+               ( ( cell_column = MIN     ) OR
+                 ( cell_column = MAX     ) OR
+                 ( cell_column = MIN_PQL ) OR
+                 ( cell_column = MAX_PQL )) THEN
+
+            decimal_places = SELECT versioned_component . places
+                IN OBJECT the_record
+
+            IF decimal_places = -1 THEN
+                decimal_places = 3
+            ENDIF
+
+            DISPLAY field_value
+              FORMAT real
+              AT column , row
+              IN WINDOW window
+              TO column + cell_width - 1
+              WITH ( places        = decimal_places      ,
+                 justification = PROMPT_JUSTIFY_LEFT )
+
+        ELSEIF   ( the_result_type = "K" ) AND
+                (( cell_column = MIN_PQL ) OR
+                 ( cell_column = MAX_PQL )) THEN
+
+            decimal_places = SELECT versioned_component . places
+                             IN OBJECT the_record
+
+            IF decimal_places = -1 THEN
+                decimal_places = 3
+            ENDIF
+
+            DISPLAY field_value
+                    FORMAT real
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+                    WITH ( places        = decimal_places      ,
+                           justification = PROMPT_JUSTIFY_LEFT )
+
+        ELSEIF   ( cell_column = FORMULA  ) OR
+                 ( cell_column = PQL_CALC ) THEN
+
+            IF field_value = NULL
+                field_value = ""
+            ENDIF
+
+            DISPLAY field_value
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+{**AS1775 HBe 5/3-2007}
+        ELSEIF   ( cell_column = PRINT_LABEL  ) THEN
+
+            IF field_value = NULL
+                field_value = FALSE
+            ENDIF
+
+            DISPLAY field_value
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+                    FORMAT versioned_component.print_label
+
+        ELSEIF   ( cell_column = LABEL_TEXT  ) THEN
+
+            IF field_value = NULL
+                field_value = ""
+            ENDIF
+
+            DISPLAY field_value
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+{**AE1775}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+        ELSEIF   ( cell_column = EXPORT  ) THEN
+
+            IF field_value = NULL
+                field_value = FALSE
+            ENDIF
+
+            DISPLAY field_value
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+                    FORMAT versioned_component.export
+
+        ELSEIF   ( cell_column = SAP_CHARAC  ) THEN
+
+            IF field_value = NULL
+                field_value = ""
+            ENDIF
+
+            DISPLAY field_value
+                    AT column , row
+                    IN WINDOW window
+                    TO column + cell_width - 1
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+        ELSE
+
+            DISPLAY field_value
+              AT column , row
+              IN WINDOW window
+              TO column + cell_width - 1
+
+        ENDIF
+
+    ELSE
+
+        DISPLAY " "
+          AT column , row
+          IN WINDOW window
+          TO column + cell_width - 1
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_field_is_valid (       the_result_type ,
+                             the_field       ,
+                       VALUE cell_column     )
+
+{
+*   Checks to see if the field moving onto is a valid move.
+*
+*******************************************************************************}
+
+    the_field = ""
+
+    IF cell_column < MIN THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+    ELSEIF cell_column = MIN THEN
+
+        IF the_result_type = "N" THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+        ELSEIF the_result_type = "B" THEN
+            the_field = column_definition_array [ cell_column, 4 ]
+        ELSEIF the_result_type = "C" THEN
+            the_field = column_definition_array [ cell_column, 5 ]
+        ELSEIF the_result_type = "K" THEN
+            the_field = column_definition_array [ cell_column, 6 ]
+		ELSEIF the_result_type = "E" THEN
+			the_field = column_definition_array [ cell_column, 6 ]
+        ELSEIF the_result_type = "O" THEN
+            the_field = column_definition_array [ cell_column, 6 ]
+        ELSEIF the_result_type = "L" THEN
+                        the_field = column_definition_array [ cell_column, 6 ]
+        ENDIF
+
+    ELSEIF cell_column = MAX THEN
+
+        IF the_result_type = "N" THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+        ELSEIF the_result_type = "B" THEN
+            the_field = column_definition_array [ cell_column, 4 ]
+        ENDIF
+
+    ELSEIF cell_column = FORMULA THEN
+
+        IF the_result_type = "K" THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+        ENDIF
+
+{**AS1775}
+    ELSEIF cell_column = PRINT_LABEL THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+
+    ELSEIF cell_column = LABEL_TEXT THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+{**AE1775}
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+    ELSEIF cell_column = EXPORT THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+
+    ELSEIF cell_column = SAP_CHARAC THEN
+            the_field = column_definition_array [ cell_column, 1 ]
+{2013-11-27 TBG Move EXPORT and SAP_CHARAC from parameter setup}
+
+        ELSEIF cell_column > MAX THEN
+
+        IF ( the_result_type = "N" ) OR
+           ( the_result_type = "K" ) OR
+           ( the_result_type = "L" )
+
+            the_field = column_definition_array [ cell_column, 1 ]
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( the_field <> "" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE validate_grid ( self )
+
+{
+*   Validates the grid. Checks to see if -
+*   Numeric - range is OK
+*   Character - some characters there
+*   Calculated - calculation format specified
+*   Option - phrase type specified
+*   Boolean - true and false words are different.
+*
+*   Doesn't let you off grid if any of these are invalid.
+*
+*******************************************************************************}
+
+    DECLARE loop, ok
+
+    loop = 0
+    ok   = TRUE
+
+    WHILE ( loop < self . cell_rows - 1 ) AND ( ok ) DO
+
+        loop = loop + 1
+
+        ok = comp_edit_validate_row ( self ,
+                          loop )
+
+    ENDWHILE
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_row ( self ,
+                     loop )
+
+{
+*   Validates a particular row.
+*
+*******************************************************************************}
+
+    DECLARE return_value, the_record, the_result_type
+
+    return_value = TRUE
+
+    the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                               loop           )
+
+    the_result_type = SELECT versioned_component . ' column_definition_array
+            [ RESULT_TYPE, 1 ] ' IN OBJECT the_record
+
+    IF the_result_type = "N" THEN
+        return_value = comp_edit_validate_numeric_row ( the_record ,
+                                self       ,
+                                loop       )
+    ELSEIF the_result_type = "C" THEN
+        return_value = comp_edit_validate_character_row ( the_record ,
+                                self         ,
+                                loop         )
+    ELSEIF the_result_type = "K" THEN
+        return_value = comp_edit_validate_calculation_row ( the_record,
+                                self       ,
+                                loop       )
+	ELSEIF the_result_type = "E" THEN
+		return_value = comp_edit_validate_entity_row ( the_record ,
+							       self       ,
+							       loop       )
+    ELSEIF the_result_type = "O" THEN
+        return_value = comp_edit_validate_option_row ( the_record ,
+                                self       ,
+                                loop       )
+    ELSEIF the_result_type = "B" THEN
+        return_value = comp_edit_validate_boolean_row ( the_record ,
+                                self       ,
+                                loop       )
+    ELSEIF the_result_type = "L" THEN
+        return_value = comp_edit_validate_list_result_row ( the_record ,
+                                        self       ,
+                                    loop       )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+{******************************************************************************}
+    ROUTINE comp_edit_validate_list_result_row (      the_record ,
+                                  self       ,
+                            VALUE loop       )
+
+{   Validate a list_result_row
+*                                                                             *
+*******************************************************************************}
+    DECLARE return_value
+
+    return_value =  NOT ( BLANK ( SELECT versioned_component .
+            ' column_definition_array [ MIN, 6 ] '
+              IN OBJECT the_record ) )
+
+    IF NOT return_value THEN
+
+        flash_message ( "COMP_EDIT_DISPLAY_7" ,
+                        TRUE                  )
+
+        self . set_position ( MIN , loop )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_boolean_row (       the_record ,
+                               self       ,
+                         VALUE loop       )
+
+{
+*   Validates a boolean row. Makes sure true and false words are different.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    IF ( BLANK ( SELECT versioned_component . ' column_definition_array
+            [ MIN, 4 ] ' IN OBJECT the_record ) OR
+        BLANK ( SELECT versioned_component . ' column_definition_array
+            [ MAX, 4 ] ' IN OBJECT the_record ) ) THEN
+
+        flash_message ( "COMP_EDIT_DISPLAY_8" ,
+                        TRUE                  )
+
+        self . set_position ( MIN , loop )
+
+        return_value = FALSE
+
+    ELSE
+
+        return_value = TRUE
+
+    ENDIF
+
+
+    IF return_value THEN
+
+        return_value =   ( STRIP ( SELECT versioned_component .
+                ' column_definition_array
+                [ MIN, 4 ] ' IN OBJECT the_record ) <>
+            STRIP ( SELECT  versioned_component .
+                               'column_definition_array [ MAX, 4 ]'
+                        IN OBJECT the_record ) )
+
+        IF NOT return_value THEN
+
+            flash_message ( "COMP_EDIT_INVALID_BOOLEAN" ,
+                            TRUE                        )
+
+            self . set_position ( MIN , loop )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_numeric_row (       the_record ,
+                               self       ,
+                         VALUE loop       )
+
+{
+*   Validates a numeric row. Makes sure that min <= max.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value =   ( NUMERIC ( SELECT versioned_component
+            . ' column_definition_array
+            [ MIN, 1 ] ' IN OBJECT the_record ) <=
+        NUMERIC ( SELECT versioned_component . ' column_definition_array
+            [ MAX, 1 ] ' IN OBJECT the_record ) )
+
+    IF NOT return_value THEN
+
+        flash_message ( "COMP_EDIT_INVALID_NUMERIC" ,
+                        TRUE                        )
+
+        self . set_position ( MIN , loop )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_character_row (       the_record ,
+                                 self       ,
+                           VALUE loop       )
+
+{
+*   .
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value =  NOT ( BLANK ( SELECT versioned_component .
+            ' column_definition_array [ MIN, 5 ] '
+              IN OBJECT the_record ) )
+
+    IF NOT return_value THEN
+
+        flash_message ( "COMP_EDIT_DISPLAY_9" ,
+                        TRUE                  )
+
+        self . set_position ( MIN , loop )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_calculation_row (       the_record ,
+                                   self       ,
+                             VALUE loop       )
+
+{
+*   Validates a boolean row. Makes sure true and false words are different.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value =  ( NOT ( BLANK ( SELECT versioned_component .
+            ' column_definition_array [ MIN, 6 ] '
+              IN OBJECT the_record ) )) OR
+            ( SELECT versioned_component . formula
+              IN OBJECT the_record  <> NULL )
+
+    IF NOT return_value THEN
+
+        flash_message ( "COMP_EDIT_DISPLAY_7" ,
+                        TRUE                  )
+
+        self . set_position ( MIN , loop )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_option_row (       the_record ,
+                              self       ,
+                        VALUE loop       )
+
+{
+*   Validates a boolean row. Makes sure true and false words are different.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value =  NOT ( BLANK ( SELECT versioned_component .
+            ' column_definition_array [ MIN, 6 ] '
+              IN OBJECT the_record ) )
+
+    IF NOT return_value THEN
+
+        flash_message ( "COMP_EDIT_DISPLAY_6" ,
+                        TRUE                  )
+
+        self . set_position ( MIN , loop )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE comp_edit_validate_entity_row (       the_record ,
+						      self       ,
+						VALUE loop       )
+
+{
+*	Validates an entity row.
+*
+*******************************************************************************}
+
+	DECLARE return_value
+
+	return_value =  NOT ( BLANK ( SELECT versioned_component .
+			' column_definition_array [ MIN, 6 ] '
+			  IN OBJECT the_record ) )
+
+	IF NOT return_value THEN
+
+		flash_message ( "COMP_EDIT_DISPLAY_6" ,
+		                TRUE                  )
+
+		self . set_position ( MIN , loop )
+
+	ENDIF
+
+	RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE prompt_grid_cell (        self        ,
+                                VALUE cell_column ,
+                                VALUE cell_row    ,
+                                      window      ,
+                                VALUE column      ,
+                                VALUE row         ,
+                                VALUE cell_width  ,
+                                VALUE cell_height )
+
+{
+*   Prompt for a cell in the component list.
+*
+*******************************************************************************}
+
+    IF ( comp_edit_prompt_on_insert ) OR
+       ( lib_grid_is_insert_line ( self                             ,
+                       cell_row                         ,
+                       NOT self . user_info . editable )) THEN
+
+        IF ( NOT self . user_info . editable ) THEN
+
+            PROMPT AT column , row
+                IN WINDOW window
+
+        ELSEIF ( SELECT versioned_analysis . allow_category ) AND
+               ( self . user_info . editable                ) THEN
+
+            comp_edit_prompt_on_insert = TRUE
+
+            comp_edit_add_categories ( self      ,
+                           cell_row  ,
+                           cell_row  )
+            self . set_position ( 1 , cell_row )
+
+        ELSE
+
+            comp_edit_prompt_on_insert = TRUE
+
+            comp_edit_prompt_for_new ( self        ,
+                           cell_column ,
+                           cell_row    ,
+                           window      ,
+                           column      ,
+                           row         ,
+                           cell_width  ,
+                           cell_height )
+
+        ENDIF
+
+    ELSE
+
+        comp_edit_prompt_for_old ( self        ,
+                       cell_column ,
+                       cell_row    ,
+                       window      ,
+                       column      ,
+                       row         ,
+                       cell_width  ,
+                       cell_height )
+
+    ENDIF
+
+    IF lastkey = "EXIT" THEN
+
+        SET GLOBAL "LASTKEY" TO "DO" { Set the lastkey to call the
+                          validation routines         }
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_prompt_for_new (       self        ,
+                                       VALUE cell_column ,
+                                       VALUE cell_row    ,
+                                             window      ,
+                                       VALUE column      ,
+                                       VALUE row         ,
+                                       VALUE cell_width  ,
+                                       VALUE cell_height )
+
+{
+*   Prompt for a new cell in the component list.
+*
+*******************************************************************************}
+
+        DECLARE field_value        ,
+        can_leave          ,
+        accept_id          ,
+        delete_row         ,
+        create_insert_row
+
+    field_value = " "
+
+    REPEAT
+
+        PROMPT FOR field_value
+			FORMAT TEXT_50
+            AT column , row
+            IN WINDOW window
+                TO column + cell_width - 1
+            WITH ( justification  = PROMPT_JUSTIFY_LEFT ,
+                               browse_routine = "comp_browse"       )
+
+        can_leave = lib_grid_add_checks ( self                  ,
+                          blank ( field_value ) ,
+                          accept_id             ,
+                          create_insert_row     ,
+                          delete_row            )
+
+        IF accept_id THEN
+
+            can_leave = FALSE
+
+            IF lib_comp_validate_name ( field_value ,
+                                TRUE        ) THEN
+
+                can_leave = comp_edit_add_to_collection (
+                                 self        ,
+                                 field_value ,
+                                 cell_row    )
+
+            ENDIF
+
+        ENDIF
+
+    UNTIL can_leave
+
+    comp_edit_prompt_on_insert = FALSE
+
+    IF delete_row THEN
+
+        self . remove_row ( cell_row )
+
+    ELSEIF create_insert_row THEN
+
+        self . insert_row ( self . cell_rows + 1 ,
+                    1                    ,
+                    GRID_SEPARATOR_NONE  )
+        self . redisplay_row ( cell_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_add_to_collection (       self        ,
+                                field_value ,
+                          VALUE row         )
+
+{
+*   When come off insert prompt this adds to the object database and
+*   reorders.
+*
+*******************************************************************************}
+
+    DECLARE key0, the_record, inserted, undeleted
+
+    inserted  = TRUE
+    undeleted = FALSE
+
+    key0 = self . user_info . identity : PAD ( field_value , " " , 50 )
+
+    the_record = self . user_info . get_by_index ( "KEY0" , key0 )
+
+    IF ( the_record <> EMPTY ) THEN
+
+        IF ( the_record . deleted ) THEN
+
+            the_record . undelete ( )
+
+            undeleted = TRUE
+
+        ELSE
+
+            flash_message ( "COMP_EDIT_IN_LIST" ,
+                        TRUE                )
+
+            inserted = FALSE
+
+        ENDIF
+
+    ELSE
+
+        CREATE OBJECT self . user_info . class_to_use , the_record
+
+        object_add_table ( the_record , self . user_info . table )
+
+        the_record . table = self . user_info . table
+        the_record . new   = TRUE
+
+        RESERVE ENTRY versioned_component IN OBJECT the_record , key0
+
+        self . user_info . add ( the_record )
+
+    ENDIF
+
+    IF inserted THEN
+
+        comp_edit_build_order ( self ,
+                    TRUE ,
+                    row  )
+
+        the_record = self . user_info . get_by_index ( "KEY0" ,
+                                key0  )
+
+        ASSIGN versioned_component . order_number
+                IN OBJECT the_record = row
+
+        self . user_info . re_index ( "ORDER_NUMBER" )
+
+        IF NOT undeleted THEN
+
+            comp_edit_assign_defaults ( self ,
+                            row  )
+
+        ELSE
+
+            IF comp_edit_prompt_on_insert THEN
+
+                comp_edit_prompt_on_insert = FALSE
+
+            ENDIF
+
+        ENDIF
+
+        { Rob
+
+        self . redisplay_row ( row )
+                }
+
+        IF comp_list_enabled THEN
+
+            comp_list_add_component (
+                      SELECT versioned_component . analysis
+                             IN OBJECT the_record        ,
+                      SELECT versioned_component . analysis_version
+                             IN OBJECT the_record        ,
+                      SELECT versioned_component . name
+                             IN OBJECT the_record        ,
+                      row                                )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( inserted )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_prompt_for_old (       self        ,
+                       VALUE cell_column ,
+                       VALUE cell_row    ,
+                             window      ,
+                       VALUE column      ,
+                       VALUE row         ,
+                       VALUE cell_width  ,
+                       VALUE cell_height )
+
+{
+*   Prompt for an old cell in the component list. Almost each prompt is
+*   different so this routine is very untidy.
+*
+*******************************************************************************}
+
+    DECLARE the_record , the_val, the_field, the_result_type, previous_val
+
+    the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                            cell_row      )
+
+    the_result_type = TOUPPER ( SELECT versioned_component .
+                                       'column_definition_array
+                                                 [ RESULT_TYPE, 1 ]'
+                                IN OBJECT the_record )
+
+    IF ( cell_column = RESULT_TYPE ) THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+        the_val = SELECT versioned_component . ' the_field '
+               IN OBJECT the_record
+
+        previous_val = the_val
+
+        PROMPT FOR the_val
+          BROWSE ON valid_phrase_id . res_type
+          AT column , row
+          IN WINDOW window
+          TO column + cell_width - 1
+          WITH ( display_only = NOT ( self . user_info . editable )  ,
+             always_validate = TRUE                              ,
+             validation_routine = "comp_edit_validate_rt_prompt" ,
+             is_spin = TRUE                      )
+
+    ELSEIF ( cell_column = NAME ) THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+        the_val = SELECT versioned_component . ' the_field '
+               IN OBJECT the_record
+
+        PROMPT FOR the_val
+          BROWSE ON versioned_component . name
+          AT column , row
+          IN WINDOW window
+          TO column + cell_width - 1
+          WITH ( display_only = TRUE )
+
+    ELSEIF ( cell_column = SIG_FIGS_FORMAT ) THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+        the_val = SELECT versioned_component . ' the_field '
+               IN OBJECT the_record
+
+        PROMPT FOR the_val
+          BROWSE ON sig_figs
+          AT column , row
+          IN WINDOW window
+          TO column + cell_width - 1
+          WITH ( display_only = NOT ( self . user_info . editable ) )
+
+    ELSEIF ( cell_column = UNITS ) THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+        the_val = SELECT versioned_component . ' the_field '
+               IN OBJECT the_record
+
+        PROMPT FOR the_val
+          CLASS UNIT_PROMPT_CLASS
+          WITH ( display_only = NOT ( self . user_info . editable ) ,
+                         column       = column ,
+             row          = row    ,
+             window       = window ,
+             width        = cell_width )
+
+    ELSEIF  (cell_column = DILUTION_FACTOR) THEN
+
+        the_field = column_definition_array [ cell_column, 1 ]
+
+        the_val = SELECT versioned_component . ' the_field '
+              IN OBJECT the_record
+
+        PROMPT FOR the_val
+          BROWSE ON text
+          AT column , row
+          IN WINDOW window
+          TO column + cell_width - 1
+          WITH ( display_only = NOT ( self . user_info . editable ),
+            always_validate = TRUE ,
+            validation_routine = "comp_edit_validate_dil_prompt")
+
+    ELSE
+
+        IF comp_edit_field_is_valid ( the_result_type ,
+                          the_field       ,
+                          cell_column     ) THEN
+
+            the_val = SELECT versioned_component . ' the_field '
+                   IN OBJECT the_record
+
+            previous_val = the_val
+
+            IF ( cell_column > UNITS) AND
+               ( cell_column < SIG_FIGS_FORMAT ) THEN
+
+                comp_edit_do_dp_prompt ( self        ,
+                             cell_column ,
+                             cell_row    ,
+                             window      ,
+                             column      ,
+                             row         ,
+                             cell_width  ,
+                             cell_height ,
+                             the_val     )
+
+            ELSEIF ( the_result_type = "N" )    AND
+                   ( ( cell_column = MIN     )  OR
+                     ( cell_column = MAX     )  OR
+                     ( cell_column = MIN_PQL )  OR
+                     ( cell_column = MAX_PQL )) THEN
+
+                comp_edit_do_real_prompt ( self        ,
+                                           cell_column ,
+                                           cell_row    ,
+                                           window      ,
+                                           column      ,
+                                           row         ,
+                                           cell_width  ,
+                                           cell_height ,
+                                           the_val     ,
+                                           the_record  ,
+                                           the_field   )
+
+            ELSEIF ( the_result_type = "K" )   AND
+                   (( cell_column = MIN_PQL )  OR
+                    ( cell_column = MAX_PQL )) THEN
+
+                comp_edit_do_real_prompt ( self        ,
+                                           cell_column ,
+                                           cell_row    ,
+                                           window      ,
+                                           column      ,
+                                           row         ,
+                                           cell_width  ,
+                                           cell_height ,
+                                           the_val     ,
+                                           the_record  ,
+                                           the_field   )
+
+            ELSEIF ( cell_column = PQL_CALC ) THEN
+
+                IF the_val = NULL THEN
+
+                    the_val = ""
+
+                    ENDIF
+
+                PROMPT FOR the_val
+                       FORMAT versioned_component .
+                              pql_calculation
+                       AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+                       WITH ( display_only
+                        = NOT ( self . user_info . editable ) )
+
+                IF blank ( the_val ) THEN
+                    the_val = NULL
+                ENDIF
+
+            ELSEIF ( the_result_type = "K" ) AND
+                   ( cell_column = FORMULA ) THEN
+
+                comp_edit_do_formula ( self        ,
+                                       cell_column ,
+                                       cell_row    ,
+                                       window      ,
+                                       column      ,
+                                       row         ,
+                                       cell_width  ,
+                                       cell_height ,
+                                       the_val     ,
+                                       the_record  ,
+                                       the_field   )
+
+            ELSEIF ( cell_column = FORMULA ) THEN
+
+                PROMPT AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+
+            ELSEIF ( the_result_type = "K" ) AND
+                   ( cell_column = MIN )     THEN
+
+                PROMPT FOR the_val
+                       BROWSE ON calculation
+                       AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+                       WITH ( display_only
+                    = NOT ( self . user_info . editable ) ,
+                    build_routine = "comp_calc_build_routine" ,
+                    user_info = self . user_info )
+
+            ELSEIF ( the_result_type = "L" ) AND
+                   ( cell_column = MIN )     THEN
+
+                PROMPT FOR the_val
+                       BROWSE ON list_result_format
+                       AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+                       WITH ( display_only
+                        = NOT ( self . user_info . editable ) )
+
+            ELSEIF ( the_result_type = "O" ) AND
+                   ( cell_column = MIN )     THEN
+
+                PROMPT FOR the_val
+                       BROWSE ON phrase_header
+                       AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+                       WITH ( display_only
+                        = NOT ( self . user_info . editable ) )
+
+			ELSEIF ( the_result_type = "E" ) AND
+			       ( cell_column = MIN )     THEN
+
+				IF NOT variable_is_assigned ( valid_tables ) THEN
+					valid_tables = lib_comp_setup_valid_tables ( )
+				ENDIF
+
+				PROMPT FOR the_val
+				       CHOOSE OUTOF valid_tables
+				       AT column , row
+				       IN WINDOW window
+				       TO column + cell_width - 1
+				       WITH ( display_only
+				        = NOT ( self . user_info . editable ) )
+
+            ELSE
+
+                PROMPT FOR the_val
+                       FORMAT versioned_component . 'the_field'
+                       AT column , row
+                       IN WINDOW window
+                       TO column + cell_width - 1
+                       WITH ( display_only
+                        = NOT ( self . user_info . editable ) )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    IF (( the_field   <> ""   )  AND
+        ( cell_column <> NAME )) THEN
+
+        ASSIGN versioned_component . ' the_field '
+                IN OBJECT the_record = the_val
+
+        IF ( cell_column = RESULT_TYPE  ) AND
+           ( previous_val <> the_val    ) AND
+           ( NOT ( BLANK ( previous_val ) ) ) THEN
+
+            comp_edit_clear_component_fields ( self )
+
+        ELSEIF ( the_result_type = "N" ) AND ( cell_column = DP ) AND
+        ( previous_val <> the_val ) THEN
+
+            self . redisplay_row ( cell_row )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_do_formula (       self        ,
+                       VALUE cell_column ,
+                       VALUE cell_row    ,
+                         window      ,
+                       VALUE column      ,
+                       VALUE row         ,
+                       VALUE cell_width  ,
+                       VALUE cell_height ,
+                         the_val     ,
+                         the_record  ,
+                         the_field   )
+{
+*   Prompt and validate a formula
+*
+*
+*******************************************************************************}
+
+    DECLARE valid     ,
+        old_value ,
+        message   ,
+        names     ,
+        count     ,
+        component
+
+    CREATE OBJECT STD_FORMULA_VALIDATE , names
+
+    count = 1
+
+    WHILE count < self . cell_rows DO
+
+        component = self . user_info . get_by_index ( "ORDER_NUMBER"  ,
+                                   count          )
+
+        names . names [ count ] = SELECT versioned_component . name IN OBJECT component
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF the_val = NULL THEN
+
+        the_val = ""
+
+    ENDIF
+
+    old_value = the_val
+
+    REPEAT
+
+        valid = FALSE
+
+        PROMPT FOR the_val
+               FORMAT versioned_component . formula
+               AT column , row
+               IN WINDOW window
+                   TO column + cell_width - 1
+               WITH ( display_only   = NOT ( self . user_info . editable ) ,
+                      build_routine  = "formula_builder"                   ,
+                      browse_routine = "formula_builder"                   ,
+                      user_info      = self . user_info                    )
+
+        IF ( old_value <> the_val ) AND
+           ( lastkey   <> "EXIT"  ) AND
+           ( lastkey   <> "REMOVE") AND
+           NOT blank ( the_val )    THEN
+
+            IF NOT lib_formula_definition_validate ( the_val  ,
+                                 names    ,
+                                     message  ) THEN
+
+                flash_message ( message , TRUE )
+
+            ELSE
+
+                valid = TRUE
+
+            ENDIF
+
+        ELSE
+
+            valid = TRUE
+
+        ENDIF
+
+    UNTIL valid = TRUE
+
+    IF blank ( the_val ) THEN
+
+        the_val = NULL
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_do_real_prompt (       self        ,
+                       VALUE cell_column ,
+                       VALUE cell_row    ,
+                             window      ,
+                       VALUE column      ,
+                       VALUE row         ,
+                       VALUE cell_width  ,
+                       VALUE cell_height ,
+                             the_val     ,
+                             the_record  ,
+                             the_field   )
+{
+*   Does a special prompt on the decimal places, significant figures and
+*   rounding prompts.
+*
+*******************************************************************************}
+
+    DECLARE decimal_places
+
+    decimal_places = SELECT versioned_component . places
+            IN OBJECT the_record
+
+    IF decimal_places = -1 THEN
+        decimal_places = 3
+    ENDIF
+
+    PROMPT FOR the_val
+      FORMAT versioned_component . ' the_field '
+      AT column , row
+      IN WINDOW window
+      TO column + cell_width - 1
+      WITH ( display_only = NOT ( self . user_info . editable ) ,
+         places = decimal_places                            ,
+         justification = PROMPT_JUSTIFY_LEFT                )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_rt_prompt ( self )
+
+{
+*   Validates the result type prompt because prompt_text_phrase
+*   lets you off with a blank value.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value = TRUE
+
+    IF BLANK ( self . text ) THEN
+        return_value = FALSE
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_dil_prompt ( self )
+
+{
+*   Validates the result type prompt because prompt_text_phrase
+*   lets you off with a blank value.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value = TRUE
+
+    IF NOT numtext ( self . text ) THEN
+        return_value = FALSE
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_do_dp_prompt (       self        ,
+                     VALUE cell_column ,
+                     VALUE cell_row    ,
+                           window      ,
+                     VALUE column      ,
+                     VALUE row         ,
+                     VALUE cell_width  ,
+                     VALUE cell_height ,
+                            the_val    )
+{
+*   Does a special prompt on the decimal places, significant figures and
+*   rounding prompts.
+*
+*******************************************************************************}
+
+    IF the_val = -1 THEN
+        the_val = "X"
+    ELSE
+        the_val = STRIP ( the_val )
+    ENDIF
+
+    PROMPT FOR the_val
+      ON LINE row
+      FROM column
+      IN WINDOW window
+      CHOOSE OUTOF places_browse_array
+      WITH ( display_only = NOT ( self . user_info . editable )  ,
+             zap_on_first = TRUE                                 ,
+         always_validate = TRUE                              ,
+         validation_routine = "comp_edit_validate_dp_prompt" ,
+         is_spin = TRUE                                      )
+
+    IF the_val = "X" THEN
+        the_val = -1
+    ELSE
+        the_val = NUMERIC ( the_val )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_dp_prompt ( self )
+
+{
+*   Validates the prompt for significant figures etc.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    return_value = FALSE
+
+    IF STRIP ( self . text ) <> "X" THEN
+
+        IF NUMERIC ( self . text ) <> ERROR THEN
+            IF NUMERIC ( self . text ) >= 0 THEN
+                return_value = TRUE
+            ENDIF
+        ENDIF
+
+    ELSE
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_clear_component_fields ( self )
+
+{
+*   Clears all fields after the result type has been changed.
+*
+*******************************************************************************}
+
+    comp_edit_assign_defaults ( self               ,
+                    self . current_row )
+
+    self . redisplay_row ( self . current_row )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_assign_defaults (       self  ,
+                        VALUE row   )
+
+{
+*   Assigns default_values when either add new component or change the
+*   result type. Only need to fill in defaults for result types N, B, K.
+*
+*******************************************************************************}
+
+    DECLARE the_record
+
+    the_record = self . user_info . get_by_index ( "ORDER_NUMBER"  ,
+                            row            )
+
+    IF comp_edit_prompt_on_insert THEN
+
+        comp_edit_prompt_on_insert = FALSE
+
+        IF self . cell_rows = 1 THEN
+
+            ASSIGN versioned_component . ' column_definition_array
+                [ RESULT_TYPE, 1 ] ' IN OBJECT the_record = "N"
+
+            comp_edit_assign_default_values ( self       ,
+                                  the_record )
+
+        ELSE
+
+            comp_edit_copy_default_values ( self       ,
+                                the_record )
+
+        ENDIF
+
+    ELSE
+
+        comp_edit_assign_default_values ( self       ,
+                              the_record )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_assign_default_values ( self       ,
+                          the_record )
+
+{
+*   Assigns default_values when either add new component or change the
+*   result type. Only need to fill in defaults for result types N, B, K.
+*
+*******************************************************************************}
+
+    DECLARE the_result_type,
+            the_field,
+            loop
+
+    { Clear the type specific fields }
+
+    comp_edit_clear_field ( the_record, "true_word"          )
+    comp_edit_clear_field ( the_record, "allowed_characters" )
+    comp_edit_clear_field ( the_record, "calculation"        )
+
+    { Based on the new type set the appropriate fields }
+
+    the_result_type = SELECT versioned_component . ' column_definition_array
+            [ RESULT_TYPE, 1 ] ' IN OBJECT the_record
+
+    loop = 2
+
+    WHILE loop < self . cell_columns DO
+
+        loop = loop + 1
+
+        IF comp_edit_field_is_valid ( the_result_type ,
+                          the_field       ,
+                          loop            ) THEN
+
+            comp_edit_assign_the_default ( the_record      ,
+                               the_result_type ,
+                               the_field       ,
+                               loop            )
+
+        ELSE
+
+            comp_edit_clear_field ( the_record                          ,
+                                    column_definition_array [ loop, 1 ] )
+
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_copy_default_values ( self       ,
+                        the_record )
+
+{
+*   When add a new component this copies the values of the component above.
+*   If there is no record above, the one below is used.
+*   If there is also none below, the default values are assigned instead.
+*
+*******************************************************************************}
+
+    DECLARE copy_record, copy_result_type, loop, the_field
+
+    copy_record = self . user_info . get_by_index
+                        ( "ORDER_NUMBER"         ,
+                          self . current_row - 1 )
+
+    IF ( copy_record = EMPTY ) THEN
+
+        copy_record = self . user_info . get_by_index
+                        ( "ORDER_NUMBER"         ,
+                          self . current_row + 1 )
+
+    ENDIF
+
+    IF ( copy_record <> EMPTY ) THEN
+
+        copy_result_type = SELECT  versioned_component .
+                                  'column_definition_array
+                                            [ RESULT_TYPE, 1 ]'
+                           IN OBJECT copy_record
+
+        ASSIGN versioned_component . ' column_definition_array
+           [ RESULT_TYPE, 1 ] ' IN OBJECT the_record = copy_result_type
+
+        loop= 2
+
+        WHILE loop < self . cell_columns DO
+
+            loop = loop + 1
+
+            IF comp_edit_field_is_valid ( copy_result_type ,
+                              the_field        ,
+                              loop             ) THEN
+
+                ASSIGN versioned_component . ' the_field '
+                       IN OBJECT the_record =
+                          SELECT versioned_component .
+                                 ' the_field '
+                          IN OBJECT copy_record
+
+            ENDIF
+
+        ENDWHILE
+
+    ELSE
+        IF self . current_row = 1 THEN
+
+            ASSIGN versioned_component . ' column_definition_array
+                [ RESULT_TYPE, 1 ] ' IN OBJECT the_record = "N"
+
+        ENDIF
+
+        comp_edit_assign_default_values ( self       ,
+                              the_record )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_clear_field (       the_record ,
+                                    VALUE the_field  )
+
+{
+*   Clear the field by assign the default blank value.
+*
+*******************************************************************************}
+
+    DECLARE default_value
+
+    get_field_details versioned_component . ' the_field '
+                      "DEFAULT_VALUE",
+                      default_value
+
+    ASSIGN versioned_component . ' the_field '
+           IN OBJECT the_record = default_value
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_assign_the_default (       the_record      ,
+                           VALUE the_result_type ,
+                           VALUE the_field       ,
+                           VALUE loop            )
+
+{
+*   Assigns the default into field .
+*
+*******************************************************************************}
+
+    IF the_result_type = "B" THEN
+
+        IF loop = MIN THEN
+
+            ASSIGN versioned_component . ' the_field '
+                IN OBJECT the_record = "Yes"
+
+        ELSEIF loop = MAX THEN
+
+            ASSIGN versioned_component . ' the_field '
+                IN OBJECT the_record = "No"
+
+        ENDIF
+
+    ELSE
+
+        IF the_result_type = "N" THEN
+            IF ( loop = MIN ) OR
+               ( loop = MAX ) THEN
+
+                ASSIGN versioned_component . ' the_field '
+                    IN OBJECT the_record = 0
+
+            ENDIF
+
+		ELSEIF ( the_result_type = "E" ) OR
+		       ( the_result_type = "O" ) OR
+               ( the_result_type = "K" ) OR
+               ( the_result_type = "L" ) THEN
+
+            IF loop = calc_id THEN
+
+                ASSIGN versioned_component . 'the_field'
+                    IN OBJECT the_record = " "
+
+            ENDIF
+
+        ENDIF
+
+        IF ( loop = DP ) OR
+           ( loop = NO_SIG_FIGS ) OR
+           ( loop = BASE ) THEN
+
+            ASSIGN versioned_component . ' the_field '
+              IN OBJECT the_record = -1
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+    ROUTINE check_move (       self       ,
+                         VALUE old_column ,
+                         VALUE old_row    ,
+                               new_column ,
+                               new_row    )
+
+{
+*   Ensure that don't move to invalid column.
+*
+*******************************************************************************}
+
+    DECLARE the_record, the_result_type, the_field
+
+    IF lib_grid_is_insert_line (     self                        ,
+                         new_row                     ,
+                     NOT self . user_info . editable )
+
+        new_column = 1
+
+    ELSEIF ( new_column = 1 ) THEN
+
+        IF ( NOT comp_edit_prompt_on_insert ) THEN
+            new_column = 2
+        ENDIF
+
+    ELSE
+
+        the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                                new_row       )
+
+        the_result_type = SELECT versioned_component . ' column_definition_array
+                [ RESULT_TYPE, 1 ] ' IN OBJECT the_record
+
+        IF NOT comp_edit_field_is_valid ( the_result_type ,
+                              the_field       ,
+                              new_column      ) THEN
+
+            IF (the_result_type = "K") OR
+               (the_result_type = "L") THEN
+
+                IF old_column = MIN THEN
+                    new_column = UNITS
+                ELSE
+                    new_column = MIN
+                ENDIF
+
+            ELSEIF (the_result_type = "N"     ) AND
+                   (new_column      = FORMULA ) AND
+                   (global ( "PQL_ENABLE" )   ) THEN
+
+                IF old_column = MIN_PQL THEN
+
+                    new_column = SIG_FIGS_FORMAT
+
+                ELSE
+
+                    new_column = MIN_PQL
+
+                ENDIF
+
+            ELSE
+
+                comp_edit_move_to_valid_field ( the_result_type,
+                                new_column    ,
+                                new_row       ,
+                                old_column    ,
+                                old_row       )
+
+            ENDIF
+
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_move_to_valid_field ( VALUE the_result_type ,
+                              new_column      ,
+                              new_row         ,
+                              old_column      ,
+                              old_row         )
+
+{
+*   Moves to the nearest valid field in the grid.
+*
+*******************************************************************************}
+
+    DECLARE loop, field_is_valid, the_field
+
+    loop        = new_column
+    field_is_valid = FALSE
+
+    WHILE ( loop > 0 ) AND ( NOT field_is_valid ) DO
+
+        loop = loop - 1
+
+        IF comp_edit_field_is_valid ( the_result_type ,
+                          the_field       ,
+                          loop            ) THEN
+
+            field_is_valid = TRUE
+
+        ENDIF
+
+    ENDWHILE
+
+    IF field_is_valid THEN
+        new_column = loop
+    ELSE
+        new_column = old_column
+        new_row    = old_row
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE remove_row (      self     ,
+                 VALUE row_num )
+{
+*   Remove the given row
+*
+*******************************************************************************}
+
+    DECLARE the_record, do_delete
+
+    the_record = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                            row_num       )
+
+    IF the_record <> EMPTY THEN
+
+        IF NOT comp_list_enabled THEN
+
+            do_delete = TRUE
+
+        ELSE
+
+            do_delete = comp_list_delete_component (
+                       SELECT versioned_component . analysis
+                              IN OBJECT the_record     ,
+                       SELECT versioned_component . analysis_version
+                              IN OBJECT the_record     ,
+                       SELECT versioned_component . name
+                              IN OBJECT the_record     ,
+                       FALSE { ask the user first }    )
+
+        ENDIF
+
+        IF do_delete THEN
+
+            the_record . delete ( )
+
+            ASSIGN versioned_component . order_number
+                      IN OBJECT the_record = DELETED_ORDER_NUM
+
+            comp_edit_build_order ( self  ,
+                        FALSE ,
+                        self . current_row )
+
+            self . user_info . re_index ( "ORDER_NUMBER" )
+
+            self . remove_row ( row_num )
+
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE remove_cell ( self )
+
+{
+*   Prompt for a cell in the component list.
+*
+*******************************************************************************}
+
+    DECLARE row_num
+
+    IF self . user_info . editable THEN
+
+        IF comp_edit_prompt_on_insert THEN
+
+            self . current_column      = 2
+            comp_edit_prompt_on_insert = FALSE
+
+        ELSE
+
+            row_num = self . current_row
+
+            IF row_num > 0 THEN
+
+                remove_row ( self   ,
+                        row_num )
+
+            ENDIF
+
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE insert_cell ( self )
+
+{
+*   Prompt for a cell in the component list.
+*
+*******************************************************************************}
+
+    IF self . user_info . editable THEN
+
+        comp_edit_add_component ( self               ,
+                      self . current_row ,
+                      self . current_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_add_component (       self        ,
+                      VALUE row         ,
+                      VALUE row_to_copy )
+
+{
+*   Adds a new component to list.
+*
+*******************************************************************************}
+
+    IF ( row < 1 ) THEN
+
+        row = 1
+
+    ENDIF
+
+    IF SELECT versioned_analysis . allow_category THEN
+
+        comp_edit_add_categories ( self        ,
+                       row         ,
+                       row_to_copy )
+
+    ELSE
+
+        comp_edit_prompt_on_insert = TRUE
+
+
+        self . insert_row ( row , 1 , GRID_SEPARATOR_NONE )
+
+        self . set_position ( 1 , row )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_display (       self        ,
+                             VALUE cell_column ,
+                             VALUE cell_row    ,
+                                   window      ,
+                             VALUE column      ,
+                             VALUE row         ,
+                             VALUE cell_width  ,
+                             VALUE cell_height )
+{
+*
+*   Display Category
+*
+*******************************************************************************}
+
+    DISPLAY self . user_info [ cell_row ]
+        ON LINE row
+        FROM    column
+        TO      column + cell_width - 1
+        FORMAT  BOOLEAN
+        IN WINDOW window
+        WITH ( is_check = TRUE )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_prompt (       self        ,
+                            VALUE cell_column ,
+                            VALUE cell_row    ,
+                                  window      ,
+                            VALUE column      ,
+                            VALUE row         ,
+                            VALUE cell_width  ,
+                            VALUE cell_height )
+{
+*
+*   Display Category
+*
+*******************************************************************************}
+
+    PROMPT FOR self . user_info [ cell_row ]
+           ON LINE   row
+           FROM      column
+           IN WINDOW window
+           BROWSE ON BOOLEAN
+           WITH ( is_check = TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_off_top ( self )
+
+{
+*
+*   Leave the grid
+*
+*******************************************************************************}
+
+    self . stop_prompt ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_insert ( self )
+
+{
+*
+*   Set all to TRUE
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . user_info ) DO
+
+        self . user_info [ count ] = TRUE
+
+        count = count + 1
+
+    ENDWHILE
+
+    self . redisplay_column ( 1 )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_remove ( self )
+
+{
+*
+*   Set all to FALSE
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( self . user_info ) DO
+
+        self . user_info [ count ] = FALSE
+
+        count = count + 1
+
+    ENDWHILE
+
+    self . redisplay_column ( 1 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_addition ( VALUE base_name  ,
+                            self       ,
+                            grid       ,
+                          VALUE row        ,
+                                categories )
+
+{
+*   Add all the categories to the list
+*
+*******************************************************************************}
+
+    DECLARE new_name      ,
+        count         ,
+        component     ,
+        created_one
+
+    count       = 1
+    created_one = FALSE
+
+    WHILE count <= size_of_array ( categories ) DO
+
+        IF grid . user_info [ count ] THEN
+
+            new_name =
+                lib_comp_add_category ( base_name             ,
+                                    categories [ count ]  ,
+                            EMPTY                 )
+
+            comp_edit_prompt_on_insert = TRUE
+
+            IF comp_edit_add_to_collection ( self      ,
+                                 new_name  ,
+                                 row       ) THEN
+
+
+                component = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                                                              row )
+
+                lab_user_comp_edit_insert ( categories [ count ] ,
+                                component            )
+
+                self . insert_row ( row , 1 , GRID_SEPARATOR_NONE )
+
+                row = row + 1
+
+            ENDIF
+
+            created_one = TRUE
+
+        ENDIF
+
+        count = count + 1
+
+
+    ENDWHILE
+
+    IF NOT created_one THEN
+
+        comp_edit_prompt_on_insert = TRUE
+
+        IF comp_edit_add_to_collection ( self       ,
+                         base_name  ,
+                         row        ) THEN
+
+            component = self . user_info . get_by_index ( "ORDER_NUMBER" ,
+                                                       row )
+
+
+            lab_user_comp_edit_insert ( EMPTY ,
+                                component            )
+
+            self . insert_row ( row , 1 , GRID_SEPARATOR_NONE )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_form_insert ( self )
+
+{
+*   Insert action
+*
+*******************************************************************************}
+
+    comp_edit_category_insert ( self . prompt_objects [ 2 ] )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_form_remove ( self )
+
+{
+*   Remove action
+*
+*******************************************************************************}
+
+    comp_edit_category_remove ( self . prompt_objects [ 2 ] )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_validate_name ( self )
+
+{
+*   Validate the component name
+*
+*******************************************************************************}
+
+    RETURN ( lib_comp_validate_name ( self . value ,
+                      TRUE         ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_category_validate ( self )
+
+{
+*   Validation action
+*
+*******************************************************************************}
+
+    DECLARE comp_name  ,
+        valid      ,
+        count      ,
+        categories ,
+        test_name
+
+    lib_comp_all_categories ( categories )
+
+    comp_name = self . prompt_objects [ 1 ] . value
+
+    valid = TRUE
+
+    count = 1
+
+    WHILE ( count <= size_of_array ( categories )) AND
+          ( valid                                ) DO
+
+        IF self . prompt_objects [ 2 ] . user_info [ count ] THEN
+
+            test_name = lib_comp_add_category ( comp_name            ,
+                                categories [ count ] ,
+                                EMPTY                )
+
+            valid = lib_comp_validate_name ( test_name ,
+                             TRUE      )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF valid THEN
+
+            IF blank ( comp_name ) THEN
+
+            flash_message ( "No Name specified" , TRUE )
+            valid = FALSE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_add_categories (       self        ,
+                       VALUE row         ,
+                       VALUE row_to_copy )
+
+{
+*   Add all the categories to the list
+*
+*******************************************************************************}
+
+    DECLARE form          ,
+        prompt_object ,
+        button_object ,
+        count         ,
+        categories    ,
+        grid          ,
+        title         ,
+        grid_height   ,
+        terminator
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        terminator = "  "
+
+    ELSE
+
+        terminator = ": "
+
+    ENDIF
+
+    lib_comp_all_categories ( categories )
+
+    grid_height = find_min_number ( size_of_array ( categories )    ,
+                    global ( "SCREEN_HEIGHT" ) - 13 )
+
+    PROMPT OBJECT form
+           CLASS PROMPT_CLASS_FORM
+           WITH  ( column         = 25                                           ,
+               row            = 7                                            ,
+               height         = grid_height + 2                              ,
+               width          = 45                                           ,
+               header         = get_user_message ( "COMP_EDIT_CAT_HEAD" ,1 ) ,
+               footer         = get_user_message ( "COMP_EDIT_CAT_FOOT" ,1 ) ,
+               button_style   = FORM_BUTTON_NONE                             ,
+               vgl_library    = global ( "current_library" )                 ,
+               insert_routine = "comp_edit_category_form_insert"             ,
+               remove_routine = "comp_edit_category_form_remove"             ,
+               validation_routine = "comp_edit_category_validate"            )
+
+
+    PROMPT OBJECT prompt_object
+           FORMAT TEXT35
+           ON LINE 1
+           FROM    8
+
+
+    PROMPT OBJECT grid
+           CLASS PROMPT_CLASS_GRID
+           WITH ( height      = grid_height                            ,
+              width       = 20                                     ,
+              column      = 2                              ,
+              row         = 3                                      ,
+              vgl_library = global ( "current_library" )           ,
+              display_cell_routine = "comp_edit_category_display"  ,
+              prompt_cell_routine  = "comp_edit_category_prompt"   ,
+              off_top_routine      = "comp_edit_category_off_top"  ,
+              insert_routine       = "comp_edit_category_insert"   ,
+              remove_routine       = "comp_edit_category_remove"   ,
+              cell_rows            = size_of_array ( categories )  ,
+              cell_columns         = 1                             ,
+              title_size_left      = 15                            ,
+              title_rendition_left = PROMPT_RENDITION_BOLD         )
+
+    grid . column_size [ 1 ] = 5
+
+    grid . user_info = comp_edit_create_categories
+
+    count = 1
+
+    WHILE count <= size_of_array ( categories ) DO
+
+        title = pad ( categories [ count ]       ,
+                  " "                        ,
+                  grid . title_size_left - 2 )
+
+        title = title : terminator
+
+        grid . title_text_left [ count , 1 ] = title
+
+        count = count + 1
+
+    ENDWHILE
+
+    title = get_user_message ( "COMP_EDIT_CAT_NAME" ,1 ) : terminator
+
+    form . add_display (  title                    ,
+                  2                        ,
+                  1                        ,
+                  PROMPT_RENDITION_BOLD  +
+                  PROMPT_RENDITION_RAISED  )
+
+    PROMPT OBJECT prompt_object
+           FORMAT TEXT35
+           ON LINE 1
+           FROM    string_length ( title ) + 3
+           WITH ( vgl_library        =  global ( "current_library" ) ,
+              validation_routine = "comp_edit_validate_name"   )
+
+    form . add_prompt ( prompt_object )
+    form . add_prompt ( grid          )
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        form . height = form . height + 2
+
+        PROMPT OBJECT button_object
+               CLASS "STD_PROMPT_BUTTON"
+               ON LINE 3
+               FROM 28
+                   TO   38
+               WITH ( caption      = get_user_message ( "COMP_EDIT_CAT_OK" , 1 ),
+                  enabled      = TRUE ,
+                      send_lastkey = "DO" )
+
+        form . add_prompt ( button_object )
+
+        PROMPT OBJECT button_object
+               CLASS "STD_PROMPT_BUTTON"
+               ON LINE 5
+               FROM 28
+                   TO   38
+               WITH ( caption      = get_user_message ( "COMP_EDIT_CAT_SET_ALL" , 1 )    ,
+                  enabled      = TRUE          ,
+                      send_lastkey = "INSERT HERE" )
+
+        form . add_prompt ( button_object )
+
+        PROMPT OBJECT button_object
+               CLASS "STD_PROMPT_BUTTON"
+               ON LINE 7
+               FROM 28
+                   TO   38
+               WITH ( caption      = get_user_message ( "COMP_EDIT_CAT_CLEAR_ALL" , 1 ) ,
+                  enabled      = TRUE        ,
+                      send_lastkey = "REMOVE"    )
+
+        form . add_prompt ( button_object )
+
+
+        PROMPT OBJECT button_object
+               CLASS "STD_PROMPT_BUTTON"
+               ON LINE 9
+               FROM 28
+                   TO   38
+               WITH ( caption      = get_user_message ( "COMP_EDIT_CAT_CANCEL" , 1 ) ,
+                  enabled      = TRUE     ,
+                      send_lastkey = "EXIT"   )
+
+        form . add_prompt ( button_object )
+
+        form . add_frame ( ""           ,
+                   1            ,
+                   1            ,
+                   1            ,
+                   form . width )
+
+        form . add_frame ( ""                ,
+                   1                 ,
+                   grid . row        ,
+                   grid . height     ,
+                   grid . width  + 2 )
+
+    ENDIF
+
+    form . prompt_id = GLOBAL ("CURRENT_LIBRARY") : "_ADD_COMPS"
+    form . start_prompt ()
+    form . wait_prompt  ()
+
+    IF form . get_lastkey () = "DO" THEN
+
+        comp_edit_category_addition ( prompt_object . value ,
+                          self                  ,
+                          grid                  ,
+                          row                   ,
+                          categories            )
+
+    ENDIF
+
+    form . end_prompt ()
+
+        IF lib_grid_is_insert_line ( self                            ,
+                     row                         ,
+                                 NOT self . user_info . editable ) THEN
+
+
+        IF row = 1 THEN
+
+            SET GLOBAL "lastkey" to "EXIT"
+
+        ELSE
+
+            SET GLOBAL "lastkey" to "UP"
+
+        ENDIF
+
+    ELSE
+
+        SET GLOBAL "lastkey" to "CONTINUE"
+
+    ENDIF
+
+    self . set_position ( self . current_column ,
+                  row                   )
+
+    comp_edit_prompt_on_insert = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_propagate ( self )
+
+{
+*   Do a propagate
+*
+*******************************************************************************}
+
+    DECLARE form           ,
+        terminator     ,
+        message        ,
+        message_ptr    ,
+        display_width  ,
+        display_start  ,
+        prompt_start   ,
+        component      ,
+        comp_type      ,
+        comp_name      ,
+        category       ,
+        field_value    ,
+        the_field      ,
+        boolean_prompt
+
+    component = self . user_info . get_by_index ( "ORDER_NUMBER"     ,
+                              self . current_row )
+
+    IF component = EMPTY THEN
+
+        { No rows therefore no propagation therefore get out fast }
+
+        RETURN
+
+    ENDIF
+
+    comp_name = SELECT versioned_component . name IN OBJECT component
+
+    category = lib_comp_get_category ( comp_name )
+
+    comp_type = TOUPPER ( SELECT versioned_component . result_type
+                                IN OBJECT component )
+
+    IF ( comp_edit_field_is_valid ( comp_type             ,
+                        the_field             ,
+                        self . current_column )) AND
+       ( self . current_column > 2                         ) THEN
+
+            field_value = SELECT versioned_component . 'the_field'
+                    IN OBJECT component
+
+
+        display_start = 2
+        display_width = 25
+            prompt_start  = 30
+
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+            terminator = " "
+
+            ELSE
+
+            terminator = ":"
+
+        ENDIF
+
+        PROMPT OBJECT form
+               CLASS PROMPT_CLASS_FORM
+               WITH  ( column  = 10                                              ,
+                   row     = 12                                              ,
+                   height  = 7                                               ,
+                   width   = 65                                              ,
+                   header  = get_user_message ( "COMP_EDIT_PROP_HEAD" , 1  ) ,
+                   footer  = get_user_message ( "COMP_EDIT_PROP_FOOT" , 1  ) )
+
+
+        form . parent_prompt = self
+
+        message = get_user_message ( "COMP_EDIT_PROP_NAME" , 1 )
+        message = pad ( message , " " , display_width )
+        message = message : terminator
+
+        form . add_display ( message                   ,
+                     display_start             ,
+                     1                         ,
+                     PROMPT_RENDITION_BOLD     +
+                     PROMPT_RENDITION_RAISED   )
+
+        form . add_display ( strip ( comp_name ) : " "  ,
+                     prompt_start               ,
+                     1                          ,
+                     PROMPT_RENDITION_LOWERED   )
+
+
+        message = get_user_message ( "COMP_EDIT_PROP_FIELD" , 1 )
+        message = pad ( message , " " , display_width )
+        message = message : terminator
+
+        form . add_display ( message                   ,
+                     display_start             ,
+                     2                         ,
+                     PROMPT_RENDITION_BOLD     +
+                     PROMPT_RENDITION_RAISED   )
+
+        form . add_display ( column_definition_array [ self . current_column ,
+                                   3                     ],
+                     prompt_start              ,
+                     2                         ,
+                         PROMPT_RENDITION_LOWERED  )
+
+
+        message = get_user_message ( "COMP_EDIT_PROP_VALUE" , 1 )
+        message = pad ( message , " " , display_width )
+        message = message : terminator
+
+        form . add_display ( message                   ,
+                     display_start             ,
+                     3                         ,
+                     PROMPT_RENDITION_BOLD     +
+                     PROMPT_RENDITION_RAISED   )
+
+        form . add_display ( strip ( field_value ) : "  " ,
+                     prompt_start                 ,
+                     3                            ,
+                     PROMPT_RENDITION_LOWERED     )
+
+        form . add_frame ( ""            ,
+                   1             ,
+                   1             ,
+                   3             ,
+                   form . width  )
+
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+            display_start = 5
+            display_width = 20
+            prompt_start  = 2
+
+        ENDIF
+
+        message = get_user_message ( "COMP_EDIT_PROP_DOWN" , 1)
+        message = pad ( message , " " , display_width )
+        message = message : terminator
+
+        form . add_display ( message                   ,
+                     display_start             ,
+                     5                         ,
+                     PROMPT_RENDITION_BOLD     +
+                     PROMPT_RENDITION_RAISED   )
+
+
+        message_fetch ( "COMP_EDIT_PROP_TYPE" , message_ptr )
+        message_add_parameter ( message_ptr , comp_type      )
+                message = message_get_text ( message_ptr , 1 )
+
+        message = pad ( message , " " , display_width )
+        message = message : terminator
+
+        form . add_display ( message                   ,
+                     display_start             ,
+                     6                         ,
+                     PROMPT_RENDITION_BOLD     +
+                     PROMPT_RENDITION_RAISED   )
+
+        IF NOT blank ( category ) THEN
+
+            message_fetch ( "COMP_EDIT_PROP_CAT" , message_ptr )
+            message_add_parameter ( message_ptr ,  strip ( category ))
+                    message = message_get_text ( message_ptr , 1 )
+
+            message = pad ( message , " " , display_width )
+            message = message : terminator
+
+            form . add_display ( message                   ,
+                         display_start             ,
+                         7                         ,
+                         PROMPT_RENDITION_BOLD     +
+                             PROMPT_RENDITION_RAISED   )
+
+        ENDIF
+
+        PROMPT OBJECT boolean_prompt
+               ON LINE 5 FROM prompt_start
+               BROWSE ON BOOLEAN
+                   WITH ( value    = TRUE ,
+                  is_check = TRUE )
+
+        form . add_prompt ( boolean_prompt )
+
+        PROMPT OBJECT boolean_prompt
+               ON LINE 6 FROM prompt_start
+               BROWSE ON BOOLEAN
+                   WITH ( value    = TRUE ,
+                  is_check = TRUE )
+
+        form . add_prompt ( boolean_prompt )
+
+        IF NOT blank ( category ) THEN
+
+            PROMPT OBJECT boolean_prompt
+                   ON LINE 7 FROM prompt_start
+                   BROWSE ON BOOLEAN
+                       WITH ( value    = TRUE ,
+                      is_check = TRUE )
+
+            form . add_prompt ( boolean_prompt )
+
+        ENDIF
+
+        form . add_frame ( ""            ,
+                   1             ,
+                   5             ,
+                       3             ,
+                   form . width  )
+
+
+        self . set_enabled ( FALSE )
+        form . prompt_id = GLOBAL ("CURRENT_LIBRARY") : "_EDIT_COMPS"
+        form . start_prompt ()
+        form . wait_prompt  ()
+        form . end_prompt   ()
+        self . set_enabled ( TRUE )
+
+        IF form . get_lastkey () = "DO" THEN
+
+            comp_edit_propagate_column ( form        ,
+                                 self        ,
+                             category    ,
+                             comp_type   ,
+                             field_value ,
+                             the_field   )
+
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE comp_edit_propagate_column (       form        ,
+                           grid        ,
+                         VALUE category    ,
+                         VALUE comp_type   ,
+                         VALUE field_value ,
+                         VALUE field_name  )
+
+{
+*   Do a propagate
+*
+*******************************************************************************}
+
+    DECLARE start_row        ,
+        end_row          ,
+        count            ,
+        component        ,
+        comp_name        ,
+        do_it
+
+
+    IF form . prompt_objects [ 1 ] . value THEN
+
+        start_row = grid . current_row + 1
+        end_row = grid . cell_rows - 1
+
+    ELSE
+
+        start_row = 1
+        end_row = grid . cell_rows - 1
+
+    ENDIF
+
+    IF NOT form . prompt_objects [ 2 ] . value THEN
+
+        comp_type = ""
+
+    ENDIF
+
+    IF NOT blank ( category ) THEN
+
+        IF NOT form . prompt_objects [ 3 ] . value THEN
+
+            category = ""
+
+            ENDIF
+
+    ENDIF
+
+    count = start_row
+
+    WHILE count <= end_row DO
+
+        component = grid . user_info . get_by_index ( "ORDER_NUMBER"  ,
+                                   count          )
+
+        comp_name = SELECT versioned_component . name IN OBJECT component
+
+        do_it = TRUE
+
+        IF NOT blank ( category ) THEN
+
+            IF category <> lib_comp_get_category ( comp_name ) THEN
+
+                do_it = FALSE
+
+            ENDIF
+
+        ENDIF
+
+        IF NOT blank ( comp_type ) THEN
+
+            IF comp_type <> TOUPPER ( SELECT versioned_component . result_type
+                                              IN OBJECT component ) THEN
+
+                do_it = FALSE
+
+            ENDIF
+
+        ENDIF
+
+        IF do_it THEN
+
+            ASSIGN versioned_component . 'field_name'
+                IN OBJECT component = field_value
+
+
+        ENDIF
+
+
+        count = count + 1
+
+    ENDWHILE
+
+    grid . redisplay_column ( grid . current_column )
+
+ENDROUTINE
+
+
+{*******************************************************************************}
+
+    ROUTINE matrix_button ( self )
+
+{
+*   Launch Matrix definition interface
+*
+*******************************************************************************}
+
+    DECLARE identity
+
+    identity = global_field_collection . identity
+
+    create_cluster ( self .
+                       parent_prompt .
+                         prompt_objects [1] .
+                           user_info, FALSE )
+
+    { launch matrix definition interface }
+    comp_edit_matrix ( identity         ,
+               EMPTY            ,
+               global_matrix_collection ,
+               operation                ,
+               0                        )
+
+    clear_cluster()
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+    ROUTINE comp_browse ( self )
+
+{
+*   Routine to browse on existing component names, or to type in a new name
+*
+*******************************************************************************}
+
+    DECLARE browse_array, comp_name, count, chosen_id
+    ARRAY browse_array
+
+    count = 0
+
+    chosen_id = self . text
+
+    comp_name = SELECT DISTINCT versioned_component . name
+
+    WHILE ( comp_name <> EMPTY ) DO
+
+        count = count + 1
+
+        browse_array [count] = comp_name
+
+        NEXT versioned_component
+
+        comp_name = SELECT versioned_component . name
+
+    ENDWHILE
+
+    browse_on_array ( 80, chosen_id, browse_array )
+
+    chosen_id = STRIP ( chosen_id )
+
+    self . set_text ( chosen_id )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+    ROUTINE formula_builder ( self )
+
+{
+*   Routine to display formula builder
+*
+*******************************************************************************}
+
+DECLARE calc_text , anal_id , comp_array
+
+    calc_text = self . text
+
+    anal_id = SELECT versioned_analysis . identity
+    anal_id = anal_id : SELECT versioned_analysis . analysis_version
+
+    read_comps ( self . user_info , comp_array , TRUE )
+
+    calc_formula_browser (  calc_text           ,
+                anal_id             ,
+                self . display_only ,
+                comp_array          )
+
+    IF BLANK ( calc_text ) THEN
+        calc_text = NULL
+    ENDIF
+
+    IF ( calc_text <> NULL ) THEN
+        calc_text = STRIP ( calc_text )
+    ENDIF
+
+    self . set_text ( calc_text )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+ROUTINE comp_calc_build_routine ( self )
+
+{
+*
+* Summary    : Build routine on Cal
+*
+* Parameters : Self - the std prompt identity
+*
+* Return     : None
+*
+*******************************************************************************}
+
+DECLARE prompt_id
+
+    create_cluster ( self . user_info, TRUE )
+
+    prompt_id = self . text
+
+    prompt_labtable ( "CALCULATION" , prompt_id , FALSE )
+
+    self . set_text ( prompt_id )
+
+    clear_cluster ( )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+ROUTINE clear_cluster
+
+{
+*
+* Summary    : Clear the clusters
+*
+* Parameters : None
+*
+* Return     : None
+*
+*******************************************************************************}
+
+DECLARE comp_array , build_cluster
+
+    build_cluster = "CALCULATION_BUILD_CLUSTER"
+
+    ARRAY comp_array
+
+    set_global_array ( build_cluster , "COMPONENTS" , comp_array )
+    assign_user_global ( build_cluster , "CLUSTER_IS_VALID" , FALSE )
+
+ENDROUTINE
+
+
+{*******************************************************************************}
+
+ROUTINE create_cluster (       self           ,
+                         VALUE include_matrix )
+
+{
+*
+* Summary    : Create the clusters
+*
+* Parameters : None
+*
+* Return     : None
+*
+*******************************************************************************}
+
+DECLARE anal_id , comp_array , build_cluster
+
+    build_cluster = "CALCULATION_BUILD_CLUSTER"
+
+    IF NOT user_cluster_exists ( build_cluster ) THEN
+
+        add_global_cluster ( build_cluster )
+
+    ENDIF
+
+    IF NOT user_global_exists ( build_cluster ,
+                    "ANALYSIS"    ) THEN
+
+        add_user_global ( build_cluster ,
+                  "ANALYSIS"    )
+
+    ENDIF
+
+    IF NOT user_global_exists ( build_cluster ,
+                    "COMPONENTS"  ) THEN
+
+        add_user_global ( build_cluster ,
+                  "COMPONENTS"  )
+
+    ENDIF
+
+    IF NOT user_global_exists ( build_cluster      ,
+                    "CLUSTER_IS_VALID" ) THEN
+
+        add_user_global ( build_cluster      ,
+                  "CLUSTER_IS_VALID" )
+
+    ENDIF
+
+    anal_id = SELECT versioned_analysis . identity
+    anal_id = anal_id : SELECT versioned_analysis . analysis_version
+
+    read_comps ( self, comp_array , include_matrix )
+
+    assign_user_global ( build_cluster , "ANALYSIS"   , anal_id    )
+    assign_user_global ( build_cluster , "CLUSTER_IS_VALID" , TRUE )
+    set_global_array   ( build_cluster , "COMPONENTS" , comp_array )
+
+ENDROUTINE
+
+
+{*******************************************************************************}
+
+ROUTINE read_comps (       comp_object_db ,
+                           comp_array     ,
+                     VALUE include_matrix )
+
+{
+*
+* Summary    : Create the clusters
+*
+* Parameters : None
+*
+* Return     : None
+*
+*******************************************************************************}
+
+DECLARE loop , comp_record
+
+    ARRAY comp_array
+
+    loop = 0
+    comp_object_db . set_first ()
+
+    WHILE loop < comp_object_db . size () DO
+
+        loop = loop + 1
+
+        comp_record = comp_object_db . current
+
+        comp_array [ loop , 1 ] = SELECT versioned_component . name
+                            IN OBJECT comp_record
+
+        comp_array [ loop , 2 ] = SELECT versioned_component . result_type
+                            IN OBJECT comp_record
+
+        comp_array [ loop , 3 ] = SELECT versioned_component . units
+                            IN OBJECT comp_record
+
+        comp_object_db . set_next ()
+
+    ENDWHILE
+
+    IF ( include_matrix ) AND ( global_matrix_collection <> EMPTY ) THEN
+
+        comp_matrix_read_comps ( global_matrix_collection, comp_array )
+
+    ENDIF
+
+ENDROUTINE
+
+{*******************************************************************************}
+{*******************************************************************************}
+{*******************************************************************************}

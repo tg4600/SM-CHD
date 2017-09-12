@@ -1,0 +1,1479 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_FORMULA.RPF
+*
+* Purpose       : Define and execute the batch formula calculations
+*
+* Document Ref. : 
+*
+* Specification : SE/T/VGSM320-WORK-BATCH
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : 
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LIB_RE_FORMULA
+
+{* CONSTANTS ******************************************************************}
+
+
+{* VARIABLES ******************************************************************}
+
+DECLARE batch_formula_current_test     ,
+	batch_formula_current_prep
+
+
+{******************************************************************************}
+                            
+GLOBAL
+
+ROUTINE batch_formula_initialise
+
+{
+*	Initialise all the batch formula module
+*
+*******************************************************************************}
+
+	batch_formula_current_test     = EMPTY
+	batch_formula_current_prep     = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_find_prep ( VALUE test_number )
+                                                
+{
+*	Find the prep of for the test.
+*
+*
+*******************************************************************************}
+
+	DECLARE file_descriptor ,
+		like_clause
+
+	IF batch_formula_current_test <> test_number THEN
+
+		push_file_descriptor ( "RESULT"         , 
+					file_descriptor )
+		
+		like_clause = lib_comp_category_like_clause ( CATEGORY_PREPARATION  ,
+							      "%"            )
+
+		batch_formula_current_prep = SELECT result . name
+		       			     WHERE ( test_number = test_number ) AND
+			                           ( name        LIKE like_clause )
+
+                                                 
+		pop_file_descriptor ( file_descriptor )
+
+
+		batch_formula_current_test = test_number
+
+	ENDIF
+
+	RETURN ( batch_formula_current_prep )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_units_expression (        units_expression ,
+					  VALUE units            )
+
+{
+*	Create a result expression node
+*
+*******************************************************************************}
+
+	DECLARE expression ,
+		parameter
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+             
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "UNITS" )
+
+	ARRAY expression . parameters
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = units
+
+	expression . parameters [ 1 ] = units_expression
+	expression . parameters [ 2 ] = parameter
+
+	RETURN ( expression )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_result_expression (       test_expression ,
+					  VALUE name            )
+
+{
+*	Create a result expression node         
+*
+*******************************************************************************}
+
+	DECLARE expression ,
+		parameter                      
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "RESULT_DIL" )
+
+	ARRAY expression . parameters
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = name
+
+	IF test_expression <> EMPTY THEN
+
+		expression . parameters [ 1 ] = test_expression
+		expression . parameters [ 2 ] = parameter
+
+	ELSE                                     
+
+		expression . parameters [ 1 ] = parameter
+
+	ENDIF
+
+	RETURN ( expression )
+
+ENDROUTINE                                                                                
+
+{******************************************************************************}
+
+ROUTINE batch_formula_result_prep_expression (       test_expression ,
+					       VALUE test_number     ,
+					       VALUE name            )
+
+{
+*	Create a result/preparation expression node
+*                                              
+*******************************************************************************}
+
+	DECLARE expression ,
+		prep       
+             
+	prep = batch_formula_find_prep ( test_number )
+
+	IF prep = EMPTY THEN
+
+		expression = batch_formula_result_expression ( test_expression ,
+							       name            )  	
+
+	ELSE
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+                                          
+		expression . operand  = FORMULA_DIVIDE
+		expression . left     = batch_formula_result_expression ( test_expression ,
+									  name            )
+
+		expression . right    = batch_formula_result_expression ( test_expression ,
+									  prep            )
+        ENDIF
+	                                                                  
+                                                                                     
+	RETURN ( expression )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_parent_result_expression ( VALUE test_number     ,      
+						       test_expression ,
+					         VALUE name            )
+
+{
+*	Create a parent result expression 
+*
+*******************************************************************************}
+                             
+	DECLARE expression ,
+		prep       ,
+		temp       ,
+		empty_node
+
+	prep = batch_formula_find_prep ( test_number )
+
+	IF prep = EMPTY THEN
+
+		expression = batch_formula_result_expression ( test_expression ,
+							       name            )  	
+
+	ELSE                              
+                                                                          
+		empty_node = EMPTY               
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+		expression . operand  = FORMULA_DIVIDE
+		expression . left     = batch_formula_result_expression ( test_expression ,
+									  name            )
+
+		temp                  = batch_formula_use_expression ( test_expression ) 
+		expression . right    = batch_formula_result_expression ( temp ,
+									  prep )
+
+		temp                  = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+		expression . operand  = FORMULA_MULTIPLY
+
+		expression . left     = temp
+		expression . right    = batch_formula_result_expression ( empty_node ,
+									  prep )
+
+
+                
+	ENDIF                                  
+
+	RETURN ( expression )                         
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_parent_expression ( test )
+
+{
+*	Create a parent expression node
+*
+*******************************************************************************}
+
+	DECLARE expression ,
+		parameter
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "TEST_FIELD" )
+
+	ARRAY expression . parameters
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = "PARENT_TEST"
+	
+	IF test <> EMPTY THEN
+
+		expression . parameters [ 1 ] = test
+		expression . parameters [ 2 ] = parameter
+
+	ELSE
+                                               
+		expression . parameters [ 1 ] = parameter
+
+	ENDIF                                         
+
+	RETURN ( expression )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_abs_expression  ( parameter )
+
+{
+*	Create a abs expression node             
+*
+*******************************************************************************}
+
+	DECLARE expression 
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "ABS" )
+
+	ARRAY expression . parameters
+	
+	expression . parameters [ 1 ] = parameter
+
+	RETURN ( expression )
+
+ENDROUTINE
+
+{******************************************************************************}
+                                          
+ROUTINE batch_formula_result_field_expression ( VALUE name       ,
+						VALUE field_name )	
+                                               
+{
+*	Create a result_field expression node
+*                                                     
+*******************************************************************************}
+
+	DECLARE expression ,
+		parameter  
+                                                      
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "RESULT_FIELD" )
+
+	ARRAY expression . parameters            
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = name
+
+	expression . parameters [ 1 ] = parameter
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = field_name
+
+	expression . parameters [ 2 ] = parameter
+
+	parameter = expression          
+
+	RETURN ( expression )
+                                               
+ENDROUTINE
+
+{******************************************************************************}
+                                          
+ROUTINE batch_formula_spike_expression ( VALUE name   )
+                                               
+{
+*	Create a spike expression node
+*                                                     
+*******************************************************************************}
+
+	DECLARE expression       ,
+		left_expression  ,
+		right_expression
+                                
+ 	left_expression  = batch_formula_result_field_expression ( name         ,
+						                  "SPIKE_VALUE")
+
+	right_expression = batch_formula_result_field_expression (  name   ,
+						                   "UNITS" )
+
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+             
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "UNITS" )
+
+	ARRAY expression . parameters
+	
+	expression . parameters [ 1 ] = left_expression
+	expression . parameters [ 2 ] = right_expression
+ 
+	RETURN ( expression )
+                                               
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_standard_expression (       self    ,
+						  context ,
+                                            VALUE name    )
+
+{
+*	Create a result expression node
+*
+*******************************************************************************}
+	
+	DECLARE expression  ,
+        	parameter   ,
+		standard_id ,
+		version     
+
+	standard_id = SELECT sample . standard_id IN OBJECT 
+				context . result_object . test_object . sample_object
+	version     = SELECT sample . standard_version IN OBJECT 
+				context . result_object . test_object . sample_object
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "STANDARD" )
+
+	ARRAY expression . parameters
+	
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+        	
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = standard_id
+
+	expression . parameters [ 1 ] = parameter
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = version
+
+	expression . parameters [ 2 ] = parameter
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , parameter
+
+	parameter . operand = FORMULA_TEXT
+	parameter . text    = name
+                                                 
+	expression . parameters [ 3 ] = parameter
+
+	RETURN ( expression )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_use_expression  ( use )
+
+{
+*	Create a use expression node
+*
+*******************************************************************************}
+	
+	DECLARE expression  
+
+	CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+
+	expression . operand  = FORMULA_FUNCTION
+	expression . function = lib_re_formula_find_function ( "$USE" )
+
+	ARRAY expression . parameters          
+	
+	expression . parameters [ 1 ] = use
+
+	RETURN ( expression )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_percent_error ( self )
+
+{
+*	Qa Percent Error                         
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,
+		left_node   ,
+		right_node  ,
+		empty_node  ,
+		build_it    ,
+		standard    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF                                  
+
+	IF build_it THEN
+ 
+		empty_node = EMPTY
+
+		name    = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+
+
+                                                 
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MINUS
+
+		expression . left  = batch_formula_result_expression ( empty_node   ,
+								       reading )
+
+
+		standard           = batch_formula_standard_expression ( self    ,
+									 context ,
+									 base    ) 
+
+		expression . right = standard
+		left_node  = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left  = left_node
+		expression . right = batch_formula_use_expression ( standard )
+
+		left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+                                                 
+		expression = batch_formula_units_expression ( expression ,
+							      "%ERR"     )	
+
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+                                               
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_control_recov ( self )
+
+{
+*	Qa Control Rrcovery
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,
+		left_node   ,
+		right_node  ,
+		empty_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+                                               
+	ELSE
+
+		build_it = FALSE
+                        
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+		expression = batch_formula_result_expression ( empty_node  ,
+						               reading     )
+
+                left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left  = left_node
+
+		expression . right = batch_formula_standard_expression ( self    ,
+									 context ,
+                                                                         base    )
+
+		left_node = expression
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_ms_recov ( self )
+
+{
+*	Qa MS Recovery
+*
+*	100 * ( spike_reading ) - ( parent_prep ) * ( parent Reading )
+*				   ------------- 
+*				  ( spike_prep  )                     
+*	       --------------------------------------------------------
+*			       ( Spike Amount )	
+*
+*******************************************************************************}
+                                               
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,
+		left_node   ,
+		right_node  ,
+		parent      ,
+		empty_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+                        
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+		parent  = batch_formula_parent_expression ( empty_node )
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MINUS
+                                                                                                     
+		expression . left  = batch_formula_result_expression ( empty_node              ,
+								       reading                 )
+
+
+		expression . right = batch_formula_parent_result_expression ( context . test_number ,
+									      parent                ,
+								              reading               )
+                        
+		left_node  = expression 
+		right_node = batch_formula_spike_expression ( reading )
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	        
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left  = left_node
+		expression . right = right_node
+
+		left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100  
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+{
+		expression = batch_formula_units_expression ( expression ,
+							      "%REC"     )	
+
+ }                                              
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+                        
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+                        
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+        
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_msd_recov ( self )
+
+{                                              
+*	Qa MSD Recovery
+*
+*	100 * ( spike_reading ) - ( parent_prep ) * ( parent Reading )
+*				   ------------- 
+*				  ( spike_prep  )                     
+*	       --------------------------------------------------------
+*			       ( Spike Amount )	
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,                      
+		left_node   ,
+		right_node  ,
+		parent      ,
+		empty_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+        
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+		parent  = batch_formula_parent_expression ( empty_node )
+		parent  = batch_formula_parent_expression ( parent     )
+                                    
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MINUS
+
+		expression . left  = batch_formula_result_expression ( empty_node             ,
+								       reading                )
+                                                   
+		expression . right = batch_formula_parent_result_expression ( context . test_number ,
+									      parent                ,
+								              reading               )
+
+
+		left_node  = expression 
+
+		right_node = batch_formula_spike_expression ( reading )
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left  = left_node
+		expression . right = right_node
+
+		left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+{                    
+		expression = batch_formula_units_expression ( expression ,
+							      "%REC"     )	
+
+}                                                                                                    
+		self. left = expression
+
+	ENDIF                                      
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+                        
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_msd_rpd ( self )
+
+{                                                                                                   
+*	Qa MSD RPD
+*       
+*	100 * | ( MS Recovery - MSD Recovery ) |
+*	       --------------------------------
+*		( MS Recovery + MSD Recovery ) / 2	
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		ms          ,
+		msd         ,
+		current     ,
+		parent      ,
+		expression  ,
+		empty_node  ,
+		left_node   ,
+		right_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+                                               
+		base    = lib_comp_get_base ( name )
+		ms      = lib_comp_add_category ( base        ,
+						  CATEGORY_MS ,
+						  EMPTY       )
+		msd     = lib_comp_add_category ( base         ,                                    
+						  CATEGORY_MSD ,
+						  EMPTY        )
+                                                   
+		parent  = batch_formula_parent_expression ( empty_node )
+
+		current = batch_formula_result_expression ( empty_node  ,
+							    msd         )
+
+		parent  = batch_formula_result_expression ( parent  ,
+							    ms      )
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , left_node
+        	        
+		left_node . operand  = FORMULA_PLUS
+		left_node . left     = batch_formula_use_expression ( current )
+		left_node . right    = batch_formula_use_expression ( parent  )
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 2
+		righT_node . units   = ""
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left    = left_node
+		expression . right   = right_node
+
+		right_node = expression        
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MINUS
+                                                                                                    
+		expression . left  = current      
+		expression . right = parent
+                                                   
+		left_node  = batch_formula_abs_expression ( expression )
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+		expression . left    = left_node
+		expression . right   = right_node
+
+		left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100 
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+{
+		expression = batch_formula_units_expression ( expression ,
+							      "RPD"      )	
+}
+		self. left = expression
+                                               
+	ENDIF
+                                                          
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		expression = self . left                                                            
+                                                  
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+                                                   
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_dup_rpd ( self )
+                        
+{
+*	Qa Dupliacte RPD                          
+*
+*	100 * | (( Reading / Prep ) - ( parent / prep )) |
+*	      --------------------------------------------
+*		(( Reading / Prep ) + ( Reading / Prep ))/2	
+*
+*                                              
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,                                                                       
+		current     ,                     
+		parent      ,
+		expression  ,                      
+		empty_node  ,
+		left_node   ,
+		right_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF           
+
+	IF build_it THEN
+
+		empty_node = EMPTY                 
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+                                                          
+		parent  = batch_formula_parent_expression ( empty_node )
+
+		current = batch_formula_result_prep_expression ( empty_node            ,
+								 context . test_number ,
+							         reading               )
+
+		parent  = batch_formula_result_prep_expression ( parent                ,
+								 context . test_number ,
+							         reading               )
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , left_node
+        	
+		left_node . operand  = FORMULA_PLUS
+		left_node . left     = batch_formula_use_expression ( current )
+		left_node . right    = batch_formula_use_expression ( parent  )
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 2
+		righT_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left    = left_node
+		expression . right   = right_node
+
+		right_node = expression
+                                                   
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MINUS
+
+		expression . left  = current              
+		expression . right = parent
+
+		left_node  = batch_formula_abs_expression ( expression )
+                        
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+		expression . left    = left_node
+		expression . right   = right_node
+
+		left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100 
+		right_node . units   = ""
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+
+		expression = batch_formula_units_expression ( expression ,
+							      "RPD"      )	
+
+		self. left = expression
+
+	ENDIF
+                                                   
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,  
+					   context     ,
+					   FALSE       )
+                                                          
+		IF NOT context . error THEN
+                        
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_formula_qa_report ( self )
+
+{
+*	QA Reporting                                      
+*
+*	Reading / Prep
+*
+*******************************************************************************}
+
+	DECLARE name            ,
+		base            ,
+		reading         ,
+		expression      ,                         
+		empty_node      ,
+		build_it        ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+
+		name    = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+                                         
+		expression = batch_formula_result_prep_expression ( empty_node            ,
+								    context . test_number ,	
+						                    reading               )
+
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+                        
+ROUTINE batch_formula_qa_surr_recov ( self )
+
+{
+*       QA Surrogate recovery
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,
+		spike       ,
+		left_node   ,
+		right_node  ,
+		empty_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+
+                expression = batch_formula_result_expression ( empty_node  ,
+                                                               reading     )
+
+		spike      = batch_formula_spike_expression ( reading  )
+
+                left_node = expression
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_DIVIDE
+
+		expression . left  = left_node
+
+		expression . right = spike
+
+		left_node = expression
+
+
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , right_node
+        	
+		right_node . operand = FORMULA_NUMBER
+		right_node . value   = 100 
+		right_node . units   = ""
+                    
+		CREATE OBJECT STD_FORMULA_EXPRESSION_BATCH , expression
+        	
+		expression . operand = FORMULA_MULTIPLY
+
+		expression . left  = left_node
+		expression . right = right_node
+
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+{******************************************************************************}
+                        
+ROUTINE batch_formula_qa_blank ( self )
+
+{
+*       QA Blank
+*
+*******************************************************************************}
+
+	DECLARE name        ,
+		base        ,
+		reading     ,
+		expression  ,
+		empty_node  ,
+		build_it    ,
+		context
+		
+	context = self . context		
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+		build_it = NOT variable_is_assigned ( self . left )
+
+	ELSE
+
+		build_it = FALSE
+
+	ENDIF
+
+	IF build_it THEN
+
+		empty_node = EMPTY
+		name       = context . result_object . name	
+
+		base    = lib_comp_get_base ( name )
+		reading = lib_comp_add_category ( base             ,
+						  CATEGORY_READING ,
+						  EMPTY            )
+
+
+		expression = batch_formula_result_expression ( empty_node  ,
+						               reading     )
+
+
+		self. left = expression
+
+	ENDIF
+
+	IF ( context . mode <> FORMULA_MODE_VALIDATE ) THEN
+
+
+		expression = self . left
+
+		lib_re_formula_calculate ( expression  ,
+					   context     ,
+					   FALSE       )
+
+		IF NOT context . error THEN
+
+			self . in_equality = expression . in_equality
+			self . units       = expression . units
+			self . value       = expression . value
+
+		ENDIF
+
+	ELSE
+
+		self . in_equality = ""
+		self . units       = ""
+		self . value       = ""
+
+	ENDIF		
+
+ENDROUTINE
+
+

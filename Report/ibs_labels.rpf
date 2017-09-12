@@ -1,0 +1,677 @@
+{***********************************************************************
+* Module Name   : IBS_LABELS
+* Purpose       : Creates labels with IBS
+* Document Ref  :
+* Specification : N/a
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-08-20  Fredrik Lindstein   Created
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $TOOLBOX
+JOIN LIBRARY $USER_CONTROL
+
+PLS(0)
+
+{**************************************************************************************************************
+DECLARE Printer, ArrSmps
+ARRAY ArrSmps 
+
+ArrSmps[1] = "   1413905"
+ArrSmps[2] = "   1413906"
+ArrSmps[3] = "   1413907"
+
+Printer     = "DKLABEL-AV50"
+PrintRVS(ArrSmps, Printer) 
+***************************************************************************************************************}
+
+EXIT
+
+GLOBAL ROUTINE PLS (VALUE option)
+{*************************************************************************
+* Purpose       : Prompt for Sample and select any or all tests
+*               : for label printing. Generate xml to be saved
+*               : The xml will be processed by PC SYS LIMS Print
+* Parameters    : 
+* Return Value  : None
+*************************************************************************}
+DECLARE printer, CreateSampleForm, SampleID, ArrTests
+
+    SampleID = 0
+    IF GLOBAL("LABEL_ID") = "" THEN
+        define_label_printer ( 163 )
+    ELSE
+        printer = GLOBAL("LABEL_ID")
+        printer = SELECT printer.identity
+                     WHERE identity = printer
+                       AND removeflag = FALSE
+        IF printer = EMPTY THEN
+            define_label_printer ( 163 )
+        ENDIF
+    ENDIF
+
+    IF ((SELECT printer.device_type) = "QUEUE") THEN
+        CALL_ROUTINE "PLS"
+        USING SampleID
+        IN LIBRARY "LAB_LABELS"
+        RETURN
+    ENDIF
+
+    REPEAT
+        create_form(CreateSampleForm, SampleID)
+        ARRAY   ArrTests
+        GetTestList(SampleId.text, ArrTests, FALSE)
+        IF CreateSampleForm.get_lastkey() = "DO" THEN
+            IF size_of_array(ArrTests) = 0 THEN
+                fm("No labels to print for sample ":STRIP(SampleId.text))
+            ELSE
+                SelectTests(SampleId.text, ArrTests)
+                PrintTests(ArrTests, printer)
+            ENDIF
+        ENDIF
+    UNTIL CreateSampleForm.get_last_key() = "EXIT"
+    
+ENDROUTINE
+
+ROUTINE create_form (CreateSampleForm, SampleID)
+{*************************************************************************
+* Purpose       : Prompt for sample
+*               : 
+* Parameters    : Form, Sample ID
+* Return Value  : None
+*************************************************************************}
+
+    CREATE OBJECT PROMPT_CLASS_FORM, CreateSampleForm
+    CreateSampleForm.header    = "Print Labels for sample... (IBS)"
+    CreateSampleForm.column    = 5
+    CreateSampleForm.row       = 10
+    CreateSampleForm.height    = 4
+    CreateSampleForm.width     = 50
+    CreateSampleForm.return_behaviour = FORM_RETURN_LEAVE
+
+    CreateSampleForm.add_display("Select Sample: ", 2, 1, PROMPT_RENDITION_BOLD)
+    PROMPT OBJECT SampleID
+              BROWSE ON SAMPLE.ID_NUMERIC
+              AT 15, 1
+    CreateSampleForm.add_prompt (SampleID)
+    CreateSampleForm.add_display("Currently using printer: ":GLOBAL("LABEL_ID"), 15, 3, PROMPT_RENDITION_BOLD)
+    CreateSampleForm.add_display("(Use 'Ctrl-E, DLX' to change printer)",        15, 4, PROMPT_RENDITION_BOLD)
+    CreateSampleForm.start_prompt()
+    CreateSampleForm.wait_prompt()
+    CreateSampleForm.end_prompt()
+
+ENDROUTINE
+
+GLOBAL ROUTINE PrintRVS(ArrSmps, VALUE Printer, VALUE ExcludePrevPrinted)
+{*************************************************************************
+* Purpose       : Routine to be called without interaction to print all labels 
+*               : for one sample to specified printer
+* Parameters    : Sample ID, Printer
+* Return Value  : None
+*************************************************************************}
+DECLARE ArrTests, ArrLabel, i
+
+    IF ((SELECT printer.device_type WHERE identity = printer) = "QUEUE") THEN
+        DECLARE labels_printed
+        CALL_ROUTINE "PrintRVS"
+        USING ArrSmps, Printer, ExcludePrevPrinted
+        RETURNING labels_printed
+        IN LIBRARY "LAB_LABELS"
+        RETURN(labels_printed)
+    ENDIF
+
+    ARRAY   ArrTests
+    ARRAY   ArrLabel
+
+    i = 1
+    WHILE i <= size_of_array(ArrSmps)
+        IF ArrSmps[i] <> EMPTY THEN
+            GetTestList(ArrSmps[i], ArrTests, ExcludePrevPrinted)    
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN(PrintTests(ArrTests, printer))
+    
+ENDROUTINE
+
+ROUTINE PrintTests(ArrTests, printer)
+{*************************************************************************
+* Purpose       : Create Header information and get all label details for 
+*               : test numbers in ArrTests
+* Parameters    : ArrTests - Array of test numbers, selected printer
+* Return Value  : None
+*************************************************************************}
+DECLARE location, template, Cols, i, sample
+DECLARE ArrHeader, ArrLabel
+
+    Cols   = 19
+    ARRAY ArrHeader ARRAY_SIZE(0, 3)
+    ARRAY ArrLabel ARRAY_SIZE(0, Cols, 2)
+    
+    IF size_of_array(ArrTests) > 0 THEN
+        sample = SELECT test.sample WHERE test_number = ArrTests[1, 2]
+    ELSE
+        sample = "NO SAMPLE "
+    ENDIF
+
+    location = SELECT personnel.location_id WHERE identity = GLOBAL("OPERATOR")
+    template = SELECT location.ibs_template WHERE identity = location
+    WriteToLog(sample:JUSTIFY(PAD(STRIP(size_of_array(ArrTests)), " ", 3), "RIGHT"):" '":STRIP(template):"' @ ":STRIP(printer))
+    IF template = EMPTY THEN
+        fm("No label template has been defined for":ASCII(10):
+           STRIP(GLOBAL("OPERATOR")):"'s default location '":STRIP(location):"'")
+        RETURN(0)   
+    ENDIF
+    
+    IF size_of_array(ArrTests) = 0 THEN
+        RETURN(0)
+    ENDIF
+
+    {Get static values for textfile}
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "processOrdreNo"
+    ArrHeader [i, 2] = GenerateTransactionId()
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "labelType"
+    ArrHeader [i, 2] = STRIP(Template)
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "printerAlias"
+    ArrHeader [i, 2] = Printer
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "labelCount"
+    ArrHeader [i, 2] = "1"
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "entityid"
+    ArrHeader [i, 2] = "Multi"
+    i = size_of_array(ArrHeader) + 1
+    ArrHeader [i, 1] = "printMode"
+    ArrHeader [i, 2] = "0"  {0=Direct, 1=Open webpage, 2 = Add to webpage}
+
+    GetLabelTxt(ArrTests, ArrLabel)
+    CreateXML(ArrHeader, ArrLabel, Cols)
+    
+    RETURN(size_of_array(ArrTests) + size_of_array(ArrLabel))
+
+ENDROUTINE
+
+GLOBAL ROUTINE PrintSampleReports_rmb ( rmb_object, object , collection )
+{*************************************************************************
+* Purpose       : Explorer RMB callback routine for printing all labels
+*               : for selected samples without interaction using default 
+*               : label printer
+* Parameters    : Sample ID
+* Return Value  : None
+
+    rmb_object  EXPLORER_RMB
+    object      STD_OBJECT_RECORD
+
+*************************************************************************}
+DECLARE ArrSmps, i, table, ArrKey0, field, ExcludePrevPrinted, confirm_mess
+
+    IF ((SELECT printer.device_type) = "QUEUE") THEN
+        CALL_ROUTINE "PrintSampleReports_rmb"
+        USING rmb_object, object , collection
+        IN LIBRARY "LAB_LABELS"
+        RETURN
+    ENDIF
+
+ARRAY ArrSmps 
+ARRAY ArrKey0
+
+    ExcludePrevPrinted = TRUE
+    table = rmb_object.table
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+    IF size_of_array(ArrKey0) = 0 THEN
+        fm("No key field defined for table ":table)
+    ELSEIF size_of_array(ArrKey0) > 1
+        fm("Multiple keys defined for ":table:ASCII(10):GetArray(ArrKey0))
+    ELSE
+        field = ArrKey0[1]
+    ENDIF
+
+    collection.set_first()
+    WHILE collection.current <> EMPTY DO
+        ArrSmps [size_of_array(ArrSmps) + 1] = SELECT 'table'.'field' IN OBJECT collection.current
+        collection.set_next()
+    ENDWHILE
+
+    confirm_mess = "Exclude labels that has already been printed?"
+    i = 1
+    WHILE (i <= size_of_array(ArrSmps)) AND 
+          (ExcludePrevPrinted = FALSE)
+        IF ArrSmps[i] <> " - " THEN
+            IF ("V" = (SELECT sample.status WHERE id_numeric = ArrSmps[i])) THEN
+                IF confirm_with_text(confirm_mess) THEN
+                   ExcludePrevPrinted = TRUE
+                ELSE
+                   i = size_of_array(ArrSmps) 
+                ENDIF
+            ENDIF    
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    PrintRVS(ArrSmps, GLOBAL("LABEL_ID"), ExcludePrevPrinted)
+    
+ENDROUTINE
+
+
+ROUTINE GetTestList(SampleId, ArrTests, VALUE ExcludePrevPrinted)
+{*************************************************************************
+* Purpose       : Create list of tests for sample
+* Parameters    : SampeID
+* Return Value  : Array of Analysis/TestCount; TestNumber
+*************************************************************************}
+
+DECLARE test_num, i
+
+{ARRAY   ArrTests}
+
+    IF ExcludePrevPrinted THEN
+        test_num = SELECT DISTINCT lablabels_view.test_number WHERE sample_id = SampleID AND label_printed = FALSE
+    ELSE
+        test_num = SELECT DISTINCT lablabels_view.test_number WHERE sample_id = SampleID
+    ENDIF
+    
+    WHILE test_num <> EMPTY DO
+        ArrTests [size_of_array(ArrTests) + 1, 2] = test_num
+    NEXT lablabels_view
+        test_num = SELECT lablabels_view.test_number
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= size_of_array(ArrTests)
+        ArrTests [i, 1] = STRIP(SELECT lablabels_view.analysis WHERE test_number = ArrTests [i, 2]):"/":STRIP(SELECT lablabels_view.test_count)
+        ArrTests [i, 3] = SELECT lablabels_view.test_status
+        i = i + 1
+    ENDWHILE
+    
+    RETURN(ArrTests)
+
+ENDROUTINE
+
+ROUTINE SelectTests(SampleId, ArrTests)
+{*************************************************************************
+* Purpose       : Select / Deselect tests for sample
+* Parameters    : Array of tests
+* Return Value  : Array of tests
+*************************************************************************}
+
+DECLARE form, list
+        set_up_std_prompt_list_class ( )
+        CREATE OBJECT "STD_FORM", form
+        form.height     = 10
+        form.width      = 40
+        form.row        = 4
+        form.column     = 6
+        form.border     = TRUE
+        form.header     = "Sample ID: ":SampleID
+        form.prompt_id  = "PrintLabelForSample"
+
+        CREATE OBJECT "STD_PROMPT_LIST", list
+        list.height = form.height - 1
+        list.width  = form.width - 2
+        list.row    = 1
+        list.column = 1
+        list.style  = LIST_STYLE_CHECK_BOXES +
+                      LIST_STYLE_REPORT +
+                      LIST_STYLE_SHOWSELALWAYS +
+                      LIST_STYLE_AUTOARRANGE    +
+                      LIST_STYLE_HEADERDRAGDROP +
+                      LIST_STYLE_FULLROWSELECT
+        list.add_column ( "Analysis", 15 )
+        form.add_prompt ( list )
+        AddAnalysisToList(form, list, ArrTests)
+        form.start_prompt ( )
+        SetState(form, list)
+        form.wait_prompt ( )
+
+        
+        IF form.get_last_key ( ) = "DO" THEN
+            GetTestArray(form, list, ArrTests)
+        ELSE
+            WHILE size_of_array(ArrTests) > 0 
+                array_remove_slice(ArrTests, 1, 1)
+            ENDWHILE
+        ENDIF
+        form.end_prompt()
+
+ENDROUTINE
+
+ROUTINE AddAnalysisToList (FormObj, List, AnalysisArray)
+{*************************************************************************
+* Purpose       : Populate Array of test in list
+* Parameters    : Form, List and Array of tests
+* Return Value  : None
+*************************************************************************}
+
+DECLARE main_form, counter
+
+    main_form = FormObj
+    ARRAY main_form.user_info ARRAYSIZE ( 0 , 3 )
+    counter = 0
+    WHILE ( counter < SIZE_OF_ARRAY(AnalysisArray) ) DO
+        counter = counter + 1
+        main_form.user_info[counter, 1] = AnalysisArray [counter, 1]
+        main_form.user_info[counter, 2] = AnalysisArray [counter, 2]
+        main_form.user_info[counter, 3] = AnalysisArray [counter, 3]
+        list.insert_item ( main_form.user_info [ counter, 1 ] , 115 )
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE SetState(self, list)
+{*************************************************************************
+* Purpose       : Sets all items to checked
+* Parameters    : Form object, list
+* Return Value  : None
+*************************************************************************}
+DECLARE counter, mask, state
+
+    counter = 0
+    WHILE (counter < size_of_array(self.user_info)) DO
+        mask  = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        IF (INDEX("UWV", self.user_info[counter + 1,3]) > 0) THEN
+            state = LIST_ITEM_CHECKED
+        ELSE
+            state = LIST_ITEM_NOTCHECKED
+        ENDIF 
+
+{**************************************************************************************************************
+        state = LIST_ITEM_CHECKED
+***************************************************************************************************************}
+        
+        list.set_item_state ( counter , state, mask )
+        counter = counter + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE GetTestArray(self, list, ArrTests)
+{*************************************************************************
+* Purpose       : Checks if list items is checked.
+* Parameters    : Form object, list and Array of tests
+* Return Value  : Array with checked analysis
+*************************************************************************}
+DECLARE i, mask, state_is
+
+    i = size_of_array(self.user_info)
+    WHILE (i > 0) DO
+        mask     = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state_is = list.get_item_state ( i - 1, mask )
+        IF NOT(state_is = LIST_ITEM_CHECKED) THEN 
+           array_remove_slice(self.user_info, 1, i)
+        ENDIF 
+        i = i - 1
+    ENDWHILE
+
+    ArrTests = self.user_info
+
+ENDROUTINE
+
+ROUTINE GetLabelTxt(ArrTests, ArrLabel)
+{*************************************************************************
+* Purpose       : Get label information from lablabels_view
+*               : for tests listed in ArrTests
+* Return Value  : Array with details
+*************************************************************************}
+DECLARE test, lbl, field, id, test_number
+
+    test  = 1
+    lbl = 1
+    WHILE test <= size_of_array(ArrTests)
+        id = SELECT lablabels_view.identity
+             WHERE test_number = ArrTests[test, 2]
+               AND (test_status ="U" 
+                 OR test_status ="W" 
+                 OR test_status ="V" 
+                 OR test_status ="P")
+               AND order_number <> "" 
+             ORDER ON test_number, order_number
+        WHILE id <> EMPTY
+            {debug("test_number = ":ArrTests[test, 2]:ASCII(10):"id = ":id) }
+            field = 1
+            ArrLabel[lbl, 1, 1] = "ANALYSIS"
+            ArrLabel[lbl, field, 2] = STRIP(SELECT lablabels_view.analysis):"/":STRIP(SELECT lablabels_view.TEST_COUNT)
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "SAMPLEID"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.sample_id
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "ID_TEXT"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.id_text
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "PRODUCT"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.product_code
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "PRODUCT_ID"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.product_id
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "BATCH"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.batch_name
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "SAMPLING_POINT"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.sampling_point
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "ANALYSIS_TYPE"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.analysis_type
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "ANALYSIS_DESCR"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.analysis_descr
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "MEDIA"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.media
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "INCUBATION"
+            ArrLabel[lbl, field, 2] = STRIP(SELECT lablabels_view.incubation)
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "CONDITION"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.condition
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "TEMPERATURE"
+            ArrLabel[lbl, field, 2] = STRIP(SELECT lablabels_view.temperature)
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "LABEL_TEXT"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.label_text
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "COMPONENT"
+            ArrLabel[lbl, field, 2] = SUBSTITUTE(SELECT lablabels_view.component_name, "&", "&")
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "JOB_NAME"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.job_name
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "TEST_NUMBER"
+            test_number       = SELECT lablabels_view.test_number
+            ArrLabel[lbl, field, 2] = test_number 
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "RECD_DATE"
+            ArrLabel[lbl, field, 2] = SELECT lablabels_view.recd_date
+            field = field + 1
+            ArrLabel[lbl, field, 1] = "DATE_EXP"
+            ArrLabel[lbl, field, 2] = SELECT test.date_exp WHERE test_number = test_number
+            WHILE field > 0 
+                IF BLANK(ArrLabel[lbl, field, 2]) THEN ArrLabel[lbl, field, 2] = " " ENDIF
+                field = field - 1
+            ENDWHILE
+        NEXT lablabels_view
+            id = SELECT lablabels_view.identity
+            lbl = lbl + 1
+        ENDWHILE
+        test = test + 1
+    ENDWHILE
+
+   
+ENDROUTINE
+
+ROUTINE CreateXML(ArrHeader, ArrLabel, Cols)
+{*************************************************************************
+* Purpose       : Create XML for PC SYS LIMS Print
+* Parameters    : Array for header, Array of label details, Number of columns
+* Return Value  : None
+**************************************************************************}
+DECLARE GUID, FilePath, soapMessage, i, j, tn, tns, last_tn, sqlstmt
+
+    GUID = GenerateTransactionId()
+    IF OPERATOR = "xDKTBG" THEN
+        FilePath    = "smp$userfiles:IBS\TEST\IBS_" : GUID : ".xml"
+    ELSE
+        FilePath    = "smp$userfiles:IBS\IBS_" : GUID : ".xml"
+    ENDIF
+    i           = 1
+    j           = 1
+    soapMessage = "<?xml version=" : ASCII(34) : "1.0" : ASCII(34) : " encoding=" : ASCII(34) : "ISO-8859-1" : ASCII(34) : "?> "
+    soapMessage = soapMessage : "<soap:Envelope"
+    soapMessage = soapMessage : " xmlns:xsi=" : ASCII(34) : "http://www.w3.org/2001/XMLSchema-instance" : ASCII(34)
+    soapMessage = soapMessage : " xmlns:xsd=" : ASCII(34) : "http://www.w3.org/2001/XMLSchema" : ASCII(34)
+    soapMessage = soapMessage : " xmlns:soap=" : ASCII(34) : "http://schemas.xmlsoap.org/soap/envelope/" : ASCII(34) :"> "
+    soapMessage = soapMessage : "<soap:Body>"
+    soapMessage = soapMessage : "<SendXml xmlns=" : ASCII(34) : "http://tempuri.org/" : ASCII(34) : ">"
+    soapMessage = soapMessage : "<xml>"
+
+    WHILE i <> size_of_array(ArrHeader) + 1 DO
+        soapMessage = soapMessage : "<":STRIP(ArrHeader[i,1]):">":STRIP(ArrHeader[i,2]):"</":STRIP(ArrHeader[i,1]):">"
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    tns = ""
+    soapMessage = soapMessage : "<fields>"
+    WHILE i <= size_of_array(ArrLabel) DO
+        j = 1
+        soapMessage = soapMessage : "<LimsLabel ID = " : ASCII(34) : STRIP(i) : ASCII(34):">"
+        WHILE j <= Cols DO
+            soapMessage = soapMessage : "<LimsField>"
+            soapMessage = soapMessage : "<FieldName>":STRIP(ArrLabel[i, j, 1]):"</FieldName>"
+            soapMessage = soapMessage : "<FieldValue><![CDATA[":STRIP(ArrLabel[i, j, 2]):"]]></FieldValue>"
+            soapMessage = soapMessage : "</LimsField>"
+            IF ArrLabel[i, j, 1] = "TEST_NUMBER" THEN
+                tn = JUSTIFY(PAD(STRIP(ArrLabel[i, j, 2])," ",10),"RIGHT")
+                IF tns ="" THEN
+                    tns = "'":tn:"'"
+                    last_tn = tn
+                ELSEIF last_tn <> tn
+                    tns = tns:",'":tn:"'"
+                ENDIF
+            ENDIF
+            j = j + 1
+        ENDWHILE
+        soapMessage = soapMessage : "</LimsLabel>"
+       i = i + 1
+    ENDWHILE
+    soapMessage = soapMessage : "</fields>"
+
+    soapMessage = soapMessage : "</xml>"
+    soapMessage = soapMessage : "</SendXml>"
+    soapMessage = soapMessage : "</soap:Body>"
+    soapMessage = soapMessage : "</soap:Envelope>"
+
+    IF NOT BLANK(tns) THEN
+        sqlstmt = "UPDATE test SET label_printed = 'T' where test_number in (":tns:") and label_printed = 'F'"
+        execute_sql(sqlstmt)
+        execute_sql("commit")
+    ENDIF
+    
+    WriteXMLFile(FilePath, soapMessage)
+    FilePath    = "smp$userfiles:IBS\Debug\":STRIP(ArrHeader[3, 2]):"_":STRIP(OPERATOR):"_":GUID :".xml"
+    WriteXMLFile(FilePath, soapMessage)
+
+    i = 1
+    j = 1
+    DECLARE h
+    ArrHeader[1, 3] = " incl. LABELS === "
+    h = size_of_array(ArrHeader)
+    ArrHeader[h + 1, 1] = "SAMPLEID"
+    ArrHeader[h + 1, 2] = "ANALYSIS"
+    ArrHeader[h + 1, 3] = "COMPONENT"
+    WHILE i <= size_of_array(ArrLabel)
+        h = size_of_array(ArrHeader)
+        WHILE j <= 19
+            IF (ArrLabel[i, j, 1] = "SAMPLEID" ) THEN
+                ArrHeader[h + 1, 1] = ArrLabel[i, j, 2]
+            ENDIF
+            IF (ArrLabel[i, j, 1] = "ANALYSIS" ) THEN
+                ArrHeader[h + 1, 2] = ArrLabel[i, j, 2]
+            ENDIF
+            IF (ArrLabel[i, j, 1] = "COMPONENT") THEN
+                ArrHeader[h + 1, 3] = ArrLabel[i, j, 2]
+            ENDIF    
+            j = j + 1
+        ENDWHILE
+        j = 1
+        i = i + 1
+    ENDWHILE
+    
+    WriteToLog(ASCII(10):GetArray(ArrHeader):ASCII(10))
+{**************************************************************************************************************
+    FilePath    = "smp$userfiles:IBS\Debug\":STRIP(ArrHeader[3, 2]):"_":STRIP(OPERATOR):"_":GUID :".txt"
+    WriteXMLFile(FilePath, GetArray(ArrHeader))
+***************************************************************************************************************}
+
+ENDROUTINE
+
+ROUTINE WriteXMLFile(VALUE FileName, VALUE XMLText)
+{*************************************************************************
+* Purpose      : Creates XML in smp$userfiles\IBS
+* Parameters   : Filename, Content of XML
+* Return Value : None
+**************************************************************************}
+DECLARE check_ok
+
+    FILE CREATE FileName, check_ok
+    IF check_ok <> EMPTY THEN
+        fm(check_ok)
+    ENDIF
+    FILE EXTEND FileName, check_ok
+    FILE WRITE  FileName, XMLText , check_ok
+    FILE CLOSE  FileName, check_ok
+
+ENDROUTINE
+
+ROUTINE GenerateTransactionId
+{*************************************************************************
+* Purpose      : Creates a unique transaction identity
+* Parameters   : None
+* Return Value : A new identity
+**************************************************************************}
+    DECLARE Answer, generated_number, i
+
+    SET FORMAT "9999999999"
+    generated_number = INCREMENT ( "IBS_LABEL", "IDENTITY")
+    i = LENGTH(STRIP(generated_number))
+    WHILE i <= 10 DO
+        generated_number = "0" : STRIP(generated_number)
+        i = LENGTH(STRIP(generated_number))
+    ENDWHILE
+    Answer = "LABEL" : STRIP(generated_number)
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************}

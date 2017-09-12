@@ -1,0 +1,319 @@
+{***********************************************************************
+* Module Name   : CHANGE_DLS
+* Purpose       : Switching DLS forth and back for selected groups/system
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2015-10-22  Tommy Bøgeskov  Created
+************************************************************************}
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_VGL_TOOLS
+
+
+MILWAUKEE (NOW)
+
+EXIT
+
+JOIN LIBRARY $LIB_UTILS
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, GLOBAL("current_library"))
+
+ENDROUTINE
+
+
+{*************************************************************************
+* Purpose      : Change DLS for SYSTEM
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SYSTEM (VALUE start_date) 
+
+DECLARE item, val1, msg
+    
+{    SET_RUN_TIME(vgl_tools_get_call_stack_entry(1), DLS_EU(start_date)) }
+    
+    WriteToLog("Change DLS for 'SYSTEM'")
+    val1 = NOT(SELECT config_header.value WHERE identity = "TIMEZONE_SERVER_DLS")
+    item = SELECT config_header.identity FOR UPDATE WHERE identity = "TIMEZONE_SERVER_DLS"
+    IF (item = "TIMEZONE_SERVER_DLS" ) THEN
+        msg = "Change DLS to ":val1:" for TIMEZONE_SERVER_DLS"
+        START WRITE TRANSACTION msg
+        ASSIGN config_header.value = val1
+        UPDATE config_header
+        COMMIT
+        WriteToLog(msg)
+    ENDIF
+
+    item = SELECT config_header.identity FOR UPDATE WHERE identity = "TIMEZONE_CLIENT_DLS"
+    IF (item = "TIMEZONE_CLIENT_DLS" ) THEN
+        msg = "Change DLS to ":val1:" for TIMEZONE_CLIENT_DLS"
+        START WRITE TRANSACTION msg
+        ASSIGN config_header.value = val1
+        UPDATE config_header
+        COMMIT
+        WriteToLog(msg)
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Change DLS for MKE-groups
+* Return Value : N/A
+**************************************************************************}
+ROUTINE MILWAUKEE (VALUE start_date)
+DECLARE i, groups
+ARRAY   groups
+
+{    SET_RUN_TIME(vgl_tools_get_call_stack_entry(1), DLS_MKE(start_date)) }
+        
+    i = 1
+    groups[i, 1] = "4000"
+    i = i + 1
+    groups[i, 1] = "MILWAUKEE"
+    i = i + 1
+    groups[i, 1] = "NEW_BERLIN"
+    i = i + 1
+    groups[i, 1] = "WEST_ALLIS"
+
+    SET_DLS(groups)
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Change DLS for VAL-groups
+* Return Value : N/A
+**************************************************************************}
+ROUTINE VALINHOS (VALUE start_date)
+DECLARE i, groups
+ARRAY   groups
+
+    SET_RUN_TIME(vgl_tools_get_call_stack_entry(1), DLS_VAL(start_date))
+    
+    i = 1
+    groups[i, 1] = "4400"
+    i = i + 1
+    groups[i, 1] = "VALINHOS"
+
+    SET_DLS(groups)
+    
+ENDROUTINE
+
+{******************************************************************************
+*
+* Daylight Saving EU, last Sunday of March and October
+* Build based on https://en.wikipedia.org/wiki/Daylight_saving_time_by_country
+* Verified against http://www.timeanddate.com/time/change/
+*
+*******************************************************************************}
+ROUTINE DLS_EU ( VALUE start_date )
+
+    DECLARE return_date, year, month, hour
+    
+    IF start_date > NOW THEN
+        start_date = start_date + interval("0007")
+    ENDIF
+
+    SET DATE FORMAT "DZ-MZ-YYYY"
+    year  = numeric ( substring ( start_date , 7 , 4 )) 
+    month = numeric ( substring ( start_date , 4 , 2 ))
+    hour  = 2
+
+    IF month <= 3 THEN
+        return_date = "31-03"  
+    ELSEIF month <= 10 THEN
+        return_date = "31-10" 
+        hour        = 3
+    ELSE
+        return_date = "31-03" 
+        year        = year + 1
+    ENDIF
+
+    return_date = return_date : "-" : number_to_text ( year , "9999" ) 
+    return_date = date ( return_date )
+
+
+    WHILE day_number(return_date) <> 7
+        return_date = return_date - interval ( "0001 00:00" ) 
+    ENDWHILE
+
+    hour = "0000 0":STRIP(hour):":00"
+    return_date = return_date + interval(hour) 
+    RESTORE DATE FORMAT
+
+    RETURN ( return_date )
+
+ENDROUTINE
+
+{******************************************************************************
+*
+* Daylight Saving MKE, second Sunday of March and first Sunday of November
+* Build based on https://en.wikipedia.org/wiki/Daylight_saving_time_by_country
+* Verified against http://www.timeanddate.com/time/change/
+*
+*******************************************************************************}
+ROUTINE DLS_MKE ( VALUE start_date )
+
+    DECLARE return_date, year, month, hour, days
+    
+    IF start_date > NOW THEN
+        start_date = start_date + interval("0007")
+    ENDIF
+
+    SET DATE FORMAT "DZ-MZ-YYYY"
+    days  = numeric ( substring ( start_date , 1 , 2 )) 
+    year  = numeric ( substring ( start_date , 7 , 4 )) 
+    month = numeric ( substring ( start_date , 4 , 2 ))
+    days  = 30 * month + days
+    hour  = 2
+
+    IF days <= 98 THEN
+        return_date = "08-03"  
+    ELSEIF days <= 337 THEN
+        return_date = "01-11" 
+        hour        = 3
+    ELSE
+        return_date = "08-03" 
+        year        = year + 1
+    ENDIF
+
+    return_date = return_date : "-" : number_to_text ( year , "9999" ) 
+    return_date = date ( return_date )
+
+
+    WHILE day_number(return_date) <> 7
+        return_date = return_date + interval ( "0001 00:00" ) 
+    ENDWHILE
+
+    hour = "0000 0":STRIP(hour):":00"
+    return_date = return_date + interval(hour) 
+    RESTORE DATE FORMAT
+
+    RETURN ( return_date )
+
+ENDROUTINE
+
+{******************************************************************************
+*
+* Daylight Saving VAL, Third Sunday of February and October 
+* Build based on https://en.wikipedia.org/wiki/Daylight_saving_time_by_country
+* Verified against http://www.timeanddate.com/time/change/
+*
+*******************************************************************************}
+ROUTINE DLS_VAL ( VALUE start_date )
+
+    DECLARE return_date, year, month, hour, days
+    
+    IF start_date > NOW THEN
+        start_date = start_date + interval("0007")
+    ENDIF
+
+    SET DATE FORMAT "DZ-MZ-YYYY"
+    days  = numeric ( substring ( start_date , 1 , 2 )) 
+    year  = numeric ( substring ( start_date , 7 , 4 )) 
+    month = numeric ( substring ( start_date , 4 , 2 ))
+    days  = 30 * month + days
+    hour  = 2
+
+    IF days <= 82 THEN
+        return_date = "17-02"  
+    ELSEIF days <= 315 THEN
+        return_date = "15-10" 
+        hour        = 3
+    ELSE
+        return_date = "17-02" 
+        year        = year + 1
+    ENDIF
+
+    return_date = return_date : "-" : number_to_text ( year , "9999" ) 
+    return_date = date ( return_date )
+
+
+    WHILE day_number(return_date) <> 7
+        return_date = return_date + interval ( "0001 00:00" ) 
+    ENDWHILE
+
+    hour = "0000 0":STRIP(hour):":00"
+    return_date = return_date + interval(hour) 
+    RESTORE DATE FORMAT
+
+    RETURN ( return_date )
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Change DLS (TRUE/FALSE) for multiple groups
+* Parameter    : ARRAY groups
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SET_DLS(groups)
+DECLARE i, val1, item, msg
+
+    i = 1
+    WHILE i <= size_of_array(groups)
+        val1 = NOT(SELECT config_item.value WHERE identity = "TIMEZONE_CLIENT_DLS" AND group_name = groups[i, 1])
+        item = SELECT config_item.group_name FOR UPDATE WHERE identity = "TIMEZONE_CLIENT_DLS" AND group_name = groups[i, 1]
+        IF (item = groups[i, 1]) THEN
+            msg = "Change DLS to ":val1:" for group ":STRIP(groups[i, 1])
+            START WRITE TRANSACTION msg
+            ASSIGN config_item.value = val1
+            UPDATE config_item
+            COMMIT 
+            WriteToLog(msg)
+        ELSEIF item = EMPTY THEN
+            msg = "Create DLS entry for ":STRIP(groups[i, 1])
+            START WRITE TRANSACTION msg
+            NEW ENTRY config_item, "TIMEZONE_CLIENT_DLS":groups[i, 1] 
+            ASSIGN config_item.value = val1
+            UPDATE config_item
+            COMMIT  
+            WriteToLog(msg)
+        ELSE
+            WriteToLog("Unexpected state. Group: ":STRIP(groups[i, 1]):", Selected for update: ":item:", Value: ":val1)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Set the next runtime for the report in timerqueue
+* Parameter    : calling routine as string (Format "REPORT_NAME    ROUTINE_NAME   LINE_NUMBER"
+*              : next_run as date and time
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SET_RUN_TIME(VALUE calling_routine, VALUE next_run)
+
+DECLARE i, report_name, routine_name, entry
+
+    i = INDEX(calling_routine, " ")
+    report_name = LEFTSTRING(calling_routine, i)
+    calling_routine = STRIP(SUBSTRING(calling_routine, i, 200))
+    i = INDEX(calling_routine, " ")
+    routine_name = LEFTSTRING(calling_routine, i)
+
+    entry = SELECT timerqueue . entry_number FOR UPDATE WHERE report_name = report_name AND routine_name = routine_name AND suspended = FALSE
+    
+    WriteToLog(entry:" = SELECT timerqueue . entry_number FOR UPDATE WHERE report_name = ":report_name:" AND routine_name = ":routine_name:" AND suspended = FALSE")
+    
+    IF (entry <> EMPTY) AND (entry <> LOCKED) THEN
+        START WRITE TRANSACTION "Set Next run time"
+        ASSIGN timerqueue . run_time = next_run
+        UPDATE timerqueue
+        COMMIT
+    ENDIF
+
+ENDROUTINE

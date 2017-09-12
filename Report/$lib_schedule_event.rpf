@@ -1,0 +1,1363 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_SCHEDULE_EVENT
+*
+* Purpose       : Define the objects used to create events on the watchdog
+*                 timer queue. Provides all the functionality to handle event
+*                 management and immediate sample login.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET NAME "\DISPLAY"
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_VGL
+
+JOIN LIBRARY $LIB_UTILS
+
+{* Global Constants ***********************************************************}
+
+GLOBAL CONSTANT EVENT_SCHEDULE_CLASS  = "EVENT_SCHEDULE_CLASS"
+GLOBAL CONSTANT SAMPLE_EVENT_CLASS    = "SAMPLE_EVENT_CLASS"
+GLOBAL CONSTANT REPORT_EVENT_CLASS    = "REPORT_EVENT_CLASS"
+GLOBAL CONSTANT STABILITY_EVENT_CLASS = "STABILITY_EVENT_CLASS"
+
+GLOBAL CONSTANT DAILY                 = "DAILY"
+GLOBAL CONSTANT WEEKLY                = "WEEKLY"
+GLOBAL CONSTANT MONTHLY               = "MONTHLY"
+GLOBAL CONSTANT ANNUAL                = "ANNUAL"
+GLOBAL CONSTANT HOURLY                = "HOURLY"
+GLOBAL CONSTANT CUSTOM                = "CUSTOM"
+
+GLOBAL CONSTANT QUOTE                 = ASCII ( 34 )
+
+{* Local Constants ************************************************************}
+
+CONSTANT SAMPLE_EVENT          = 1
+CONSTANT REPORT_EVENT          = 2
+CONSTANT STABILITY_EVENT       = 3
+CONSTANT DISPLAY_RENDITION     = PROMPT_RENDITION_RAISED +
+                                 PROMPT_RENDITION_BOLD
+
+{* Global Variables ***********************************************************}
+
+{* Main Code ******************************************************************}
+
+
+EXIT
+
+{* Start Of routines **********************************************************}
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_sched_event_define_classes
+
+{
+*       Defines the classes required to schedule events to the WDT.
+*
+*******************************************************************************}
+
+        DEFINE CLASS EVENT_SCHEDULE_CLASS
+
+                PROPERTIES
+
+                        "frequency"        ,
+                        "suspended_days"   ,
+                        "recurring"        ,
+                        "preferred_days"   ,
+                        "day_of_month"     ,
+                        "week_of_month"    ,
+                        "not_before"       ,
+                        "not_after"        ,
+                        "event_details"    ,
+                        "timer_queue_id"   ,
+                        "interval"         ,
+                        "select_array"     ,
+                        "create_routine"   ,
+                        "create_library"   ,
+                        "login_events"     ,
+                        "interactive"      ,
+                        "progress_form"    ,
+                        "use_param_string"
+
+                ACTIONS
+
+                        "create_event"       ,
+                        "create_stab_events" ,
+                        "remove_event"       ,
+                        "check_event"        ,
+                        "check_with_params"  ,
+                        "suspend_event"      ,
+                        "activate_event"     ,
+                        "init_for_sample"    ,
+                        "init_for_report"    ,
+                        "init_for_stab"      ,
+                        "init_progress"      ,
+                        "remove_progress"    ,
+                        "display_progress"   ,
+                        "update_progress"   ,
+                        "save_event_details" ,  { only required for event table
+                                                  or squirrel file }
+                        "add_to_select"      ,
+                        "make_select_array"  ,
+                        "change_status"      ,
+                        "process_annual"     ,
+                        "process_monthly"    ,
+                        "process_weekly"     ,
+                        "process_daily"      ,
+                        "process_hourly"     ,
+                        "process_custom"     ,
+                        "add_to_string"      ,
+                        "make_param_string"  ,
+                        "run_interactive"    ,
+                        "create_timer_entry"
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS SAMPLE_EVENT_CLASS
+
+                PROPERTIES
+
+                        "event_type"     ,
+                        "event_tag"      ,
+                        "sample_details" ,
+                        "field_names"    ,
+                        "param_string"       { MAY NOT BE REQUIRED }
+
+        END CLASS
+
+        DEFINE CLASS REPORT_EVENT_CLASS
+
+                PROPERTIES
+
+                        "event_type"   ,
+                        "event_tag"    ,
+                        "printer_id"   ,
+                        "param_string"
+
+        END CLASS
+
+        DEFINE CLASS STABILITY_EVENT_CLASS
+
+                PROPERTIES
+
+                        "event_type"       ,
+                        "event_tag"        ,
+                        "study_id"         ,
+                        "layer"            ,
+                        "condition"        ,
+                        "time_point"       ,
+                        "pull_number"      ,
+                        "pull_amount"      ,
+                        "pull_unit"        ,
+                        "samp_text_id"     ,
+                        "all_studies"      ,
+                        "all_pulls"        ,
+                        "due_date"         ,
+                        "use_predicted_id" ,
+                        "param_string"
+
+        END CLASS
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_class_initialisation ( event_obj )
+
+{
+*       Initialises the event class properties.
+*
+*******************************************************************************}
+
+        ARRAY event_obj . suspended_days ARRAYSIZE ( 0 , 2 )
+        ARRAY event_obj . preferred_days ARRAYSIZE ( 7 , 2 )
+
+        event_obj . frequency      = DAILY
+        event_obj . recurring      = FALSE
+        event_obj . day_of_month   = GET_USER_MESSAGE ( "CAL_SCHED_FULL_DAYS" ,
+                                                        1                     )
+        event_obj . week_of_month  = GET_USER_MESSAGE ( "CAL_SCHED_MONTH_WEEK" ,
+                                                        1                      )
+        event_obj . not_before     = DATE ( "" )
+        event_obj . not_after      = DATE ( "" )
+        event_obj . event_details  = ""
+        event_obj . timer_queue_id = ""
+        event_obj . interval       = INTERVAL ( "0" )
+        event_obj . login_events   = FALSE
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_run_interactive ( event_obj )
+
+{
+*       Runs the event library and routine interactively.
+*
+*******************************************************************************}
+
+        DECLARE mess_obj , mess_txt , status
+
+        event_obj . not_before = NOW
+
+        IF vgl_validate_routine ( event_obj . create_library ,
+                                  event_obj . create_routine ) THEN
+
+                CALL_ROUTINE event_obj . create_routine
+                        IN LIBRARY event_obj . create_library
+                        USING event_obj
+                        RETURNING status
+
+        ELSE
+
+                message_fetch ( "CAL_SCHED_INVAL_LOR" , mess_obj )
+                message_add_parameter ( mess_obj , event_obj . create_library )
+                message_add_parameter ( mess_obj , event_obj . create_routine )
+
+                mess_txt = message_get_text ( mess_obj , 1 )
+
+                flash_message ( mess_txt , FALSE )
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_create_timer_entry ( event_obj )
+
+{
+*       Creates an entry in the TIMERQUEUE table.
+*
+*******************************************************************************}
+
+        DECLARE status , mess_txt , mess_obj
+
+        RESERVE ENTRY timerqueue , event_obj . timer_queue_id , status
+
+        IF status = EMPTY THEN
+
+                ASSIGN timerqueue . run_time        = event_obj . not_before
+                ASSIGN timerqueue . status          = "A"
+                ASSIGN timerqueue . repeat_interval = INTERVAL ( "0" )
+                ASSIGN timerqueue . tag             = event_obj . event_details . event_tag
+                ASSIGN timerqueue . report_name     = event_obj . create_library
+                ASSIGN timerqueue . routine_name    = event_obj . create_routine
+                ASSIGN timerqueue . user_name       = OPERATOR
+                ASSIGN timerqueue . event_type      = event_obj . event_details . event_type
+                ASSIGN timerqueue . param_string    = event_obj . event_details . param_string
+
+                UPDATE timerqueue
+
+        ELSE
+
+                event_obj . timer_queue_id = ERROR
+
+                message_fetch ( "CAL_SCHED_CREATE_TIMERQ_FAIL" , mess_obj )
+                message_add_parameter ( mess_obj , status )
+
+                mess_txt = message_get_text ( mess_obj , 1 )
+
+                flash_message ( mess_txt , FALSE )
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_annual ( event_obj )
+
+{
+*       Processes annual events either immediately or by placing then on the
+*       background timer queue.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        IF event_obj . login_events THEN
+
+                status = event_obj . run_interactive ( event_obj )
+
+        ELSE
+
+                event_obj . timer_queue_id = INCREMENT ( "TIMERQUEUE"   ,
+                                                         "ENTRY_NUMBER" )
+
+                event_obj . make_param_string ()
+
+                status = event_obj . create_timer_entry ()
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_monthly ( event_obj )
+
+{
+*       Processes monthly events either immediately or by placing then on the
+*       background timer queue.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        IF event_obj . login_events THEN
+
+                event_obj . run_interactive ( event_obj )
+
+        ELSE
+
+                event_obj . timer_queue_id = INCREMENT ( "TIMERQUEUE"   ,
+                                                         "ENTRY_NUMBER" )
+
+                event_obj . make_param_string ( )
+
+                status = event_obj . create_timer_entry ()
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_weekly ( event_obj )
+
+{
+*       Processes weekly events either immediately or by placing then on the
+*       background timer queue.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        status = EMPTY
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_daily ( event_obj )
+
+{
+*       Processes daily events either immediately or by placing then on the
+*       background timer queue.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        status = EMPTY
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_hourly ( event_obj )
+
+{
+*       Processes hourly events either immediately or by placing then on the
+*       background timer queue.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        status = EMPTY
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_process_custom ( event_obj )
+
+{
+*       Processes custom events by calling the custom library and routine.
+*       Passes the EVENT_OBJECT as a parameter.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        status = EMPTY
+
+        IF event_obj . login_events THEN
+
+                CALL_ROUTINE event_obj . event_details . routine_name
+                        IN LIBRARY event_obj . event_details . library_name
+                        USING event_obj
+                        RETURNING status
+
+        ELSE
+
+                { schedule to the b/g timer queue    }
+                { how do we pass the event_details?  }
+                { probably create an event table and }
+                { pass the record ID in the params   }
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_create_event ( event_obj )
+
+{
+*       Creates all the events identified by the setup in the event object.
+*
+*******************************************************************************}
+
+        DECLARE do_commit , status { , table_id }
+
+        status    = EMPTY
+{
+        table_id  = event_obj . make_select_array ( )
+}
+        lib_sched_event_start_write ( "CAL_SCHED_TIMERQ_CREATE_TRANS" ,
+                                      do_commit                       )
+
+        IF event_obj . frequency = ANNUAL THEN
+                status = event_obj . process_annual ()
+        ELSEIF event_obj . frequency = MONTHLY THEN
+                status = event_obj . process_monthly ()
+        ELSEIF event_obj . frequency = WEEKLY THEN
+                status = event_obj . process_weekly ()
+        ELSEIF event_obj . frequency = DAILY THEN
+                status = event_obj . process_daily ()
+        ELSEIF event_obj . frequency = HOURLY THEN
+                status = event_obj . process_hourly ()
+        ELSEIF event_obj . frequency = CUSTOM THEN
+                status = event_obj . process_custom ()
+        ENDIF
+
+        lib_sched_event_update_changes ( do_commit )
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_remove_event ( event_obj )
+
+{
+*       Deletes entries in the TIMERQUEUE table which match the criteria
+*       defined in the EVENT_DETAILS object. Checks to see if the returned
+*       table ID is the timer table. If not it uses the timer queue ID from the
+*       returned table ID to select the timer queue record to delete. Returns
+*       EMPTY if all timer queue records are deleted.
+*
+*******************************************************************************}
+
+        DECLARE table_id , lock_record , do_commit , status , del_id , event_id ,
+        mess_txt
+
+        status    = EMPTY
+        table_id  = event_obj . make_select_array ( )
+
+        IF STRIP ( TOUPPER ( table_id ) ) = "TIMERQUEUE" THEN
+                lock_record = TRUE
+        ELSE
+                lock_record = FALSE
+        ENDIF
+
+        lib_sched_event_start_write ( "CAL_SCHED_TIMERQ_DEL_TRANS" , do_commit )
+
+        array_select ( table_id , lock_record , event_obj . select_array )
+
+        event_id = SELECT 'table_id' . entry_number
+
+        WHILE ( event_id <> EMPTY )
+        OR    ( event_id = LOCKED ) DO
+
+                IF event_id = LOCKED THEN
+
+                        mess_txt = GET_USER_MESSAGE ( "CAL_SCHED_TIMERQ_REM_FAIL" , 1 )
+                        flash_message ( mess_txt , FALSE )
+
+                ELSEIF lock_record THEN
+
+                        DELETE 'table_id' , status
+
+                ELSE
+
+                        del_id = SELECT timerqueue . entry_number
+                                    FOR UPDATE
+                                    WHERE entry_number = event_id
+
+                        IF del_id = LOCKED THEN
+
+                                mess_txt = GET_USER_MESSAGE (
+                                                     "CAL_SCHED_TIMERQ_REM_FAIL" , 1 )
+                                flash_message ( mess_txt , FALSE )
+
+                        ELSEIF del_id <> EMPTY THEN
+                                DELETE timerqueue , status
+                        ENDIF
+
+                ENDIF
+
+                IF status <> EMPTY THEN
+                        mess_txt = GET_USER_MESSAGE ( "CAL_SCHED_TIMERQ_REM_FAIL" , 1 )
+                        flash_message ( mess_txt : status , FALSE )
+                ENDIF
+
+                NEXT 'table_id'
+                event_id = SELECT 'table_id' . entry_number
+
+        ENDWHILE
+
+        lib_sched_event_update_changes ( do_commit )
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_check_event ( event_obj )
+
+{
+*       Checks to see if the event, specified in the event Id field, exists.
+*       Returns TRUE if the event exists, FALSE if not.
+*
+*******************************************************************************}
+
+        DECLARE ret_val , event_id
+
+        ret_val = FALSE
+
+        IF variable_is_assigned ( event_obj . timer_queue_id ) THEN
+
+                event_id = SELECT timerqueue . entry_number
+                              WHERE entry_number = event_obj . timer_queue_id
+
+                ret_val  = ( event_id <> EMPTY )
+
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_check_with_params ( event_obj )
+
+{
+*       Will check to see if a stabilty event has been scheduled for the defined
+*       parameters or that a scheduled event still exists.
+*
+*******************************************************************************}
+
+        DECLARE table_id
+
+        {****************************************************************}
+        { I'M NOT TOO SURE THAT THIS IS REQUIRED BUT I WILL INCLUDE      }
+        { IT ALL THE SAME . IT MAY BE THAT ONLY STAB NEEDS THIS FACILITY }
+        {****************************************************************}
+
+        table_id = event_obj . make_select_array ( )
+
+        array_select ( table_id , FALSE , event_obj . select_array )
+
+        RETURN ( SELECT 'table_id' . entry_number <> EMPTY )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_suspend_event ( event_obj )
+
+{
+*       Suspends the selected event.
+*
+*******************************************************************************}
+
+        event_obj . change_status ( "S" )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_activate_event ( event_obj )
+
+{
+*       Activates the selected event.
+*
+*******************************************************************************}
+
+        event_obj . change_status ( "A" )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_add_form_prompts ( VALUE message_id ,
+                                                 form       )
+
+{
+*       Adds the form prompts and displays to the progress form.
+*
+*******************************************************************************}
+
+        DECLARE mess_count , mess_len , mess_txt , col , prompt_obj , count ,
+        prompt_width
+
+        mess_count   = 0
+        mess_len     = 0
+        col          = 2
+        prompt_width = 30
+
+        REPEAT
+
+                mess_txt = GET_USER_MESSAGE ( message_id , mess_count + 1 )
+
+                IF  ( mess_txt <> ERROR     ) AND 
+                    ( NOT BLANK( mess_txt ) )THEN
+
+                        IF mess_len < STRINGLENGTH ( mess_txt ) THEN
+                                mess_len = STRINGLENGTH ( mess_txt )
+                        ENDIF
+                        
+                        mess_count = mess_count + 1
+
+                ENDIF
+
+        UNTIL ( mess_txt = ERROR   ) OR
+              ( BLANK( mess_txt )  )
+
+        count = 1
+
+        WHILE count <= mess_count DO
+
+                mess_txt = GET_USER_MESSAGE ( message_id , count )
+
+                IF mess_txt <> "-" THEN
+
+                        mess_txt = PAD ( mess_txt , " " , mess_len )
+
+                        form . add_display ( mess_txt          ,
+                                             col               ,
+                                             count             ,
+                                             DISPLAY_RENDITION )
+
+                        PROMPT OBJECT prompt_obj
+                                ON LINE count
+                                FROM mess_len + 4
+                                TO mess_len + 4 + prompt_width
+                                FORMAT TEXT30
+                                WITH ( width         = prompt_width          ,
+                                       justification = PROMPT_JUSTIFY_CENTRE ,
+                                       lowered       = TRUE                  ,
+                                       bold          = TRUE                  ,
+                                       display_only  = TRUE                  )
+
+                        form . user_info [ count ] = prompt_obj
+        
+                        form . add_display ( prompt_obj )
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+        RETURN ( mess_len + 4 + prompt_width )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_init_progress (       event_obj  ,
+                                                    VALUE message_id )
+{
+*       Creates and initialises the progress form and adds the necessary
+*       prompts and displays.
+*
+*******************************************************************************}
+
+        DECLARE mess_width
+
+        CREATE OBJECT PROMPT_CLASS_FORM , event_obj . progress_form
+
+        ARRAY event_obj . progress_form . user_info ARRAYSIZE ( 0 )
+
+        event_obj . progress_form . button_style = FORM_BUTTON_NONE
+        event_obj . progress_form . header       =
+                                 GET_USER_MESSAGE ( "CAL_SCHED_PROG_HEAD" , 1 )
+
+        mess_width = lib_sched_event_add_form_prompts (
+                                                    message_id                ,
+                                                    event_obj . progress_form )
+
+        event_obj . progress_form . height       =
+                   size_of_array ( event_obj . progress_form . user_info ) + 1
+        event_obj . progress_form . width        = mess_width + 2
+        event_obj . progress_form . row          = 10
+        event_obj . progress_form . column       = 10
+
+        event_obj . progress_form . add_frame (
+                                       ""                                     ,
+                                       1                                      ,
+                                       1                                      ,
+                                       event_obj . progress_form . height - 1 ,
+                                       event_obj . progress_form . width      )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_display_progress ( event_obj )
+
+{
+*       Starts and displays the progress form.
+*
+*******************************************************************************}
+
+        IF  ( event_obj . interactive                            )
+        AND ( variable_is_assigned ( event_obj . progress_form ) ) THEN
+        
+                event_obj . progress_form . start_prompt ()
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_update_progress (       event_obj ,
+                                                      VALUE prompt_pos ,
+                                                      VALUE prompt_val )
+
+{
+*       Updates the selected prompt on the progress for with the value passed.
+*
+*******************************************************************************}
+
+        DECLARE prompt_obj
+
+        IF  ( event_obj . interactive                            )
+        AND ( variable_is_assigned ( event_obj . progress_form ) ) THEN
+
+                prompt_obj = event_obj . progress_form . user_info [ prompt_pos ]
+
+                IF ( prompt_obj <> EMPTY ) THEN
+
+                        prompt_obj . set_text ( prompt_val )
+                ENDIF
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_remove_progress ( event_obj )
+
+{
+*       Stops and removes the progress form display.
+*
+*******************************************************************************}
+
+        IF  ( event_obj . interactive                            )
+        AND ( variable_is_assigned ( event_obj . progress_form ) ) THEN
+                event_obj . progress_form . stop_prompt ()
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_init_for_sample ( event_obj )
+
+{
+*       Initialises the EVENT_DETAILS object for scheduling sampling events.
+*
+*******************************************************************************}
+
+        CREATE OBJECT SAMPLE_EVENT_CLASS , event_obj . event_details
+
+        event_obj . interactive                = FALSE
+        event_obj . create_routine             = "LIB_SCHED_EVENT_LOG_SAMPLE"
+        event_obj . create_library             = GLOBAL ( "CURRENT_LIBRARY" )
+        event_obj . event_details . event_type = SAMPLE_EVENT
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_init_for_report ( event_obj )
+
+{
+*       Initialises the EVENT_DETAILS object for scheduling VGL report events.
+*
+*******************************************************************************}
+
+        CREATE OBJECT REPORT_EVENT_CLASS , event_obj . event_details
+
+        event_obj . interactive                = FALSE
+        event_obj . create_routine             = "LIB_SCHED_EVENT_RUN_REPORT"
+        event_obj . create_library             = GLOBAL ( "CURRENT_LIBRARY" )
+        event_obj . event_details . event_type = REPORT_EVENT
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_init_for_stab ( event_obj )
+
+{
+*       Initialises the EVENT_DETAILS object for scheduling stability events.
+*
+*******************************************************************************}
+
+        CREATE OBJECT STABILITY_EVENT_CLASS , event_obj . event_details
+
+        event_obj . interactive                = FALSE
+        event_obj . frequency                  = ANNUAL
+        event_obj . create_routine             = "STB_LOGIN_BACKGROUND_SAMPLE"
+        event_obj . create_library             = "$STB_LOGIN"
+        event_obj . event_details . event_type = STABILITY_EVENT
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_add_to_select (       event_obj ,
+                                                    VALUE field_id  ,
+                                                    VALUE field_val )
+
+{
+*       General purpose routine to add defined parameters to the select array.
+*
+*******************************************************************************}
+
+        IF variable_is_assigned ( field_val ) THEN
+
+                IF  ( NOT BLANK ( field_val ) )
+                AND ( field_val <> EMPTY      ) THEN
+
+                        array_select_add ( event_obj . select_array ,
+                                           ARRAY_SELECT_EQ          ,
+                                           field_id                 ,
+                                           field_val                )
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_sched_event_update_field ( VALUE table_id  ,
+                                       VALUE field_id  ,
+                                       VALUE field_val )
+
+{
+*       Update a field in a table with the value passed. Checks the write
+*       transaction status and does not commit the change if a write
+*       transaction is already active.
+*
+*******************************************************************************}
+
+        DECLARE do_commit , status , ret_val , mess_txt , mess_obj
+
+        do_commit = TRUE
+        ret_val   = FALSE
+
+        message_fetch ( "CAL_SCHED_UPDATE_FIELD" , mess_obj )
+        message_add_parameter ( mess_obj , field_id )
+        message_add_parameter ( mess_obj , table_id )
+
+        mess_txt = message_get_text ( mess_obj , 1 )
+
+        lib_sched_event_start_write ( mess_txt , do_commit )
+
+        ASSIGN 'table_id' . 'field_id' = field_val
+        UPDATE 'table_id' , status
+
+        IF status = EMPTY THEN
+
+                ret_val = TRUE
+
+                lib_sched_event_update_changes ( do_commit )
+
+        ELSE
+
+                message_fetch ( "CAL_SCHED_UPDATE_FAIL" , mess_obj )
+                message_add_parameter ( mess_obj , field_id )
+                message_add_parameter ( mess_obj , table_id )
+                message_add_parameter ( mess_obj , status   )
+
+                mess_txt = message_get_text ( mess_obj , 1 )
+
+                flash_message ( mess_txt , FALSE )
+
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_change_status (       event_obj ,
+                                                    VALUE status    )
+
+{
+*       Changes the status of the timer queue record.
+*
+*******************************************************************************}
+
+        DECLARE ret_val , event_id
+
+        ret_val = FALSE
+
+        IF variable_is_assigned ( event_obj . timer_queue_id ) THEN
+
+                event_id = SELECT timerqueue . entry_number
+                              FOR UPDATE
+                              WHERE entry_number = event_obj . timer_queue_id
+
+                IF event_id <> LOCKED THEN
+
+                        IF event_id <> EMPTY THEN
+
+                                {******************************}
+                                { check the transaction status }
+                                { and update the field         }
+                                {******************************}
+
+                                ret_val = lib_sched_event_update_field (
+                                                                "timerqueue" ,
+                                                                "status"     ,
+                                                                status       )
+
+                        ELSE
+
+                                flash_message ( "Event does not exist" , FALSE )
+
+                        ENDIF
+
+                ELSE
+
+                        flash_message ( "Event record locked" , FALSE )
+
+                ENDIF
+
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_make_select_array ( event_obj )
+{
+*       Constructs a select array for retrieving event records. If the
+*       USE_PARAM_STRING property is set to TRUE
+*
+*******************************************************************************}
+
+        DECLARE table_id
+
+        IF event_obj . use_param_string THEN
+
+                ARRAY event_obj . select_array
+
+                event_obj . make_param_string ()
+                event_obj . add_to_select (
+                                    "param_string"                           ,
+                                    event_obj . event_details . param_string )
+                table_id = "TIMERQUEUE"
+
+        ELSEIF event_obj . event_details . event_type = STABILITY_EVENT THEN
+                table_id = lib_sched_event_make_select_for_stab ( event_obj )
+        ELSEIF event_obj . event_details . event_type = REPORT_EVENT THEN
+                table_id = lib_sched_event_make_select_for_rep ( event_obj )
+        ELSEIF event_obj . event_details . event_type = SAMPLE_EVENT THEN
+                table_id = lib_sched_event_make_select_for_samp ( event_obj )
+        ENDIF
+
+        RETURN ( table_id )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_select_for_stab ( event_obj )
+
+{
+*       Initialises the select array for stability events.
+*
+*******************************************************************************}
+
+        ARRAY event_obj . select_array
+
+        event_obj . add_to_select ( "entry_number"                           ,
+                                    event_obj . timer_queue_id               )
+        event_obj . add_to_select ( "header"                                 ,
+                                    event_obj . event_details . study_id     )
+        event_obj . add_to_select ( "layer_factor"                           ,
+                                    event_obj . event_details . layer        )
+        event_obj . add_to_select ( "c_factor"                               ,
+                                    event_obj . event_details . condition    )
+        event_obj . add_to_select ( "time_factor"                            ,
+                                    event_obj . event_details . time_point   )
+        event_obj . add_to_select ( "pull_num"                               ,
+                                    event_obj . event_details . pull_number  )
+        event_obj . add_to_select ( "sample_id_text"                         ,
+                                    event_obj . event_details . samp_text_id )
+
+        RETURN ( "pds_study_pull" )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_select_for_rep ( event_obj )
+
+{
+*       Initialises the select array for report events.
+*
+*******************************************************************************}
+
+        ARRAY event_obj . select_array
+
+        event_obj . add_to_select ( "entry_number"                           ,
+                                    event_obj . timer_queue_id               )
+
+        { NEED TO ADD THE SELECT CRITERIA HERE }
+
+        RETURN ( "timerqueue" )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_select_for_samp ( event_obj )
+
+{
+*       Initialises the select array for sample events.
+*
+*******************************************************************************}
+
+        ARRAY event_obj . select_array
+
+        { NEED TO ADD THE SELECT CRITERIA HERE }
+
+        RETURN ( "timerqueue" )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_make_param_string ( event_obj )
+
+{
+*       Constructs a select array for retrieving event records.
+*
+*******************************************************************************}
+
+        DECLARE table_id
+
+        IF event_obj . event_details . event_type = STABILITY_EVENT THEN
+                table_id = lib_sched_event_make_string_for_stab ( event_obj )
+        ELSEIF event_obj . event_details . event_type = REPORT_EVENT THEN
+                table_id = lib_sched_event_make_string_for_rep ( event_obj )
+        ELSEIF event_obj . event_details . event_type = SAMPLE_EVENT THEN
+                table_id = lib_sched_event_make_string_for_samp ( event_obj )
+        ENDIF
+
+        RETURN ( table_id )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE event_schedule_class_action_add_to_string ( event_obj ,
+                                                    param     )
+
+{
+*       General purpose routine to build up the parameter string.
+*
+*******************************************************************************}
+
+        DECLARE val_to_add , details
+
+        val_to_add = QUOTE : " " : QUOTE
+        details    = event_obj . event_details
+
+        IF variable_is_assigned ( param ) THEN
+
+                IF  ( NOT BLANK ( param ) )
+                AND ( param <> EMPTY      ) THEN
+
+                        val_to_add = QUOTE : STRIP ( param ) : QUOTE
+
+                ENDIF
+
+        ENDIF
+
+        IF NOT variable_is_assigned ( details . param_string ) THEN
+                details . param_string = val_to_add
+        ELSEIF ( details . param_string = EMPTY   )
+        OR     ( BLANK ( details . param_string ) ) THEN
+                details . param_string = val_to_add
+        ELSE
+                details . param_string = details . param_string : "," :
+                                                                    val_to_add
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_string_for_stab ( event_obj )
+
+{
+*       Creates the parameter string for stability events.
+*
+*******************************************************************************}
+
+        event_obj . add_to_string ( event_obj . event_details . event_tag )
+        event_obj . add_to_string ( event_obj . event_details . study_id )
+        event_obj . add_to_string ( event_obj . event_details . layer )
+        event_obj . add_to_string ( event_obj . event_details . condition )
+        event_obj . add_to_string ( event_obj . event_details . time_point )
+        event_obj . add_to_string ( event_obj . event_details . pull_number )
+        event_obj . add_to_string ( event_obj . event_details . samp_text_id )
+        event_obj . add_to_string ( event_obj . event_details . pull_amount )
+        event_obj . add_to_string ( event_obj . event_details . pull_unit )
+
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_string_for_rep ( event_obj )
+
+{
+*       Creates the parameter string for report events.
+*
+*******************************************************************************}
+
+{
+        IF THE REPORT IS A BACKGROUND STABILITY REPORT THE PARAMETER STRING
+        SHOULD ALREADY BE DEFINED.
+
+                        "event_type"   ,
+                        "event_tag"    ,
+                        "library_name" ,
+                        "routine_name" ,
+                        "printer_id"   ,
+                        "param_string"
+}
+
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_make_string_for_samp ( event_obj )
+
+{
+*       Creates the parameter string for sample events.
+*
+*******************************************************************************}
+
+{
+                        "event_type"     ,
+                        "event_tag"      ,
+                        "sample_details" ,
+                        "field_names"
+}
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_sched_event_start_write ( VALUE transaction_message ,
+                                                    do_commit           )
+
+{
+*       Initiates a start write transaction if one is not already started.
+*
+*******************************************************************************}
+
+        DECLARE mess_txt
+
+        do_commit = FALSE
+
+        IF NOT transaction_is_write () THEN
+
+                do_commit = TRUE
+                mess_txt  = GET_USER_MESSAGE ( transaction_message , 1 )
+
+                IF mess_txt = ERROR THEN
+                        mess_txt = transaction_message
+                ENDIF
+
+                START WRITE TRANSACTION mess_txt
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_sched_event_update_changes ( VALUE do_commit )
+
+{
+*       Commits any changes to the database if the commit flag is set.
+*
+*******************************************************************************}
+
+        IF do_commit THEN
+                COMMIT
+        ENDIF
+
+ENDROUTINE
+
+
+{************************************************************************}
+{routines called from the background timer queue to execute event types }
+{************************************************************************}
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_log_sample
+
+{
+*
+*       Logs background samples.
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE lib_sched_event_run_report
+
+{
+*       Runs background reports.
+*
+*******************************************************************************}
+
+
+ENDROUTINE

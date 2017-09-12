@@ -1,0 +1,2513 @@
+{******************************************************************************
+*
+* Module Name   : $LIST_EDITOR
+*
+* Purpose       : Standard List Editor.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : VGSM 3.1
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+SET COMPILE_OPTION DECLARE
+
+SET NOT_PROTECTED
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_VGL_TOOLS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $PROMPT_GRID
+JOIN LIBRARY $PROMPT_TOOLBAR
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+GLOBAL CONSTANT LIST_EDITOR_BASE_CLASS = "STD_LIST_EDITOR"
+GLOBAL CONSTANT LIST_EDITOR_CLASS      = "STD_LIST_EDITOR_FORM"
+GLOBAL CONSTANT LIST_EDITOR_GRID_CLASS = "STD_LIST_EDITOR_GRID"
+
+{* LOCAL CONSTANTS ************************************************************}
+
+CONSTANT CONTROL_BUTTON_WIDTH = 10
+
+{* VARIABLES ******************************************************************}
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE list_editor_define
+
+{
+* Initialises the List Editor module
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+        list_editor_declare_class ( )
+
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_editor_declare_class
+{
+* Defines the list editor classes
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    prompt_toolbar_initialise    ( )
+    set_up_std_prompt_grid_class ( )
+    set_up_popup_class           ( )
+
+    DEFINE CLASS LIST_EDITOR_BASE_CLASS
+
+        PROPERTIES
+            "GRID"            ,
+            "COLLECTION"      ,
+            "TABLE"           ,
+            "INITIALISED"     ,
+            "PROMPT_DETAILS"  ,
+            "LIBRARY"         ,
+            "PRE_INSERT"      ,
+            "POST_INSERT"     ,
+            "DELETE"          ,
+            "INSERT"          ,
+            "SELECT"          ,
+            "IDENTITY"        ,
+            "ORDER_FIELD"     ,
+            "ORDER_IS_KEY0"   ,
+            "COPY_IDENTITY"   ,
+            "ROW_INSERTED"    ,
+            "ORDER_ARRAY"     ,
+            "DATA_READ"       ,
+            "COMPATABILITY"   ,
+            "CHECK_MOVE"      ,
+            "VALIDATION"      ,
+            "RIGHT_MOUSE"     ,
+            "DISPLAY_ONLY"    ,
+            "ROW"             ,
+            "COLUMN"          ,
+            "HEIGHT"          ,
+            "WIDTH"           ,
+            "PARENT_FORM"     ,
+            "SCREENS_BUILT"   ,
+            "INSERTS_ENABLED" ,
+            "DELETES_ENABLED" ,
+            "SELECT_CALLBACK"
+
+        ACTIONS
+            "LABTABLE_ADD"              ,
+            "LABTABLE_COPY"             ,
+            "LABTABLE_READ_FOR_MODIFY"  ,
+            "LABTABLE_READ_FOR_DISPLAY" ,
+            "LABTABLE_MODIFY"           ,
+            "LABTABLE_DISPLAY"          ,
+            "LABTABLE_PRINT"            ,
+            "LABTABLE_SAVE"             ,
+            "LABTABLE_QUIT"             ,
+            "BUILD_SELECT"              ,
+            "CREATE"                    ,
+            "SET_TABLE"                 ,
+            "GET_DATA"                  ,
+            "GET_OBJECT"                ,
+            "BUILD_ORDER"               ,
+            "BUILD_SCREENS"             ,
+            "ADD_AN_ENTRY"              ,
+            "DESTROY_SCREENS"           ,
+            "SET_ORDER"                 ,
+            "PROMPT"                    ,
+            "CONSTRUCT_KEY0"            ,
+            "OPERATION"                 ,
+            "SETUP_PROMPT_DETAILS"      ,
+            "ADD_TO_FORM"               ,
+            "UPDATE_CONTENTS"           ,
+            "INSERT_ROW"                ,
+            "REMOVE_ROW"                ,
+            "CAN_INSERT"                ,
+            "CAN_REMOVE"                ,
+            "UPDATE_TITLES"             ,
+            "GET_ITEM_COUNT"            ,
+            "OPTION_INSERT_CURRENT"     ,
+            "OPTION_REMOVE_CURRENT"     ,
+            "GRID_BUILD_CONTEXT_MENU"   ,
+            "UPDATE_SCREEN_STATE"
+
+        INITIALISATION
+
+    END CLASS
+
+    DEFINE CLASS LIST_EDITOR_CLASS
+
+        INHERIT LIST_EDITOR_BASE_CLASS ,
+                PROMPT_CLASS_FORM
+
+        PROPERTIES
+            "TOOLBAR"                 ,
+            "ADD_TOOLBUTTON_CALLBACK"
+
+        ACTIONS
+            "ADD_TO_FORM"             ,
+            "PROMPT"                  ,
+            "DESTROY_SCREENS"         ,
+            "UPDATE_SCREEN_STATE"     ,
+            "CREATE_TOOLBAR"          ,
+            "ADD_TOOLBUTTONS"
+
+        INITIALISATION
+
+    END CLASS
+
+    DEFINE CLASS LIST_EDITOR_GRID_CLASS
+
+        INHERIT PROMPT_GRID_EX_CLASS
+
+        PROPERTIES
+            "LIST_EDITOR"
+
+        ACTIONS
+            "ENTER_CELL"        ,
+            "RIGHT_MOUSE_CLICK"
+
+    END CLASS
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Std List Editor Class                                                     *}
+{*****************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_class_initialisation ( self )
+
+{
+* Initialise a new object in the class.
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . initialised   = FALSE
+    self . screens_built = FALSE
+
+    CREATE OBJECT "STD_OBJECT_DATABASE",  self . collection
+    CREATE OBJECT LIST_EDITOR_GRID_CLASS, self . grid
+
+    self . grid . list_editor = self
+
+    self . grid . prompt_cell_routine  = "LIST_EDITOR_PROMPT_CELL"
+    self . grid . display_cell_routine = "LIST_EDITOR_DISPLAY_CELL"
+
+    self . grid . select_routine       = "LIST_EDITOR_SELECT_KEY"
+    self . grid . check_move_routine   = "LIST_EDITOR_CHECK_MOVE"
+    self . grid . right_mouse_routine  = "LIST_EDITOR_RIGHT_MOUSE"
+
+    self . grid . vgl_library          = global ( "current_library" )
+    self . grid . return_behaviour     = GRID_RETURN_RIGHT
+
+    self . row_inserted            = FALSE
+
+    self . order_field             = EMPTY
+    self . data_read               = FALSE
+
+    self . pre_insert              = EMPTY
+    self . post_insert             = EMPTY
+    self . delete                  = EMPTY
+    self . select                  = EMPTY
+    self . insert                  = EMPTY
+    self . check_move              = EMPTY
+    self . validation              = EMPTY
+    self . right_mouse             = EMPTY
+    self . select_callback         = EMPTY
+
+    self . inserts_enabled = TRUE
+    self . deletes_enabled = TRUE
+
+    self . display_only    = FALSE
+
+    self . compatability   = PROMPT_DETAILS_310
+
+    ARRAY self . order_array ARRAY_SIZE ( 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_construct_key0 ( self , VALUE new_value )
+
+{
+* Returns a new key for the new list entry
+*
+* Parameters : self      , Std List Editor
+*              new_value , the string that uniquely identifies new row from the
+*                          other rows
+*
+*******************************************************************************}
+
+    DECLARE key0_count, key0_fields, field_size, key0_string, raw_key0_string,
+            field, key_char_pos
+
+    key0_string = ""
+
+    {* Concatenate prefix with new value *}
+    raw_key0_string = self . identity : new_value
+
+    {* Replace order fields with order position value *}
+    GET_TABLE_DETAILS 'self . table' , "KEY0_FIELD", key0_fields
+
+    key_char_pos = 1
+
+    key0_count = 1
+    WHILE key0_count <= size_of_array ( key0_fields ) DO
+
+        field = key0_fields [ key0_count ]
+
+        GET_FIELD_DETAILS 'self . table' . 'field' , "FIELD_SIZE", field_size
+
+        IF field = self . order_field THEN
+
+            key0_string = key0_string : PACKED_DECIMAL( self . collection . size () + 1 )
+
+        ELSE
+
+            key0_string = key0_string : SUBSTRING( raw_key0_string, key_char_pos, field_size )
+
+        ENDIF
+
+        key_char_pos = key_char_pos + field_size
+
+        key0_count = key0_count + 1
+
+    ENDWHILE
+
+    RETURN ( key0_string )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_build_select (       self         ,
+                                              VALUE prefix       ,
+                                                    select_array )
+
+{
+* Creates the select array that will be used to select the relevant records.
+*
+* Parameters : self         , Std List Editor
+*              prefix       , the first portion of the padded key0
+*              select_array , the select array built within the function
+*
+*******************************************************************************}
+
+    DECLARE key0_count, key0_fields, field_size, key_string, first_time
+    DECLARE lib, rout
+
+    ARRAY select_array
+
+    IF STRINGLENGTH ( prefix ) = 0 THEN
+
+        fatal_error ( "Prefix too small" )
+
+    ENDIF
+
+    GET_TABLE_DETAILS 'self . table' , "KEY0_FIELD"  , key0_fields
+    GET_TABLE_DETAILS 'self . table' , "ORDER_FIELD" , self . order_field
+
+    IF self . order_field <> EMPTY THEN
+
+        key0_count = 1
+
+        WHILE key0_count <= size_of_array ( key0_fields ) DO
+
+            IF key0_fields [ key0_count ] = self . order_field THEN
+
+                self . order_is_key0 = TRUE
+
+            ENDIF
+
+            key0_count = key0_count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    first_time = TRUE
+    key0_count = 1
+
+    WHILE STRINGLENGTH ( prefix ) > 0 DO
+
+        IF key0_count > size_of_array ( key0_fields ) THEN
+
+            fatal_error ( "Prefix too big" )
+
+        ENDIF
+
+        GET_FIELD_DETAILS
+                  'self . table' . 'key0_fields [ key0_count ]' ,
+                  "FIELD_SIZE" ,
+                  field_size
+
+        IF STRINGLENGTH ( prefix ) < field_size THEN
+
+            key_string = PAD ( prefix , " " , field_size )
+            prefix = ""
+
+        ELSE
+
+            key_string = SUBSTRING ( prefix , 1 , field_size )
+            prefix = prefix # key_string
+
+        ENDIF
+
+        IF NOT first_time THEN
+
+            ARRAY_SELECT_ADD ( select_array     ,
+                               ARRAY_SELECT_AND ,
+                               EMPTY            ,
+                               EMPTY            )
+
+        ENDIF
+
+        ARRAY_SELECT_ADD ( select_array               ,
+                           ARRAY_SELECT_EQ            ,
+                           key0_fields [ key0_count ] ,
+                           key_string                 )
+
+        key0_count = key0_count + 1
+
+        first_time = FALSE
+
+    ENDWHILE
+
+    IF self . select_callback <> EMPTY THEN
+
+        IF lib_utils_get_callback( self . select_callback ,
+                                   self . library         ,
+                                   lib                    ,
+                                   rout                   ) THEN
+
+            CALL_ROUTINE rout
+                IN LIBRARY lib
+                USING self, select_array
+
+        ENDIF
+
+    ENDIF
+
+    IF self . order_field <> EMPTY THEN
+
+        ARRAY_SELECT_ADD ( select_array        ,
+                   ARRAY_SELECT_ORDER  ,
+                   self . order_field  ,
+                   EMPTY               )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_build_order ( self )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE loop, object, number_elements
+
+    loop = 1
+
+    ARRAY self . order_array ARRAYSIZE ( 0 )
+    number_elements = self . collection . size ( )
+
+    WHILE loop <= number_elements DO
+
+        object = self . collection . get_by_number ( loop )
+        self . order_array [ loop ]  = object . build_index ( "KEY0" )
+
+        loop = loop + 1
+
+    ENDWHILE
+
+    IF self . grid . current_row > number_elements THEN
+        self . grid . current_row = number_elements
+        IF self . grid . current_row = 0 THEN
+            self . grid . current_column = 0
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_get_data (       self            ,
+                                          VALUE read_for_modify )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE select_array
+
+    IF self . data_read THEN
+
+    ELSEIF self . copy_identity <> EMPTY THEN
+
+        self . build_select (  self . copy_identity ,
+                       select_array         )
+
+        self . collection . select_copy ( select_array    ,
+                                          self . identity )
+
+        self . data_read = TRUE
+        self . build_order ()
+
+    ELSE
+
+        self . build_select (  self . identity ,
+                       select_array    )
+
+        IF read_for_modify THEN
+
+            self . collection . select_for_update ( select_array )
+
+        ELSE
+
+            self . collection . select ( select_array )
+
+        ENDIF
+
+        self . data_read = TRUE
+        self . build_order ()
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_set_order ( self )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE count                ,
+        object               ,
+        do_update            ,
+        do_simple_order      ,
+        do_complicated_stuff ,
+        part_of_key0         ,
+        updated
+
+    do_update = TRUE
+
+    IF self . order_field <> EMPTY THEN
+
+        GET_FIELD_DETAILS 'self . table' . 'self . order_field'
+                      "KEY0_FIELD" ,
+                   part_of_key0
+
+        IF part_of_key0 THEN
+
+            do_simple_order      = FALSE
+            do_complicated_stuff = TRUE
+
+        ELSE
+
+            do_simple_order      = TRUE
+            do_complicated_stuff = FALSE
+
+
+        ENDIF
+
+    ELSE
+
+        do_simple_order      = FALSE
+        do_complicated_stuff = FALSE
+
+    ENDIF
+
+    IF do_complicated_stuff THEN
+
+        do_update = FALSE
+
+        ARRAY updated = FALSE
+
+        count = 1
+
+        WHILE count <= self . collection . size () DO
+
+            object = self . collection . get_by_number ( count )
+
+            IF object . deleted THEN
+
+                object . update ()
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+        count = size_of_array ( self . order_array )
+
+        WHILE count >= 1 DO
+
+            object = self . collection . get_by_index
+                    ( "KEY0"   ,
+                           self . order_array [ count ])
+
+            IF numeric ( SELECT 'self . table' .
+                                'self . order_field'
+                         IN OBJECT object ) < count THEN
+
+                object . assign_order ( count )
+                object . update ()
+                updated [ count ] = TRUE
+
+            ENDIF
+
+            count  = count - 1
+
+        ENDWHILE
+
+
+        count = 1
+
+        WHILE count <= size_of_array ( self . order_array ) DO
+
+            IF NOT updated [ count ] THEN
+
+                object = self . collection . get_by_index
+                        ( "KEY0"   ,
+                               self . order_array [ count ])
+
+
+                object . assign_order ( count )
+                object . update ()
+                updated [ count ] = TRUE
+
+            ENDIF
+
+            count  = count + 1
+
+        ENDWHILE
+
+
+    ENDIF
+
+    IF do_simple_order THEN
+
+        count = 1
+
+        WHILE self . order_array [ count ] <> EMPTY DO
+
+            object = self . collection . get_by_index
+                    ( "KEY0"   ,
+                           self . order_array [ count ])
+
+            IF numeric ( SELECT 'self . table' .
+                                'self . order_field'
+                         IN OBJECT object ) <> count THEN
+
+                object . assign_order ( count )
+
+            ENDIF
+
+            count  = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( do_update )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_set_titles (       prompt_details ,
+                                 VALUE header_line    )
+
+{
+* Sets the title for each column in the prompt details using the passed string
+* consisting of concatonated titles padded to the width of the field.
+*
+*******************************************************************************}
+
+    DECLARE count, title, field_count
+
+    count = 1
+    field_count = size_of_array ( prompt_details )
+
+    WHILE count <= field_count DO
+
+        title = substring ( header_line , 1 ,
+                    prompt_details [ count , 6 ])
+
+        IF STRINGLENGTH ( title )  >=
+            STRINGLENGTH ( header_line ) THEN
+
+            header_line = ""
+
+        ELSE
+
+            header_line = header_line # title
+
+        ENDIF
+
+        WHILE (( STRINGLENGTH ( header_line ) > 0 ) AND
+               ( substring ( header_line , 1, 1 ) <> " " )) DO
+
+            title = title : substring (header_line ,1,1 )
+            header_line = substring ( header_line , 2 ,
+                          STRINGLENGTH ( header_line ) - 1 )
+
+        ENDWHILE
+
+        IF count < field_count THEN
+
+            prompt_details [ count,6] =
+                   find_max_number ( prompt_details [ count , 6 ] ,
+                        ( prompt_details [ count + 1, 5 ] -
+                          prompt_details [ count, 5 ] ))
+
+        ENDIF
+
+        header_line = strip ( header_line )
+
+        prompt_details [ count,5] = strip ( title )
+        prompt_details [ count,6] =
+            find_max_number ( prompt_details [ count , 6 ] ,
+                         STRINGLENGTH ( title )      )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_setup_prompt_details (       self           ,
+                                                            prompt_details ,
+                                                      VALUE header_line    )
+{
+*
+* Parameters : self , Std List Editor
+*
+******************************************************************************}
+
+    ARRAY_COPY ( self . prompt_details , prompt_details )
+
+    list_editor_set_titles ( self . prompt_details , header_line )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_get_object ( self, VALUE cell_row )
+
+{
+* Returns the object record corresponding to the passed cell row number
+*
+* Parameters : self     , Std List Editor
+*              cell_row , the row number
+*
+*******************************************************************************}
+
+    DECLARE key0, object
+
+    IF ( cell_row <= 0                                ) OR
+       ( cell_row > self . grid . cell_rows           ) OR
+       ( list_editor_is_insert_row ( self, cell_row ) ) THEN
+
+        object = EMPTY
+
+    ELSE
+
+        key0 = self . order_array [ cell_row ]
+
+        object = self . collection . get_by_index ( "KEY0", key0 )
+    ENDIF
+
+    RETURN ( object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_add_to_form ( self )
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . screens_built THEN
+
+        self . grid . height = self . height
+        self . grid . width  = self . width
+        self . grid . row    = self . row
+        self . grid . column = self . column
+
+        self . parent_form . add_prompt ( self . grid )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_build_screens ( self )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . screens_built THEN
+
+        self . grid . title_separator_top   = GRID_SEPARATOR_CELLS
+        self . grid . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+        self . grid . title_size_top        = 1
+        self . grid . fixed_columns_left    = 1
+
+        self . grid . cell_columns = size_of_array ( self . prompt_details )
+        self . grid . cell_rows =
+
+            lib_grid_number_of_lines ( self . display_only OR
+                                           NOT( self . inserts_enabled ) ,
+                                           self . collection . size ( )  )
+
+        IF self . grid . cell_columns = 1 THEN
+
+            self . grid . fixed_columns_left = 0
+
+        ENDIF
+
+        lib_grid_setup_columns ( self . prompt_details  ,
+                     self . grid            ,
+                     self . table           )
+
+    ENDIF
+
+    self . add_to_form ( )
+
+    self . screens_built = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_set_table ( self )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . initialised THEN
+
+        IF NOT variable_is_assigned ( self . collection . table ) THEN
+
+            self . collection . initialise ( self . table )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_destroy_screens ( self )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . initialised = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_prompt (       self       ,
+                                        VALUE modifiable )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    { Do nothing - handled by form }
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_editor_add_entry (       self        ,
+                                VALUE current_row ,
+                                VALUE new_value   ,
+                                      key0        ,
+                                      new_object  )
+{
+*
+*
+*******************************************************************************}
+
+    key0 = self . construct_key0 ( new_value )
+
+    new_object = self . collection . reserve_entry ( key0 )
+
+    RETURN ( new_object <> EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_add_an_entry (       self       ,
+                                                    grid       ,
+                                              VALUE new_value  ,
+                                              VALUE row        ,
+                                                    new_object )
+
+{
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE worked    ,
+        key0
+
+    IF list_editor_add_entry ( self       ,
+                   row        ,
+                   new_value  ,
+                   key0       ,
+                   new_object ) THEN
+
+        { Update the order stuff }
+
+        array_insert_slice ( self . order_array  ,
+                     1                   ,
+                     row                 )
+        self . order_array [ row ] = key0
+
+        grid . insert_row ( row , 1 , GRID_SEPARATOR_NONE )
+
+        worked = TRUE
+
+    ELSE
+
+        worked = FALSE
+
+    ENDIF
+
+    RETURN ( worked )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE list_editor_insert_new_row (       self        ,
+                                           grid        ,
+                                     VALUE cell_column ,
+                                     VALUE cell_row    ,
+                                           window      ,
+                                     VALUE column      ,
+                                     VALUE row         ,
+                                     VALUE cell_width  ,
+                                     VALUE cell_height )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE new_value, key0, new_object, accept_id, delete_row
+    DECLARE create_insert_line, can_leave, lib, rout
+
+    REPEAT
+
+        IF lib_utils_get_callback( self . pre_insert ,
+                                   self . library         ,
+                                   lib                    ,
+                                   rout                   ) THEN
+
+            IF self . compatability = PROMPT_DETAILS_260 THEN
+
+                CALL_ROUTINE  rout
+                    USING cell_row ,
+                          window   ,
+                          new_value
+                        IN LIBRARY lib
+
+            ELSE
+
+                CALL_ROUTINE  rout
+                    USING self        ,
+                          grid        ,
+                          cell_column ,
+                          cell_row    ,
+                          window      ,
+                          column      ,
+                          row         ,
+                          cell_width  ,
+                          cell_height ,
+                          new_value
+                        IN LIBRARY lib
+
+            ENDIF
+
+        ELSE
+
+            fatal_error( "pre_insert_routine required" )
+
+        ENDIF
+
+        can_leave = lib_grid_add_checks ( self . grid         ,
+                                      blank ( new_value ) ,
+                                  accept_id           ,
+                                  create_insert_line  ,
+                                  delete_row          )
+
+        IF accept_id THEN
+
+            IF NOT list_editor_add_entry ( self        ,
+                               cell_row    ,
+                               new_value   ,
+                               key0        ,
+                               new_object  ) THEN
+
+
+                can_leave = FALSE
+
+            ENDIF
+
+        ENDIF
+
+    UNTIL ( can_leave )
+
+    self . row_inserted = FALSE
+
+    IF create_insert_line THEN
+
+        grid . insert_row ( cell_row + 1       ,
+                    1                   ,
+                        GRID_SEPARATOR_NONE )
+
+    ENDIF
+
+    IF  accept_id THEN
+
+        IF self . post_insert <> EMPTY THEN
+
+            object_set_current_table ( new_object, self . table )
+
+            IF lib_utils_get_callback( self . post_insert ,
+                                       self . library     ,
+                                       lib                ,
+                                       rout               ) THEN
+
+                IF self . compatability = PROMPT_DETAILS_260 THEN
+
+                    CALL_ROUTINE  rout
+                        USING cell_row ,
+                              window
+                            IN LIBRARY lib
+
+                ELSE
+
+                    CALL_ROUTINE  rout
+                        USING self     ,
+                              cell_row ,
+                              window
+                            IN LIBRARY lib
+
+                ENDIF
+
+            ENDIF
+
+            object_copy_current_table ( new_object    ,
+                            self . table  )
+
+        ENDIF
+
+        { Update the order stuff }
+
+        array_insert_slice ( self . order_array  ,
+                     1                   ,
+                     cell_row            )
+        self . order_array [ cell_row ] = key0
+
+        grid . redisplay_row ( cell_row )
+
+
+    ELSEIF delete_row THEN
+
+        grid . remove_row ( cell_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_select_key ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE lib, rout
+
+    IF lib_utils_get_callback( self . list_editor . select  ,
+                               self . list_editor . library ,
+                               lib                          ,
+                               rout                         ) THEN
+
+
+        IF self . list_editor . compatability = PROMPT_DETAILS_260 THEN
+
+            CALL_ROUTINE rout
+                USING self . current_row ,
+                      self . window
+                IN LIBRARY lib
+
+        ELSE
+
+            CALL_ROUTINE rout
+                USING self
+                IN LIBRARY lib
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_is_insert_row ( list_editor, row )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE grid, no_insert_row
+
+    grid = list_editor . grid
+
+    no_insert_row = ( list_editor . display_only        ) OR
+                    ( NOT list_editor . inserts_enabled )
+
+    RETURN( lib_grid_is_insert_line ( grid, row, no_insert_row ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_check_move (       grid           ,
+                                 VALUE current_column ,
+                                 VALUE current_row    ,
+                                       new_column     ,
+                                       new_row        )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE list_editor, lib, rout
+
+    list_editor = grid . list_editor
+
+    IF (0 < current_row) THEN
+
+        IF lib_utils_get_callback( list_editor . check_move ,
+                                   list_editor . library    ,
+                                   lib                      ,
+                                   rout                     ) THEN
+
+            CALL_ROUTINE rout
+                 USING   list_editor    ,
+                         grid           ,
+                         current_column ,
+                         current_row    ,
+                         new_column     ,
+                         new_row
+            IN LIBRARY   lib
+
+        ENDIF
+
+    ENDIF
+
+    IF list_editor_is_insert_row ( list_editor, new_row ) THEN
+
+        new_column = 1
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_right_mouse ( grid )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE list_editor, lib, rout
+
+    list_editor = grid . list_editor
+
+    IF lib_utils_get_callback( list_editor . right_mouse ,
+                               list_editor . library     ,
+                               lib                       ,
+                               rout                      ) THEN
+
+
+        CALL_ROUTINE rout
+            USING list_editor, grid
+            IN LIBRARY lib
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_insert ( self )
+
+{
+* The list editor grid's insert key callback
+*
+* Parameters : self , Std List Editor Grid
+*
+*******************************************************************************}
+
+    self . list_editor . option_insert_current( )
+
+    RETURN ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_option_insert_current ( self )
+
+{
+* Inserts a row at the current position
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE current_row, moved, do_insert, lib, rout
+
+    IF self . can_insert( ) THEN
+
+        current_row = self . grid . current_row
+
+        IF lib_utils_get_callback ( self . insert  ,
+                                    self . library ,
+                                    lib            ,
+                                    rout           ) THEN
+
+            IF self . compatability = PROMPT_DETAILS_260 THEN
+
+                CALL_ROUTINE rout
+                        USING      current_row
+                    RETURNING  do_insert
+                    IN LIBRARY lib
+
+            ELSE
+
+                CALL_ROUTINE rout
+                    USING      self, current_row
+                    RETURNING  do_insert
+                    IN LIBRARY lib
+
+            ENDIF
+
+        ELSE
+
+            do_insert = TRUE
+
+        ENDIF
+
+        IF do_insert THEN
+
+            IF current_row < 1 THEN
+                current_row = 1
+            ENDIF
+
+            self . row_inserted = TRUE
+            self . grid . insert_row ( current_row , 1 ,
+                                       GRID_SEPARATOR_NONE )
+
+            moved = self . grid . set_position ( 1 , current_row )
+
+            IF ( NOT moved ) THEN
+
+                self . grid . remove_row ( current_row )
+                self . row_inserted = FALSE
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_remove ( self )
+
+{
+* The list editor grid's remove key callback
+*
+* Parameters : self , Std List Editor Grid
+*
+*******************************************************************************}
+
+    self . list_editor . option_remove_current( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_option_remove_current ( self )
+
+{
+* Removes the row at the current position
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE do_delete, current_row, object, lib, rout
+
+    IF self . can_remove( )
+
+        current_row = self . grid . current_row
+
+        object = self . collection . get_by_index( "KEY0" ,
+                                                    self . order_array [ current_row ])
+
+
+        IF lib_utils_get_callback( self . delete  ,
+                                   self . library ,
+                                   lib            ,
+                                   rout           ) THEN
+
+            object_set_current_table ( object, self . table )
+
+            IF self . compatability = PROMPT_DETAILS_260 THEN
+
+                CALL_ROUTINE rout
+                    RETURNING do_delete
+                    IN LIBRARY lib
+
+            ELSE
+
+                CALL_ROUTINE rout
+                    USING     self
+                    RETURNING do_delete
+                    IN LIBRARY lib
+
+            ENDIF
+
+            object_copy_current_table ( object, self . table )
+
+        ELSE
+
+            do_delete = TRUE
+
+        ENDIF
+
+        IF do_delete THEN
+
+            object . delete ()
+
+            array_remove_slice ( self . order_array ,
+                                 1                  ,
+                                 current_row        )
+
+            self . grid . remove_row ( current_row )
+
+            IF current_row <> 1 THEN
+
+                self . grid . set_position ( self . grid . current_column ,
+                                             current_row - 1              )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_grid_build_context_menu( self, menu )
+{
+* Builds context menu
+*
+* Parameters : self , Std List Editor
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_display_cell (       self        ,
+                                   VALUE cell_column ,
+                                   VALUE cell_row    ,
+                                         window      ,
+                                   VALUE column      ,
+                                   VALUE row         ,
+                                   VALUE cell_width  ,
+                                   VALUE cell_height )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE object
+
+    IF ( self . list_editor . row_inserted                          ) OR
+       ( list_editor_is_insert_row ( self . list_editor, cell_row ) ) THEN
+
+
+        CLEAR LINE      row
+              FROM      column
+              TO        column + cell_width - 1
+              IN WINDOW window
+
+    ELSE
+
+        object = self . list_editor . get_object ( cell_row )
+
+        lib_grid_display_array ( self                  ,
+                     cell_column           ,
+                     cell_row              ,
+                     window                ,
+                     column                ,
+                     row                   ,
+                     cell_width            ,
+                     object                ,
+                     self . list_editor . prompt_details ,
+                     self . list_editor . table          ,
+                     FALSE                ,
+                     self . list_editor . compatability           )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_prompt_cell (       self        ,
+                                  VALUE cell_column ,
+                                  VALUE cell_row    ,
+                                        window      ,
+                                  VALUE column      ,
+                                  VALUE row         ,
+                                  VALUE cell_width  ,
+                                  VALUE cell_height )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE object
+
+    IF ( self . list_editor . row_inserted                          ) OR
+       ( list_editor_is_insert_row ( self . list_editor, cell_row ) ) THEN
+
+
+        IF self . display_only THEN
+
+            PROMPT ON LINE    row
+                    FROM      column
+                    IN WINDOW window
+
+
+        ELSE
+
+            list_editor_insert_new_row ( self . list_editor ,
+                             self                 ,
+                                     cell_column          ,
+                                     cell_row             ,
+                                     window               ,
+                                     column               ,
+                                     row                  ,
+                                     cell_width           ,
+                                     cell_height          )
+
+        ENDIF
+
+    ELSE
+
+        object = self . list_editor . get_object ( cell_row )
+
+        lib_grid_prompt_array ( self                  ,
+                        cell_column           ,
+                    cell_row              ,
+                    window                ,
+                    column                ,
+                    row                   ,
+                    cell_width            ,
+                    object                ,
+                    self . list_editor . prompt_details ,
+                    self . list_editor . table          ,
+                    FALSE                                 ,
+                    self . list_editor . compatability                  )
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_editor_validation ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE valid, lib, rout
+
+    IF self . grid . display_only THEN
+
+        valid = TRUE
+
+    ELSEIF lib_utils_get_callback( self . validation ,
+                                   self . library    ,
+                                   lib               ,
+                                   rout              ) THEN
+
+        CALL_ROUTINE rout
+            RETURNING    valid
+            USING        self
+            IN LIBRARY   lib
+
+
+    ELSE
+
+        valid = TRUE
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_add( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_copy ( self )
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . set_table ()
+
+    self . get_data ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_read_for_modify ( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_read_for_display ( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_modify ( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . initialised THEN
+
+        self . set_table ()
+
+        self . get_data ( TRUE )
+        self . build_screens ()
+
+        self . grid . select_routine     = "LIST_EDITOR_SELECT_KEY"
+        self . grid . check_move_routine = "LIST_EDITOR_CHECK_MOVE"
+
+        IF self . deletes_enabled THEN
+            self . grid . remove_routine = "LIST_EDITOR_REMOVE"
+        ENDIF
+
+        IF self . inserts_enabled THEN
+            self . grid . insert_routine = "LIST_EDITOR_INSERT"
+        ENDIF
+
+        self . grid . display_only = FALSE
+        self . display_only        = FALSE
+
+        self . initialised = TRUE
+
+    ELSE
+
+        self . repaste ()
+
+    ENDIF
+
+    RETURN ( self . prompt ( TRUE ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_display ( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . initialised THEN
+
+        self . set_table ()
+
+        self . grid . display_only = TRUE
+        self . display_only        = TRUE
+
+        self . get_data ( FALSE )
+        self . build_screens ()
+
+        self . initialised = TRUE
+
+    ELSE
+
+        self . repaste ()
+
+    ENDIF
+
+    self . prompt ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_save ( self )
+
+{
+* Save the data.
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    IF NOT self . display_only THEN
+
+        IF self . set_order () THEN
+
+            self . collection . invoke_all ( "UPDATE" )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_labtable_quit ( self )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . data_read          = FALSE
+    self . collection         = EMPTY
+    self . grid . list_editor = EMPTY
+    self . grid               = EMPTY
+    self                      = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_can_insert ( self )
+
+{
+* Returns True if can insert a row
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    DECLARE is_insert_row
+
+    is_insert_row = list_editor_is_insert_row ( self, self . grid . current_row )
+
+    RETURN(     self . inserts_enabled AND
+            NOT self . display_only    AND
+            NOT is_insert_row          )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_can_remove ( self )
+
+{
+* Returns True if can remove a row
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    DECLARE is_insert_row
+
+    is_insert_row = list_editor_is_insert_row ( self, self . grid . current_row )
+
+    RETURN(     self . deletes_enabled AND
+            NOT self . display_only    AND
+            NOT is_insert_row          )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_update_screen_state ( self )
+
+{
+* Called when the context may have changed to allow screen elements to reflect
+* the change
+*
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_editor_create_buttons ( list_editor )
+
+{
+*
+*
+* Parameters : list_editor . Std List Editor Form
+*
+*******************************************************************************}
+
+    DECLARE button, butt_rhs_col
+
+    butt_rhs_col = list_editor . width + 1
+
+    {* Create exit button(s) *}
+    IF list_editor . display_only THEN
+
+        CREATE OBJECT "STD_PROMPT_BUTTON", button
+        button . row           = list_editor . height - 0.5
+        button . width         = 10
+        button . column        = butt_rhs_col - button . width
+        button . send_last_key = "EXIT"
+        button . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CLOSE", 1 )
+        button . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CLOSE", 1 ) : " (Esc)"
+
+        list_editor . add_prompt( button )
+
+        butt_rhs_col = butt_rhs_col - button . width - 2
+
+    ELSE
+
+        CREATE OBJECT "STD_PROMPT_BUTTON", button
+        button . row           = list_editor . height - 0.5
+        button . width         = 10
+        button . column        = butt_rhs_col - button . width
+        button . send_last_key = "EXIT"
+        button . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CANCEL", 1 )
+        button . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CANCEL", 1 ) : " (Esc)"
+
+        list_editor . add_prompt( button )
+
+        butt_rhs_col = butt_rhs_col - button . width - 2
+
+        CREATE OBJECT "STD_PROMPT_BUTTON", button
+        button . row           = list_editor . height - 0.5
+        button . width         = 10
+        button . column        = butt_rhs_col - button . width
+        button . send_last_key = "DO"
+        button . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_OK", 1 )
+        button . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_OK", 1 ) : " (Alt+Enter)"
+
+        list_editor . add_prompt( button )
+
+        butt_rhs_col = butt_rhs_col - button . width - 2
+
+    ENDIF
+
+    list_editor . add_panel( butt_rhs_col + 1                        ,
+                             list_editor . height - 0.5              ,
+                             1                                       ,
+                             list_editor . width - butt_rhs_col      ,
+                             PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+    list_editor . create_toolbar( )
+
+    list_editor . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_operation (       list_editor   ,
+                       VALUE record_prefix ,
+                             copy_identity ,
+                       VALUE action        )
+
+{
+*   Initialise a new object in the class.
+*
+*******************************************************************************}
+
+    DECLARE return_value
+
+    list_editor . identity      = record_prefix
+    list_editor . copy_identity = copy_identity
+
+    return_value = EMPTY
+
+    IF action = "ADD"  THEN
+
+    ELSEIF action = "COPY"  THEN
+
+        list_editor . collection . reset ()
+        list_editor . build_order ()
+        list_editor . labtable_copy ()
+
+    ELSEIF action = "READ_FOR_MODIFY"  THEN
+
+        { FPR }
+        list_editor . collection . reset ()
+        list_editor . build_order ()
+
+    ELSEIF action = "READ_FOR_DISPLAY"  THEN
+
+        { FPR }
+        list_editor . collection . reset ()
+        list_editor . build_order ()
+
+    ELSEIF action = "MODIFY"  THEN
+
+        return_value = list_editor . labtable_modify ()
+
+    ELSEIF action = "DISPLAY"  THEN
+
+        list_editor . labtable_display ()
+
+    ELSEIF action = "SAVE"  THEN
+
+        list_editor . labtable_save ()
+        list_editor . destroy_screens ()
+        list_editor . labtable_quit ()
+
+        return_value = transaction_has_updates ()
+
+    ELSEIF action = "QUIT"  THEN
+
+        list_editor . destroy_screens ()
+        list_editor . labtable_quit ()
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_insert_row ( self, VALUE row )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . grid . current_row = row
+    list_editor_insert ( self . grid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_action_remove_row ( self, VALUE row )
+
+{
+* Parameters : self , Std List Editor
+*
+*******************************************************************************}
+
+    self . grid . current_row = row
+    list_editor_remove ( self . grid )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_action_update_titles ( self )
+
+{
+* Refreshes the top title from the prompt details array
+*
+* Parameters : self , Std List Editor
+*
+******************************************************************************}
+
+    DECLARE column
+
+    lib_grid_setup_columns ( self . prompt_details  ,
+                             self . grid            ,
+                             self . table           )
+
+    IF self . grid . started THEN
+
+        column = 1
+        WHILE column <= self . grid . cell_columns DO
+
+            self . grid . re_display_title_top( column )
+            column = column + 1
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_action_get_item_count ( self )
+
+{
+* Returns the number of undeleted items in the list editor
+*
+* Parameters : self , Std List Editor
+*
+******************************************************************************}
+
+    DECLARE count
+
+    count = 0
+
+    self . collection . set_first( )
+
+    WHILE self . collection . current <> EMPTY DO
+
+        IF NOT self . collection . current .  deleted THEN
+            count = count + 1
+        ENDIF
+
+        self . collection . set_next( )
+
+    ENDWHILE
+
+    RETURN( count )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_action_update_contents ( self, VALUE modifiable )
+
+{
+* Reloads and refreshes the view of the the data within the grid
+*
+* Parameters : self , Std List Editor
+*
+******************************************************************************}
+
+    self . data_read     = FALSE
+    self . initialised   = FALSE
+    self . row_inserted  = FALSE
+    self . order_field   = EMPTY
+    self . screens_built = FALSE
+
+    CREATE OBJECT "STD_OBJECT_DATABASE",  self . collection
+
+    self . grid . display_only = NOT modifiable
+    self . display_only        = NOT modifiable
+
+    self . set_table ()
+
+    self . get_data ( modifiable )
+    self . build_screens ()
+
+    IF modifiable THEN
+        IF self . deletes_enabled THEN
+            self . grid . remove_routine = "LIST_EDITOR_REMOVE"
+        ENDIF
+
+        IF self . inserts_enabled THEN
+            self . grid . insert_routine = "LIST_EDITOR_INSERT"
+        ENDIF
+    ENDIF
+
+    self . initialised = TRUE
+
+    self . grid . rebuild( )
+
+ENDROUTINE
+
+{******************************************************************************}
+{* Std list editor form class                                                 *}
+{******************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_form_class_initialisation ( self )
+
+{
+* Initialise a new object in the class.
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    self . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+    self . validation_routine  = "LIST_EDITOR_VALIDATION"
+
+    self . proportional = TRUE
+
+    self . button_style = FORM_BUTTON_NONE
+
+    self . toolbar = EMPTY
+    self . row    = 5
+    self . column = 3
+    self . width  = 75
+    self . height = 15
+
+    self . add_toolbutton_callback = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_form_action_add_to_form ( self )
+
+{
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    IF NOT self . screens_built THEN
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+            self . prompt_id = "$LIST_EDITOR_FORM_" : STRIP( self . table )
+
+            self . grid . row    = 2
+            self . grid . column = 1
+            self . grid . width  = self . width
+            self . grid . height = self . height - 3
+
+            self . prompt_objects[ 1 ] = self . grid
+
+            self . grid . expand_column( self . grid . cell_columns )
+
+            list_editor_create_buttons ( self )
+
+        ELSE
+
+            {* character cell support *}
+            self . grid . column = 1
+            self . grid . row    = 1
+
+            lib_grid_add_to_form ( self . grid   ,
+                                   self          ,
+                                   TRUE          )
+
+            self . column = 3
+            self . row    = 7
+
+            self . width = find_max_number (
+                                 STRINGLENGTH ( self . header ) + 2 ,
+                                 STRINGLENGTH ( self . footer ) + 2 )
+
+            IF self . grid . width < self . width THEN
+                self . grid . column = 1 +
+                       (( self . width - self . grid . width ) DIV 2 )
+            ELSE
+                self . grid . column = 1
+                self . width = self . grid . width
+            ENDIF
+
+            self . height = GLOBAL( "SCREEN_HEIGHT" ) - 9
+            self . grid . height = self . height
+
+            self . column = find_max_number ( 3,
+                                          ( GLOBAL ( "SCREEN_WIDTH" ) -
+                                            self . width ) DIV 2 )
+
+        ENDIF
+
+    ENDIF
+
+    self . start_prompt ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_form_action_destroy_screens ( self )
+
+{
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    IF self . initialised THEN
+
+        self . end_prompt ()
+        self . initialised = FALSE
+        self . screens_built = FALSE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_form_action_prompt ( self, VALUE modifiable )
+
+{
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    self . wait_prompt  ()
+
+    self . unpaste ()
+
+    IF self . get_lastkey () = "EXIT" THEN
+
+        self . collection . reset ()
+        self . destroy_screens ()
+        self . build_order ()
+
+    ENDIF
+
+    RETURN ( self . get_lastkey () <> "EXIT" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_form_action_update_screen_state ( self )
+
+{
+* Called when the context may have changed to allow screen elements to reflect
+* the change. Enables / Disables toolbar buttons
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    self . toolbar . set_button_state( "INSERT", self . can_insert( ) )
+    self . toolbar . set_button_state( "REMOVE", self . can_remove( ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_form_action_create_toolbar( self )
+
+{
+* Creates the toolbar
+*
+* Parameters : self , Std List Editor Form
+*
+*******************************************************************************}
+
+    DECLARE lib,rout
+
+    CREATE OBJECT TOOLBAR_CLASS, self . toolbar
+    self . toolbar . height = 0.9
+
+    self . add_toolbuttons( self . toolbar )
+
+    IF lib_utils_get_callback( self . add_toolbutton_callback ,
+                               self . library                 ,
+                               lib                            ,
+                               rout                           ) THEN
+
+        CALL_ROUTINE rout
+            IN LIBRARY lib
+            USING self, self . toolbar
+
+    ENDIF
+
+    self . add_prompt( self . toolbar )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_form_action_add_toolbuttons( self, toolbar )
+
+{
+* Adds items to the passed toolbar
+*
+* Parameters : self    , Std List Editor Form
+*              toolbar , The toolbar object to add items to
+*
+*******************************************************************************}
+
+    DECLARE toolbutton
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_NEW_ITEM" )
+    toolbutton . identity      = "INSERT"
+    toolbutton . send_last_key = "INSERT HERE"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_INSERT", 1 ) :" (F5)"
+
+    toolbar . add_item ( toolbutton )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_DELETE_ITEM" )
+    toolbutton . identity      = "REMOVE"
+    toolbutton . send_last_key = "REMOVE"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_REMOVE", 1 ) : " (F6)"
+
+    toolbar . add_item ( toolbutton )
+
+    toolbar . add_separator( )
+
+    IF ( self . select <> EMPTY ) AND ( NOT BLANK ( self . select )) THEN
+
+        CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+        toolbutton . set_icon  ( "INT_MENU_SELECT" )
+        toolbutton . identity      = "SELECT"
+        toolbutton . send_last_key = "SELECT"
+        toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_DETAILS", 1 ) : " (F3)"
+
+        toolbar . add_item ( toolbutton )
+
+    ENDIF
+
+    toolbar . add_separator( )
+
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_HELP_BUBBLE" )
+    toolbutton . identity      = "HELP"
+    toolbutton . send_last_key = "HELP"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+    toolbar . add_item ( toolbutton )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Std List Editor Grid Class                                                *}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+ROUTINE std_list_editor_grid_action_enter_cell(       self        ,
+                                                VALUE cell_column ,
+                                                VALUE cell_row    )
+{
+* Called when a grid cell is entered
+*
+* Parameters : self       , Std List Editor Grid object
+*              cell_column, The new cell column
+*              cell_row   , The new cell row
+*
+******************************************************************************}
+
+    self . std_prompt_grid_ex :: enter_cell( cell_column , cell_row )
+
+    self . list_editor . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_list_editor_grid_action_right_mouse_click(       self   ,
+                                                       VALUE column ,
+                                                       VALUE row    )
+{
+* Called when the user clicks right mouse
+*
+* Parameters : self   , Std List Editor Grid object
+*              column , column clicked on
+*              row    , row clicked on
+*
+*******************************************************************************}
+
+    DECLARE menu
+
+    self . std_prompt_grid_ex :: right_mouse_click( column, row )
+
+    CREATE OBJECT POPUP_MENU_CLASS, menu
+
+    self . list_editor . grid_build_context_menu( menu )
+
+    menu . start( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Global Routines                                                           *}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE list_editor_create_object ( list_editor )
+
+{
+*   Check if the passed parameter is a list editor - if it isn't then
+*   Create it as one.
+*
+******************************************************************************}
+
+    DECLARE return_value
+
+    return_value = FALSE
+
+    IF ( NOT VARIABLE_IS_ASSIGNED ( list_editor )) OR
+       ( list_editor =  EMPTY                    ) THEN
+
+        list_editor_declare_class    ( )
+
+        CREATE OBJECT LIST_EDITOR_CLASS, list_editor
+
+        return_value = TRUE
+
+    ENDIF
+
+        RETURN ( return_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE list_editor_version1 ( VALUE screen_height       ,
+                      VALUE screen_width        ,
+                      VALUE screen_row          ,
+                      VALUE screen_column       ,
+                      VALUE the_table_name      ,
+                      VALUE top_line            ,
+                      VALUE header_line         ,
+                      VALUE bottom_line         ,
+                      VALUE use_array           ,
+                      VALUE display_routine     ,
+                      VALUE prompt_routine      ,
+                        prompt_details      ,
+                      VALUE pre_insert_routine  ,
+                      VALUE post_insert_routine ,
+                      VALUE delete_routine  ,
+                      VALUE select_routine      ,
+                        copy_identity       ,
+                      VALUE record_prefix       ,
+                      VALUE calling_library     ,
+                      VALUE action              ,
+                        list_editor         )
+
+
+    DECLARE return_value
+
+    IF list_editor_create_object ( list_editor ) THEN
+
+        list_editor . compatability = PROMPT_DETAILS_260
+
+        list_editor . table  = the_table_name
+		list_editor . header = top_line
+        list_editor . footer = bottom_line
+
+        list_editor . pre_insert  = pre_insert_routine
+        list_editor . post_insert = post_insert_routine
+        list_editor . delete      = delete_routine
+        list_editor . select      = select_routine
+
+        list_editor . library     = calling_library
+
+        IF use_array THEN
+
+            list_editor . setup_prompt_details ( prompt_details ,
+                                 header_line    )
+
+
+        ENDIF
+
+    ENDIF
+
+    return_value = list_editor . operation ( record_prefix ,
+                         copy_identity ,
+                         action        )
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE list_editor_create_object_no_form ( VALUE list_height         ,
+                                            VALUE list_width          ,
+                                            VALUE list_row            ,
+                                            VALUE list_column         ,
+                                            VALUE the_table_name      ,
+                                                  prompt_details      ,
+                                            VALUE pre_insert_routine  ,
+                                            VALUE post_insert_routine ,
+                                            VALUE delete_routine      ,
+                                            VALUE select_routine      ,
+                                            VALUE calling_library     ,
+                                                  form                ,
+                                                  list_editor         )
+
+{
+*   Check if the passed parameter is a list editor - if it isn't then
+*   Create it as one.
+*
+******************************************************************************}
+
+    DECLARE return_value
+
+    return_value = FALSE
+
+    IF ( NOT VARIABLE_IS_ASSIGNED ( list_editor )) OR
+       ( list_editor =  EMPTY                    ) THEN
+
+        list_editor_declare_class ()
+
+        CREATE OBJECT LIST_EDITOR_BASE_CLASS, list_editor
+
+        list_editor . table  = the_table_name
+
+        list_editor . pre_insert  = pre_insert_routine
+        list_editor . post_insert = post_insert_routine
+        list_editor . delete      = delete_routine
+        list_editor . select      = select_routine
+
+        list_editor . library     = calling_library
+
+        list_editor . parent_form   = form
+        list_editor . display_only  = form . display_only
+
+        list_editor . height = list_height
+        list_editor . width  = list_width
+        list_editor . row    = list_row
+        list_editor . column = list_column
+
+        array_copy ( list_editor . prompt_details ,
+                     prompt_details               )
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}

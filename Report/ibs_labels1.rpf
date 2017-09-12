@@ -1,0 +1,1655 @@
+{***********************************************************************
+*
+* Module Name   : IBS_LABELS
+*
+* Purpose       : Creates labels with IBS
+*
+* Document Ref  :
+*
+* Specification : N/a
+*
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-08-20  Fredrik Lindstein   Created
+*
+*
+*           **** = NEEDS CHANGE BEFORE GOLIVE!!!
+*
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $TOOLBOX
+JOIN LIBRARY $USER_CONTROL
+
+PLS(1023)
+EXIT
+
+ROUTINE PLS (VALUE option)
+DECLARE CreateJobForm, SampleID, Key, CurPrinter
+
+        IF GLOBAL("LABEL_ID") = "" THEN
+            define_label_printer ( 163 )
+        ELSE
+            CurPrinter = GLOBAL("LABEL_ID")
+            CurPrinter = SELECT printer . identity
+                         WHERE identity = CurPrinter
+                           AND removeflag = FALSE
+            IF CurPrinter = EMPTY THEN
+                define_label_printer ( 163 )
+            ENDIF
+        ENDIF
+
+
+REPEAT
+
+    create_form(CreateJobForm, SampleID)
+    key = CreateJobForm.get_lastkey()
+
+    IF key = "DO" THEN
+        {fm("Execute Labelprint for ":SampleID:", key: ":key)}
+        SelectSampleLabels(SampleID)
+    ENDIF
+
+UNTIL CreateJobForm.get_last_key() = "EXIT"
+
+ENDROUTINE
+
+
+{***********************************************
+Routine: create_form
+Purpuse: Create sample form
+***********************************************}
+ROUTINE create_form (CreateSampleForm, SampleID)
+DECLARE InputSample, title
+
+IF STRIP(GLOBAL("LABEL_ID")) <> ""
+    title = "Print Labels for sample..."
+ELSE
+    title = "Print Labels (Select printer)"
+ENDIF
+
+
+CREATE OBJECT PROMPT_CLASS_FORM, CreateSampleForm
+    CreateSampleForm.header    = title
+    CreateSampleForm.column    = 5
+    CreateSampleForm.row       = 10
+    CreateSampleForm.height    = 4
+    CreateSampleForm.width     = 50
+    CreateSampleForm.return_behaviour = FORM_RETURN_LEAVE
+
+    CreateSampleForm . add_display("Select Sample: ", 2, 1, PROMPT_RENDITION_BOLD)
+    PROMPT OBJECT InputSample
+              BROWSE ON SAMPLE . ID_NUMERIC
+              AT 15, 1
+    CreateSampleForm.add_prompt (InputSample)
+    CreateSampleForm . add_display("Currently using printer: ":GLOBAL("LABEL_ID"), 15, 3, PROMPT_RENDITION_BOLD)
+    CreateSampleForm . add_display("(Use 'Ctrl-E, DLX' to change printer)",        15, 4, PROMPT_RENDITION_BOLD)
+    CreateSampleForm.start_prompt()
+    CreateSampleForm.wait_prompt()
+        SampleID    = STRIP(InputSample.text)
+    CreateSampleForm.end_prompt()
+
+ENDROUTINE
+
+ROUTINE SelectSampleLabels(SampleID)
+
+{
+*   Explorer RMB callback routine for displaying job hierarchy
+*
+*******************************************************************************}
+DECLARE ArrSmps, ArrTests, i, SmpGotLabels, List, ArrRes, test_num, Remove
+DECLARE ArrAnas, AnaID, j, k, AlreadyInArray, Addi, form{, list, ArrRes}
+ARRAY ArrSmps   ARRAY_SIZE(0,2)
+ARRAY ArrTests  ARRAY_SIZE(0,3)
+
+    i = 1
+
+    i = size_of_array(ArrSmps) + 1
+    ArrSmps [i, 1] = i
+    ArrSmps [i, 2] = sample_id
+
+    SmpGotLabels = FALSE
+
+    ARRAY ArrAnas   ARRAY_SIZE(0,1)
+
+    test_num = SELECT DISTINCT lablabels_view.test_number WHERE sample_id = SampleID
+    WHILE test_num <> EMPTY DO
+        j = size_of_array(ArrAnas) + 1
+        ArrAnas [j, 1] = test_num
+        SmpGotLabels = TRUE
+        next LABLABELS_VIEW
+        test_num = SELECT lablabels_view.test_number
+    ENDWHILE
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(ArrAnas) DO
+        AnaID = STRIP(SELECT lablabels_view.analysis WHERE test_number = ArrAnas[i, 1]):"/":STRIP(SELECT lablabels_view.test_count)
+        ArrAnas[i, 1] = AnaID
+        i = i + 1
+    ENDWHILE
+
+    j = 1
+    AlreadyInArray = FALSE
+    WHILE j < size_of_array(ArrAnas) + 1
+
+        k = 1
+        WHILE k <  size_of_array(ArrTests) + 1
+
+            IF ArrTests[k, 2] = ArrAnas[j, 1] THEN
+                AlreadyInArray = TRUE
+                k = size_of_array(ArrTests) + 1
+            ENDIF
+
+            k = k + 1
+        ENDWHILE
+
+
+        IF NOT AlreadyInArray THEN
+
+            Addi = size_of_array(ArrTests) + 1
+            ArrTests[Addi, 1] = Addi
+            ArrTests[Addi, 2] = ArrAnas [j, 1]
+            ArrTests[Addi, 3] = SampleID
+        ENDIF
+
+        j = j + 1
+
+    ENDWHILE
+
+    IF NOT SmpGotLabels THEN
+
+        FM("Sample " :STRIP(ArrSmps [i, 2]) : " has no labels defined.")
+    ENDIF
+
+
+    IF size_of_array(ArrTests) <> 0 THEN
+
+        set_up_std_prompt_list_class ( )
+
+        CREATE OBJECT "STD_FORM", form
+
+        form.height = 10
+        form.width = 40
+        form.row = 4
+        form.column = 6
+        form.border = TRUE
+        form.header = "Sample ID: ":SampleId
+        form.prompt_id  = "PrintLabelForSample"
+
+
+
+        CREATE OBJECT "STD_PROMPT_LIST", list
+
+        list . height = form . height - 1
+        list . width = form . width - 2
+        list . row = 1
+        list . column = 1
+        list . style = LIST_STYLE_CHECK_BOXES +
+                LIST_STYLE_REPORT +
+                LIST_STYLE_SHOWSELALWAYS +
+                LIST_STYLE_AUTOARRANGE    +
+                LIST_STYLE_HEADERDRAGDROP +
+                LIST_STYLE_FULLROWSELECT
+
+        list . add_column ( "Analysis", 15 )
+
+        form . add_prompt ( list )
+
+        AddAnalysisToList(form, list, ArrTests)
+
+        form . start_prompt ( )
+
+        SetState(form, list)
+
+        form . wait_prompt ( )
+
+        ArrRes = GetResultArray(form, list)
+
+        IF form . get_last_key ( ) = "DO" THEN
+            i = 1
+            WHILE i <= SIZE_OF_ARRAY(ArrTests) DO
+                j = 1
+                Remove = TRUE
+                WHILE j <= SIZE_OF_ARRAY(ArrRes)
+                    IF ArrTests[i,2] = ArrRes[j,1] THEN
+                        Remove = FALSE
+                        j = SIZE_OF_ARRAY(ArrRes)
+                    ENDIF
+                    j = j + 1
+                ENDWHILE
+                IF Remove THEN
+                    array_remove_slice(ArrTests, 1, i)
+                    i = i -1
+                ENDIF
+                i = i + 1
+            ENDWHILE
+            PrintResultArray(ArrTests)
+        ENDIF
+
+        form . end_prompt ( )
+
+    ELSE
+
+        FM("No labels found for selected samples")
+
+
+ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+*
+* This file is deviede into three different sections:
+*
+* 1.    Startup routines to choose what to run.
+*
+* 2.    Routines to generate data for labels and send them to IBS
+*
+* 3.    Response routines.
+*       Rutines that waits for and controls incoming responsefiles
+*       from IBS
+*
+* 4.    Misc routines
+*
+*************************************************************************}
+
+{*************************************************************************
+*
+*   SECTION 1: Startup routines
+*
+**************************************************************************}
+{************************************************************************}
+GLOBAL ROUTINE PrintLabelForSample (VALUE IdNumeric, VALUE TestNumber, VALUE RePrint, VALUE ShowMessages, VALUE LocationId, VALUE UpdateDatabase)
+DECLARE Location, IBSTemplate, Err, ShowError, AutoPrint, IBSWebservice, IBSPrinter
+
+    {Verify printer selection}
+    IF GLOBAL("LABEL_ID") = "" THEN
+        define_label_printer ( 163 )
+    ELSE
+        IBSPrinter = SELECT printer . identity
+                     WHERE identity = GLOBAL("LABEL_ID")
+                       AND removeflag = FALSE
+        IF IBSPrinter = EMPTY THEN
+            define_label_printer ( 163 )
+        ENDIF
+    ENDIF
+
+    {Set defult values}
+    Location    = STRIP(LocationId)
+    IF (location = EMPTY) OR (STRIP(location) = "") THEN
+        Location   = SELECT PERSONNEL . LOCATION_ID WHERE IDENTITY = GLOBAL("OPERATOR")
+    ENDIF
+    {Location   = SELECT SAMPLE . LOCATION_ID WHERE ID_NUMERIC =  IdNumeric}
+
+    AutoPrint       = FALSE
+    IF Location <> EMPTY THEN
+        IBSTemplate     = SELECT LOCATION . IBS_TEMPLATE WHERE IDENTITY = Location
+        IF TestNumber = "TEST" THEN
+            IBSTemplate = "QC-AVE"
+            TestNumber = "ALL"
+        ENDIF
+        IBSWebservice   = SELECT LOCATION . IBS_WEBSERVICE
+
+        {IBSPrinter      = SELECT LOCATION . IBS_PRINTER}
+        IBSPrinter      = GLOBAL("LABEL_ID")
+        AutoPrint       = SELECT LOCATION . AUTO_PRINT
+        ShowError       = TRUE
+        Err             = EMPTY
+
+    ELSE
+
+        IBSTemplate     = ""
+        IBSWebservice   = ""
+        IBSPrinter  = ""
+        ShowError   = FALSE
+    ENDIF
+
+    IF (AutoPrint = EMPTY) THEN
+        RETURN
+    ENDIF
+    IF (NOT AutoPrint) THEN
+        RETURN
+    ENDIF
+
+    IF NUMERIC(LENGTH(IBSTemplate)) = 0 THEN
+        WriteToLog("No label template has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No label template has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        ShowError = FALSE
+        RETURN
+    ELSEIF NUMERIC(LENGTH(IBSWebservice)) = 0 THEN
+        WriteToLog("No IBS Webservice has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No IBS Webservice has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        ShowError = FALSE
+        RETURN
+    ELSEIF NUMERIC(LENGTH(IBSPrinter)) = 0 THEN
+        WriteToLog("No IBS Webservice has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No IBS Printer has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        ShowError = FALSE
+        RETURN
+    ELSE
+
+{        IBSPrinter  = "TEC"}
+
+        Err = PrintTemplate(IBSTemplate, IdNumeric, TestNumber, RePrint, IBSWebservice, IBSPrinter)
+
+        IF (Err = EMPTY) AND (UpdateDatabase) THEN
+            {sqlstmt = "UPDATE TEST SET LABEL_PRINTED = 'T' WHERE SAMPLE = '":IdNumeric:"'"
+            execute_sql ( sqlstmt)
+            execute_sql ( "commit")}
+        ENDIF
+    ENDIF
+
+    IF ShowError THEN
+        IF (Err = EMPTY) THEN
+            IF ShowMessages THEN
+                FM("Labels printed")
+            ENDIF
+        ELSE
+            WriteToLog("Error = ": err :" for template (" : STRIP(IBSTemplate) : ") for location (":STRIP(Location):") and user (":STRIP(GLOBAL("OPERATOR")):") with function in IBS_LABLES.")
+            IF ShowMessages THEN
+                FM("IBS Printer service reported error. Contact LIMS System Mamager" : ASCII(10): "Error: " : Err)
+            ENDIF
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 2: Routines to generate labels and send them to IBS
+*
+**************************************************************************}
+{************************************************************************}
+ROUTINE PrintTemplate(VALUE Template, VALUE IdNumeric, VALUE TestNumber, VALUE RePrint, VALUE WebService, VALUE Printer)
+{
+*
+* Purpose       : Main routine that collects data and prints xml for
+*                 enviromental sampling.
+*
+* Parameters    : JobHeaderJobName - Job header identity
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE SmpId, NumOfCols, i, NumOfSmps, CNT, tc, XMLSTATUS, XMLSTR
+DECLARE Answer, ResponseText, GUID, FilePath, LogTxt, ReturnFilePath, WebServiceAction
+DECLARE HeaderArray, LineArray
+
+
+    {Set defult values}
+    WebServiceAction    = "http://www.barcode.org/SendXml"
+    GUID                = GenerateTransactionId ()
+    IF OPERATOR = "DKTBG" THEN
+        FilePath            = "smp$userfiles:IBS\TEST\IBS_" : STRIP(GUID) : ".xml"
+        ReturnFilePath      = "smp$userfiles:IBS\TEST\LOGS\IBS_" : STRIP(GUID) : ".ctl"
+    ELSE
+        FilePath            = "smp$userfiles:IBS\IBS_" : STRIP(GUID) : ".xml"
+        ReturnFilePath      = "smp$userfiles:IBS\LOGS\IBS_" : STRIP(GUID) : ".ctl"
+    ENDIF
+    {FilePath        = "\\DKHOEIBS03\LIMSML\LIMS_" : STRIP(GUID) : ".xml"}
+    NumOfCols   = 13
+    NumOfSmps   = 0
+    Answer = EMPTY
+
+
+    {Initiate arrays}
+    ARRAY HeaderArray ARRAY_SIZE(0, 2)
+    ARRAY LineArray ARRAY_SIZE(0, NumOfCols, 2)
+
+
+    {Get static values for textfile}
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "processOrdreNo"
+    HeaderArray [i, 2] = IdNumeric
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "labelType"
+    HeaderArray [i, 2] = STRIP(Template)
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "printerAlias"
+    HeaderArray [i, 2] = Printer
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "labelCount"
+    HeaderArray [i, 2] = "1"
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "entityid"
+    HeaderArray [i, 2] = TestNumber
+    i = size_of_array(HeaderArray) + 1
+    HeaderArray [i, 1] = "printMode"
+    HeaderArray [i, 2] = "0"  {0=Direct, 1=Open webpage, 2 = Add to webpage}
+
+    IF TestNumber = "ALL" THEN
+
+        IF RePrint = TRUE THEN
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ELSE
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (LABEL_PRINTED = FALSE)
+
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (LABEL_PRINTED = FALSE)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ENDIF
+    ELSE
+        IF RePrint = TRUE THEN
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                {AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W") }
+                AND (TEST_NUMBER = TestNumber)
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                {AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W") }
+                AND (TEST_NUMBER = TestNumber)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ELSE
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (TEST_NUMBER = TestNumber)
+                AND (LABEL_PRINTED = FALSE)
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (TEST_NUMBER = TestNumber)
+                AND (LABEL_PRINTED = FALSE)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ENDIF
+
+    ENDIF
+
+{WriteToLog("We are expecting " : STRIP(CNT) : " number of labels to be printed") }
+
+    {Add sample information to sample array}
+    WHILE SmpId <> EMPTY DO
+
+        IF Answer = EMPTY THEN
+            NumOfSmps   = NumOfSmps + 1
+            LogTxt = "Printing ": STRIP(NumOfSmps) : "/":STRIP(CNT):" "
+
+            {Create the lines as they will apper in the label and add to array
+             If the template changes this also must be altered}
+
+            i = SIZE_OF_ARRAY(LineArray) + 1
+            LineArray[i,  1, 1] = "ANALYSIS"
+
+            tc = STRIP(SELECT LABLABELS_VIEW.TEST_COUNT)
+            IF tc <> "" THEN
+                tc = "/":tc
+            ENDIF
+
+{Add LIMSLABEL ID}
+            LineArray[i,  1, 2] = STRIP(SELECT LABLABELS_VIEW.ANALYSIS) : tc
+            LineArray[i,  2, 1] = "SAMPLEID"
+            LineArray[i,  2, 2] = SELECT LABLABELS_VIEW.SAMPLE_ID
+            LineArray[i,  3, 1] = "PRODUCT"
+            LineArray[i,  3, 2] = SELECT LABLABELS_VIEW.PRODUCT_CODE
+            LineArray[i,  4, 1] = "MEDIA"
+            LineArray[i,  4, 2] = SELECT LABLABELS_VIEW.MEDIA
+            LineArray[i,  5, 1] = "INCUBATION"
+            LineArray[i,  5, 2] = STRIP(SELECT LABLABELS_VIEW.INCUBATION)
+            LineArray[i,  6, 1] = "CONDITION"
+            LineArray[i,  6, 2] = SELECT LABLABELS_VIEW.CONDITION
+            LineArray[i,  7, 1] = "TEMPERATURE"
+            LineArray[i,  7, 2] = STRIP(SELECT LABLABELS_VIEW.TEMPERATURE)
+            LineArray[i,  8, 1] = "LABEL_TEXT"
+            LineArray[i,  8, 2] = SELECT LABLABELS_VIEW.LABEL_TEXT
+            LineArray[i,  9, 1] = "COMPONENT"
+            LineArray[i,  9, 2] = SUBSTITUTE(SELECT LABLABELS_VIEW.COMPONENT_NAME, "&", "_")
+            LineArray[i, 10, 1] = "JOB_NAME"
+            LineArray[i, 10, 2] = SELECT LABLABELS_VIEW.JOB_NAME
+            LineArray[i, 11, 1] = "TEST_NUMBER"
+            LineArray[i, 11, 2] = SELECT LABLABELS_VIEW.TEST_NUMBER
+            LineArray[i, 12, 1] = "RECD_DATE"
+            LineArray[i, 12, 2] = SELECT LABLABELS_VIEW.RECD_DATE
+            LineArray[i, 13, 1] = "DATE_EXP"
+            LineArray[i, 13, 2] = SELECT test.date_exp WHERE test_number = test_number
+
+            if (STRIP(LineArray[i,  3, 2]) = "")
+                then LineArray[i,  3, 2] = " "
+            endif
+            if (STRIP(LineArray[i, 10, 2]) = "")
+                then LineArray[i, 10, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  2, 2]) = "")
+                then LineArray[i,  2, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  1, 2]) = "")
+                then LineArray[i,  1, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  9, 2]) = "")
+                then LineArray[i,  9, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  4, 2]) = "")
+                then LineArray[i,  4, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  6, 2]) = "")
+                then LineArray[i,  6, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  5, 2]) = "")
+                then LineArray[i,  5, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  7, 2]) = "")
+                then LineArray[i,  7, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  8, 2]) = "")
+                then LineArray[i,  8, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  13, 2]) = "")
+                then LineArray[i,  13, 2] = " "
+            endif
+
+    WriteToLog(LogTxt:GetArray(LineArray))
+{    WriteToLog(LogTxt:
+               STRIP(LineArray[i,  3, 2]):"|":
+               STRIP(LineArray[i, 10, 2]):"|":
+               STRIP(LineArray[i,  2, 2]):"|":
+               STRIP(LineArray[i,  1, 2]):"|":
+               STRIP(LineArray[i,  9, 2]):"|":
+               STRIP(LineArray[i,  4, 2]):"|":
+               STRIP(LineArray[i,  6, 2]):"|":
+               STRIP(LineArray[i,  5, 2]):"|":
+               STRIP(LineArray[i,  7, 2]):"|":
+               STRIP(LineArray[i,  8, 2])     )}
+
+        ENDIF
+
+
+        NEXT LABLABELS_VIEW
+        SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+
+    ENDWHILE
+
+
+    IF NumOfSmps = 0 THEN
+        Answer = "No components to print."
+    ELSE
+
+    ResponseText = SendToWebService(STRIP(WebService), STRIP(WebServiceAction), STRIP(FilePath), HeaderArray, LineArray, NumOfCols, XMLStatus, XMLstr)
+
+    IF ResponseText <> "NoPrint" THEN
+        IF XMLStatus <> 200 THEN
+            Answer = GetValueOutOfXMLFile (ResponseText, "faultstring")
+            IF Answer = EMPTY THEN
+                Answer = XMLstr
+            ENDIF
+        ENDIF
+    ENDIF
+
+    i = 0
+    {WHILE (NOT FILE EXISTS(ReturnFilePath))
+        SLEEP FOR INTERVAL("0 00:00:01")
+        i = i + 1
+        IF i > 9 THEN
+            fm("No labels Printed. Unknown error, after ":STRIP(i):" sec.")
+        ENDIF
+    ENDWHILE}
+
+    IF FILE EXISTS(ReturnFilePath) THEN
+        fm("Labels Printed, after less than ":STRIP(i):" sec.")
+    ENDIF
+
+    ENDIF
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 3: Misc functions
+*
+**************************************************************************}
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE WriteXMLFile(VALUE FileName, VALUE XMLText)
+
+{
+*
+* Purpose      : Creates the physical file and adds xml to it.
+*
+* Parameters   : Filename - where the file should be saved
+*        XMLText  - text to add to created file
+*
+* Return Value : N/A
+*
+**************************************************************************}
+DECLARE check_ok{, FilePath, GUID}
+
+    FILE CREATE FileName, check_ok
+    IF check_ok <> EMPTY THEN
+        fm(check_ok)
+    ENDIF
+    FILE EXTEND FileName, check_ok
+    FILE WRITE  FileName, XMLText , check_ok
+    FILE CLOSE  FileName, check_ok
+
+{    GUID     = GenerateTransactionId ()
+    FilePath = "\\DKHOEIBS03\LIMSML\LIMS_" : STRIP(GUID) : ".xml"
+    FileName = SUBSTRING( FilePath, 1, LENGTH(FilePath)-4)
+    FileName = FileName : "_soap.xml"
+
+
+    FILE CREATE FileName, check_ok
+    IF check_ok <> EMPTY THEN
+        fm(check_ok)
+        WriteToLog(check_ok)
+    ENDIF
+    FILE EXTEND FileName, check_ok
+    FILE WRITE  FileName, XMLText , check_ok
+    FILE CLOSE  FileName, check_ok}
+
+
+ENDROUTINE
+
+
+{*************************************************************************
+*
+*   SECTION 4: Transaction handeling
+*
+**************************************************************************}
+
+{*************************************************************************}
+GLOBAL ROUTINE GenerateTransactionId
+
+{
+*
+* Purpose      : Creates a unique transaction identity
+*
+* Parameters   : None
+*
+* Return Value : A new identity
+*
+**************************************************************************}
+    DECLARE Answer, generated_number, i
+
+    SET FORMAT "9999999999"
+    generated_number = INCREMENT ( "IBS_LABEL", "IDENTITY")
+
+    i = LENGTH(STRIP(generated_number))
+
+    WHILE i <= 10 DO
+
+        generated_number = "0" : STRIP(generated_number)
+        i = LENGTH(STRIP(generated_number))
+
+    ENDWHILE
+
+    Answer = "LABEL" : STRIP(generated_number)
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE SendToWebService(VALUE sURL, VALUE Action, VALUE FilePath, HeaderArray, LineArray, NumOfColsInLineArray, XmlStatus, XMLstr)
+{WriteToLog(GetArray(LineArray))}
+{
+*
+* Purpose      : Use MSXML2.ServerXmlHttp object to communicate with a web service.
+*
+* Parameters   : sURL       - Path to webservice
+*        Action     - Function to call on webservice
+         FileName   - Path to file to be sent as parameter
+*
+* Return Value : response xml as string
+*
+**************************************************************************}
+DECLARE xmlhttp, soapMessage, i, j, Answer, Status, ResponseText, tn, tns, last_tn, sqlstmt
+
+    i = 1
+    j = 1
+    soapMessage = ""
+    soapMessage = "<?xml version=" : ASCII(34) : "1.0" : ASCII(34) : " encoding=" : ASCII(34) : "ISO-8859-1" : ASCII(34) : "?> "
+    soapMessage = soapMessage : "<soap:Envelope"
+    soapMessage = soapMessage : " xmlns:xsi=" : ASCII(34) : "http://www.w3.org/2001/XMLSchema-instance" : ASCII(34)
+    soapMessage = soapMessage : " xmlns:xsd=" : ASCII(34) : "http://www.w3.org/2001/XMLSchema" : ASCII(34)
+    soapMessage = soapMessage : " xmlns:soap=" : ASCII(34) : "http://schemas.xmlsoap.org/soap/envelope/" : ASCII(34) :"> "
+    soapMessage = soapMessage : "<soap:Body>"
+    soapMessage = soapMessage : "<SendXml xmlns=" : ASCII(34) : "http://tempuri.org/" : ASCII(34) : ">"
+    soapMessage = soapMessage : "<xml>"
+    {soapMessage = soapMessage : "<?xml version=" : ASCII(34) : "1.0" : ASCII(34) : " encoding=" : ASCII(34) : "utf-8" : ASCII(34) : "?> " }
+
+
+    WHILE i <> size_of_array(HeaderArray) + 1 DO
+        soapMessage = soapMessage : "<":STRIP(HeaderArray[i,1]):">":STRIP(HeaderArray[i,2]):"</":STRIP(HeaderArray[i,1]):">"
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    tns = ""
+    soapMessage = soapMessage : "<fields>"
+    WHILE i <> size_of_array(LineArray) + 1 DO
+        j = 1
+        soapMessage = soapMessage : "<LimsLabel ID = " : ASCII(34) : STRIP(i) : ASCII(34):">"
+        WHILE j <> NumOfColsInLineArray + 1 DO
+            soapMessage = soapMessage : "<LimsField>"
+            soapMessage = soapMessage : "<FieldName>":STRIP(LineArray[i, j, 1]):"</FieldName>"
+            soapMessage = soapMessage : "<FieldValue><![CDATA[":STRIP(LineArray[i, j, 2]):"]]></FieldValue>"
+            soapMessage = soapMessage : "</LimsField>"
+            IF LineArray[i, j, 1] = "TEST_NUMBER" THEN
+                tn = JUSTIFY(PAD(STRIP(LineArray[i, j, 2])," ",10),"RIGHT")
+                IF tns ="" THEN
+                    tns = "'":tn:"'"
+                    last_tn = tn
+                ELSEIF last_tn <> tn
+                    tns = tns:",'":tn:"'"
+                ENDIF
+            ENDIF
+            j = j + 1
+        ENDWHILE
+        soapMessage = soapMessage : "</LimsLabel>"
+       i = i + 1
+    ENDWHILE
+    soapMessage = soapMessage : "</fields>"
+
+    soapMessage = soapMessage : "</xml>"
+    soapMessage = soapMessage : "</SendXml>"
+    soapMessage = soapMessage : "</soap:Body>"
+    soapMessage = soapMessage : "</soap:Envelope>"
+
+    sqlstmt = "UPDATE test SET label_printed = 'T' where test_number in (":tns:") and label_printed = 'F'"
+    execute_sql(sqlstmt)
+    execute_sql("commit")
+
+    {WriteToLog("soapMessage: ":ASCII(10):soapMessage)}
+
+
+    {start_string = SUBSTRING( FilePath, 1, LENGTH(FilePath)-4)
+    out_string = startstring : "_soap.xml"}
+
+    {WriteToLog("start_string = ":start_string:ASCII(10):"                      ":
+           "out_string   = ":out_string)}
+{ }
+
+    WriteXMLFile( FilePath,  soapMessage)
+
+{******************* ADDED for testing, to AVOID SENDING XML !!!! ************************
+
+    RETURN ( "NoPrint" )}
+
+{WriteToLog(ASCII(10):
+"   CREATE OBJECT STD_OLE_AUTOMATION_SERVER, xmlhttp ":ASCII(10):
+"   xmlhttp.create (Msxml2.ServerXMLHTTP)":ASCII(10):
+"   xmlhttp.open(POST , ":sURL:" , False)":ASCII(10):
+"   xmlhttp.setRequestHeader( Man, POST  : ":sURL :" /LimsService.asmx HTTP/1.1)":ASCII(10):
+"   xmlhttp.setRequestHeader( SOAPAction, ":Action:" )":ASCII(10):
+"   xmlhttp.setRequestHeader(Content-Type, text/xml; charset=ISO-8859-1")}
+
+{   As it worked on 2010/06/28
+    ************************************
+    CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+    xmlhttp . create ("Msxml2.ServerXMLHTTP")
+
+    xmlhttp.open("POST" , sURL , False)
+    xmlhttp.setRequestHeader( "Man", "POST " : sURL: "/dslkskfd" :" HTTP/1.1")
+    xmlhttp.setRequestHeader( "SOAPAction", Action )
+    xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+    Answer = xmlhttp.send(soapMessage)
+
+    As it didn't work on 2010/09/01
+    ************************************
+    CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+    xmlhttp.create ("Msxml2.ServerXMLHTTP")
+    xmlhttp.open("POST" , sURL , "FALSE")
+    xmlhttp.setRequestHeader( "Man", "POST" : sURL :" HTTP/1.1")
+    xmlhttp.setRequestHeader( "SOAPAction", Action )
+    xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+    xmlhttp.setRequestHeader( "encoded", "true" )
+    xmlhttp.setRequestHeader( "encodingStyle", "http://schemas.xmlsoap.org/soap/encoding/")
+
+}
+{    fm("Send print request is disabled, IBS_LABELS.rpf line 626-627!")}
+    RETURN ( "NoPrint" )
+
+    CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+    xmlhttp . create ("Msxml2.ServerXMLHTTP")
+    xmlhttp.open("POST" , sURL , False)
+    xmlhttp.setRequestHeader( "Man", "POST " : sURL: "/dslkskfd" :" HTTP/1.1")
+    xmlhttp.setRequestHeader( "SOAPAction", Action )
+    xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+
+    Answer = xmlhttp.send(soapMessage)
+
+    Status = xmlhttp.Status
+    {StatusText = xmlhttp.StatusText}
+
+    IF Status <> 200 THEN
+
+        ResponseText = xmlhttp.responseText
+        Answer = GetValueOutOfXMLFile (ResponseText, "faultstring")
+        IF Answer = EMPTY THEN
+            Answer = ResponseText
+        ENDIF
+
+        fm("Status: ":Status:ASCII(10):
+            xmlhttp.StatusText:ASCII(10):
+            Answer)
+
+        WriteToLog(             "'Status <> 200'":ASCII(10):
+        "                        sURL: ": sURL: ASCII(10):
+        "                        Status   = " :xmlhttp.Status : ASCII(10) :
+        "                        Text     = " :xmlhttp.statusText : ASCII(10):
+        "                        xmlhttp.responseText: ":xmlhttp.responseText : ASCII(10) )
+
+    ELSE
+        ResponseText = xmlhttp.responseText
+        Answer = GetValueOutOfXMLFile (ResponseText, "SendXmlResult")
+        IF Answer = EMPTY THEN
+            Answer = ResponseText
+        ENDIF
+
+        fm("Status: ":Status:ASCII(10):
+            xmlhttp.StatusText:ASCII(10):
+            Answer)
+
+        WriteToLog(              "'Status = 200'":ASCII(10):
+        "                        sURL                 = " :sURL: ASCII(10):
+        "                        Status               = " :xmlhttp.Status : ASCII(10) :
+        "                        Text                 = " :xmlhttp.statusText : ASCII(10):
+        "                        xmlhttp.responseText = " :Answer : ASCII(10) )
+    ENDIF
+
+    XMLstr = xmlhttp.statusText
+
+    IF NUMTEXT(xmlhttp.Status) THEN
+        XmlStatus = NUMERIC(xmlhttp.Status)
+    ELSE
+        XmlStatus = -1
+    ENDIF
+
+    RETURN ( xmlhttp.responseText )
+
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    GetValueOutOfXMLFile
+Purpuse:    Finds value for specfic field in xml and returns it
+Parameters:     XML     string  String of xml
+        FieldName   string  Field to find value for
+*************************************************************************}
+ROUTINE GetValueOutOfXMLFile(VALUE XML, VALUE FieldName)
+
+DECLARE Answer, StartI, EndI, tmpStr
+
+    StartI  = INDEX(xml, FieldName) + LENGTH(FieldName) + 1
+
+    IF StartI <> LENGTH(FieldName) + 1 THEN
+        tmpStr  = SUBSTRING(xml, StartI, LENGTH(xml))
+        EndI    = INDEX(tmpstr, "<") - 1
+        Answer  = SUBSTRING(xml, StartI, EndI)
+    ELSE
+        Answer = EMPTY
+    ENDIF
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE PrintSampleReports_rmb ( rmb_object, object , collection )
+
+{
+*   Explorer RMB callback routine for displaying job hierarchy
+*
+*******************************************************************************}
+DECLARE sample_id, ArrSmps, ArrTests, i, table, SmpGotLabels
+DECLARE ArrAnas, AnaID, j, k, AlreadyInArray, Addi, form, list, ArrRes
+
+ARRAY ArrRes    ARRAY_SIZE(0,2)
+ARRAY ArrSmps   ARRAY_SIZE(0,2)
+ARRAY ArrTests  ARRAY_SIZE(0,3)
+
+table = "SAMP_JOB_VIEW"
+table = "QC_SAMPLE_VIEW"
+
+collection . set_first()
+
+WHILE collection . current <> EMPTY DO
+{   sample_id = SELECT 'table' . id_numeric IN OBJECT collection . current}
+    sample_id = SELECT 'table' . sample IN OBJECT collection . current
+
+    i = size_of_array(ArrSmps) + 1
+    ArrSmps [i, 1] = i
+    ArrSmps [i, 2] = sample_id
+
+    collection . set_next()
+
+ENDWHILE
+
+i = 1
+
+SmpGotLabels = FALSE
+
+WHILE ArrSmps [i, 1] <> EMPTY DO
+
+    ARRAY ArrAnas   ARRAY_SIZE(0,1)
+
+    anaid = SELECT DISTINCT LABLABELS_VIEW . ANALYSIS
+        WHERE SAMPLE_ID = ArrSmps [i, 2]
+        {AND LABEL_PRINTED = FALSE}
+
+
+    WHILE anaid <> EMPTY DO
+
+        SmpGotLabels = TRUE
+        j = size_of_array(ArrAnas) + 1
+        ArrAnas [j, 1] = anaid
+
+        next LABLABELS_VIEW
+        anaid = SELECT LABLABELS_VIEW . ANALYSIS
+
+    ENDWHILE
+
+    AlreadyInArray = FALSE
+    j = 1
+
+    WHILE j < size_of_array(ArrAnas) + 1
+
+        k = 1
+        WHILE k <  size_of_array(ArrTests) + 1
+
+            IF ArrTests[k, 2] = ArrAnas[j, 1] THEN
+                AlreadyInArray = TRUE
+                k = size_of_array(ArrTests) + 1
+            ENDIF
+
+            k = k + 1
+        ENDWHILE
+
+
+        IF NOT AlreadyInArray THEN
+
+            Addi = size_of_array(ArrTests) + 1
+            ArrTests[Addi, 1] = Addi
+            ArrTests[Addi, 2] = ArrAnas [j, 1]
+            ArrTests[Addi, 3] = ArrSmps [i, 2]
+        ENDIF
+
+        j = j + 1
+
+    ENDWHILE
+
+    IF NOT SmpGotLabels THEN
+
+        FM("Sample " :STRIP(ArrSmps [i, 2]) : " has no labels defined.")
+        {EXIT}
+
+    ENDIF
+
+    i = i + 1
+
+ENDWHILE
+
+
+IF size_of_array(ArrTests) <> 0 THEN
+
+    set_up_std_prompt_list_class ( )
+
+    CREATE OBJECT "STD_FORM", form
+
+    form . height = 10
+    form . width = 40
+    form . row = 4
+    form . column = 6
+    form . border = TRUE
+    form . header = "List"
+
+
+    CREATE OBJECT "STD_PROMPT_LIST", list
+
+    list . height = form . height - 1
+    list . width = form . width - 2
+    list . row = 1
+    list . column = 1
+    list . style = LIST_STYLE_CHECK_BOXES +
+            LIST_STYLE_REPORT +
+            LIST_STYLE_SHOWSELALWAYS +
+            LIST_STYLE_AUTOARRANGE    +
+            LIST_STYLE_HEADERDRAGDROP +
+            LIST_STYLE_FULLROWSELECT
+
+    list . add_column ( "Analysis", 15 )
+
+    form . add_prompt ( list )
+
+    AddAnalysisToList(form, list, ArrTests)
+
+    form . start_prompt ( )
+
+    SetState(form, List)
+
+    form . wait_prompt ( )
+
+    ArrRes = GetResultArray(form, list)
+
+    IF form . get_last_key ( ) = "DO" THEN
+        PrintResultArray(ArrTests)
+    ENDIF
+
+    form . end_prompt ( )
+
+ELSE
+
+    FM("No labels found for selected samples")
+
+
+ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE AddAnalysisToList (FormObj, List, AnalysisArray)
+
+{
+* Purpose       : Adds analysis to listobject
+*
+* Parameters    : Form object
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE main_form, counter
+
+    main_form = FormObj
+
+    ARRAY main_form . user_info ARRAYSIZE ( 0 , 2 )
+
+    counter = 0
+
+    WHILE ( counter < SIZE_OF_ARRAY(AnalysisArray) ) DO
+
+        counter = counter + 1
+
+        main_form . user_info[counter, 1] = AnalysisArray [counter, 1]
+
+        main_form . user_info[counter, 2] = AnalysisArray [counter, 2]
+
+        list . insert_item ( main_form . user_info [ counter, 2 ] , 115 )
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE SetState(SELF, list)
+
+{
+*
+* Purpose       : Sets all items to check
+*
+* Parameters    : Form object
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE counter, mask, state
+
+counter = 0
+
+    WHILE (counter < size_of_array(self . user_info)) DO
+
+        mask  = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state = LIST_ITEM_CHECKED
+
+        list. set_item_state ( counter , state, mask )
+
+        counter = counter + 1
+
+    ENDWHILE
+
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE GetResultArray(self, list)
+
+{
+*
+* Purpose       : Checks if list items is checked.
+*
+* Parameters    : Form object
+*
+* Return Value  : Array with checked analysis
+*
+*************************************************************************}
+DECLARE counter, mask, state_is, ResArray
+
+
+    ARRAY ResArray ARRAY_SIZE (0,1)
+    counter = 0
+
+    WHILE (counter < size_of_array(self.user_info)) DO
+
+        mask  = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state_is = list . get_item_state ( counter, mask )
+
+        IF state_is = LIST_ITEM_CHECKED THEN
+
+            ResArray[size_of_array(ResArray)+1,1] =  self . user_info[counter + 1, 2]
+
+        ENDIF
+
+        counter = counter + 1
+
+    ENDWHILE
+
+    RETURN (ResArray)
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE PrintResultArray(ArrTests)
+
+{PrintResultArray(ResultArray, AnalysisArray, SampleArray)
+*
+* Purpose       : Combindes previous gathered data and send it to print
+*         function.
+*
+* Parameters    : ResultArray, ArrTests
+*
+* Return Value  : None
+*
+*************************************************************************}
+
+DECLARE AllArray, i, j, TestNum, ii, prevsmp, NumOfCols, Replicate,
+        Answer, GUID, FilePath, XMLStatus, XMLstr{, LastSample}, WebServiceAction,
+        ResponseText, HeaderArray, LineArray, Sample, Analysis, Location, ReturnFilePath
+
+ARRAY AllArray {ARRAY_SIZE(0,10)}
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(ArrTests) DO
+    Analysis  = LEFTSTRING(ArrTests[i, 2], INDEX(ArrTests[i, 2],"/") - 1)
+    Replicate = SUBSTRING(ArrTests[i, 2], INDEX(ArrTests[i, 2],"/") + 1, 3)
+    Sample    = ArrTests[i, 3]
+    Location  = STRIP(SELECT sample.location_id WHERE id_numeric = Sample)
+    IF (Location = EMPTY) OR (STRIP(location) = "") THEN
+        Location = SELECT personnel.location_id WHERE identity = GLOBAL("OPERATOR")
+    ENDIF
+    TestNum   = SELECT DISTINCT lablabels_view.test_number WHERE sample_id = Sample AND analysis = Analysis AND test_count = Replicate    WHILE TestNum <> EMPTY DO
+        j = SIZE_OF_ARRAY(AllArray) + 1
+        AllArray[j,1] = Sample
+        AllArray[j,2] = Analysis
+        AllArray[j,3] = TestNum
+        AllArray[j,4] = Location
+    NEXT LABLABELS_VIEW
+        TestNum = SELECT lablabels_view.test_number
+ENDWHILE
+    i = i + 1
+ENDWHILE
+
+WriteToLog(GetArray(AllArray))
+
+    ii = 1
+    prevsmp = ""
+    {Set defult values}
+    WebServiceAction= "http://www.barcode.org/SendXml"
+    NumOfCols   = 19
+    Answer = EMPTY
+
+    WHILE ii <= SIZE_OF_ARRAY(AllArray) DO
+        IF INDEX(AllArray[ii, 1],"---") = 0
+            IF prevsmp <> AllArray[ii, 1] THEN
+                {Initiate arrays}
+                ARRAY HeaderArray ARRAY_SIZE(0, 2)
+                ARRAY LineArray ARRAY_SIZE(0, NumOfCols, 2)
+                CreateHeaderForRMB (AllArray[ii, 1], AllArray[ii, 3], TRUE, FALSE, AllArray[ii, 4], FALSE, HeaderArray, IBSTemplate, IBSWebservice, IBSPrinter)
+                IF ii <> 1 THEN
+                    GUID        = GenerateTransactionId ()
+                    IF OPERATOR = "DKTBG" THEN
+                        FilePath        = "smp$userfiles:IBS\TEST\IBS_" : STRIP(GUID) : ".xml"
+                    ELSE
+                        FilePath        = "smp$userfiles:IBS\IBS_" : STRIP(GUID) : ".xml"
+                    ENDIF
+                    ResponseText = SendToWebService(STRIP(IBSWebService), STRIP(WebServiceAction), STRIP(FilePath), HeaderArray, LineArray, NumOfCols, XMLStatus, XMLstr)
+
+                    IF ResponseText <> "NoPrint" THEN
+                        IF XMLStatus <> 200 THEN
+                            Answer = GetValueOutOfXMLFile (ResponseText, "faultstring")
+                            IF Answer = EMPTY THEN
+                                Answer = XMLstr
+                            ENDIF
+                        ENDIF
+                    ENDIF
+
+                ENDIF
+
+                prevsmp = AllArray[ii, 1]
+            ENDIF
+        ENDIF
+        IF INDEX(AllArray[ii, 1],"---") = 0
+            PrintTemplateRMB(IBSTemplate, AllArray[ii, 1], AllArray[ii, 3], TRUE, IBSWebservice, IBSPrinter, LineArray)
+        ENDIF
+        {LastSample = AllArray[ii, 1]}
+        ii = ii + 1
+
+    ENDWHILE
+
+    IF size_of_array(HeaderArray) <> 0 THEN
+
+        GUID        = GenerateTransactionId ()
+    IF OPERATOR = "DKTBG" THEN
+        FilePath        = "smp$userfiles:IBS\TEST\IBS_" : STRIP(GUID) : ".xml"
+        ReturnFilePath      = "smp$userfiles:IBS\TEST\LOGS\IBS_" : STRIP(GUID) : ".ctl"
+    ELSE
+        FilePath        = "smp$userfiles:IBS\IBS_" : STRIP(GUID) : ".xml"
+        ReturnFilePath      = "smp$userfiles:IBS\LOGS\IBS_" : STRIP(GUID) : ".ctl"
+    ENDIF
+       {FilePath        = "\\DKHOEIBS03\LIMSML\LIMS_" : STRIP(GUID) : ".xml"}
+        ResponseText = SendToWebService(STRIP(IBSWebService), STRIP(WebServiceAction), STRIP(FilePath), HeaderArray, LineArray, NumOfCols, XMLStatus, XMLstr)
+
+        IF ResponseText <> "NoPrint" THEN
+            IF XMLStatus <> 200 THEN
+                Answer = GetValueOutOfXMLFile (ResponseText, "faultstring")
+                IF Answer = EMPTY THEN
+                    Answer = XMLstr
+                ENDIF
+            ENDIF
+        ENDIF
+
+    i = 0
+    {WHILE (NOT FILE EXISTS(ReturnFilePath))
+        SLEEP FOR INTERVAL("0 00:00:01")
+        i = i + 1
+        IF i > 10 THEN
+            fm("No labels Printed. Unknown error, after ":STRIP(i):" sec.")
+            EXIT
+        ENDIF
+    ENDWHILE}
+
+    IF FILE EXISTS(ReturnFilePath) THEN
+        fm("Labels Printed, after less than ":STRIP(i):" sec.")
+    ENDIF
+
+    ENDIF
+
+{    IF SIZE_OF_ARRAY(AllArray) <> 0 THEN
+        FM("Labels printed.")
+    ENDIF}
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE CreateHeaderForRMB (    VALUE IdNumeric,
+                VALUE TestNumber,
+                VALUE RePrint,
+                VALUE ShowMessages,
+                VALUE LocationId,
+                VALUE UpdateDatabase,
+                HeaderArray,
+                IBSTemplate,
+                IBSWebservice,
+                IBSPrinter)
+
+{
+*
+* Purpose       : Combindes previous gathered data and send it to print
+*         function.
+*
+* Parameters    : ResultArray, AnalysisArray
+*
+* Return Value  : None
+*
+*************************************************************************}
+    DECLARE Location{, ShowError}, i
+
+
+    {Set defult values}
+    Location    = LocationId
+
+    IF Location <> EMPTY THEN
+        IBSTemplate     = SELECT LOCATION . IBS_TEMPLATE WHERE IDENTITY = Location
+        IF TestNumber = "TEST" THEN
+            IBSTemplate = "QC-AVE"
+            TestNumber = "ALL"
+        ENDIF
+        IBSWebservice   = SELECT LOCATION . IBS_WEBSERVICE
+        IF GLOBAL("LABEL_ID") = "" THEN
+            define_label_printer ( 163 )
+        ENDIF
+        {IBSPrinter      = SELECT LOCATION . IBS_PRINTER}
+        IBSPrinter      = GLOBAL("LABEL_ID")
+        {ShowError   = TRUE}
+    ELSE
+
+        IBSTemplate     = ""
+        IBSWebservice   = ""
+        IBSPrinter  = ""
+        {ShowError = FALSE}
+    ENDIF
+
+    IF NUMERIC(LENGTH(IBSTemplate)) = 0 THEN
+        WriteToLog("No label template has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No label template has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        {ShowError = FALSE}
+        RETURN
+{
+    ELSEIF NUMERIC(LENGTH(IBSWebservice)) = 0 THEN
+        WriteToLog("No IBS Webservice has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No IBS Webservice has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        RETURN
+}
+    ELSEIF NUMERIC(LENGTH(IBSPrinter)) = 0 THEN
+        WriteToLog("No IBS Webservice has been set for ":STRIP(Location):"/":STRIP(GLOBAL("OPERATOR")):" yet.")
+        IF ShowMessages THEN
+            FM("No IBS Printer has been set for you yet." : ASCII(10) : "Contact LIMS system manager")
+        ENDIF
+        {ShowError = FALSE}
+        RETURN
+    ELSE
+
+
+        {Get static values for textfile}
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "processOrdreNo"
+        HeaderArray [i, 2] = IdNumeric
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "labelType"
+        HeaderArray [i, 2] = STRIP(IBSTemplate)
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "printerAlias"
+        HeaderArray [i, 2] = IBSPrinter
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "labelCount"
+        HeaderArray [i, 2] = "1"
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "entityid"
+        HeaderArray [i, 2] = "Multi"
+        i = size_of_array(HeaderArray) + 1
+        HeaderArray [i, 1] = "printMode"
+        HeaderArray [i, 2] = "0"  {0=Direct, 1=Open webpage, 2 = Add to webpage}
+
+
+    ENDIF
+
+ENDROUTINE
+
+{************************************************************************}
+ROUTINE PrintTemplateRMB(VALUE Template, VALUE IdNumeric, VALUE TestNumber, VALUE RePrint, VALUE WebService, VALUE Printer, LineArray)
+
+{
+*
+* Purpose       : Main routine that collects data and prints xml for
+*                 enviromental sampling.
+*
+* Parameters    : JobHeaderJobName - Job header identity
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE SmpId, i, j, NumOfSmps, CNT, tc
+DECLARE Answer, LogTxt
+
+    {Set defult values}
+    NumOfSmps   = 0
+    Answer = EMPTY
+
+    IF TestNumber = "ALL" THEN
+
+        IF RePrint = TRUE THEN
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ELSE
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (LABEL_PRINTED = FALSE)
+
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (LABEL_PRINTED = FALSE)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ENDIF
+    ELSE
+        IF RePrint = TRUE THEN
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                {AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W") }
+                AND (TEST_NUMBER = TestNumber)
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                {AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W") }
+                AND (TEST_NUMBER = TestNumber)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ELSE
+
+            CNT = SELECT COUNT LABLABELS_VIEW
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (TEST_NUMBER = TestNumber)
+                AND (LABEL_PRINTED = FALSE)
+
+            {Get values for sample(s) and add to array}
+            SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+                WHERE  SAMPLE_ID = IdNumeric
+                AND (TEST_STATUS ="U" OR TEST_STATUS ="V" OR TEST_STATUS ="W")
+                AND (TEST_NUMBER = TestNumber)
+                AND (LABEL_PRINTED = FALSE)
+                ORDER ON TEST_NUMBER DESCENDING, ORDER_NUMBER {DESCENDING}
+        ENDIF
+
+    ENDIF
+
+{WriteToLog("We are expecting " : STRIP(CNT) : " label(s) to be printed")}
+
+    {Add sample information to sample array}
+    WHILE SmpId <> EMPTY DO
+
+        IF Answer = EMPTY THEN
+            NumOfSmps   = NumOfSmps + 1
+            LogTxt = "Printing ": STRIP(NumOfSmps) : "/":STRIP(CNT):" "
+
+            {Create the lines as they will apper in the label and add to array
+             If the template changes this also must be altered}
+
+            i = SIZE_OF_ARRAY(LineArray) + 1
+            j = 1
+            LineArray[i,  1, 1] = "ANALYSIS"
+
+            tc = STRIP(SELECT LABLABELS_VIEW.TEST_COUNT)
+            IF tc <> "" THEN
+                tc = "/":tc
+            ENDIF
+
+            LineArray[i,  j, 2] = STRIP(SELECT LABLABELS_VIEW.ANALYSIS) : tc
+            j = j + 1
+            LineArray[i,  j, 1] = "SAMPLEID"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.SAMPLE_ID
+            j = j + 1
+            LineArray[i,  j, 1] = "ID_TEXT"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.ID_TEXT
+            j = j + 1
+            LineArray[i,  j, 1] = "PRODUCT"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.PRODUCT_CODE
+            j = j + 1
+            LineArray[i,  j, 1] = "PRODUCT_ID"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.PRODUCT_ID
+            j = j + 1
+            LineArray[i,  j, 1] = "BATCH"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.BATCH_NAME
+            j = j + 1
+            LineArray[i,  j, 1] = "SAMPLING_POINT"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.SAMPLING_POINT
+            j = j + 1
+            LineArray[i,  j, 1] = "ANALYSIS_TYPE"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.ANALYSIS_TYPE
+            j = j + 1
+            LineArray[i,  j, 1] = "ANALYSIS_DESCR"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.ANALYSIS_DESCR
+            j = j + 1
+            LineArray[i,  j, 1] = "MEDIA"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.MEDIA
+            j = j + 1
+            LineArray[i,  j, 1] = "INCUBATION"
+            LineArray[i,  j, 2] = STRIP(SELECT LABLABELS_VIEW.INCUBATION)
+            j = j + 1
+            LineArray[i,  j, 1] = "CONDITION"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.CONDITION
+            j = j + 1
+            LineArray[i,  j, 1] = "TEMPERATURE"
+            LineArray[i,  j, 2] = STRIP(SELECT LABLABELS_VIEW.TEMPERATURE)
+            j = j + 1
+            LineArray[i,  j, 1] = "LABEL_TEXT"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.LABEL_TEXT
+            j = j + 1
+            LineArray[i,  j, 1] = "COMPONENT"
+            LineArray[i,  j, 2] = SUBSTITUTE(SELECT LABLABELS_VIEW.COMPONENT_NAME, "&", "&")
+            j = j + 1
+            LineArray[i,  j, 1] = "JOB_NAME"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.JOB_NAME
+            j = j + 1
+            LineArray[i,  j, 1] = "TEST_NUMBER"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.TEST_NUMBER
+            j = j + 1
+            LineArray[i,  j, 1] = "RECD_DATE"
+            LineArray[i,  j, 2] = SELECT LABLABELS_VIEW.RECD_DATE
+            j = j + 1
+            LineArray[i,  j, 1] = "DATE_EXP"
+            LineArray[i,  j, 2] = SELECT test.date_exp WHERE test_number = test_number
+ 
+
+            if (STRIP(LineArray[i,  1, 2]) = "")
+                then LineArray[i,  1, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  2, 2]) = "")
+                then LineArray[i,  2, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  3, 2]) = "")
+                then LineArray[i,  3, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  4, 2]) = "")
+                then LineArray[i,  4, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  6, 2]) = "")
+                then LineArray[i,  6, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  5, 2]) = "")
+                then LineArray[i,  5, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  7, 2]) = "")
+                then LineArray[i,  7, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  8, 2]) = "")
+                then LineArray[i,  8, 2] = " "
+            endif
+            if (STRIP(LineArray[i,  9, 2]) = "")
+                then LineArray[i,  9, 2] = " "
+            endif
+            if (STRIP(LineArray[i, 10, 2]) = "")
+                then LineArray[i, 10, 2] = " "
+            endif
+            if (STRIP(LineArray[i, 11, 2]) = "")
+                then LineArray[i, 11, 2] = " "
+            endif
+            if (STRIP(LineArray[i, 12, 2]) = "")
+                then LineArray[i, 12, 2] = " "
+            endif
+            if (STRIP(LineArray[i, 13, 2]) = "")
+                then LineArray[i, 13, 2] = " "
+            endif
+
+
+{    WriteToLog(LogTxt:
+               STRIP(LineArray[i,  3, 2]):"|":
+               STRIP(LineArray[i, 10, 2]):"|":
+               STRIP(LineArray[i,  2, 2]):"|":
+               STRIP(LineArray[i,  1, 2]):"|":
+               STRIP(LineArray[i,  9, 2]):"|":
+               STRIP(LineArray[i,  4, 2]):"|":
+               STRIP(LineArray[i,  6, 2]):"|":
+               STRIP(LineArray[i,  5, 2]):"|":
+               STRIP(LineArray[i,  7, 2]):"|":
+               STRIP(LineArray[i,  8, 2])     )}
+
+        ENDIF
+
+
+        NEXT LABLABELS_VIEW
+        SmpId = SELECT LABLABELS_VIEW . SAMPLE_ID
+
+    ENDWHILE
+
+
+    IF NumOfSmps = 0 THEN
+
+        Answer = "No components to print."
+
+    ENDIF
+
+    RETURN (Answer)
+
+ENDROUTINE
+{*************************************************************************}
+

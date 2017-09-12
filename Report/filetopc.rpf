@@ -1,0 +1,172 @@
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN LIBRARY $LIB_UTILS
+
+file_to_pc ("smp$textreports",EMPTY)
+
+GLOBAL ROUTINE file_to_pc( VALUE host_dir, VALUE host_ext )
+
+IF (host_dir=EMPTY) OR (BLANK(host_dir)) THEN
+   flash_message("ERROR: File To PC routine must be called by Host Directory",
+                  TRUE)
+   return ( FALSE )
+ENDIF
+
+cur_file_dir = GLOBAL("file_directory")
+cur_file_ext = GLOBAL("file_extension")
+
+SET GLOBAL "file_directory" TO host_dir
+
+CREATE   OBJECT PROMPT_CLASS_FORM, ext_form
+
+ext_form . height  =  10
+ext_form . width   =  50
+ext_form . row     =  10
+ext_form . column  =  16
+ext_form . border  =  TRUE
+ext_form . header  =  "Copy File from Host to PC"
+ext_form . footer  =  "Press DO to enter File Names / Exit to quit"
+
+prompt_row = 3
+prompt_col = 5
+prompt_ext = "Enter Host File Extension : "
+
+PROMPT   OBJECT pr_host_ext
+         ON LINE prompt_row
+         FROM length(strip(prompt_ext)) + prompt_col + 1
+         FORMAT TEXT10
+
+ext_form . add_prompt ( pr_host_ext )
+
+pr_host_ext . value = host_ext
+
+ext_form . start_prompt ()
+
+DISPLAY  prompt_ext
+         ON LINE prompt_row
+         FROM prompt_col IN WINDOW ext_form . window
+
+REPEAT
+
+   ext_form . wait_prompt ()
+
+   ext_key = ext_form . get_LASTKEY()
+
+   IF ( ext_key = "DO" ) AND ( NOT ( BLANK(pr_host_ext.value) ) ) THEN
+
+      SET GLOBAL "file_extension" TO pr_host_ext . value
+
+      CREATE OBJECT PROMPT_CLASS_FORM, file_form
+
+      file_form . height  =  ext_form . height - prompt_row
+      file_form . width   =  50
+      file_form . row     =  ext_form . row + prompt_row
+      file_form . column  =  16
+      file_form . border  =  TRUE
+      file_form . header  =  "Files with Extension:":strip(pr_host_ext.value)
+      file_form . footer  =  "Press DO to enter PC File Name / Exit to quit"
+
+      prompt_file = "Enter Host File Name : "
+
+      PROMPT   OBJECT pr_host_file
+               ON LINE prompt_row
+               FROM length(strip(prompt_file)) + prompt_col + 1
+               BROWSE ON FILE
+
+      file_form . add_prompt ( pr_host_file )
+
+      file_form . start_prompt ()
+
+      DISPLAY  prompt_file
+               ON LINE prompt_row
+               FROM prompt_col IN WINDOW file_form . window
+
+      REPEAT
+
+         file_form . wait_prompt ()
+
+         file_key = file_form . get_LASTKEY()
+
+         IF ( file_key = "DO" ) AND ( NOT ( BLANK(pr_host_file.value) ) ) THEN
+
+            CREATE OBJECT PROMPT_CLASS_FORM, pc_form
+
+            pc_form . height  =  file_form . height - prompt_row
+            pc_form . width   =  50
+            pc_form . row     =  file_form . row    + prompt_row
+            pc_form . column  =  16
+            pc_form . border  =  TRUE
+            pc_form . header  =  "Enter PC Parameters"
+            pc_form . footer  =  "Press DO to Copy / Exit to quit"
+
+            prompt_pc = "Enter PC File Name : "
+
+            PROMPT   OBJECT pr_pc_file
+                     ON LINE prompt_row
+                     FROM length(strip(prompt_pc)) + prompt_col + 1
+                     FORMAT TEXT30
+
+            pc_form . add_prompt ( pr_pc_file )
+
+            pr_host_file . value = strip(pr_host_file.value)
+            pos = INDEX( pr_host_file.value, "]" ) + 1
+            pr_pc_file . value = substring( pr_host_file.value,pos,
+                                 length(pr_host_file.value)-pos+1)
+            pos = INDEX( pr_pc_file.value, ";" )-1
+            pr_pc_file . value = substring( pr_pc_file.value,1,pos)
+
+            pc_form . start_prompt ()
+
+            DISPLAY  prompt_pc
+                     ON LINE prompt_row
+                     FROM prompt_col IN WINDOW pc_form . window
+
+            REPEAT
+
+               pc_form . wait_prompt ()
+
+               pc_key = pc_form . get_LASTKEY()
+
+               IF ( pc_key = "DO" ) AND
+                  ( NOT ( BLANK(pr_pc_file.value) ) ) THEN
+                  do_trans()
+               ENDIF
+
+            UNTIL (pc_key = "EXIT")
+
+            pc_form . end_prompt ()
+
+         ENDIF
+
+      UNTIL (file_key = "EXIT")
+
+      file_form . end_prompt ()
+
+   ENDIF
+
+UNTIL (ext_key = "EXIT")
+
+ext_form . end_prompt ()
+
+SET GLOBAL "file_directory" TO cur_file_dir
+SET GLOBAL "file_extension" TO cur_file_ext
+
+ENDROUTINE
+
+ROUTINE do_trans
+
+   SET LOGICAL "PCOUT"   TO pr_pc_file.value
+   SET LOGICAL "vms_fil" TO pr_host_file.value
+
+   sec_spawn = "@smp$comfiles:vax2pc.com"
+   SPAWN sec_spawn,sec_status INTERACTIVE
+
+   IF   sec_status <> EMPTY
+   THEN flash_message("Could not transfer File. ":sec_status:
+                      ". Contact system administrator to modify flags",TRUE)
+   ELSE flash_message("Transfer OK",TRUE)
+   ENDIF
+
+ENDROUTINE

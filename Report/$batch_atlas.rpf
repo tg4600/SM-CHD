@@ -1,0 +1,558 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_ATLAS.RPF
+*
+* Purpose       : Contains the classes supporting the batch <-> atlas link
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_DDE
+
+JOIN LIBRARY $BATCH_UTILS
+JOIN LIBRARY $BATCH_USER
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LIB_UTILS
+
+CONSTANT ATLAS_TEMPLATES = "TEMPLATES\"
+CONSTANT ATLAS_TEMPLATE_EXT  = ".MTT"
+
+{******************************************************************************}
+
+GLOBAL ROUTINE batch_atlas_initialise
+
+{
+*
+*
+*******************************************************************************}
+
+	IF NOT global ( "LIBRARY_INITIALISED" ) THEN
+
+		batch_atlas_define_classes ()
+
+		SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+	ENDIF
+        
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_atlas_define_classes
+
+{
+*
+*
+*******************************************************************************}
+
+	DEFINE CLASS STD_BATCH_ATLAS_ANALYSIS
+	
+		INHERIT STD_BATCH_XCHROM_ANALYSIS
+		
+		ACTIONS "FINISH_DOWNLOAD" ,
+		        "TRANSFER_FILE"   , 
+		        "READ_ANALYSIS"  
+	
+	END CLASS	
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_atlas_analysis_action_finish_download ( self )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE end_of_file     ,
+        user_logical    ,
+        atlas_path      ,
+        atlas_lims_path ,
+        limsmodana      ,
+        waiting         ,
+        log_file        ,
+        input           ,
+        output          ,
+        status          ,
+        server_file     ,
+        client_file     , 
+        platform        , 
+        inst_path       , 
+        result_logical  , 
+        template_path   , 
+        xc_file         ,
+        template_ext 
+		
+	atlas_path = client_get_app_path ( "Atlas.exe" ) 
+		
+	atlas_path = atlas_path # "Atlas.exe"
+	
+	template_path = GLOBAL ( "ATLAS_TEMPLATES" )
+		
+	IF ( BLANK ( template_path ) ) THEN
+		
+		template_path = atlas_path : ATLAS_TEMPLATES
+	
+	ENDIF
+		
+	template_ext = GLOBAL ( "ATLAS_TEMPLATE_EXT" ) 
+		
+	IF ( BLANK ( template_ext ) ) THEN
+		
+		template_ext = ATLAS_TEMPLATE_EXT
+			
+	ENDIF
+
+	atlas_lims_path = atlas_path : "\lims\"
+	
+	{ Transfer method file to server}
+	
+	platform = GLOBAL ( "PLATFORM" )
+	
+	server_file = STRIP(self.analysis_name) : ".MTH"
+	client_file = STRIP(self.method_name) : ".MTT"
+	inst_path = atlas_path : "projects\" : STRIP(self.project_name) : "\" :  STRIP(self.instrument) : "\" : STRIP(self.analysis_name) : ".dir\"
+	
+	status = self . transfer_file ( platform      ,
+	                                server_file   ,
+	                                client_file   ,
+	                                template_path )
+												
+	IF ( status <> EMPTY ) THEN
+											   
+		status = GET_USER_MESSAGE ( "STD_XCHROM_FAIL_TMPL", 1 ) : status
+		
+	ELSE
+	
+		{ Continue download }
+		
+		end_of_file = ""
+		end_of_file = PAD ( end_of_file , "*" , 79 )
+
+		IF GLOBAL ( "PLATFORM" ) = "VMS" THEN
+
+			user_logical = "smp$userfiles:"
+
+		ELSE
+
+			user_logical = "$smp_userfiles/"
+
+		ENDIF
+        
+		FILE WRITE user_logical : self . download_file_name , end_of_file
+
+		FILE CLOSE user_logical : self . download_file_name
+
+		{ Transfer file to the client }
+
+		TRANSFER_FROM_SERVER ( user_logical : self . download_file_name      ,
+		                       atlas_lims_path  : self . download_file_name  )
+
+		log_file = "limslink.log"
+
+		{ Call Atlas's analysis modifier : limsmodana.exe }
+
+		limsmodana = ASCII (34) : atlas_lims_path : "\limsmodana.exe" : ASCII (34)
+		input    = "-input="  : atlas_lims_path : self . download_file_name
+		output   = "-output=" : atlas_lims_path : log_file
+
+		IF self . append_analysis THEN
+
+			dde_winexec ( limsmodana : " " : input : " " : output , 
+			              "SW_HIDE"                               ,
+			              status                                  )
+
+		ELSE
+
+			dde_winexec ( limsmodana : " " : input : " " : output : " initialise" ,
+			              "SW_HIDE"                                               ,
+			              status                                                  )
+
+		ENDIF
+
+		IF status <> EMPTY THEN
+
+			         { Attempting limsmodana : }
+			status = GET_USER_MESSAGE ( "STD_XCHROM_ATT_LIMSMODANA", 1 ) : status
+
+		ELSE
+
+			waiting = 1
+
+			REPEAT
+
+				status = self . check_modana_success ( atlas__lims_path ,
+				                                       log_file         )
+
+				waiting = waiting + 1
+
+				SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+				IF waiting > 10 THEN
+
+					status = GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL" , 1 )
+
+				ENDIF
+
+			                  { Attempt to read past end of file }
+			UNTIL ( status <> GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL", 1 ))
+			OR    ( waiting > 10                                       )
+
+											   
+			IF ( status <> EMPTY ) THEN
+                        
+				         { Limsmodana : }
+				status = GET_USER_MESSAGE ( "STD_XCHROM_LIMSMODANA",1 ) : status
+
+			ELSE
+				
+				{ Copy File }
+				
+				server_file = STRIP(self.analysis_name) : ".MTH"
+					
+				IF platform = "VMS" THEN
+					
+					result_logical = "SMP$RESULTFILES:"
+				
+				ELSE
+				
+					result_logical = "$SMP_RESULTFILES/"
+				
+				ENDIF
+				
+				SLEEP FOR INTERVAL ( "0 00:00:01" )
+			             
+				xc_file = inst_path : server_file
+				server_file = result_logical : server_file
+				status = TRANSFER_BINARY_FROM_SERVER ( server_file ,
+				                                       xc_file     )
+													   
+				IF ( status <> EMPTY ) THEN
+				
+					status = GET_USER_MESSAGE ( "STD_XCHROM_FAIL_TMPL", 1 ) : status
+					
+				ENDIF
+													   													   
+			ENDIF
+			
+			IF ( status = EMPTY ) THEN
+
+				status = self . run_xchrom_analysis ( atlas_lims_path )
+
+				IF status <> EMPTY THEN
+
+					         { Atlas : }
+					status = GET_USER_MESSAGE ( "STD_XCHROM_ATLAS", 1 ) : status
+
+				ENDIF
+
+			ENDIF
+
+			FILE DELETE server_file
+										    
+			CLIENT_DELETE_FILE ( atlas_lims_path : self . download_file_name )
+
+			CLIENT_DELETE_FILE ( atlas_lims_path : log_file )
+
+		ENDIF
+		
+	ENDIF
+
+	RETURN ( status )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_atlas_analysis_action_transfer_file (       self        ,
+                                                              platform    ,
+                                                              server_file ,
+                                                              client_file ,
+                                                        VALUE source_path )
+{
+*
+*
+******************************************************************************}
+
+DECLARE result_logical, success
+
+        IF platform = "VMS" THEN
+
+                result_logical = "SMP$RESULTFILES:"
+
+        ELSE
+
+                result_logical = "$SMP_RESULTFILES/"
+
+        ENDIF
+
+        success = TRANSFER_BINARY_TO_SERVER ( source_path    : "\" :  client_file ,
+                                              result_logical :        server_file )
+        
+        server_file = result_logical : server_file
+
+        RETURN ( success )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_batch_atlas_analysis_action_read_analysis (       self         ,
+                                                              entries      ,
+                                                        VALUE read_samples )
+
+{
+*
+*
+******************************************************************************}
+
+	DECLARE file_list  ,
+	        message    ,
+	        getinj     ,
+	        count      ,     
+	        status     ,
+	        samp_num   ,
+	        command    ,
+	        data_id    ,
+	        output     ,
+	        SMW_path   ,
+	        xcsmsync   ,
+	        sync_comm  ,
+	        success    ,
+	        temp_file  ,
+			message_ptr
+
+	ARRAY file_list
+
+	message = EMPTY
+	
+	self . chrom_path = client_get_app_path ( "Atlas.exe" )
+	
+	self . chrom_path = self . chrom_path # "Atlas.exe"
+
+	IF ( self . chrom_path <> EMPTY ) THEN
+		
+		self . chrom_path = self . chrom_path : "lims\"
+
+		self . file_prefix = STRIP ( self . project_name  ) : "-" :
+		                     STRIP ( self . instrument    ) : "-" :
+		                     STRIP ( self . analysis_name )
+
+		self . file_prefix = TOLOWER ( self . file_prefix )
+
+		CLIENT_GET_FILE_NAMES ( self . chrom_path        :
+		                        GLOBAL ( "PROCESS_ID" )  :
+		                        "-" : self . file_prefix :
+		                        "*.dat"                  ,
+		                        file_list                )
+
+		count = 1
+
+		WHILE ( count <= size_of_array ( file_list ) )  DO
+
+			CLIENT_DELETE_FILE ( self . chrom_path : file_list [ count ] )
+
+			count = count + 1
+
+		ENDWHILE
+
+		{ Call Atlas's limsgetinj.exe for each sample }
+
+		getinj = ASCII (34) : self . chrom_path : "limsgetinj.exe" : ASCII (34) : " "
+
+		data_id = STRIP ( self . project_name  ) : "," :
+		          STRIP ( self . instrument    ) : "." :
+		          STRIP ( self . analysis_name ) : ","
+
+		data_id = TOLOWER ( data_id )
+
+		output = "-output=" : self . chrom_path :
+		         GLOBAL ( "PROCESS_ID" ) : "-" : self . file_prefix
+
+		count  = 1
+		status = EMPTY
+
+		SMW_path = CLIENT_GET_CLIENT_PATH () 
+
+		temp_file = CLIENT_TEMPORARY_FILE ()
+
+		xcsmsync = ASCII (34) : SMW_path : "\xcsmsync.exe" : ASCII (34) 
+		sync_comm = xcsmsync : " " : temp_file : " " : self . chrom_path : "\ "
+
+		WHILE ( count <= entries )
+		AND   ( status = EMPTY   ) DO
+
+			samp_num = STRIP ( count )
+			command = getinj : ASCII(34) : data_id : samp_num : ",1,1 " : ASCII(34)
+			command = command : output : "-" : samp_num : "-1.dat"
+
+			sync_comm = sync_comm : GLOBAL ( "PROCESS_ID" ) : "-" : 
+			            self . file_prefix : "-" : samp_num : "-1.dat "
+                                                
+			dde_winexec ( command, "SW_HIDE", status )
+
+			count = count + 1
+
+			SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+		ENDWHILE
+
+		dde_winexec ( sync_comm, "SW_HIDE", status )
+
+		self . check_xcgetinj_complete ( count - 1 ,
+		                                 temp_file )     
+
+		CLIENT_DELETE_FILE ( temp_file )
+
+		ARRAY file_list
+
+		IF status = EMPTY THEN
+
+			success = CLIENT_GET_FILE_NAMES ( self . chrom_path     :
+			                                  GLOBAL ( "PROCESS_ID") :
+			                                  "*.dat"                ,
+			                                  file_list              )
+        
+			IF ( success ) THEN
+
+				self . read_samples ( file_list ,
+	                                  entries   ,
+	                                  TRUE      )
+
+			ELSE
+				          { No data to Upload }
+				message = GET_USER_MESSAGE ( "STD_XCHROM_NO_DATA",1 )
+				
+				message_fetch ( "STD_XCHROM_NO_DATA" ,
+				                 message_ptr         )
+		
+				message_add_parameter ( message_ptr ,
+				                        "Atlas"     )
+			
+				message = message_get_text ( message_ptr , 1 )
+				                      
+			ENDIF
+
+		ELSE
+
+			message = GET_USER_MESSAGE ( "STD_XCHROM_ATT_LIMSGETINJ", 1 )
+        
+			message = message : " : " : status
+
+		ENDIF
+
+	ELSE
+		
+		message_fetch ( "STD_XCHROM_FAILED_LOCATE" ,
+		                 message_ptr               )
+		
+		message_add_parameter ( message_ptr ,
+		                        "Atlas"     )
+			
+		message = message_get_text ( message_ptr , 1 )
+
+	ENDIF
+
+	RETURN (message )                       
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE load_template_phrase ( VALUE chrom_path )
+
+{
+*
+*
+******************************************************************************}
+
+DECLARE template_path, template_list, template_ext, template_files, template_id, entries
+DECLARE num_templates, count, found, status
+
+	ARRAY template_list
+
+	chrom_path = chrom_path # "Atlas.exe"
+	
+	template_path = GLOBAL ( "ATLAS_TEMPLATES" )
+	
+	IF ( BLANK ( template_path ) ) THEN
+	
+		template_path = ATLAS_TEMPLATES
+	
+	ENDIF
+	
+	template_ext = GLOBAL ( "ATLAS_TEMPLATE_EXT" ) 
+	
+	IF ( BLANK ( template_ext ) ) THEN
+	
+		template_ext = ATLAS_TEMPLATE_EXT
+		
+	ENDIF
+
+	template_files = chrom_path : "\" : template_path : "*" : template_ext
+
+	CLIENT_GET_FILE_NAMES ( template_files , template_list ) 
+	
+	num_templates = size_of_array ( template_list )
+	
+	IF ( num_templates > 0 ) THEN
+	
+		entries = SELECT COUNT phrase
+		          WHERE phrase_type = "MCTEMP"
+				  
+		count = 1 
+		
+		WHILE count <= num_templates DO
+		
+			template_id = SUBSTRING ( template_list[count], 1, INDEX (template_list[count], ".") - 1 )
+
+			found = SELECT phrase . phrase_id
+			        WHERE phrase_type = "MCTEMP"
+			        AND   phrase_text = template_id
+
+			IF found = EMPTY THEN
+
+				entries = entries + 1
+
+
+				RESERVE ENTRY phrase ,
+				              "MCTEMP    "  :
+				              template_id ,
+				              status
+
+				IF status = EMPTY THEN
+
+					ASSIGN phrase . phrase_text = template_list[count]
+
+					UPDATE phrase
+					
+				ENDIF
+
+			ENDIF
+
+			count = count + 1
+
+		ENDWHILE
+		
+	ENDIF
+
+ENDROUTINE

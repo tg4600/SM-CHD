@@ -1,0 +1,625 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $AQL
+*
+* Purpose       : Library of statistical sampling routines
+*
+* Document Ref  : N/A
+*
+* Specification : N/A
+*
+******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $LIB_LIST_RESULT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_INSPECT
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+SET NAME "DISPLAY/"
+ENABLE WINDOWS
+
+GLOBAL CONSTANT STAT_FIXED_SAMPLING   = "FIXED"
+GLOBAL CONSTANT STAT_ATTRIBUTE_SINGLE = "ATT_SINGLE"
+GLOBAL CONSTANT STAT_ATTRIBUTE_DOUBLE = "ATT_DOUBLE"
+GLOBAL CONSTANT STAT_VARIABLE_SINGLE  = "VAR_SINGLE"
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE aql_get_number_of_elements( VALUE test_number )
+
+{
+*
+*******************************************************************************}
+
+      DECLARE product, product_version, dynamic_product, analysis
+      DECLARE analysis_version, no_of_elements, double_att_fail
+      DECLARE stat_table, stat_type, sample, total_elements
+
+      no_of_elements = 0
+
+      sample = SELECT test . sample
+                  WHERE test_number = test_number
+
+      analysis         = SELECT test . analysis
+      analysis_version = SELECT test . analysis_version
+      double_att_fail  = SELECT test . stat_double_att_fail
+
+      product = SELECT sample . product
+                  WHERE id_numeric = sample
+
+      product_version  = SELECT sample . product_version
+      dynamic_product  = SELECT sample . dynamic_product
+      total_elements   = SELECT sample . total_elements
+
+      stat_type = aql_get_analysis_stat_type ( analysis, analysis_version )
+
+      IF stat_type <> STAT_FIXED_SAMPLING THEN
+
+            stat_table = aql_select_stat_record( product         ,
+                                                 product_version ,
+                                                 dynamic_product ,
+                                                 analysis        ,
+                                                 "%"             ,
+                                                 total_elements  ,
+                                                 stat_type       )
+
+            IF stat_table <> EMPTY THEN
+
+                  no_of_elements = SELECT 'stat_table' . sample
+
+
+                  IF stat_type = STAT_ATTRIBUTE_DOUBLE THEN
+
+                        double_att_fail  = SELECT test . stat_double_att_fail
+
+                        IF double_att_fail THEN
+
+                              no_of_elements = no_of_elements * 2
+
+                        ENDIF
+
+                  ENDIF
+
+            ENDIF
+
+      ENDIF
+
+      RETURN ( no_of_elements )
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE aql_get_analysis_stat_type ( VALUE analysis, VALUE analysis_version )
+
+{
+*
+*******************************************************************************}
+
+      RETURN( SELECT versioned_analysis . sampling_plan_type
+                  WHERE identity         = analysis
+                  AND   analysis_version = analysis_version )
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE aql_select_stat_record ( VALUE initial_product          ,
+                                 VALUE initial_product_version  ,
+                                 VALUE initial_dynamic_product  ,
+                                 VALUE analysis                 ,
+                                 VALUE component_name           ,
+                                 VALUE quantity                 ,
+                                 VALUE type                     )
+
+{
+*     Selects the strictest, appropriate record from the relevant statistical
+*     table, given the passed parameters, and returns the name of the table.
+*
+*******************************************************************************}
+
+      DECLARE max_no_of_elements, no_of_elements,  pos, mlp_array
+      DECLARE product, product_version, stat_table, selected_padded_id
+      DECLARE selected_stat_table
+
+      mlp_array = get_mlps ( initial_product          ,
+                             initial_product_version  ,
+                             initial_dynamic_product  )
+
+      selected_stat_table = EMPTY
+      selected_padded_id  = EMPTY
+      max_no_of_elements  = 1
+
+      pos = 1
+      WHILE pos <= size_of_array( mlp_array ) DO
+
+            product         = mlp_array[pos, 1]
+            product_version = mlp_array[pos, 2]
+
+            stat_table = select_stat_record ( product         ,
+                                              product_version ,
+                                              analysis        ,
+                                              component_name  ,
+                                              type            ,
+                                              quantity        )
+
+            IF stat_table <> EMPTY THEN
+
+                  no_of_elements = SELECT 'stat_table' . sample
+
+                  IF no_of_elements <> EMPTY THEN
+                        IF no_of_elements > max_no_of_elements THEN
+
+                              max_no_of_elements = no_of_elements
+                              
+                              selected_padded_id = lib_db_get_current_identity ( stat_table )
+                              selected_stat_table = stat_table
+                              
+                        ENDIF
+                  ENDIF
+
+            ENDIF
+
+            pos = pos + 1
+
+      ENDWHILE
+
+      IF ( selected_stat_table <> EMPTY ) AND
+         ( selected_padded_id  <> EMPTY ) THEN
+      
+            lib_db_select_padded ( selected_stat_table ,
+                                   selected_padded_id  ,
+                                   FALSE               )
+           
+      ENDIF
+
+      RETURN( selected_stat_table )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE aql_get_quality_statistic ( VALUE sample         ,                                    
+                                    VALUE test_number    ,
+                                    VALUE component_name ,
+                                    VALUE calc_type      )
+
+{
+*     Returns the quality statistic for the passed sample, test and component.
+*     'calc_type' is either "UPPER" or "LOWER" representing upper or lower
+*     quality statistic.
+*
+*******************************************************************************}
+
+      DECLARE lowest_quality_statistic, mlp_array, average, sd
+      DECLARE pos, product, product_version, limit, analysis, quality_statistic
+      DECLARE initial_product, initial_product_version, initial_dynamic_product
+      DECLARE list_result_component
+
+      lowest_quality_statistic = EMPTY
+
+      list_result_component = SELECT result . name
+                                    WHERE ( test_number = test_number )
+                                    AND   ( result_type = "L" )
+                                    ORDER ON order_number
+
+      average = lib_list_result_average( test_number, list_result_component )
+      sd = lib_list_result_standard_deviation( test_number, list_result_component )
+
+      analysis = SELECT test . analysis
+                  WHERE test_number = test_number
+
+      initial_product = SELECT sample . product
+                              WHERE id_numeric = sample
+
+      initial_product_version = SELECT sample . product_version
+      initial_dynamic_product = SELECT sample . dynamic_product
+
+      mlp_array = get_mlps ( initial_product          ,
+                             initial_product_version  ,
+                             initial_dynamic_product  )
+
+
+      IF ( average <> EMPTY ) AND ( sd <> EMPTY ) THEN
+
+            pos = 1
+            WHILE pos <= size_of_array( mlp_array ) DO
+
+                  product         = mlp_array[pos, 1]
+                  product_version = mlp_array[pos, 2]
+
+                  limit = get_limit ( product         ,
+                                      product_version ,
+                                      analysis        ,
+                                      component_name  ,
+                                      "min_limit"     )
+
+                  IF limit <> EMPTY THEN
+
+                        IF calc_type = "LOWER" THEN
+                              IF sd <> 0 THEN
+                                    quality_statistic = ( average - limit ) / sd
+                              ELSE
+                                    quality_statistic = GLOBAL( "UPPER_REAL_VALUE" )
+                              ENDIF
+                        ELSE
+                              IF sd <> 0 THEN
+                                    quality_statistic = ( limit - average ) / sd
+                              ELSE
+                                    quality_statistic = GLOBAL( "UPPER_REAL_VALUE" )
+                              ENDIF
+                        ENDIF
+
+                        IF lowest_quality_statistic = EMPTY THEN
+                              lowest_quality_statistic = quality_statistic
+
+                        ELSEIF quality_statistic < lowest_quality_statistic THEN
+                              lowest_quality_statistic = quality_statistic
+
+                        ENDIF
+
+                  ENDIF
+
+                  pos = pos + 1
+
+            ENDWHILE
+
+      ELSE
+
+            lowest_quality_statistic = EMPTY
+
+      ENDIF
+
+      RETURN( lowest_quality_statistic )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_limit ( VALUE product         ,
+                    VALUE product_version ,
+                    VALUE analysis        ,
+                    VALUE component_name  ,
+                    VALUE field_name      )
+
+{
+*     Returns the mlp limit value of the field 'field_name' for the passed
+*     product, version, analysis and component
+*
+******************************************************************************}
+
+      DECLARE entry_code, mlp_level, limit, limit_value
+
+      limit_value = EMPTY
+
+      entry_code = SELECT mlp_components . entry_code
+                        WHERE ( product_id      = product         )
+                        AND   ( product_version = product_version )
+                        AND   ( analysis_id     = analysis        )
+                        AND   ( component_name  = component_name  )
+
+      IF entry_code <> EMPTY THEN
+
+            mlp_level = find_aql_level ( product, product_version )
+
+            limit = SELECT mlp_values . 'field_name'
+                        WHERE ( entry_code = entry_code )
+                        AND   ( level_id   = mlp_level  )
+
+            IF limit <> EMPTY THEN
+
+                  limit = SUBSTITUTE ( limit, "<", "" )
+                  limit = SUBSTITUTE ( limit, ">", "" )
+                  limit = SUBSTITUTE ( limit, "=", "" )
+                  limit_value = limit
+            ENDIF
+
+      ENDIF
+
+      RETURN( limit_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_stat_table ( VALUE stat_type )
+
+{
+*     Returns the name of the table corresponding to the passed statistical
+*     type
+*
+******************************************************************************}
+
+      DECLARE stat_table
+
+      IF stat_type = STAT_ATTRIBUTE_SINGLE THEN
+            stat_table = "stat_atrib_single"
+
+      ELSEIF stat_type = STAT_ATTRIBUTE_DOUBLE THEN
+            stat_table = "stat_atrib_double"
+
+      ELSEIF stat_type = STAT_VARIABLE_SINGLE THEN
+            stat_table = "stat_varbl_single"
+
+      ELSE
+            stat_table = EMPTY
+
+      ENDIF
+
+      RETURN( stat_table )
+
+ENDROUTINE
+
+{********************************************************************************}
+
+ROUTINE select_stat_record ( VALUE product         ,
+                             VALUE product_version ,
+                             VALUE analysis        ,
+                             VALUE component_name  ,
+                             VALUE type            ,
+                             VALUE quantity        )
+{
+*     Selects the appropriate record from the relevant statistical table, given
+*     the passed parameters, and returns the name of the table.
+*     Only the information on the passed product is used - its schedule is not
+*     considered.
+*
+*********************************************************************************}
+
+      DECLARE samp_i_level, initial_letter, aql_value, use_code
+      DECLARE entry_code, mlp_level, stat_table, padded_id
+      DECLARE max_no_of_elements, no_of_elements, ins_level
+
+      padded_id  = EMPTY
+      stat_table = get_stat_table ( type )
+
+      no_of_elements     = EMPTY
+      max_no_of_elements = 1
+
+      samp_i_level = SELECT mlp_analysis . sampling_insp_level
+                        WHERE ( product_id      = product         )
+                        AND   ( product_version = product_version )
+                        AND   ( analysis_id     = analysis        )
+
+      IF samp_i_level <> EMPTY THEN
+
+            mlp_level = find_aql_level ( product, product_version )
+
+            initial_letter = find_letter ( samp_i_level, type, quantity )
+
+            ins_level = SELECT mlp_analysis . inspection_level
+
+            entry_code = SELECT mlp_components . entry_code
+                              WHERE ( analysis_id     =    analysis        )
+                              AND   ( product_id      =    product         )
+                              AND   ( product_version =    product_version )
+                              AND   ( component_name  LIKE component_name  )
+
+            WHILE entry_code <> EMPTY DO
+
+                  aql_value = SELECT mlp_values . aql_value
+                                    WHERE ( entry_code = entry_code )
+                                    AND   ( level_id   = mlp_level  )
+                                    AND   ( aql_value  <> " "       )
+
+                  IF ( aql_value <> EMPTY ) THEN
+
+                        use_code = SELECT 'stat_table' . use_code
+                                    WHERE ( samp_plan_code = initial_letter )
+                                    AND   ( insp_level     = ins_level      )
+                                    AND   ( aql_value      = aql_value      )
+
+                        IF ( use_code = NULL ) THEN
+
+                              no_of_elements = SELECT 'stat_table' . sample
+
+                        ELSE
+
+                              no_of_elements = SELECT 'stat_table' . sample
+                                                WHERE ( samp_plan_code = use_code  )
+                                                AND   ( insp_level     = ins_level )
+                                                AND   ( aql_value      = aql_value )
+
+                        ENDIF
+
+                  ENDIF
+
+                  IF no_of_elements <> EMPTY THEN
+
+                        IF no_of_elements > max_no_of_elements THEN
+
+                              max_no_of_elements = no_of_elements
+
+                              padded_id = lib_db_get_current_identity ( stat_table )
+
+                        ENDIF
+
+                  ENDIF
+
+                  NEXT mlp_components
+                  entry_code = SELECT mlp_components . entry_code
+
+            ENDWHILE
+
+      ENDIF
+
+      IF ( stat_table <> EMPTY ) AND ( padded_id <> EMPTY ) THEN
+      
+            lib_db_select_padded ( stat_table, padded_id, FALSE )
+
+      ELSE
+      
+            stat_table = EMPTY
+            
+      ENDIF
+
+      RETURN( stat_table )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE find_letter ( VALUE level, VALUE type, VALUE number_of_elements )
+
+{
+*
+*     Finds the code letter associated with the passed parameters
+*     Parameters:
+*           level              - the sampling inspection level
+*           type               - the statistical sampling type
+*           number_of_elements - the number representing a batch quantity
+*****************************************************************************}
+
+      DECLARE basic_type, letter
+
+      IF ( type = STAT_ATTRIBUTE_SINGLE ) OR ( type = STAT_ATTRIBUTE_DOUBLE ) THEN
+
+            basic_type = "A"
+
+      ELSE
+
+            basic_type = "V"
+
+      ENDIF
+
+      letter = SELECT stat_code . code_letter
+                  WHERE stat_type       = basic_type
+                  AND   sampling_level  = level
+                  AND   lower_units    <= number_of_elements
+                  ORDER ON lower_units DESCENDING
+
+      RETURN ( letter )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE find_aql_level ( VALUE mlp_identity, VALUE mlp_version )
+
+{
+*     Returns the passed mlp's level that is used for aql values
+*
+******************************************************************************}
+
+      DECLARE entry_code, level_id, test_level, is_aql_level
+
+      level_id = EMPTY
+
+      entry_code = SELECT mlp_header . entry_code
+                        WHERE identity        = mlp_identity
+                        AND   product_version = mlp_version
+
+      IF entry_code <> EMPTY THEN
+
+            test_level = SELECT mlp_values . level_id
+                              WHERE entry_code = entry_code
+
+            WHILE test_level <> EMPTY DO
+
+                  is_aql_level = SELECT mlp_level . aql_level
+                                    WHERE level_id = test_level
+
+                  IF is_aql_level THEN
+                        level_id = test_level
+                  ENDIF
+
+                  NEXT mlp_values
+
+                  test_level = SELECT mlp_values . level_id
+
+            ENDWHILE
+
+
+      ENDIF
+
+      RETURN ( level_id )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_mlps ( VALUE product          ,
+                   VALUE product_version  ,
+                   VALUE dynamic_product  )
+
+{
+*     Returns a 2d array containg the mlp identity and version of mlp's
+*     associated with the passed product identities
+*
+*******************************************************************************}
+
+      DECLARE mlp_array
+
+      ARRAY mlp_array ARRAYSIZE(0,2)
+
+      get_mlp ( product, product_version, mlp_array )
+      get_mlp ( dynamic_product, 1, mlp_array )
+
+      RETURN( mlp_array )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_mlp ( VALUE product          ,
+                  VALUE product_version  ,
+                        mlp_array        )
+
+{
+*     fills the passed 2d array with the mlp identity and version of mlp's
+*     part of the schedule associated with the passed product identity
+*
+*******************************************************************************}
+
+      DECLARE pos, sub_mlp, sub_version, context
+
+      IF ( SELECT mlp_header . identity WHERE identity = product ) <> EMPTY THEN
+
+            IF product_version = 0 THEN
+                  product_version = SELECT MAX mlp_header . product_version
+                                           WHERE ( identity = product ) AND
+                                                 ( approval_status = APPR_APPROVED )
+            ENDIF
+
+            pos = size_of_array( mlp_array ) + 1
+
+            mlp_array[pos,1] = product
+            mlp_array[pos,2] = product_version
+
+            sub_mlp = SELECT mlp_schedule . mlp_id
+                        WHERE identity = product
+                        AND   identity_version = product_version
+
+            WHILE sub_mlp <> EMPTY DO
+
+                  sub_version = SELECT mlp_schedule . mlp_version
+
+                  push_file_descriptor( "mlp_schedule", context )
+
+                  get_mlp ( sub_mlp, sub_version, mlp_array )
+
+                  pop_file_descriptor( context )
+
+                  NEXT mlp_schedule
+                  sub_mlp = SELECT mlp_schedule . mlp_id
+
+            ENDWHILE
+
+      ENDIF
+
+ENDROUTINE
+

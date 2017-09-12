@@ -1,0 +1,546 @@
+{******************************************************************************
+*
+* Module Name   : $INVENTORY_ALLOCATE
+*
+* Purpose       : User interface to allow inventory allocations to be performed
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $CRITERIA_SAVED
+JOIN LIBRARY $LIB_INVENTORY
+JOIN LIBRARY $LIB_LIST_VIEWER
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_QTY_UNIT
+
+option_allocate( EMPTY )
+
+option_view_allocations( EMPTY )
+
+{******************************************************************************}
+
+ROUTINE option_view_allocations( VALUE option )
+{
+* Displays a list containing all allocations of a particular inventory class
+*
+*******************************************************************************}
+
+	DECLARE inventory_id, criteria, viewer
+
+	IF get_identity ( inventory_id                 ,
+	                  "Choose Inventory Class"     ,
+	                  "View Inventory Allocations" ,
+	                  "INVENTORY_VIEW"             ,
+	                  EMPTY                        ) THEN
+
+    	define_list_viewer_class ( )
+
+		ARRAY criteria
+		ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ, "INVENTORY_ID", inventory_id )
+
+		CREATE OBJECT LIST_VIEWER_CLASS, viewer
+
+		viewer . header           = STRIP( inventory_id ) : " allocations"
+		viewer . autosize         = TRUE
+		viewer . auto_status_icon = TRUE
+		viewer . menu_columns     = TRUE
+		viewer . menu_criteria    = FALSE
+		viewer . menu_labtable    = FALSE
+		viewer . menu_view        = TRUE
+		viewer . show_removed     = FALSE
+		viewer . read_lock        = FALSE
+		viewer . criteria         = criteria
+		viewer . table            = "INVENTORY_ALLOCATION_VIEW"
+
+		viewer . go ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE option_allocate( VALUE option )
+{
+* Prompts for allocation details then allocates an item or items within an
+* inventory class
+*
+*******************************************************************************}
+
+	DECLARE form, inventory_id
+
+	IF get_identity ( inventory_id             ,
+	                  "Choose Inventory Class" ,
+	                  "Inventory Allocation"   ,
+	                  "INVENTORY_VIEW"         ,
+	                  EMPTY                    ) THEN
+
+		inventory_allocate_initialisation( )
+		CREATE OBJECT "INVENTORY_ALLOCATE_FORM", form
+
+		form . inventory_id = inventory_id
+
+		form . start_prompt( )
+		form . wait_prompt( )
+		form . end_prompt( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_initialisation
+{
+*
+*
+*******************************************************************************}
+
+	prompt_qty_unit_initialisation( )
+
+	DEFINE CLASS "INVENTORY_ALLOCATE_FORM"
+
+		INHERIT "STD_FORM"
+
+		INITIALISATION
+	
+		PROPERTIES
+			"inventory_id"              ,
+			"prompt_quantity"           , { internal }
+			"radio_item"                , { internal }
+			"radio_rule"                , { internal }
+			"prompt_item"               , { internal }
+			"prompt_rule"               , { internal }
+			"prompt_reason"             , { internal }
+			"button_allocate"             { internal }
+			
+		ACTIONS
+			"update_screen_state"       ,
+			"start_prompt"              ,
+			"get_rule_choose_array"     ,
+			"option_perform_allocation" ,
+			"can_perform_allocation"    ,
+			"do"
+
+	END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_class_initialisation( self )
+{
+* Inventory allocate form class initialisation
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	self . width  = 40
+	self . height = 10.5
+	self . row    = 5
+	self . column = 5
+	self . prompt_id = "$INVENTORY_ALLOCATE_MAIN"
+	self . button_style = FORM_BUTTON_NONE
+	
+	self . inventory_id = EMPTY
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_update_screen_state( self )
+{
+* Sets enabled state for prompts
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	DECLARE option_item
+
+	option_item = ( self . radio_item . value = TRUE )
+
+	self . prompt_item . set_enabled( option_item )
+	self . prompt_rule . set_enabled( NOT option_item )	
+
+	self . button_allocate . set_enabled ( self . can_perform_allocation( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_get_rule_choose_array( self )
+{
+* Returns a choose array containing all built in rules
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	DECLARE rules_array
+
+	ARRAY rules_array
+	rules_array[1,1] = "Select soon to expire first"
+	rules_array[1,2] = "inventory_items_soon_to_expire"
+
+	rules_array[2,1] = "Select earliest entry first"
+	rules_array[2,2] = "inventory_items_earliest_entry_first"
+	
+	rules_array[3,1] = "Select smallest quantity first"
+	rules_array[3,2] = "inventory_items_smallest_first"
+
+	RETURN( rules_array )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_start_prompt( self )
+{
+* Start prompt
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	DECLARE header_unit, rules_array, pos, mand_array, button_cancel
+
+	self . header = STRIP( self . inventory_id ) : " Allocation" 
+
+	header_unit = inventory_get_unit( self . inventory_id )
+
+	self . add_display( "Quantity Required", 1, 0.5, 0 )
+	
+    PROMPT OBJECT self . prompt_quantity
+        CLASS "PROMPT_QTY_UNIT"
+        WITH ( column         = 20              ,
+               row            = 0.5             ,
+               width          = 10              ,
+               value          = ""              ,
+               base_unit      = header_unit     ,
+               display_unit   = ""              ,
+               minimum_value  = 0               ,
+               error_too_low  = "Cannot allocate negative quantity" ,
+               leave_prompt_routine = "generic_leave_prompt" )
+	
+	self . add_prompt( self . prompt_quantity )
+
+	self . add_frame( "Selection Method", 1, 3, 4, self . width )
+
+	PROMPT OBJECT self . radio_item
+		CLASS "STD_PROMPT_TEXT_BOOLEAN"
+		WITH ( column          = 2       ,
+		       row             = 3       ,
+		       is_radio        = TRUE    ,
+		       value           = TRUE    ,
+		       caption         = "Choose a specific item" ,
+		       toggled_routine = STRIP( GLOBAL( "CURRENT_LIBRARY" ) ) : "/radio_item_toggled" )
+		       
+	self . add_prompt( self . radio_item )
+
+	ARRAY mand_array
+	ARRAY_SELECT_ADD( mand_array, ARRAY_SELECT_EQ, "INVENTORY_ID", self . inventory_id )
+
+	PROMPT OBJECT self . prompt_item
+		BROWSE ON inventory_item_summary_view . item_id
+		WITH ( column          = 6          ,
+		       row             = 4          ,
+		       mandatory_array = mand_array ,
+		       leave_prompt_routine = "generic_leave_prompt" )
+		       
+	self . add_prompt( self . prompt_item )
+
+	PROMPT OBJECT self . radio_rule
+		CLASS "STD_PROMPT_TEXT_BOOLEAN"
+		WITH ( column          = 2       ,
+		       row             = 5       ,
+		       is_radio        = TRUE    ,
+		       caption         = "Use a rule" ,
+		       toggled_routine = STRIP( GLOBAL( "CURRENT_LIBRARY" ) ) : "/radio_rule_toggled" )
+		       
+	self . add_prompt( self . radio_rule )
+
+	rules_array = self . get_rule_choose_array( )
+
+	pos = size_of_array( rules_array ) + 1
+	rules_array[ pos , 1 ] = "Browse for a criteria..."
+	rules_array[ pos , 2 ] = EMPTY
+
+	PROMPT OBJECT self . prompt_rule
+		CLASS "STD_PROMPT_TEXT_CHOOSE"
+		WITH ( column       = 6       ,
+		       row          = 6       ,
+		       choose_array = rules_array ,
+		       leave_prompt_routine = "generic_leave_prompt" )
+		       
+	self . add_prompt( self . prompt_rule )
+
+	self . add_display( "Reason", 1, 8, 0 )
+
+	PROMPT OBJECT self . prompt_reason
+		CLASS "STD_PROMPT_TEXT"
+		WITH ( column       = 10      ,
+		       row          = 8       ,
+		       leave_prompt_routine = "generic_leave_prompt" )
+		       
+	self . add_prompt( self . prompt_reason )
+
+	PROMPT OBJECT self . button_allocate
+		CLASS "STD_PROMPT_BUTTON"
+		WITH ( column       = self . width - 20   ,
+		       row          = self . height - 0.5 ,
+		       width        = 10                  ,
+		       caption      = "Allocate"          ,
+		       send_last_key = "DO"               ,
+		       default      = TRUE                )
+		       
+	self . add_prompt( self . button_allocate )
+
+	PROMPT OBJECT button_cancel
+		CLASS "STD_PROMPT_BUTTON"
+		WITH ( column        = self . width - 9    ,
+		       row           = self . height - 0.5 ,
+		       width         = 10                  ,
+		       caption       = "Cancel"            ,
+		       send_last_key = "EXIT"              )
+		       
+	self . add_prompt( button_cancel )
+
+	self . update_screen_state( )
+
+	self . std_form :: start_prompt( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_can_perform_allocation( self )
+{
+* Returns true if have enough info to perform the allocation
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	DECLARE valid
+
+	valid = NOT BLANK( self . prompt_quantity . value )
+	
+	IF valid THEN
+
+		IF self . radio_item . value THEN 
+		
+			valid = NOT BLANK( self . prompt_item . value )
+			
+		ELSE
+		
+			valid = NOT BLANK( self . prompt_rule . value )
+
+		ENDIF
+
+	ENDIF
+
+	RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_option_perform_allocation( self )
+{
+* Does the allocation
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	DECLARE entered_qty, entered_units, item, candidates_routine, reason, candidates
+	DECLARE errors, user_criteria, id_criteria
+
+	IF self . can_perform_allocation( ) THEN
+	
+		entered_qty   = self . prompt_quantity . value_entered
+		entered_units = self . prompt_quantity . display_unit
+		reason        = self . prompt_reason . value
+
+		IF ( self . radio_item . value ) THEN
+
+			item = self . prompt_item . value
+
+			errors = inventory_item_allocate( self . inventory_id  ,
+			                                  item                 ,
+			                                  entered_qty          ,
+			                                  entered_units        ,
+			                                  reason               )
+
+			IF errors = EMPTY THEN
+
+				flash_message( STRIP( entered_qty ) : " " : STRIP( entered_units ) : " successfully allocated from " : item, TRUE )
+
+			ELSE
+
+				flash_message( errors, TRUE )
+
+			ENDIF
+
+		ELSE
+
+			candidates = EMPTY
+
+			IF self . prompt_rule . value <> EMPTY THEN
+
+				candidates_routine = self . prompt_rule . value
+
+				CALL_ROUTINE candidates_routine
+					IN LIBRARY "$LIB_INVENTORY"
+					USING self . inventory_id
+					RETURNING candidates
+
+			ELSE
+
+				IF criteria_saved_load ( "INVENTORY_ITEM_SUMMARY_VIEW", user_criteria ) THEN
+
+					CREATE OBJECT "STD_OBJECT_DATABASE", candidates
+					candidates . initialise( "INVENTORY_ITEM_SUMMARY_VIEW" )
+
+					ARRAY id_criteria
+					ARRAY_SELECT_ADD( id_criteria, ARRAY_SELECT_EQ   , "INVENTORY_ID", self . inventory_id )
+					ARRAY_SELECT_ADD( id_criteria, ARRAY_SELECT_ORDER, "UNALLOCATED" , ARRAY_SELECT_ASCENDING )
+
+					ARRAY_SELECT_CONCAT( user_criteria, id_criteria )
+
+					candidates . select( user_criteria )
+				
+				ENDIF
+
+			ENDIF
+
+			IF candidates <> EMPTY THEN
+
+				errors = inventory_allocate( self . inventory_id ,
+				                             entered_qty         ,
+				                             entered_units       ,
+				                             reason              ,
+				                             candidates          )
+
+				IF errors = EMPTY THEN
+
+					flash_message( STRIP( entered_qty ) : " " : STRIP( entered_units ) : " successfully allocated from " : self . inventory_id, TRUE )
+
+				ELSE
+
+					flash_message( errors, TRUE )
+
+				ENDIF
+				
+			ENDIF
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_allocate_form_action_do( self )
+{
+* called when do is pressed
+*
+* Parameters : self , Inventory allocate form object
+*
+*******************************************************************************}
+
+	self . option_perform_allocation( )
+
+ENDROUTINE
+
+{******************************************************************************}
+{* Callback Routines                                                          *}
+{******************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE radio_item_toggled( self )
+{
+* Radio Button Toggled Callback. Called when checked
+*
+* Parameters : self , Radio Button prompt
+*
+*******************************************************************************}
+
+	DECLARE form
+
+	form = self . parent_prompt
+
+	form . radio_rule . set_text( NOT self . value )
+
+	form . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE radio_rule_toggled( self )
+{
+* Radio Button Toggled Callback. Called when checked
+*
+* Parameters : self , Radio Button prompt
+*
+*******************************************************************************}
+
+	DECLARE form
+
+	form = self . parent_prompt
+
+	form . radio_item . set_text( NOT self . value )
+
+	form . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE generic_leave_prompt( self )
+{
+* Leave prompt Callback. update screen state
+*
+* Parameters : self , prompt object erivative
+*
+*******************************************************************************}
+
+	DECLARE form
+
+	form = self . parent_prompt
+
+	form . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE allocate_button_clicked( self )
+{
+* button click Callback. Perform allocation
+*
+* Parameters : self , prompt object erivative
+*
+*******************************************************************************}
+
+	DECLARE form
+
+	form = self . parent_prompt
+
+	form . option_perform_allocation( )
+
+ENDROUTINE

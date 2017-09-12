@@ -1,0 +1,2861 @@
+{******************************************************************************
+*
+* Module Name   : $STB_LOGIN
+*
+* Purpose       : To provide the functionality and programming interfaces to
+*           allow background or interactive event scheduling or sample
+*           login for a single or all active studies.
+*
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+**M1521 HBe 13-1-04: MLP_ID and study_comment inserted
+**M1551 HBe          Template and graph trouble on stability 
+**M1574 THERMO       Problem with login of multiple stability samples solved
+**M1576 HBe 01-8-04: Bug fix from change 1574 - and group_id inserted as default group of operator.
+*******************************************************************************}
+
+ENABLE WINDOWS
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET FORMAT "99999"
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_LOGIN
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_SCHEDULE_EVENT
+JOIN LIBRARY $LIB_TEST
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $SAMP_JOB
+JOIN LIBRARY $STB_GLBL
+JOIN LIBRARY $STB_USER
+
+{* Global Constants ***********************************************************}
+
+GLOBAL CONSTANT GBL_SAMPLE_STATUS_CHANGE = "@"
+GLOBAL CONSTANT GBL_SAMPLE_STUDY_FIELD   = "STAB_STUDY_ID"
+GLOBAL CONSTANT GBL_SAMPLE_LAYER_FIELD   = "LAYER_FACTOR"
+GLOBAL CONSTANT GBL_SAMPLE_COND_FIELD    = "C_FACTOR"
+GLOBAL CONSTANT GBL_SAMPLE_TIME_FIELD    = "TIME_FACTOR"
+GLOBAL CONSTANT GBL_LOG_FILE             = "smp$logfiles:stab_error.log"
+
+{* Local Constants ************************************************************}
+
+CONSTANT ASSIGN_TO_TIMER     = 1
+CONSTANT LOGIN_SAMPLES       = 2
+CONSTANT PROCESS_STUDY       = 3
+CONSTANT PROCESS_ALL_STUDIES = 4
+CONSTANT PROCESS_INTERACTIVE = 5
+CONSTANT PROCESS_BACKGROUND  = 6
+CONSTANT PROCESS_ALL_PULLS   = 7
+CONSTANT PROCESS_DUE_PULLS   = 8
+CONSTANT DUE_PULLS_DUE_DATE  = 9
+CONSTANT SINGLE_STUDY_ID     = 10
+
+{ Common login display progress constants }
+
+CONSTANT DISPLAY_STUDY_ID    = 1
+CONSTANT DISPLAY_LAYER       = 2
+CONSTANT DISPLAY_CONDITION   = 3
+CONSTANT DISPLAY_TIME_POINT  = 4
+CONSTANT DISPLAY_PULL_NUMBER = 5
+CONSTANT DISPLAY_DUE_DATE    = 6
+
+{ Sample login display progress constants }
+
+CONSTANT DISPLAY_JOB_NAME    = 7
+CONSTANT DISPLAY_ID_TEXT     = 8
+CONSTANT DISPLAY_ID_NUMERIC  = 9
+
+CONSTANT DISPLAY_PULL_AMOUNT = 10
+CONSTANT DISPLAY_PULL_UNIT   = 11
+
+{ Event login display progress constants }
+
+CONSTANT DISPLAY_TEXT_ID     = 8
+CONSTANT DISPLAY_ENTRY_NUM   = 9
+
+{ Study activation  }
+
+CONSTANT ACTIVATED_FROM_MENU  = FALSE
+CONSTANT ACTIVATED_FROM_STUDY = TRUE
+
+{* Variables ******************************************************************}
+
+        DECLARE mess
+
+{* Main Code ******************************************************************}
+
+stb_login_menu_activate ()
+
+EXIT
+
+{* Start of Routines **********************************************************}
+
+{******************************************************************************}
+
+ROUTINE stb_login_parse_bool ( VALUE param_val )
+
+{
+* Parses the parameter string and if a boolean value has been passed
+* converts the text sting to a boolean value.
+*
+*******************************************************************************}
+
+        DECLARE ret_val
+
+        IF param_val = "TRUE" THEN
+                ret_val = TRUE
+        ELSE
+                ret_val = FALSE
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_read_param ( VALUE message_id ,
+                                       VALUE message_no ,
+                                             param_val  )
+
+{
+* Reads the next timer queue parameter off the parameter list.
+*
+*******************************************************************************}
+
+        DECLARE valid_param , mess_txt
+
+        valid_param = FALSE
+
+        IF GLOBAL ( "PARAM_ACTIVE" ) THEN
+
+                valid_param = TRUE
+
+                PROMPT FOR param_val
+
+        ELSE
+
+                mess_txt = GET_USER_MESSAGE ( message_id , message_no )
+                stb_login_log_error ( mess_txt )
+
+        ENDIF
+
+        RETURN ( valid_param )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_read_params ( event_obj )
+
+{
+* Reads the parameter list into the event object.
+*
+*******************************************************************************}
+
+        DECLARE param_val , success
+
+        success = 0
+
+        IF stb_login_read_param ( "STB_LOGIN_REP_PARAMS" , 1 , param_val ) THEN
+                event_obj . login_events = stb_login_parse_bool ( param_val )
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_REP_PARAMS" , 2 , param_val ) THEN
+                event_obj . event_details . all_studies =
+                                        stb_login_parse_bool ( param_val )
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_REP_PARAMS" , 3 , param_val ) THEN
+                event_obj . event_details . all_pulls   =
+                                        stb_login_parse_bool ( param_val )
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_REP_PARAMS" , 4 , param_val ) THEN
+                event_obj . not_after = DATE ( param_val )
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_REP_PARAMS" , 5 , param_val ) THEN
+                event_obj . event_details . study_id = param_val
+                success = success + 1
+        ENDIF
+
+        RETURN ( success = 5 )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_background ( VALUE activation_time )
+
+{
+* Log in samples or schedule events to the background timer queue. All
+* events including sample login will be assigned to the timer queue.
+*
+*******************************************************************************}
+
+        DECLARE event_obj
+
+        lib_sched_event_define_classes ()
+
+        CREATE OBJECT EVENT_SCHEDULE_CLASS , event_obj
+
+        event_obj . init_for_stab ()
+        event_obj . interactive = FALSE
+
+        IF stb_login_read_params ( event_obj )
+
+                stb_login_make_stab_events ( event_obj )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_update_timer_field ( VALUE status, event_obj )
+
+{
+* Updates the pull record with the timerqueue record id or logs an error
+* message.
+*
+*******************************************************************************}
+
+        IF status = EMPTY THEN
+
+                IF event_obj . timer_queue_id <> ERROR THEN
+
+                        ASSIGN pds_study_pull . wdt_entry_number =
+                                                   event_obj . timer_queue_id
+
+                        UPDATE pds_study_pull
+
+                        event_obj . update_progress (
+                                                  DISPLAY_ENTRY_NUM          ,
+                                                  event_obj . timer_queue_id )
+
+                ENDIF
+
+        ELSE
+
+                stb_login_log_timer_error ( "STB_LOGIN_CRE_TIME_FAIL" ,
+                                            status                    ,
+                                            event_obj                 )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_re_create_details_obj ( event_obj )
+
+{
+* Copies the event details to a new event object. Implemented to get
+* around the memory problem.
+*
+*******************************************************************************}
+
+        DECLARE all_studies , all_pulls , study_id , int_flag
+
+        study_id     = event_obj . event_details . study_id
+        all_studies  = event_obj . event_details . all_studies
+        all_pulls    = event_obj . event_details . all_pulls
+        int_flag     = event_obj . interactive
+
+        event_obj . init_for_stab ()
+
+        event_obj . event_details . all_studies = all_studies
+        event_obj . event_details . all_pulls   = all_pulls
+        event_obj . event_details . study_id    = study_id
+        event_obj . interactive                 = int_flag
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_events_all_pulls ( event_obj )
+
+{
+* Creates the TIMERQUEUE entry for the pulls in the selected study at
+* their scheduled date.
+*
+*******************************************************************************}
+
+        DECLARE study_id , pull_num , do_commit , status
+
+        study_id = event_obj . event_details . study_id
+
+        lib_sched_event_start_write ( "STB_LOGIN_CRE_TIME_DUE" ,
+                                      do_commit                )
+
+        pull_num = SELECT pds_study_pull . pull_num
+                        FOR UPDATE
+                        WHERE ( header    = study_id )
+                        AND   ( cell_disp = "P"      )
+                        AND   ( active    = TRUE     )
+
+        WHILE ( pull_num <> EMPTY ) DO
+
+                IF pull_num = LOCKED THEN
+
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+
+                ELSE
+
+                        stb_login_store_pull_info ( pull_num  ,
+                                                    event_obj )
+
+                        stb_login_display_pull_info ( event_obj )
+
+                        status = event_obj . create_event ()
+
+                        stb_login_update_timer_field ( status    ,
+                                                       event_obj )
+
+                        {***************************************}
+                        { Required to get around memory problem }
+                        {***************************************}
+
+                        stb_login_re_create_details_obj ( event_obj )
+
+                ENDIF
+
+
+                NEXT pds_study_pull
+
+                pull_num = SELECT pds_study_pull . pull_num
+
+        ENDWHILE
+
+        lib_sched_event_update_changes ( do_commit )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_events_due_pulls ( event_obj )
+
+{
+* Creates the TIMERQUEUE entry for the pulls in the selected study before
+* their due date.
+*
+*******************************************************************************}
+
+        DECLARE study_id , due_date , pull_num , do_commit , status
+
+        study_id    = event_obj . event_details . study_id
+        due_date    = event_obj . not_after
+
+        lib_sched_event_start_write ( "STB_LOGIN_CRE_TIME_DUE" ,
+                                      do_commit                )
+
+        pull_num = SELECT pds_study_pull . pull_num
+                        FOR UPDATE
+                        WHERE ( header          = study_id )
+                        AND   ( due_login_date <= due_date )
+                        AND   ( cell_disp       = "P"      )
+                        AND   ( active          = TRUE     ) 
+
+        WHILE ( pull_num <> EMPTY ) DO
+
+                IF pull_num = LOCKED THEN
+
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+
+                ELSE
+
+                        stb_login_store_pull_info ( pull_num  , event_obj )
+                        stb_login_display_pull_info ( event_obj )
+
+                        status = event_obj . create_event ()
+
+                        stb_login_update_timer_field ( status , event_obj )
+
+                        {***************************************}
+                        { Required to get around memory problem }
+                        {***************************************}
+
+                        stb_login_re_create_details_obj ( event_obj )
+
+                ENDIF
+
+                NEXT pds_study_pull
+
+                pull_num = SELECT pds_study_pull . pull_num
+
+
+        ENDWHILE
+
+        lib_sched_event_update_changes ( do_commit )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_events_all_studies ( event_obj )
+
+{
+* Creates the TIMERQUEUE entry for the pulls in all active studies at
+* their scheduled date.
+*
+*******************************************************************************}
+
+        DECLARE study_id , old_study
+
+        old_study = ""
+        study_id  = SELECT pds_study . identity
+                        FOR UPDATE
+                        WHERE ( identity > old_study )
+                        AND   ( status   = "A"       )
+
+        WHILE ( study_id <> EMPTY  )
+        OR    ( study_id  = LOCKED ) DO
+
+                IF study_id = LOCKED THEN
+
+                        study_id = SELECT pds_study . identity
+                                        WHERE ( identity > old_study )
+                                        AND   ( status   = "A"       )
+
+                        stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                                    study_id                 )
+
+                ELSE
+
+                        event_obj . event_details . study_id = study_id
+                        stb_login_events_single_study ( event_obj )
+
+                ENDIF
+
+                old_study = study_id
+                study_id  = SELECT pds_study . identity
+                                FOR UPDATE
+                                WHERE ( identity > old_study )
+                                AND   ( status   = "A"       )
+
+                study_id = SELECT pds_study . identity
+
+        ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_events_single_study ( event_obj )
+
+{
+* Creates the TIMERQUEUE entry for the pulls in the selected study at
+* their scheduled date.
+*
+*******************************************************************************}
+
+        event_obj . update_progress ( DISPLAY_STUDY_ID                     ,
+                                      event_obj . event_details . study_id )
+
+        IF event_obj . event_details . all_pulls THEN
+
+                stb_login_events_all_pulls ( event_obj )
+
+        ELSE
+
+                stb_login_events_due_pulls ( event_obj )
+
+        ENDIF
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_create_timer_events ( event_obj )
+
+{
+* Creates the TIMERQUEUE records at their scheduled date.
+*
+*******************************************************************************}
+
+        DECLARE study_id
+
+        IF event_obj . event_details . all_studies THEN
+
+                stb_login_events_all_studies ( event_obj )
+
+        ELSE
+
+                study_id = event_obj . event_details . study_id
+                study_id = SELECT pds_study . identity
+                                FOR UPDATE
+                                WHERE ( identity = study_id  )
+                                AND   ( status   =  "A"      )
+
+                IF study_id = LOCKED THEN
+
+                        stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                                    study_id                 )
+
+                ELSEIF study_id <> EMPTY THEN
+
+                        stb_login_events_single_study ( event_obj )
+
+                ELSE
+
+                        stb_login_log_study_error ( "STB_LOGIN_NO_STUDY" ,
+                                                    study_id             )
+
+                ENDIF
+
+        ENDIF
+
+        WAKE_UP_BACKGROUND
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_store_pull_info ( VALUE pull_num, event_obj )
+
+{
+* Stores the pull information in the event object.
+*
+*******************************************************************************}
+
+        DECLARE layer_id
+
+        layer_id = SELECT pds_study_pull . layer_factor
+
+        event_obj . event_details . use_predicted_id = SELECT pds_study . use_predicted
+
+        event_obj . not_before = SELECT pds_study_pull . due_login_date
+
+        event_obj . event_details . pull_number  = pull_num
+
+        event_obj . event_details . layer        = layer_id
+        event_obj . event_details . condition    = SELECT pds_study_pull . c_factor
+        event_obj . event_details . time_point   = SELECT pds_study_pull . time_factor
+        event_obj . event_details . due_date     = SELECT pds_study_pull . due_login_date
+        event_obj . event_details . event_tag    = SELECT pds_study_pull . pull_name
+        event_obj . event_details . samp_text_id = SELECT pds_study_pull . sample_id_text
+        event_obj . event_details . pull_amount  = SELECT pds_study_pull . pull_amount
+        event_obj . event_details . pull_unit    = SELECT pds_study_pull . pull_unit
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_samples_all_pulls ( event_obj )
+
+{
+* Creates the sample records for all pulls in the selected study.
+*
+*******************************************************************************}
+
+        DECLARE study_id , pull_num , do_commit, samp_logged, samp_count
+
+        samp_count = 0
+
+        study_id = event_obj . event_details . study_id
+
+        lib_sched_event_start_write ( "STB_LOGIN_LOG_PULL"  ,
+                                      do_commit             )
+
+        pull_num = SELECT pds_study_pull . pull_num
+                        FOR UPDATE
+                        WHERE ( header    = study_id )
+                        AND   ( cell_disp = "P"      )
+                        AND   ( active    = TRUE     )
+
+        WHILE pull_num <> EMPTY DO
+
+                IF pull_num = LOCKED THEN
+
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+
+                ELSE
+
+                        stb_login_store_pull_info ( pull_num , event_obj )
+
+                        samp_logged = stb_login_sample ( event_obj )
+
+                        {***************************************}
+                        { Required to get around memory problem }
+                        {***************************************}
+
+                        IF ( samp_logged ) THEN
+                                stb_login_re_create_details_obj ( event_obj )
+                        ELSE
+                                samp_count = samp_count + 1
+                        ENDIF
+
+                ENDIF
+
+                NEXT pds_study_pull
+
+                pull_num = SELECT pds_study_pull . pull_num
+
+        ENDWHILE
+
+        IF ( samp_count > 0 ) THEN
+
+                flash_message ( GET_USER_MESSAGE ( 
+                                "STB_INVENTORY_PULL_LOGIN_FAILED" , 2 ), true )
+        ENDIF
+
+        lib_sched_event_update_changes ( do_commit )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_samples_due_pulls ( event_obj )
+
+{
+* Creates the sample records for all pulls up to the due date supplied
+* for the selected study.
+*
+*******************************************************************************}
+
+        DECLARE study_id , due_date , pull_num , do_commit
+
+        study_id    = event_obj . event_details . study_id
+        due_date    = event_obj . not_after
+
+        lib_sched_event_start_write ( "STB_LOGIN_LOG_PULL" ,
+                                      do_commit            )
+
+        pull_num = SELECT pds_study_pull . pull_num
+                        FOR UPDATE
+                        WHERE ( header          = study_id )
+                        AND   ( due_login_date <= due_date )
+                        AND   ( cell_disp       = "P"      )
+                        AND   ( active          = TRUE     )
+
+        WHILE pull_num <> EMPTY DO
+
+                IF pull_num = LOCKED THEN
+
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+
+                ELSE
+
+                        stb_login_store_pull_info ( pull_num  ,
+                                                    event_obj )
+                        stb_login_sample ( event_obj )
+
+                        {***************************************}
+                        { Required to get around memory problem }
+                        {***************************************}
+
+                        stb_login_re_create_details_obj ( event_obj )
+
+                ENDIF
+
+                NEXT pds_study_pull
+
+                pull_num = SELECT pds_study_pull . pull_num
+
+        ENDWHILE
+
+        lib_sched_event_update_changes ( do_commit )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_samples_all_studies ( event_obj )
+
+{
+* Creates the sample records for all active studies.
+*
+*******************************************************************************}
+
+        DECLARE study_id , old_study
+
+        old_study = ""
+        study_id  = SELECT pds_study . identity
+                        FOR UPDATE
+                        WHERE ( identity > old_study )
+                        AND   ( status   =  "A"      )
+
+        WHILE ( study_id <> EMPTY  )
+        OR    ( study_id  = LOCKED ) DO
+
+                IF study_id = LOCKED THEN
+
+                        study_id = SELECT pds_study . identity
+                                        WHERE ( identity > old_study )
+                                        AND   ( status   =  "A"      )
+
+                        stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                                    study_id                 )
+
+                ELSE
+
+                        event_obj . event_details . study_id = study_id
+                        stb_login_samples_single_study ( event_obj )
+
+                ENDIF
+
+                old_study = study_id
+                study_id  = SELECT pds_study . identity
+                                FOR UPDATE
+                                WHERE ( identity > old_study )
+                                AND   ( status   =  "A"      )
+
+                study_id = SELECT pds_study . identity
+
+        ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_samples_single_study ( event_obj )
+
+{
+* Creates the sample records for a single study.
+*
+*******************************************************************************}
+
+        event_obj . update_progress ( DISPLAY_STUDY_ID                     ,
+                                      event_obj . event_details . study_id )
+
+        IF event_obj . event_details . all_pulls THEN
+
+                stb_login_samples_all_pulls ( event_obj )
+        ELSE
+                stb_login_samples_due_pulls ( event_obj )
+        ENDIF
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_create_samples ( event_obj )
+
+{
+* Logs in the samples for an active study or all active studies. If the
+* due date flag is set only logs in samples up to the due date.
+*
+*******************************************************************************}
+
+        DECLARE study_id
+
+        IF event_obj . event_details . all_studies THEN
+
+                stb_login_samples_all_studies ( event_obj )
+
+        ELSE
+
+                study_id = event_obj . event_details . study_id
+                study_id = SELECT pds_study . identity
+                                FOR UPDATE
+                                WHERE ( identity = study_id  )
+                                AND   ( status   =  "A"      )
+
+                IF study_id = LOCKED THEN
+
+                        stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                                    study_id                 )
+
+                ELSEIF study_id <> EMPTY THEN
+
+                        stb_login_samples_single_study ( event_obj )
+
+                ELSE
+
+                        stb_login_log_study_error ( "STB_LOGIN_NO_STUDY" ,
+                                                    study_id             )
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_make_stab_events ( event_obj )
+
+{
+* Called by the interactive and background processes to create the
+* stability events.
+*
+*******************************************************************************}
+
+        IF event_obj . login_events THEN
+
+                event_obj . init_progress ( "STB_LOGIN_SAMP_PROMPTS" )
+                event_obj . display_progress ()
+
+                stb_login_create_samples ( event_obj )
+
+        ELSE
+
+                event_obj . init_progress ( "STB_LOGIN_EVENT_PROMPTS" )
+                event_obj . display_progress ()
+
+                stb_login_create_timer_events ( event_obj )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_assign_to_timer ( VALUE login_events ,
+                                    VALUE all_studies  ,
+                                    VALUE all_pulls    ,
+                                    VALUE due_date     ,
+                                    VALUE study_id     )
+
+{
+* Submits the $STB_LOGIN program to the background timer queue with the
+* correct parameters.
+*
+*******************************************************************************}
+
+        DECLARE event_obj , mess_txt
+
+        lib_sched_event_define_classes ()
+
+        CREATE OBJECT EVENT_SCHEDULE_CLASS , event_obj
+
+        {*************************************************************}
+        { Initialise the schedule object for running the login report }
+        {*************************************************************}
+
+        event_obj . init_for_report ()
+
+        event_obj . frequency                    = ANNUAL
+        event_obj . recurring                    = FALSE
+        event_obj . not_before                   = NOW
+        event_obj . not_after                    = DATE ( "" )
+        event_obj . interactive                  = FALSE
+        event_obj . create_library               = GLOBAL ( "CURRENT_LIBRARY" )
+        event_obj . create_routine               = "stb_login_background"
+
+        mess_txt = GET_USER_MESSAGE ( "STB_LOGIN_BKGD_TAG" , 1 )
+
+        event_obj . event_details . event_tag    = mess_txt
+        event_obj . event_details . printer_id   = EMPTY
+        event_obj . event_details . param_string =
+                                       QUOTE : login_events : QUOTE : "," :
+                                       QUOTE : all_studies  : QUOTE : "," :
+                                       QUOTE : all_pulls    : QUOTE : "," :
+                                       QUOTE : due_date     : QUOTE : "," :
+                                       QUOTE : study_id     : QUOTE
+
+        event_obj . create_event ()
+
+        WAKE_UP_BACKGROUND
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_create_events ( VALUE do_interactive ,
+                                  VALUE login_events   ,
+                                  VALUE all_studies    ,
+                                  VALUE all_pulls      ,
+                                  VALUE due_date       ,
+                                  VALUE study_id       )
+
+{
+* Main stability login routine. Called when a study has been activated
+* and samples or events are to be created. The routine will check to see
+* whether background scheduling is required. If so it will submit
+* $STB_LOGIN to the background timer queue. If interactive assignment is
+* required a progress form will be displayed and updated as each event is
+* created. Several options will be made available.
+*
+* Login or schedule       - The samples may be logged in immediately or
+*                           scheduled for login at their due date.
+* All or single study     - Events for all active studies or a single
+*                           active study can be processed.
+* All pulls or due pulls  - Process all the pulls in the selected studies
+*                           or only those due on or before the due date.
+* Due date                - If passed can be used to determine the scope
+*                           for processing events.
+*
+*******************************************************************************}
+
+        DECLARE event_obj
+
+        IF do_interactive THEN
+
+                lib_sched_event_define_classes ()
+
+                CREATE OBJECT EVENT_SCHEDULE_CLASS , event_obj
+
+                event_obj . init_for_stab ()
+
+                event_obj . interactive                 = TRUE
+                event_obj . login_events                = login_events
+                event_obj . not_after                   = due_date
+                event_obj . event_details . all_studies = all_studies
+                event_obj . event_details . all_pulls   = all_pulls
+                event_obj . event_details . study_id    = study_id
+
+                stb_login_make_stab_events ( event_obj )
+        ELSE
+                stb_login_assign_to_timer ( login_events ,
+                                            all_studies  ,
+                                            all_pulls    ,
+                                            due_date     ,
+                                            study_id     )
+        ENDIF
+
+        stb_login_close_log_file ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_add_prompts ( self )
+
+{
+* Add all the activation details prompts to the form. Use the interactive
+* activation constants as defaults.
+*
+*******************************************************************************}
+
+        DECLARE mand_criteria
+
+        PROMPT OBJECT self . radio_assign_timer
+                ON LINE 1
+                FROM    3
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = ASSIGN_TO_TIMER               ,
+                        is_radio        = TRUE                          ,
+                        display_only    = self . display_only                     ,
+                        toggled_routine = "toggle_state"                ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 1 ) )
+
+        self . add_prompt( self . radio_assign_timer )
+
+        PROMPT OBJECT self . radio_login_now
+                ON LINE 2
+                FROM    3
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = LOGIN_SAMPLES         ,
+                        is_radio        = TRUE                  ,
+                        display_only    = self . display_only             ,
+                        toggled_routine = "toggle_state"        ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 2 ) )
+
+        self . add_prompt( self . radio_login_now )
+
+        PROMPT OBJECT self . radio_all_studies
+                ON LINE 1
+                FROM    37
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_ALL_STUDIES         ,
+                        is_radio        = TRUE                        ,
+                        display_only    = self . display_only                   ,
+                        toggled_routine = "toggle_state"              ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 3 ) )
+
+        self . add_prompt( self . radio_all_studies )
+
+        PROMPT OBJECT self . radio_single_study
+                ON LINE 2
+                FROM    37
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_STUDY                       ,
+                        is_radio        = TRUE                                ,
+                        display_only    = self . display_only                           ,
+                        toggled_routine = "toggle_state"                      ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 4 ) )
+        
+        self . add_prompt( self . radio_single_study )
+
+        ARRAY mand_criteria
+        ARRAY_SELECT_ADD( mand_criteria, ARRAY_SELECT_EQ, "STATUS", "A" )
+
+        PROMPT OBJECT self . text_study_id
+                ON LINE 2
+                FROM    52
+                BROWSE ON pds_study
+                WITH (  user_info       = SINGLE_STUDY_ID     ,
+                        display_only    = self . display_only ,
+                        mandatory_array = mand_criteria       )
+
+        self . add_prompt( self . text_study_id )
+        
+        PROMPT OBJECT self . radio_background
+                ON LINE 5
+                FROM    3
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_BACKGROUND                   ,
+                        is_radio        = TRUE                                 ,
+                        display_only    = self . display_only                            ,
+                        toggled_routine = "toggle_state"                       ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 5 ) )
+
+        self . add_prompt( self . radio_background )
+
+        PROMPT OBJECT self . radio_interactive
+                ON LINE 6
+                FROM    3
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_INTERACTIVE              ,
+                        is_radio        = TRUE                             ,
+                        display_only    = self . display_only                        ,
+                        toggled_routine = "toggle_state"                   ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 6 ) )
+        
+        self . add_prompt( self . radio_interactive )
+        
+        PROMPT OBJECT self . radio_due_pulls
+                ON LINE 5
+                FROM    37
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_DUE_PULLS                 ,
+                        is_radio        = TRUE                              ,
+                        display_only    = self . display_only                         ,
+                        toggled_routine = "toggle_state"                    ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 7 ) )
+        
+        self . add_prompt( self . radio_due_pulls )
+        
+        PROMPT OBJECT self . radio_all_pulls
+                ON LINE 6
+                FROM    37
+                BROWSE ON BOOLEAN
+                WITH (  user_info       = PROCESS_ALL_PULLS         ,
+                        is_radio        = TRUE                      ,
+                        display_only    = self . display_only                 ,
+                        toggled_routine = "toggle_state"            ,
+                        caption         = GET_USER_MESSAGE ( "STB_LOGIN_FORM_DISP" , 8 ) )
+        
+        self . add_prompt( self . radio_all_pulls )
+        
+        PROMPT OBJECT self . date_pulls_due
+                ON LINE 5
+                FROM    52
+                BROWSE ON DATE
+                WITH (  value        = TODAY                ,
+                        user_info    = DUE_PULLS_DUE_DATE   ,
+                        display_only = self . display_only  )
+        
+        self . add_prompt( self . date_pulls_due )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_define
+{
+* Defines the Stb Login Form
+*
+*******************************************************************************}
+
+        DEFINE CLASS "STB_LOGIN_FORM"
+
+                INHERIT "STD_FORM"
+
+                INITIALISATION
+                
+                PROPERTIES
+                        "radio_assign_timer" ,
+                        "radio_login_now"    ,
+                        "radio_all_studies"  ,
+                        "radio_single_study" ,
+                        "text_study_id"      ,
+                        "radio_background"   ,
+                        "radio_interactive"  ,
+                        "radio_due_pulls"    ,
+                        "radio_all_pulls"    ,
+                        "date_pulls_due"     ,
+                        "study_id"
+                
+                
+
+                ACTIONS
+                        "validation"           ,
+                        "add_prompts"          ,
+                        "set_mode_interactive" ,
+                        "set_scheduling_now"   ,
+                        "set_scope_single"     ,
+                        "set_scope_all"        ,
+                        "set_pull_due_date"    ,
+                        "set_all_pulls"        ,
+                        "set_prompt_defaults"
+
+        END CLASS
+        
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_class_initialisation( self )
+{
+* Stb Login Form Class Initialisation
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . header           = GET_USER_MESSAGE ( "STB_LOGIN_FORM_HDR" , 1 )
+        self . height           = 6
+        self . width            = 68
+        self . column           = 25
+        self . row              = 3
+        self . button_style     = FORM_BUTTON_OK_CANCEL
+        self . help_context     = "$STB_LOGIN_ACTIVATE"
+        self . return_behaviour = FORM_RETURN_STAY
+        self . prompt_id        = "$STB_LOGIN_MAIN"
+        
+        self . radio_assign_timer = EMPTY
+        self . radio_login_now    = EMPTY
+        self . radio_all_studies  = EMPTY
+        self . radio_single_study = EMPTY
+        self . text_study_id      = EMPTY
+        self . radio_background   = EMPTY
+        self . radio_interactive  = EMPTY
+        self . radio_due_pulls    = EMPTY
+        self . radio_all_pulls    = EMPTY
+        self . date_pulls_due     = EMPTY
+        
+        self . study_id           = ""
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_mode_interactive ( self, VALUE yes )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . radio_interactive . set_text ( yes )
+        self . radio_background . set_text ( NOT yes )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_scheduling_now ( self, VALUE yes )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . radio_login_now . set_text ( yes )
+        self . radio_assign_timer . set_text ( NOT yes )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_scope_single ( self, VALUE study_id )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . set_scope_all( FALSE )
+
+        self . text_study_id . set_text( study_id )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_scope_all ( self, VALUE yes )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . radio_single_study . set_text ( NOT yes )
+        self . radio_all_studies . set_text ( yes )
+
+        self . text_study_id . set_enabled( NOT yes )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_pull_due_date ( self, VALUE due_date )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . set_all_pulls( FALSE )
+        
+        self . date_pulls_due . set_text( due_date )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_all_pulls ( self, VALUE yes )
+{
+*
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . radio_due_pulls . set_text ( NOT yes )
+        self . radio_all_pulls . set_text ( yes )
+
+        self . date_pulls_due . set_enabled ( NOT yes )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_set_prompt_defaults ( self )
+{
+* Sets the prompts default values based on interactivity mode
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+        self . set_mode_interactive( GLOBAL ( "STB_INTERACTIVE_ACT" ) )
+        
+        IF GLOBAL ( "STB_INTERACTIVE_ACT" ) THEN
+                
+                self . set_scheduling_now( INT_ACT_LOGIN_SAMPLES )
+
+                IF INT_ACT_PROCESS_ALL_STUDIES THEN
+                        self . set_scope_all( TRUE )
+                ELSE
+                        self . set_scope_single( self . study_id )
+                ENDIF
+
+                IF INT_ACT_PROCESS_ALL_PULLS THEN
+                        self . set_all_pulls( TRUE )
+                ELSE
+                        self . set_pull_due_date( TODAY )
+                ENDIF
+
+        ELSE
+        
+                self . set_scheduling_now( BGD_ACT_LOGIN_SAMPLES )
+                
+                IF BGD_ACT_PROCESS_ALL_STUDIES THEN
+                        self . set_scope_all( TRUE )
+                ELSE
+                        self . set_scope_single( self . study_id )
+                ENDIF
+
+                IF BGD_ACT_PROCESS_ALL_PULLS THEN
+                        self . set_all_pulls( TRUE )
+                ELSE
+                        self . set_pull_due_date( TODAY )
+                ENDIF
+       
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form ( VALUE study_id )
+
+{
+* Creates the study activation form.
+*
+*******************************************************************************}
+
+        DECLARE mess_txt, main_form
+
+        stb_login_form_define( )
+
+        CREATE OBJECT "STB_LOGIN_FORM" , main_form
+
+        ARRAY main_form . user_info ARRAYSIZE ( 0 )
+        
+        main_form . display_only = FALSE
+        main_form . study_id     = study_id
+
+        main_form . add_prompts ( )
+        
+        main_form . set_prompt_defaults( )
+
+        mess_txt = GET_USER_MESSAGE ( "STB_LOGIN_FORM_FRAMES" , 1 )
+        main_form . add_frame ( mess_txt , 1  , 1 , 2 , 34 )
+
+        mess_txt = GET_USER_MESSAGE ( "STB_LOGIN_FORM_FRAMES" , 2 )
+        main_form . add_frame ( mess_txt , 36 , 1 , 2 , 34 )
+
+        mess_txt = GET_USER_MESSAGE ( "STB_LOGIN_FORM_FRAMES" , 3 )
+        main_form . add_frame ( mess_txt , 1  , 5 , 2 , 34 )
+
+        mess_txt = GET_USER_MESSAGE ( "STB_LOGIN_FORM_FRAMES" , 4 )
+        main_form . add_frame ( mess_txt , 36 , 5 , 2 , 34 )
+        
+        main_form . start_prompt ()
+        main_form . wait_prompt ()
+        main_form . end_prompt ()
+
+        IF main_form . get_lastkey () = "DO" THEN
+
+                stb_login_create_events ( main_form . radio_interactive . value ,
+                                          main_form . radio_login_now . value   ,
+                                          main_form . radio_all_studies . value ,
+                                          main_form . radio_all_pulls . value   ,
+                                          main_form . date_pulls_due . value    ,
+                                          main_form . text_study_id . value     )
+                        
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_login_form_action_validation( self )
+
+{
+* Validates that entry exists for due login date when it is active
+*
+* Parameters : self, Stb Login Form object
+*
+*******************************************************************************}
+
+    DECLARE ok
+
+    ok = TRUE
+
+    IF ( self . radio_due_pulls . value ) THEN
+
+        IF ( BLANK( self . date_pulls_due . value ) ) THEN
+
+            flash_message ( GET_USER_MESSAGE ( "STB_LOGIN_FORM_VALID", 1 ), TRUE )
+            ok =  FALSE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE toggle_state ( self )
+
+{
+* Toggles the pairs of radio buttons. Also enables or disables the due
+* login date depending on the value of the radio button.
+*
+*******************************************************************************}
+
+        DECLARE main_form
+
+        main_form  = self . parent_prompt
+
+        IF self . user_info = ASSIGN_TO_TIMER THEN
+        
+                main_form . set_scheduling_now( NOT self . value )
+                
+        ELSEIF self . user_info = LOGIN_SAMPLES THEN
+        
+                main_form . set_scheduling_now( self . value )
+                
+        ELSEIF self . user_info = PROCESS_STUDY THEN
+
+                main_form . set_scope_all( NOT self . value )
+                
+        ELSEIF self . user_info = PROCESS_ALL_STUDIES THEN
+
+                main_form . set_scope_all( self . value )
+                
+        ELSEIF self . user_info = PROCESS_INTERACTIVE THEN
+
+                main_form . set_mode_interactive( self . value )
+                
+        ELSEIF self . user_info = PROCESS_BACKGROUND THEN
+
+                main_form . set_mode_interactive( NOT self . value  )
+                
+        ELSEIF self . user_info = PROCESS_ALL_PULLS THEN
+
+                main_form . set_all_pulls( self . value )
+                
+        ELSEIF self . user_info = PROCESS_DUE_PULLS THEN
+
+                main_form . set_all_pulls( NOT self . value )
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_menu_activate
+
+{
+* Called from the SampleManager menu. Displays the activation
+* details form and calls the schedule events interface if required.
+*
+*******************************************************************************}
+
+        DECLARE study_id
+
+        
+        IF GLOBAL( "PARAM_ACTIVE" ) THEN
+                PROMPT FOR study_id
+        ELSE
+                study_id = ""
+        ENDIF
+
+        stb_login_form ( study_id )
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_activate ( VALUE study_id )
+
+{
+* Called from the activate study interface. Displays the activation
+* details form if the global config item is set to "Interactive" (Boolean
+* TRUE) and calls the schedule events interface if required.
+*
+*******************************************************************************}
+
+        MENUPROC 28587 USING study_id { Pull Login }
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_lock_pull_record ( VALUE doing_add_pull ,
+                                           event_obj      )
+
+{
+* Locks the pull record as indicated by the parameters defined in the
+* scheduling object. Returns EMPTY if successful.
+*
+*******************************************************************************}
+
+        DECLARE tq_id , ret_val
+
+        event_obj . use_param_string = FALSE
+        event_obj . make_select_array ( )
+
+        array_select ( "pds_study_pull" , TRUE , event_obj . select_array )
+
+        ret_val = ERROR
+        tq_id   = SELECT pds_study_pull . wdt_entry_number
+
+        IF ( tq_id = LOCKED ) THEN
+                stb_login_log_pull_error (
+                                      "STB_LOGIN_PULL_LOCKED"                 ,
+                                      event_obj . event_details . study_id    ,
+                                      event_obj . event_details . pull_number )
+        ELSEIF tq_id = EMPTY THEN
+                stb_login_log_pull_error (
+                                      "STB_LOGIN_NO_PULL"                     ,
+                                      event_obj . event_details . study_id    ,
+                                      event_obj . event_details . pull_number )
+        ELSEIF ( NOT BLANK ( tq_id ) )
+        AND    ( doing_add_pull      ) THEN
+                stb_login_log_pull_error (
+                                      "STB_LOGIN_PULL_ASSIGNED"               ,
+                                      event_obj . event_details . study_id    ,
+                                      event_obj . event_details . pull_number )
+        ELSEIF ( BLANK ( tq_id )    )
+        AND    ( NOT doing_add_pull ) THEN
+                stb_login_log_pull_error (
+                                      "STB_LOGIN_NO_PULL_ASSIGNED"            ,
+                                      event_obj . event_details . study_id    ,
+                                      event_obj . event_details . pull_number )
+        ELSE
+                ret_val = EMPTY
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_add_event ( VALUE event_params , due_date )
+
+{
+* Adds a new event to the background timer queue. Returns EMPTY if
+* successful.
+*
+*******************************************************************************}
+
+        DECLARE status , event_obj , do_commit
+
+        lib_sched_event_define_classes ()
+
+        stb_login_define_std_event_obj ( event_obj )
+        stb_login_parse_event_params ( event_params , event_obj )
+
+        lib_sched_event_start_write ( "STB_LOGIN_ADD_TQ_EVENT" ,
+                                      do_commit                )
+
+        event_obj . not_before = due_date
+
+        status = event_obj . create_event ()
+
+
+        IF status = EMPTY THEN
+                lib_sched_event_update_changes ( do_commit )
+        ENDIF
+
+        IF  ( status <> EMPTY )
+        AND ( do_commit       )
+        
+                ROLLBACK
+                
+        ENDIF
+
+        RETURN ( event_obj . timer_queue_id )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_delete_event ( VALUE event_params )
+
+{
+* Deletes an existing event from the timer queue. Returns EMPTY if
+* successful.
+*
+*******************************************************************************}
+
+        DECLARE status , event_obj , do_commit
+
+        lib_sched_event_define_classes ()
+
+        stb_login_define_std_event_obj ( event_obj )
+        stb_login_parse_event_params ( event_params , event_obj )
+
+        lib_sched_event_start_write ( "STB_LOGIN_ADD_TQ_EVENT" ,
+                                      do_commit                )
+
+        event_obj . use_param_string = TRUE
+        status                       = event_obj . remove_event ()
+        event_obj . timer_queue_id   = ""
+
+        IF status = EMPTY THEN
+                lib_sched_event_update_changes ( do_commit )
+        ENDIF
+
+        IF  ( status <> EMPTY )
+        AND ( do_commit       )
+                ROLLBACK
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_check_event ( VALUE is_id        ,
+                                VALUE event_params )
+
+{
+* The routine has 2 modes. If is_id is TRUE, data_str will contain a
+* timer queue record ID. If it is FALSE, data_str will contain a
+* parameter list which will uniquely identify the timer queue event
+* through its parameter list.
+*
+*******************************************************************************}
+
+        DECLARE status , event_obj
+
+        lib_sched_event_define_classes ()
+
+        stb_login_define_std_event_obj ( event_obj )
+
+        IF is_id THEN
+
+                event_obj . use_param_string = FALSE
+                event_obj . timer_queue_id   = event_params
+
+                status = event_obj . check_event ()
+
+        ELSE
+
+                stb_login_parse_event_params ( event_params , event_obj )
+
+                event_obj . use_param_string = TRUE
+                status = event_obj . check_with_params ()
+
+        ENDIF
+
+        RETURN ( status )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_define_std_event_obj ( event_obj )
+
+{
+* Creates the event object with default parameters for stability events.
+*
+*******************************************************************************}
+
+        IF NOT variable_is_assigned ( event_obj ) THEN
+
+                CREATE OBJECT EVENT_SCHEDULE_CLASS , event_obj
+
+                event_obj . init_for_stab ()
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_parse_event_params ( VALUE param_list ,
+                                                     event_obj  )
+
+{
+* Parses the paramter string and stores the data in the schedule details
+* object.
+*
+*******************************************************************************}
+
+        event_obj . event_details . event_tag    = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . study_id     = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . layer        = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . condition    = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . time_point   = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . pull_number  = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . samp_text_id = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . pull_amount  = get_token ( param_list ,
+                                                               ","        )
+        event_obj . event_details . pull_unit    = get_token ( param_list ,
+                                                               ","        )
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE stb_login_get_event_details ( event_obj )
+
+{
+* Reads the paramter list and stores the data in the schedule details
+* object.
+*
+*******************************************************************************}
+
+        DECLARE param_val , success
+
+        success = 0
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 1 , param_val ) THEN
+                event_obj . event_details . event_tag    = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 2 , param_val ) THEN
+                event_obj . event_details . study_id     = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 3 , param_val ) THEN
+                event_obj . event_details . layer        = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 4 , param_val ) THEN
+                event_obj . event_details . condition    = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 5 , param_val ) THEN
+                event_obj . event_details . time_point   = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 6 , param_val ) THEN
+                event_obj . event_details . pull_number  = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 7 , param_val ) THEN
+                event_obj . event_details . samp_text_id = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 8 , param_val ) THEN
+                event_obj . event_details . pull_amount = param_val
+                success = success + 1
+        ENDIF
+
+        IF stb_login_read_param ( "STB_LOGIN_SAMP_PARAMS" , 9 , param_val ) THEN
+                event_obj . event_details . pull_unit = param_val
+                success = success + 1
+        ENDIF
+
+        RETURN ( success = 9 )
+
+ENDROUTINE
+
+
+{**************************************************}
+{ Timer Queue sample and event processing routines }
+{**************************************************}
+
+{******************************************************************************}
+
+ROUTINE stb_login_add_stab_records ( event_obj )
+
+{
+* Reads the study and pull records into the object.
+*
+*******************************************************************************}
+
+{TC for incident number 47897 - 18/08/04 changed the code in this routine to help stop the study becoming locked 
+when the samples are being taken by different background processes all trying to login the samples at the same time.
+The code change uses a random sleep interval to help stop the 2 background processes that are trying to login
+samples at the same time to sleep for differing times before trying to login the samples for the same study again.
+The loop allows the processes to try and login the samples 20 times before they give the error lock and stops
+trying to login the sample.}
+
+
+{ **********  TC 18/08/04 This is the original routine code  **********************************}
+
+{DECLARE study_id , ret_val , layer_factor , time_factor , c_factor , pull_num
+
+        ret_val  = FALSE
+
+        study_id = SELECT pds_study . identity
+                      FOR UPDATE
+                      WHERE ( identity = event_obj . event_details . study_id )
+                      AND   ( status   = "A"                                  )
+
+        IF study_id = LOCKED THEN
+                stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                            event_obj . event_details . study_id )
+        ELSEIF study_id = EMPTY THEN
+                stb_login_log_study_error ( "STB_LOGIN_NO_STUDY" ,
+                                            event_obj . event_details . study_id )
+        ELSE
+
+                event_obj . event_details . use_predicted_id =
+                                                SELECT pds_study . use_predicted
+
+                pull_num     = event_obj . event_details . pull_number
+                layer_factor = event_obj . event_details . layer
+                time_factor  = event_obj . event_details . time_point
+                c_factor     = event_obj . event_details . condition
+
+                pull_num = SELECT pds_study_pull . pull_num
+                              FOR UPDATE
+                              WHERE ( header       = study_id     )
+                              AND   ( pull_num     = pull_num     )
+                              AND   ( layer_factor = layer_factor )
+                              AND   ( time_factor  = time_factor  )
+                              AND   ( c_factor     = c_factor     )
+                              AND   ( cell_disp    = "P"          )
+
+                IF pull_num = LOCKED THEN
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+                ELSEIF pull_num = EMPTY THEN
+                        stb_login_log_pull_error ( "STB_LOGIN_NO_PULL" ,
+                                                   study_id            ,
+                                                   pull_num            )
+                ELSE
+                        event_obj . event_details . due_date =
+                                         SELECT pds_study_pull . due_login_date
+                        ret_val = TRUE
+                ENDIF
+
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE}
+{  TC 18/08/04 ************************************************************* end of original code }
+
+
+{ **** TC 18/08/04 This is the code change for the routine for incident 47897 *********************}
+
+
+        DECLARE study_id , ret_val , layer_factor , time_factor , c_factor , pull_num
+
+        ret_val  = FALSE
+
+        study_id = SELECT pds_study . identity
+                      FOR UPDATE
+                      WHERE ( identity = event_obj . event_details . study_id )
+                      AND   ( status   = "A"                                  )
+
+        IF study_id = LOCKED THEN
+        
+        
+        declare my_count, finish_now,  out_val
+        
+        finish_now = FALSE
+        my_count = 0
+  	out_val = RANDOM ( GLOBAL ("PROCESS_ID") )
+        
+        
+	WHILE ( my_count <= 20 ) AND  ( NOT finish_now )
+	
+		sleep for interval ("00 00:00:":round(out_val))
+		
+		out_val=RANDOM ( out_val )
+		
+		out_val = out_val * 10
+		
+		study_id = SELECT pds_study . identity
+			     FOR UPDATE
+			     WHERE ( identity = event_obj . event_details . study_id )
+			       AND   ( status   = "A"   )
+			       
+			       
+		my_count = my_count + 1
+		
+		
+		IF (study_id = LOCKED) AND (my_count >= 20)  THEN
+
+
+                stb_login_log_study_error ( "STB_LOGIN_STUDY_LOCKED" ,
+                                            event_obj . event_details . study_id )
+				    
+		ELSEIF (study_id <> LOCKED)
+
+			finish_now = TRUE
+			
+			event_obj . event_details . use_predicted_id =
+						    SELECT pds_study . use_predicted
+
+			pull_num     = event_obj . event_details . pull_number
+			layer_factor = event_obj . event_details . layer
+			time_factor  = event_obj . event_details . time_point
+			c_factor     = event_obj . event_details . condition
+			
+			
+			pull_num = SELECT pds_study_pull . pull_num
+				      FOR UPDATE
+				      WHERE ( header       = study_id     )
+				      AND   ( pull_num     = pull_num     )
+				      AND   ( layer_factor = layer_factor )
+				      AND   ( time_factor  = time_factor  )
+				      AND   ( c_factor     = c_factor     )
+				      AND   ( cell_disp    = "P"          )
+
+			
+			IF pull_num = LOCKED THEN
+
+
+				sleep for interval ("00 00:00:":round(out_val))
+				
+
+				pull_num = SELECT pds_study_pull . pull_num
+					   FOR UPDATE
+					   WHERE ( header       = study_id     )
+					     AND   ( pull_num     = pull_num     )
+					     AND   ( layer_factor = layer_factor )
+					     AND   ( time_factor  = time_factor  )
+					     AND   ( c_factor     = c_factor     )
+					     AND   ( cell_disp    = "P"          )
+					     
+					     
+				IF pull_num = LOCKED THEN
+
+					stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+								   study_id                ,
+								   pull_num                )
+
+				ENDIF
+				
+
+			ELSEIF pull_num = EMPTY THEN
+				stb_login_log_pull_error ( "STB_LOGIN_NO_PULL" ,
+							   study_id            ,
+							   pull_num            )
+							   
+			ELSE
+				event_obj . event_details . due_date =
+						 SELECT pds_study_pull . due_login_date
+				ret_val = TRUE
+
+				
+		       ENDIF
+
+
+
+		ENDIF
+
+
+	 ENDWHILE
+          
+          
+        ELSEIF study_id = EMPTY THEN
+                stb_login_log_study_error ( "STB_LOGIN_NO_STUDY" ,
+                                            event_obj . event_details . study_id )
+        ELSE
+
+                event_obj . event_details . use_predicted_id =
+                                                SELECT pds_study . use_predicted
+
+                pull_num     = event_obj . event_details . pull_number
+                layer_factor = event_obj . event_details . layer
+                time_factor  = event_obj . event_details . time_point
+                c_factor     = event_obj . event_details . condition
+
+                pull_num = SELECT pds_study_pull . pull_num
+                              FOR UPDATE
+                              WHERE ( header       = study_id     )
+                              AND   ( pull_num     = pull_num     )
+                              AND   ( layer_factor = layer_factor )
+                              AND   ( time_factor  = time_factor  )
+                              AND   ( c_factor     = c_factor     )
+                              AND   ( cell_disp    = "P"          )
+
+                IF pull_num = LOCKED THEN
+                        stb_login_log_pull_error ( "STB_LOGIN_PULL_LOCKED" ,
+                                                   study_id                ,
+                                                   pull_num                )
+                ELSEIF pull_num = EMPTY THEN
+                        stb_login_log_pull_error ( "STB_LOGIN_NO_PULL" ,
+                                                   study_id            ,
+                                                   pull_num            )
+                ELSE
+                        event_obj . event_details . due_date =
+                                         SELECT pds_study_pull . due_login_date
+                        ret_val = TRUE
+                ENDIF
+
+        ENDIF
+
+        RETURN ( ret_val )
+
+ENDROUTINE
+
+{ **************** end of changed code for incidnet 47897 ********************* }
+
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_background_sample ( VALUE activation_time )
+
+{
+* Called from the watchdog timer queue entry to log in a sample for the
+* parameter list.
+*
+*******************************************************************************}
+
+        DECLARE event_obj , do_commit
+
+        lib_sched_event_define_classes ()
+
+        CREATE OBJECT EVENT_SCHEDULE_CLASS , event_obj
+
+        event_obj . init_for_stab ()
+        event_obj . interactive = FALSE
+
+        IF stb_login_get_event_details ( event_obj ) THEN
+
+
+                IF stb_login_add_stab_records ( event_obj ) THEN
+
+                        lib_sched_event_start_write ( "STB_LOGIN_BKDG_LOGIN" ,
+                                                      do_commit              )
+
+                        stb_login_sample ( event_obj )
+
+                        lib_sched_event_update_changes ( do_commit )
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_display_pull_info ( event_obj )
+
+{
+* Displays pull specific information in the progress window.
+*
+*******************************************************************************}
+
+        DECLARE text_id
+
+        IF event_obj . interactive THEN
+
+            text_id   = SELECT pds_study_pull . sample_id_text
+            
+            event_obj . update_progress ( DISPLAY_LAYER                     ,
+                                          event_obj . event_details . layer )
+                                          
+            event_obj . update_progress ( DISPLAY_CONDITION                     ,
+                                          event_obj . event_details . condition )
+            
+            event_obj . update_progress ( DISPLAY_TIME_POINT                     ,
+                                          event_obj . event_details . time_point )
+            
+            event_obj . update_progress ( DISPLAY_PULL_NUMBER                     ,
+                                          event_obj . event_details . pull_number )
+            
+            event_obj . update_progress ( DISPLAY_DUE_DATE                     ,
+                                          event_obj . event_details . due_date )
+
+            IF event_obj . login_events THEN
+
+                    event_obj . update_progress ( DISPLAY_JOB_NAME   , ""      )
+                    event_obj . update_progress ( DISPLAY_ID_TEXT    , text_id )
+                    event_obj . update_progress ( DISPLAY_ID_NUMERIC , ""      )
+
+            ELSE
+
+                    event_obj . update_progress ( DISPLAY_TEXT_ID   , text_id )
+                    event_obj . update_progress ( DISPLAY_ENTRY_NUM , ""      )
+
+            ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_update_text_id ( VALUE samp_id   ,
+                                         event_obj )
+
+{
+* Overwrites the generated sample textual id with the predicted Id if the
+* study header flag is set.
+*
+*******************************************************************************}
+
+{**MS1521 HBe 13-1-04
+        DECLARE id_num , text_id
+}
+        DECLARE id_num , text_id, mlp_id, batch_name, comment, study_idd, context, version
+{**ME1521}
+        {**************************************}
+        { Fix due to login object overwriting  }
+        { the textual ID with a genrated value }
+        {**************************************}
+
+        IF event_obj . event_details . use_predicted_id THEN
+
+{**AS1521 HBe 13-1-04: Extra information gathered - to be assigned to the sample}
+                study_idd = select sample.stab_study_id where id_numeric = samp_id
+                
+                IF study_idd <> EMPTY THEN
+              
+                   push_file_descriptor("PDS_STUDY",context)
+
+                   mlp_id = select pds_study.mlp_id where identity = study_idd
+                
+                   batch_name = select pds_study.batch_name
+                
+                   comment = select pds_study.study_comment
+
+                   version= select max_active_mlp_ver.max_version 
+                                    where identity = mlp_id
+
+                   pop_file_descriptor(context)
+                
+                ENDIF
+{**AE1521 }
+                id_num = SELECT sample . id_numeric
+                                FOR UPDATE
+                                WHERE id_numeric = samp_id
+
+                IF id_num <> EMPTY THEN
+
+                        text_id = SELECT pds_study_pull . sample_id_text
+
+                        IF NOT BLANK ( text_id )  Then
+
+                                ASSIGN sample . id_text = text_id
+{**AS1521 HBe 13-1-04: MLP_ID, product_version, BATCH_NAME, stability_sample and id_text to be assigned to the sample}
+                                IF mlp_id <> EMPTY THEN
+                                   assign sample . product_name     = mlp_id
+                                ENDIF
+                                IF batch_name <> EMPTY THEN
+                                   assign sample . batch_name       = batch_name
+                                ENDIF
+                                IF version <> EMPTY THEN
+                                   assign sample . product_version  = version
+                                ENDIF
+                                IF comment <> EMPTY THEN
+                                   assign sample . sample_comment   = comment
+                                ENDIF
+
+                                assign sample . stability_sample = TRUE
+                                
+{**AS1576}                      assign sample . group_id = GLOBAL("DEFAULT_GROUP")
+{**AE1521 }
+                                UPDATE sample
+
+                        ENDIF
+
+                ENDIF
+
+        ELSE
+
+                text_id = SELECT sample . id_text
+                                WHERE id_numeric = samp_id
+
+                IF text_id <> EMPTY THEN
+
+                        event_obj . event_details . samp_text_id = text_id
+
+                        event_obj . update_progress ( DISPLAY_TEXT_ID ,
+                                                      text_id         )
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_sample ( event_obj )
+
+{
+* Called from the background login and interactive login to log in a
+* sample for the defined criteria.
+*
+*******************************************************************************}
+
+        DECLARE job_id , samp_id, return_value
+
+        return_value = TRUE 
+
+        IF SELECT pds_study_pull . cell_disp <> "P" THEN
+
+                stb_login_log_pull_error (
+                                    "STB_LOGIN_INVAL_PULL_STAT"          ,
+                                    event_obj . event_details . study_id ,
+                                    event_obj . event_details . pull_num )
+        ELSE
+                stb_login_display_pull_info ( event_obj )
+
+                job_id = stb_login_login_job ( event_obj )
+
+                IF job_id <> ERROR THEN
+
+                        samp_id = stb_login_create_stab_sample ( job_id    ,
+                                                                 event_obj )
+                        IF samp_id <> ERROR THEN
+
+                                stb_login_update_text_id ( samp_id   ,
+                                                           event_obj )
+
+                                stb_login_update_study_fields ( job_id    ,
+                                                                samp_id   ,
+                                                                event_obj )
+
+                                stb_login_update_all_tables ( event_obj )
+
+                                stb_login_log_sample_details ( job_id    ,
+                                                               samp_id   ,
+                                                               event_obj )
+                        ELSE
+                                stb_login_log_study_error (
+                                         "STB_LOGIN_SAMP_FAIL"                ,
+                                         event_obj . event_details . study_id )
+
+                                return_value = FALSE
+
+                        ENDIF
+
+                ELSE
+                        stb_login_log_study_error (
+                                         "STB_LOGIN_JOB_FAIL"                 ,
+                                         event_obj . event_details . study_id )
+                ENDIF
+        ENDIF
+
+        stb_login_close_log_file ()
+
+        RETURN ( return_value )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_update_all_tables ( event_obj )
+
+{
+* Updates all modified tables.
+*
+*******************************************************************************}
+
+        UPDATE pds_study
+        UPDATE pds_study_pull
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_get_job_template ( job_template ,
+                                     event_obj    )
+
+{
+* Finds the job template Id to use to create the stability job
+*
+*******************************************************************************}
+
+        job_template = SELECT pds_study . job_template_id
+
+        IF BLANK ( job_template ) THEN
+                job_template = STAB_DEFAULT_JOB_TEMPLATE
+        ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_login_job ( event_obj )
+
+{
+* If no job has been logged in for the stability study the get the job
+* template to use and log in the job. Otherwise use the existing job Id.
+*
+*******************************************************************************}
+
+        DECLARE job_template , job_id , job_obj , mess
+
+        job_id = SELECT pds_study . job_name
+
+          IF GLOBAL ( "STAB_CREATE_JOB" ) THEN
+
+                IF SELECT pds_study . use_study_name THEN
+
+                        job_id = event_obj . event_details . study_id
+
+                ELSEIF BLANK ( job_id ) THEN
+
+                        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+                                mess = GET_USER_MESSAGE ( "STB_LOGIN_LOG_JOB" ,
+                                                          1                   )
+                                window_set_status ( mess )
+                        ENDIF
+
+                        stb_login_get_job_template ( job_template , event_obj )
+
+                        samp_job_initialise ()
+
+                        CREATE OBJECT SAMP_JOB_JOB_LOGIN_CLASS , job_obj
+
+                        job_obj . job_template            = job_template
+                        job_obj . repeat_count            = 0
+                        job_obj . samples_for_job         = FALSE
+                        job_obj . use_current_transaction = TRUE
+
+                        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+                                job_obj . dont_confirm = FALSE
+                        ELSE
+                                job_obj . dont_confirm = TRUE
+                        ENDIF
+
+                        job_id = job_obj . login_a_job ()
+
+                        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+                                window_set_status ( "" )
+                        ENDIF
+
+                ENDIF
+
+        ENDIF
+
+        event_obj . update_progress ( DISPLAY_JOB_NAME , job_id )
+
+        RETURN ( job_id )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_get_sample_template ( sample_template ,
+                                        event_obj       )
+
+{
+* Finds the sample template Id to use to log in the study samples.
+*
+*******************************************************************************}
+
+        sample_template = SELECT pds_study_pull . sample_template
+
+        IF BLANK ( sample_template ) THEN
+
+                sample_template = SELECT pds_study . sample_template
+
+                IF BLANK ( sample_template ) THEN
+                        sample_template = DEFAULT_SAMP_TEMP
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_create_test_list ( event_obj, samp_obj )
+
+{
+* Finds the sample template Id to use to log in the study samples.
+*
+*******************************************************************************}
+
+        DECLARE test_schedule , make_standard , add_to_window , mode , line_editor
+
+        test_editor_initialise ( " "                          ,
+                                 FALSE                        ,
+                                 TRUE                         ,
+                                 TRUE                         ,
+                         GLOBAL ( "CURRENT_LIBRARY" ) ,
+                                 samp_obj . user_test_list    )
+
+        make_standard = TRUE
+        add_to_window = FALSE
+        line_editor   = EMPTY                 { dummy }
+        mode          = "USER_TEST_LIST"
+        test_schedule = SELECT pds_study_pull . test_schedule
+
+        IF NOT BLANK ( test_schedule ) THEN
+
+                get_test_schedule ( test_schedule             ,
+                                    make_standard             ,
+                                    samp_obj . user_test_list ,
+                                    add_to_window             ,
+                                    mode                      ,
+                                    line_editor               )
+
+        ENDIF
+
+        RETURN ( test_schedule )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_read_field_value (       field_values  ,
+                                     VALUE field_name    ,
+                                           field_value   )
+
+{
+* Reads the contents of a field from the login object field values array.
+*
+*******************************************************************************}
+
+        DECLARE count , found
+
+        found       = FALSE
+        count       = 1
+        field_value = EMPTY
+
+        WHILE ( count <= size_of_array ( field_values ) )
+        AND   ( NOT found                               ) DO
+
+                IF STRIP ( field_values [ count , 1 ] ) = STRIP ( field_name ) THEN
+
+                        field_value = field_values [ count , 2 ]
+                        found       = TRUE
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_update_sample_fields ( VALUE pull_ts   ,
+                                               samp_obj  ,
+                                               event_obj )
+
+{
+* Updates the sample record with study/pull specific information.
+*
+*******************************************************************************}
+
+        DECLARE samp_desc , samp_ts
+
+        samp_desc = SELECT pds_study_pull . description
+
+
+        lib_utils_set_field_value ( samp_obj . field_values              ,
+                                    GBL_SAMPLE_STUDY_FIELD               ,
+                                    event_obj . event_details . study_id )
+
+        lib_utils_set_field_value ( samp_obj . field_values           ,
+                                    GBL_SAMPLE_LAYER_FIELD            ,
+                                    event_obj . event_details . layer )
+
+        lib_utils_set_field_value ( samp_obj . field_values               ,
+                                    GBL_SAMPLE_COND_FIELD                 ,
+                                    event_obj . event_details . condition )
+
+        lib_utils_set_field_value ( samp_obj . field_values                ,
+                                    GBL_SAMPLE_TIME_FIELD                  ,
+                                    event_obj . event_details . time_point )
+
+        samp_desc = STRIP ( event_obj . event_details . study_id ) : " " :
+                    GET_USER_MESSAGE ( "STB_LOGIN_PULL_DETS" , 1 ) :
+                    STRIP ( event_obj . event_details . layer ) : " " :
+                    GET_USER_MESSAGE ( "STB_LOGIN_PULL_DETS" , 6 ) :
+                    STRIP ( event_obj . event_details . time_point ) : " " :
+                    GET_USER_MESSAGE ( "STB_LOGIN_PULL_DETS" , 7 ):
+                    STRIP ( event_obj . event_details . condition ) : " " :
+                    GET_USER_MESSAGE ( "STB_LOGIN_PULL_DETS" , 4 ) :
+                    STRIP ( event_obj . event_details . pull_number ) :
+                    " - " : STRIP ( samp_desc ) 
+
+
+
+        lib_utils_set_field_value ( samp_obj . field_values ,
+                                    "DESCRIPTION"           ,
+                                    samp_desc               )
+
+        stb_login_read_field_value ( samp_obj . field_values  ,
+                                     "TEST_SCHEDULE"          ,
+                                     samp_ts                  )
+
+
+
+        IF samp_ts <> EMPTY THEN
+
+                IF  (     BLANK ( samp_ts ) )
+                AND ( NOT BLANK ( pull_ts ) ) THEN
+
+                        lib_utils_set_field_value ( samp_obj . field_values ,
+                                                    "TEST_SCHEDULE"         ,
+                                                    pull_ts                 )
+
+                ELSEIF ( NOT BLANK ( samp_ts ) )
+                AND    (     BLANK ( pull_ts ) ) THEN
+
+                        ASSIGN pds_study_pull . test_schedule = samp_ts
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_create_stab_sample ( VALUE job_id, event_obj )
+
+{
+* Creates the stability pull sample record.
+*
+*******************************************************************************}
+
+        DECLARE samp_id, pull_ts, sample_template, samp_obj
+
+        samp_id = packed_decimal ( 0 )
+
+        stb_login_get_sample_template ( sample_template , event_obj )
+
+        samp_job_initialise ()
+
+        CREATE OBJECT SAMP_JOB_SAMPLE_LOGIN_CLASS , samp_obj
+
+        samp_obj . repeat_count            = 1
+        samp_obj . template_id             = sample_template
+        samp_obj . job_name                = job_id
+        samp_obj . use_current_transaction = TRUE
+        samp_obj . use_template_syntax     = TRUE
+        samp_obj . syntax                  = "DEFAULT"
+        samp_obj . user_add_tests          = TRUE
+
+        IF INDEX ( "UHVWCAXS" , GBL_SAMPLE_STATUS_CHANGE ) <> 0 THEN
+                samp_obj . user_status = GBL_SAMPLE_STATUS_CHANGE
+        ENDIF
+
+        pull_ts = stb_login_create_test_list ( event_obj, samp_obj )
+
+        stb_login_update_sample_fields ( pull_ts , samp_obj , event_obj )
+
+        sample_assigns ( samp_obj , event_obj )
+
+        samp_id = samp_obj . login_a_sample ()
+
+        event_obj . update_progress ( DISPLAY_ID_NUMERIC , samp_id )
+
+        RETURN ( samp_id )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_update_study_fields ( VALUE job_id    ,
+                                        VALUE samp_id   ,
+                                              event_obj )
+
+{
+* Updates the study and pull record with relevant details.
+*
+*******************************************************************************}
+
+        DECLARE number_left , study_id , study_pull
+
+        study_id = event_obj . event_details . study_id
+
+        ASSIGN pds_study . job_name = job_id
+
+        push_file_descriptor ( "pds_study_pull" , study_pull )
+
+        number_left = SELECT COUNT pds_study_pull
+                         WHERE ( cell_disp = "P"      )
+                         AND   ( header    = study_id )
+                         AND   ( active    = TRUE     )
+
+        pop_file_descriptor ( study_pull )
+
+        IF number_left <= 1 THEN
+
+                ASSIGN pds_study . status = "C"
+
+                ASSIGN pds_study . activated_before = TRUE
+        ENDIF
+
+        ASSIGN pds_study_pull . created_sample_id = samp_id
+        ASSIGN pds_study_pull . cell_disp         = "V"
+        ASSIGN pds_study_pull . wdt_entry_number  = ""
+
+
+        ASSIGN pds_study_pull . sample_id_text =
+                event_obj . event_details . samp_text_id
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_log_sample_details ( VALUE job_id    ,
+                                       VALUE samp_id   ,
+                                             event_obj )
+
+{
+* Logs sample details after logging in a sample.
+*
+*******************************************************************************}
+
+        DECLARE mess_obj , mess_txt , event_details , count , do_title , do_blank
+
+        event_details = event_obj . event_details
+
+        message_fetch ( "STB_LOGIN_SAMP_LOGGED" , mess_obj )
+        message_add_parameter ( mess_obj , job_id )
+        message_add_parameter ( mess_obj , event_details . event_tag )
+        message_add_parameter ( mess_obj , event_details . study_id )
+        message_add_parameter ( mess_obj , event_details . layer )
+        message_add_parameter ( mess_obj , event_details . condition )
+        message_add_parameter ( mess_obj , event_details . time_point )
+        message_add_parameter ( mess_obj , event_details . pull_number )
+        message_add_parameter ( mess_obj , event_details . samp_text_id )
+        message_add_parameter ( mess_obj , samp_id )
+        message_add_parameter ( mess_obj , event_details . due_date )
+
+        count = 1
+
+        WHILE count <= message_get_lines ( mess_obj ) DO
+
+                do_title = ( count = 1 )
+                do_blank = ( count = message_get_lines ( mess_obj ) )
+                mess_txt = message_get_text ( mess_obj , count )
+                count    = count + 1
+
+                stb_login_write_to_log_file ( do_title , do_blank , mess_txt )
+
+        ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_log_pull_error ( VALUE mess_id  ,
+                                   VALUE study_id ,
+                                   VALUE pull_num )
+
+{
+* Logs a pull record failure
+*
+*******************************************************************************}
+
+        DECLARE mess_obj , mess_txt
+
+        IF pull_num = EMPTY THEN
+                pull_num = ""
+        ENDIF
+
+        message_fetch ( mess_id , mess_obj )
+        message_add_parameter ( mess_obj , pull_num )
+        message_add_parameter ( mess_obj , study_id )
+
+        mess_txt = message_get_text ( mess_obj , 1 )
+
+        stb_login_log_error ( mess_txt )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_log_timer_error ( VALUE mess_id   ,
+                                    VALUE status    ,
+                                          event_obj )
+
+{
+* Logs a timer queue create entry failure
+*
+*******************************************************************************}
+
+        DECLARE mess_obj , mess_txt
+
+        message_fetch ( mess_id , mess_obj )
+        message_add_parameter ( mess_obj                             ,
+                                event_obj . event_details . study_id )
+        message_add_parameter ( mess_obj                                ,
+                                event_obj . event_details . pull_number )
+        message_add_parameter ( mess_obj , status )
+
+        mess_txt = message_get_text ( mess_obj , 1 )
+
+        stb_login_log_error ( mess_txt )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_log_study_error ( VALUE message  ,
+                                    VALUE study_id )
+
+{
+* Logs a study failure
+*
+*******************************************************************************}
+
+        DECLARE mess_obj , mess_txt
+
+        IF study_id = EMPTY THEN
+                study_id = ""
+        ENDIF
+
+        message_fetch ( message , mess_obj )
+        message_add_parameter ( mess_obj , study_id )
+
+        mess_txt = message_get_text ( mess_obj , 1 )
+
+        stb_login_log_error ( mess_txt )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_log_error ( VALUE message )
+
+{
+* Writes the error message to the log file or flashes a message on
+* screen.
+*
+*******************************************************************************}
+
+        DECLARE mess_txt
+
+        mess_txt  = GET_USER_MESSAGE ( message , 1 )
+
+        IF mess_txt = ERROR THEN
+                mess_txt = message
+        ENDIF
+
+        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+                flash_message ( "Error: " : mess_txt , FALSE )
+        ELSE
+                stb_login_write_to_log_file ( TRUE , TRUE , mess_txt )
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_write_to_log_file ( VALUE write_title ,
+                                              VALUE write_blank ,
+                                              VALUE message     )
+
+{
+* Writes the error message to the log file
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        IF FILE EXISTS ( GBL_LOG_FILE ) THEN
+                FILE EXTEND GBL_LOG_FILE , status
+        ELSE
+                FILE CREATE GBL_LOG_FILE , status
+        ENDIF
+
+        IF status = EMPTY THEN
+
+                IF write_title THEN
+                        FILE WRITE GBL_LOG_FILE                               ,
+                                   LEFTSTRING ( NOW , 17 ) : "   " : OPERATOR ,
+                                   status
+                ENDIF
+
+                FILE WRITE GBL_LOG_FILE , message , status
+
+                IF write_blank THEN
+                        FILE WRITE GBL_LOG_FILE , "" , status
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_login_close_log_file
+
+{
+* Closes the log file. Ignores the status flag as the file may be opened
+* by another user.
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        IF FILE EXISTS ( GBL_LOG_FILE ) THEN
+                FILE CLOSE GBL_LOG_FILE , status
+        ENDIF
+
+ENDROUTINE

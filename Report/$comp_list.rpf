@@ -1,0 +1,2689 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $COMP_LIST
+*
+* Purpose       : Modify and assign component lists.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : VGSM 3.1
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_LOGIN
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_RE_LIST
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LAB_USER
+JOIN LIBRARY $PROMPT_TOOLBAR
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+set name "defer/"
+
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+
+{* LOCAL CONSTANTS ************************************************************}
+
+
+CONSTANT COMP_LIST_HEADER_CLASS         = "STD_COMP_LIST_HEADER"
+CONSTANT COMP_LIST_ENTRY_SCREEN_CLASS   = "STD_COMP_LIST_ENTRY_SCREEN"
+CONSTANT COMP_LIST_HEADER_SCREEN_CLASS  = "STD_COMP_LIST_HEADER_SCREEN"
+
+CONSTANT COMP_LIST_ASSIGN_ENTRY_CLASS   = "STD_COMP_LIST_ASSIGN_ENTRY"
+CONSTANT COMP_LIST_ASSIGN_HEADER_CLASS  = "STD_COMP_LIST_ASSIGN_HEADER"
+
+CONSTANT USER_ROUTINE = "COMPONENT_LIST_USER_CREATE"
+CONSTANT USER_LIBRARY = "$SAMP_USER"
+
+
+{* VARIABLES ******************************************************************}
+
+DECLARE ANALYSIS_ID_SIZE       ,
+    COMPONENT_ID_SIZE      ,
+    COMP_NAME_ID_SIZE
+
+
+{ Prompt variables }
+
+DECLARE comp_list_prompt_details        ,
+    comp_list_header_prompt_details ,
+    comp_list_components            ,
+    comp_list_data_read             ,
+    comp_list_components_read       ,
+    comp_list_deleted_components    ,
+    comp_list_components_changed    ,
+
+    comp_list_header_collection     ,
+    comp_list_header_order          ,
+
+    comp_list_runtime_collection
+
+
+{******************************************************************************}
+GLOBAL
+
+ROUTINE comp_list_initialise
+
+{
+*   Initialise the comp list library.
+*
+*******************************************************************************}
+
+    IF NOT global ( "library_initialised" ) THEN
+
+        lib_grid_initialise ()
+
+        prompt_toolbar_initialise ( )
+
+        comp_list_class_define ()
+
+        GET_FIELD_DETAILS versioned_analysis . identity ,
+                  "FIELD_SIZE" ,
+                  ANALYSIS_ID_SIZE
+
+        GET_FIELD_DETAILS versioned_component . name ,
+                  "FIELD_SIZE" ,
+                  COMPONENT_ID_SIZE
+
+        GET_FIELD_DETAILS versioned_c_l_header . comp_list ,
+                  "FIELD_SIZE" ,
+                  COMP_NAME_ID_SIZE
+
+        ARRAY comp_list_prompt_details   ARRAY_SIZE ( 0 , 6 )
+
+        comp_list_prompt_details [ 1 , 2 ] = "ROUTINE"
+            comp_list_prompt_details [ 1 , 3 ] = global ( "current_library" )
+        comp_list_prompt_details [ 1 , 4 ] = "COMP_LIST_DISPLAY_NAME"
+            comp_list_prompt_details [ 1 , 5 ] = get_user_message ( "COMP_LIST_COMPONENT_TITLE" ,1)
+        comp_list_prompt_details [ 1 , 6 ] =  30
+
+
+        comp_list_prompt_details [ 2 , 2 ] = "ROUTINE"
+            comp_list_prompt_details [ 2 , 3 ] = global ( "current_library" )
+        comp_list_prompt_details [ 2 , 4 ] = "COMP_LIST_CREATE"
+            comp_list_prompt_details [ 2 , 5 ] = get_user_message ( "COMP_LIST_CREATE_TITLE" ,1)
+        comp_list_prompt_details [ 2 , 6 ] = 6
+
+        IF global ( "RESULT_REPLICATES_ENABLED" ) THEN
+
+            comp_list_prompt_details [ 3 , 2 ] = "FORMAT"
+                comp_list_prompt_details [ 3 , 3 ] = "VERSIONED_C_L_ENTRY"
+            comp_list_prompt_details [ 3 , 4 ] = "REPLICATE_COUNT"
+                comp_list_prompt_details [ 3 , 5 ] = get_user_message ( "COMP_LIST_REPLICATE_TITLE" ,1)
+            comp_list_prompt_details [ 3 , 6 ] = 11
+
+        ENDIF
+
+        lab_user_comp_list_entry ( comp_list_prompt_details )
+
+        ARRAY comp_list_header_prompt_details   ARRAY_SIZE ( 0 , 6 )
+
+        comp_list_header_prompt_details [ 1 , 2 ] = "ROUTINE"
+            comp_list_header_prompt_details [ 1 , 3 ] = global ( "current_library" )
+        comp_list_header_prompt_details [ 1 , 4 ] = "COMP_LIST_HEADER_DISPLAY_NAME"
+            comp_list_header_prompt_details [ 1 , 5 ] =
+                get_user_message ( "COMP_LIST_IDENTITY_TITLE" ,1)
+        comp_list_header_prompt_details [ 1 , 6 ] =  COMP_NAME_ID_SIZE
+
+
+        comp_list_header_prompt_details [ 2 , 2 ] = "FORMAT"
+            comp_list_header_prompt_details [ 2 , 3 ] = "VERSIONED_C_L_HEADER"
+        comp_list_header_prompt_details [ 2 , 4 ] = "DESCRIPTION"
+            comp_list_header_prompt_details [ 2 , 5 ] =
+                get_user_message ( "COMP_LIST_DESCRIPTION_TITLE" ,1)
+        comp_list_header_prompt_details [ 2 , 6 ] =
+                        global ( "SCREEN_WIDTH" ) -
+                        COMP_NAME_ID_SIZE -
+                        5
+
+        lab_user_comp_list_header ( comp_list_header_prompt_details )
+
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_class_define
+
+{
+*   Define the classed used by the component list package.
+*
+*******************************************************************************}
+
+    DEFINE CLASS COMP_LIST_HEADER_CLASS
+
+        INHERIT "STD_OBJECT_RECORD"
+
+        PROPERTIES "ENTRY_COLLECTION"
+
+    END CLASS
+
+    DEFINE CLASS COMP_LIST_ENTRY_SCREEN_CLASS
+
+    INHERIT "STD_GRID_EDITOR"
+
+    PROPERTIES "ANALYSIS"   ,
+           "COMP_LIST"  ,
+           "COMPONENT"  ,
+           "COLLECTION"
+
+    END CLASS
+
+    DEFINE CLASS COMP_LIST_HEADER_SCREEN_CLASS
+
+    PROPERTIES "ANALYSIS"         ,
+           "COPY_ANALYSIS"    ,
+           "MODE"             ,
+           "ACTIVE"           ,
+           "DELETED"          ,
+           "INSERT_NEW_ENTRY"
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE comp_list_components_have_been_read
+
+{
+*
+*
+*******************************************************************************}
+
+    RETURN (( variable_is_assigned ( comp_list_components_read )) AND
+                ( comp_list_components_read                         ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_data_has_been_read
+
+{
+*
+*
+*******************************************************************************}
+
+    RETURN (( variable_is_assigned ( comp_list_data_read )) AND
+                ( comp_list_data_read                        ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_read_components ( VALUE analysis_id ,
+                                    VALUE version     )
+
+{
+*   Read the components from the database into the component array
+*
+*******************************************************************************}
+
+    DECLARE name         ,
+        count        ,
+        select_array
+
+    IF NOT ( comp_list_components_have_been_read () ) THEN
+
+        ARRAY comp_list_components         ARRAY_SIZE ( 0 )
+        ARRAY comp_list_deleted_components ARRAY_SIZE ( 0 )
+
+        comp_list_components_changed = FALSE
+
+        count      = 1
+
+        ARRAY select_array ARRAYSIZE ( 0, 3 )
+
+        array_select_add ( select_array    ,
+                           ARRAY_SELECT_EQ ,
+                           "ANALYSIS"      ,
+                           analysis_id     )
+
+        array_select_add ( select_array       ,
+                           ARRAY_SELECT_EQ    ,
+                           "ANALYSIS_VERSION" ,
+                           version            )
+
+        array_select_add ( select_array           ,
+                           ARRAY_SELECT_ORDER     ,
+                           "ORDER_NUMBER"         ,
+                           ARRAY_SELECT_ASCENDING )
+
+        array_select ( "VERSIONED_COMPONENT" ,
+                       FALSE                 ,
+                       select_array          )
+
+        name = SELECT versioned_component . name
+
+        WHILE name <> EMPTY DO
+
+            comp_list_components [ count ] = name
+
+            NEXT versioned_component
+            name = SELECT versioned_component . name
+            count = count + 1
+
+        ENDWHILE
+
+        comp_list_components_read = TRUE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE comp_list_add_component ( VALUE analysis_id ,
+                                         VALUE version     ,
+                     VALUE name        ,
+                     VALUE position    )
+
+{
+*   Add the new component to the component array at the correct
+*   position.
+*
+*****************************************************************************}
+
+    DECLARE count
+
+    comp_list_read_components ( analysis_id, version )
+
+    array_insert_slice ( comp_list_components ,
+                 1                    ,
+                 position             )
+
+    comp_list_components [ position ] = name
+    comp_list_components_changed = TRUE
+
+    { Check the deleted component array }
+
+    count = 1
+
+    WHILE count <= size_of_array ( comp_list_deleted_components ) DO
+
+        IF ( comp_list_deleted_components [ count ] ) = strip ( name ) THEN
+
+                    array_remove_slice ( comp_list_deleted_components ,
+                         1                            ,
+                         count                )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_ask_display (       grid        ,
+                                VALUE cell_column ,
+                        VALUE cell_row    ,
+                          screen      ,
+                        VALUE column      ,
+                        VALUE row         ,
+                        VALUE cell_width  ,
+                    VALUE cell_height )
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DISPLAY grid . user_info [ cell_row , cell_column ]
+        ON LINE row
+        FROM    column
+        TO      column + cell_width - 1
+        IN WINDOW screen
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_ask_prompt  (       grid        ,
+                                VALUE cell_column ,
+                        VALUE cell_row    ,
+                          screen      ,
+                        VALUE column      ,
+                        VALUE row         ,
+                        VALUE cell_width  ,
+                    VALUE cell_height )
+
+{
+*
+*
+*
+******************************************************************************}
+
+    PROMPT FOR grid . user_info [ cell_row , cell_column ]
+           ON LINE row
+               FROM    column
+           TO      column + cell_width - 1
+           IN WINDOW screen
+           WITH ( display_only = TRUE )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_ask_user_if_sure ( VALUE name  ,
+                       lists )
+
+{
+*   Ask the user if they really want to do this
+*
+*******************************************************************************}
+
+    DECLARE grid_object ,
+        form        ,
+        buttons     ,
+        message
+
+    message_fetch ("COMP_LIST_SURE_DELETE_HEADER" , message)
+    message_add_parameter ( message      ,
+                strip ( name ))
+
+    message = message_get_text ( message, 1 )
+
+    CREATE OBJECT  "STD_GRID_EDITOR", grid_object
+
+    grid_object . width   = global ( "SCREEN_WIDTH" ) - 4
+    grid_object . height  = 17
+
+    grid_object . column   = 1
+    grid_object . row      = 1
+
+    grid_object . border   = FALSE
+
+    grid_object . return_behaviour = GRID_RETURN_RIGHT
+
+    grid_object . vgl_library          = global ( "current_library" )
+
+    grid_object . prompt_cell_routine  = "comp_list_ask_prompt"
+    grid_object . display_cell_routine = "comp_list_ask_display"
+
+    grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+    grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+    grid_object . title_size_top        = 1
+    grid_object . fixed_columns_left    = 1
+
+    grid_object . cell_columns = 2
+    grid_object . cell_rows    = size_of_array ( lists )
+
+
+    grid_object . title_text_top [ 1 , 1 ] = get_user_message ( "COMP_LIST_IDENTITY_TITLE" ,1)
+    grid_object . column_size    [ 1     ] =  COMP_NAME_ID_SIZE
+
+    grid_object . title_text_top [ 2 , 1 ] = get_user_message ( "COMP_LIST_DESCRIPTION_TITLE" ,1)
+    grid_object . column_size    [ 2     ] = global ( "SCREEN_WIDTH" ) -
+                                    COMP_NAME_ID_SIZE -
+                                5
+
+
+    grid_object . user_info = lists
+
+    lib_grid_create_form  ( grid_object                        ,
+                form                               ,
+                    FALSE                              ,
+                0                                  ,
+                message                            ,
+                get_user_message ( "COMP_LIST_SURE_DELETE_FOOTER" ,1),
+                buttons                            )
+
+
+    form . confirm_required = global ( "TERMTYPE" ) <> "GUI"
+    form . start_prompt ()
+    form . wait_prompt  ()
+    form . end_prompt   ()
+
+    RETURN ( form . get_lastkey () = "DO" )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE comp_list_delete_component ( VALUE analysis_id ,
+                                            VALUE version     ,
+                        VALUE name        ,
+                        VALUE dont_ask    )
+
+{
+*   Delete the component from the component array.
+*
+*****************************************************************************}
+
+    DECLARE deleted_position ,
+        count            ,
+        lists            ,
+        do_delete        ,
+        comp_list        ,
+        position
+
+
+    ARRAY lists
+
+    count = 1
+
+    comp_list = SELECT versioned_c_l_entry . comp_list
+            WHERE ( analysis         = analysis_id ) AND
+              ( analysis_version = version     ) AND
+              ( name             = name        )
+
+    WHILE comp_list <> EMPTY DO
+
+        lists [ count , 1 ] = comp_list
+        lists [ count , 2 ] = SELECT versioned_c_l_header . description
+                      WHERE ( analysis         = analysis_id ) AND
+                        ( analysis_version = version     ) AND
+                        ( comp_list        = comp_list   )
+
+        NEXT versioned_c_l_entry
+
+        count = count + 1
+
+        comp_list = SELECT versioned_c_l_entry . comp_list
+
+    ENDWHILE
+
+    IF ( count = 1 ) OR dont_ask THEN
+
+        do_delete = TRUE
+
+    ELSE
+
+            do_delete = comp_list_ask_user_if_sure ( name  ,
+                             lists )
+
+    ENDIF
+
+    IF do_delete THEN
+
+        comp_list_read_components ( analysis_id, version )
+
+        position = comp_list_find_by_name ( name )
+
+        IF position > 0 THEN
+
+            array_remove_slice ( comp_list_components ,
+                         1                    ,
+                         position             )
+
+        ENDIF
+
+        comp_list_components_changed = TRUE
+
+        deleted_position = size_of_array ( comp_list_deleted_components ) + 1
+
+        comp_list_deleted_components [ deleted_position ] = name
+
+    ENDIF
+
+    RETURN ( do_delete )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE comp_list_get_list ( VALUE analysis_id    ,
+                 VALUE comp_list_id   ,
+                 VALUE copy_analysis  ,
+                 VALUE mode           ,
+                   collection     )
+
+
+{
+*   Read the component list into the collection.
+*
+*
+*******************************************************************************}
+
+    DECLARE select_array
+
+    IF NOT variable_is_assigned ( collection ) THEN
+
+        CREATE OBJECT "STD_OBJECT_DATABASE", collection
+
+        collection . initialise ( "VERSIONED_C_L_ENTRY" )
+
+        IF copy_analysis <> EMPTY THEN
+
+            select_array = array_select_key0_to_array
+                             ( "VERSIONED_C_L_ENTRY" ,
+                               copy_analysis     )
+
+            array_select_add ( select_array     ,
+                           ARRAY_SELECT_AND ,
+                           EMPTY            ,
+                           EMPTY            )
+
+            array_select_add (  select_array    ,
+                        ARRAY_SELECT_EQ ,
+                       "COMP_LIST"      ,
+                        comp_list_id    )
+
+            collection . select_copy ( select_array ,
+                           analysis_id  )
+
+        ELSE
+
+            select_array = array_select_key0_to_array
+                             ( "VERSIONED_C_L_ENTRY" ,
+                               analysis_id       )
+
+            array_select_add ( select_array     ,
+                           ARRAY_SELECT_AND ,
+                           EMPTY            ,
+                           EMPTY            )
+
+            array_select_add (  select_array    ,
+                        ARRAY_SELECT_EQ ,
+                       "COMP_LIST"      ,
+                        comp_list_id    )
+
+            IF mode = "DISPLAY" THEN
+
+                collection . select ( select_array )
+
+            ELSE
+
+                collection . select_for_update ( select_array )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_update  (       collection ,
+                VALUE analysis   ,
+                VALUE comp_list  )
+
+{
+*   Put the component list back into the database. This routine must
+*   be called within a write transaction.
+*
+*******************************************************************************}
+
+    DECLARE count     ,
+        order     ,
+        component ,
+        object
+
+    IF ( NOT variable_is_assigned ( collection ))    AND
+           (     comp_list_components_have_been_read ()) AND
+       (     comp_list_components_changed          ) THEN
+
+        comp_list_get_list (  analysis   ,
+                      comp_list  ,
+                      EMPTY      ,
+                     "MODIFY"    ,
+                      collection )
+
+    ENDIF
+
+    IF variable_is_assigned ( collection )  THEN
+
+        order = 1
+        count = 1
+
+        WHILE count <= size_of_array ( comp_list_components ) DO
+
+            component = comp_list_components [ count ]
+
+            IF comp_list_find_component ( analysis   ,
+                              comp_list  ,
+                              component  ,
+                              collection ,
+                              object     ) THEN
+
+                object . assign_order ( count )
+                order = order + 1
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+            { Delete any unwanted components }
+
+        count = 1
+
+        WHILE count <= size_of_array ( comp_list_deleted_components ) DO
+
+            component = comp_list_deleted_components [ count ]
+
+            IF comp_list_find_component ( analysis   ,
+                              comp_list  ,
+                              component  ,
+                              collection ,
+                              object     ) THEN
+
+                object . delete ()
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+        collection . invoke_all ( "UPDATE" )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_delete_list  ( VALUE analysis       ,
+                     VALUE component_list )
+
+{
+*   Delete the given component list.
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE select_array
+
+    select_array = array_select_key0_to_array ( "VERSIONED_C_L_ENTRY" ,
+                                                analysis              )
+
+    array_select_add (  select_array      ,
+                        ARRAY_SELECT_EQ   ,
+                       "COMP_LIST"        ,
+                        component_list    )
+
+    array_select ( "VERSIONED_C_L_ENTRY" ,
+                    TRUE                 ,
+                    select_array         )
+
+    WHILE ( SELECT versioned_c_l_entry . name ) <> EMPTY DO
+
+        DELETE versioned_c_l_entry
+
+        NEXT versioned_c_l_entry
+
+    ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_find_component ( VALUE analysis   ,
+                           VALUE comp_list  ,
+                       VALUE component  ,
+                         collection ,
+                     object     )
+
+{
+*   Try to find the component in the collection.
+*
+*
+****************************************************************************}
+
+    DECLARE key0    ,
+        temp    ,
+        found
+
+    found = FALSE
+
+    key0  = analysis : comp_list : component
+    temp  = collection . get_by_index ( "KEY0" , key0 )
+
+    IF temp <> EMPTY THEN
+
+        IF NOT temp . deleted THEN
+
+            object = temp
+            found  = TRUE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( found )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_find_by_name ( VALUE component_name )
+
+{
+*   Return the position in the comp_list_components array
+*   If not found return 0
+*
+****************************************************************************}
+
+    DECLARE position  ,
+            searching ,
+            current_pos
+
+    current_pos = 1
+    position    = 0
+    searching   = TRUE
+
+    WHILE searching DO
+
+        IF current_pos > size_of_array ( comp_list_components ) THEN
+
+            searching = FALSE
+
+        ELSEIF comp_list_components [ current_pos ] = EMPTY THEN
+
+            searching = FALSE
+
+        ELSEIF comp_list_components [ current_pos ] = component_name THEN
+
+            searching = FALSE
+            position  = current_pos
+
+        ELSE
+
+            current_pos = current_pos + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( position )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_display_name (       self        ,
+                           grid        ,
+                 VALUE cell_column ,
+                 VALUE cell_row    ,
+                         VALUE column      ,
+                     VALUE line        ,
+                     VALUE width_1     ,
+                           display_id  ,
+                     VALUE is_display  )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE exists
+
+    exists      = variable_is_assigned ( self )
+
+    IF is_display THEN
+
+        DISPLAY grid . component  ON LINE line FROM column
+                          TO column + width_1 - 1
+                          IN WINDOW display_id
+                          BOLD = exists
+
+    ELSE
+
+        PROMPT FOR grid . component ON LINE line FROM column
+                            TO column + width_1 - 1
+                            IN WINDOW display_id
+                                            WITH ( display_only = TRUE   ,
+                               bold         = exists )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_reserve ( grid )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE key0        ,
+        component
+
+    component   = comp_list_components [ grid . current_row ]
+
+    key0 = grid . analysis  :
+           grid . comp_list :
+           component
+
+    grid . collection . reserve_entry ( key0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_delete ( grid )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE component  ,
+        object     ,
+        exists
+
+    component   = comp_list_components [ grid . current_row ]
+    exists      = comp_list_find_component ( grid . analysis   ,
+                         grid . comp_list  ,
+                                                 component         ,
+                         grid . collection ,
+                         object            )
+
+    IF exists THEN
+
+        object . delete ()
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_create (       self        ,
+                     grid        ,
+               VALUE cell_column ,
+               VALUE cell_row    ,
+                   VALUE column      ,
+               VALUE line        ,
+               VALUE width_1     ,
+                     display_id  ,
+               VALUE is_display  )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+    DECLARE exists        ,
+        current_value ,
+        object
+
+    exists      = comp_list_find_component ( grid . analysis   ,
+                         grid . comp_list  ,
+                                                 grid . component  ,
+                         grid . collection ,
+                         object            )
+
+    current_value = exists
+
+    IF is_display THEN
+
+        DISPLAY exists ON LINE line FROM column
+                   TO column + width_1 - 1
+                   IN WINDOW display_id
+                   FORMAT boolean
+                               WITH ( is_check = TRUE )
+
+    ELSE
+
+
+        PROMPT FOR exists ON LINE line FROM column
+                  TO column + width_1 - 1
+                          IN WINDOW display_id
+                      BROWSE ON boolean
+                                  WITH ( is_check = TRUE )
+
+        IF ( lastkey <> "EXIT"        ) AND
+           ( exists  <> current_value ) THEN
+
+            IF exists THEN
+
+                comp_list_reserve ( grid )
+
+            ELSE
+
+                comp_list_delete ( grid )
+
+            ENDIF
+
+            grid . redisplay_row ( grid . current_row )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_display (       grid        ,
+                            VALUE cell_column ,
+                    VALUE cell_row    ,
+                  screen      ,
+                    VALUE column      ,
+                    VALUE row         ,
+                    VALUE cell_width  ,
+                VALUE cell_height )
+
+    DECLARE object    ,
+        component
+
+    component        = comp_list_components [ cell_row ]
+        grid . component = component
+
+    comp_list_find_component ( grid . analysis   ,
+                       grid . comp_list  ,
+                                   component         ,
+                       grid . collection ,
+                       object            )
+    lib_grid_display_array ( grid                     ,
+                 cell_column              ,
+                 cell_row                 ,
+                 screen                   ,
+                 column                   ,
+                 row                      ,
+                 cell_width               ,
+                 object                   ,
+                                 comp_list_prompt_details ,
+                 "VERSIONED_C_L_ENTRY"    ,
+                 FALSE                    ,
+                 PROMPT_DETAILS_310       )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_prompt (       grid        ,
+                           VALUE cell_column ,
+                   VALUE cell_row    ,
+                     screen      ,
+                   VALUE column      ,
+                   VALUE row         ,
+               VALUE cell_width  ,
+               VALUE cell_height )
+
+    DECLARE object    ,
+        component
+
+    component        = comp_list_components [ cell_row ]
+        grid . component = component
+
+    comp_list_find_component ( grid . analysis   ,
+                       grid . comp_list  ,
+                                   component         ,
+                       grid . collection ,
+                       object            )
+
+    lib_grid_prompt_array ( grid                     ,
+                cell_column              ,
+                cell_row                 ,
+                screen                   ,
+                column                   ,
+                row                      ,
+                cell_width               ,
+                object                   ,
+                                comp_list_prompt_details ,
+                "VERSIONED_C_L_ENTRY"    ,
+                 FALSE                   ,
+                 PROMPT_DETAILS_310      )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_check_move (       grid           ,
+                       VALUE current_column ,
+                   VALUE current_row    ,
+                         new_column     ,
+                         new_row        )
+
+{
+*   Check to see if the column the user is going to is valid for
+*       the given entry in the component list.
+*
+*
+*******************************************************************************}
+
+    DECLARE exists      ,
+        component   ,
+        object
+
+    component   = comp_list_components [ new_row ]
+
+    exists      = comp_list_find_component ( grid . analysis   ,
+                         grid . comp_list  ,
+                                                 component         ,
+                         grid . collection ,
+                         object            )
+
+
+    IF NOT exists THEN
+
+        IF new_column > 2 THEN
+
+            new_column = 2
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_insert ( grid_object )
+
+{
+*   Define the grid object for the component list
+*
+*******************************************************************************}
+
+    comp_list_reserve ( grid_object )
+    grid_object . redisplay_row ( grid_object . current_row )
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_remove ( grid_object )
+
+{
+*   Define the grid object for the component list
+*
+*******************************************************************************}
+
+    comp_list_delete ( grid_object )
+    grid_object . redisplay_row ( grid_object . current_row )
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_grid (       grid_object          ,
+             VALUE number_of_components ,
+             VALUE mode                 )
+
+{
+*   Define the grid object for the component list
+*
+*******************************************************************************}
+
+    grid_object . width   = 5
+    grid_object . height  = 19
+    grid_object . column   = 1
+    grid_object . row      = 1
+
+    grid_object . border   = FALSE
+
+    grid_object . vgl_library          = global ( "current_library" )
+
+    grid_object . prompt_cell_routine  = "comp_list_prompt"
+    grid_object . display_cell_routine = "comp_list_display"
+
+    grid_object . check_move_routine   = "comp_list_check_move"
+
+    IF mode <> "DISPLAY" THEN
+
+        grid_object . insert_routine   = "comp_list_insert"
+        grid_object . remove_routine   = "comp_list_remove"
+
+    ENDIF
+
+    grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+    grid_object . title_size_top        = 1
+
+    grid_object . cell_columns = size_of_array ( comp_list_prompt_details )
+    grid_object . cell_rows    = number_of_components
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        IF number_of_components = 1 THEN
+
+            grid_object . height  = grid_object . cell_rows + 2
+
+        ELSE
+
+            grid_object . height  = grid_object . cell_rows + 1
+
+        ENDIF
+
+
+    ELSE
+
+        grid_object . height  = grid_object . cell_rows + 2
+        grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+
+    ENDIF
+
+    lib_grid_setup_columns ( comp_list_prompt_details ,
+                 grid_object              ,
+                 "VERSIONED_C_L_HEADER"       )
+
+    IF grid_object . cell_columns > 2 THEN
+
+        grid_object . fixed_columns_left    = 2
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_screen ( VALUE mode         ,
+               VALUE analysis_id  ,
+               VALUE comp_list_id ,
+                 collection   )
+
+{
+*   The main routine to call to modify the entries in a component list.
+*
+*
+*******************************************************************************}
+
+
+    DECLARE form              ,
+        button_list       ,
+        horizontal_button ,
+        button_count      ,
+        screen_info       ,
+        message           ,
+        header_mess
+
+    CREATE OBJECT COMP_LIST_ENTRY_SCREEN_CLASS, screen_info
+
+    screen_info . analysis        = analysis_id
+    screen_info . comp_list       = comp_list_id
+
+    ARRAY button_list
+
+    button_count = 1
+
+    lib_grid_lastkey_button ( button_list    ,
+                  button_count   ,
+                  "DO"           ,
+                  get_user_message ( "SMP_PROMPT_BUTTON_CLOSE",1))
+
+    lib_grid_lastkey_button ( button_list    ,
+                  button_count   ,
+                  "HELP"         ,
+                  EMPTY          )
+
+    comp_list_get_list ( analysis_id   ,
+                 comp_list_id  ,
+                 EMPTY         ,
+                             mode          ,
+                 collection    )
+
+    screen_info . collection = collection
+
+    IF size_of_array ( comp_list_components ) = 0 THEN
+
+        message_fetch ("COMP_LIST_NO_COMPONENTS" , message)
+        message_add_parameter ( message ,
+                    lib_utils_contract_version ( analysis_id ))
+        message_add_parameter (message, "(":lib_utils_contract_version(analysis_id):")")
+
+        flash_message ( message_get_text ( message,1) , TRUE  )
+
+    ELSE
+
+        comp_list_grid ( screen_info                            ,
+                 size_of_array ( comp_list_components ) ,
+                 mode                                   )
+
+        message_fetch ("COMP_LIST_ENTRY_HEADER" , message)
+        message_add_parameter ( message , strip ( screen_info . comp_list ))
+        {message_add_parameter ( message , lib_utils_contract_version ( analysis_id ))}
+        message_add_parameter (message, "(":lib_utils_contract_version(analysis_id):")")
+
+        header_mess = message_get_text ( message, 1)
+
+
+        lib_grid_create_form  ( screen_info            ,
+                    form                   ,
+                        FALSE                  ,
+                    0                      ,
+                    header_mess            ,
+                    get_user_message ("COMP_LIST_ENTRY_FOOTER" , 1),
+                    horizontal_button      )
+
+        lib_form_add_vertical_buttons ( form         ,
+                        button_list  )
+
+        form . help_context = "$COMP_LIST_ENTRY_SCREEN"
+		form . prompt_id    = "COMP_LIST_ENTRY_SCREEN"
+
+        form . start_prompt ()
+
+        form . prompt_objects [ 1 ] . set_position ( 2 , 1 )
+
+        form . wait_prompt  ()
+            form . end_prompt   ()
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_save ( screen_info )
+
+{
+*   Save the changes to the comp_list_header list back to the database,
+*   the routine needs to be called inside a write transaction.
+*
+******************************************************************************}
+
+    DECLARE count   ,
+        object
+
+    count = 1
+
+    WHILE count <= comp_list_header_collection . size () DO
+
+        object = comp_list_header_collection . get_by_number ( count )
+
+        IF object . deleted THEN
+
+            comp_list_delete_list ( screen_info . analysis             ,
+                            SELECT versioned_c_l_header . comp_list
+                            IN OBJECT object                   )
+
+        ELSE
+
+            comp_list_update ( object . entry_collection ,
+                       screen_info . analysis    ,
+                       SELECT versioned_c_l_header . comp_list
+                       IN OBJECT object          )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    comp_list_header_collection . invoke_all ( "UPDATE" )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_build_order
+
+    DECLARE count  ,
+        object
+
+    ARRAY comp_list_header_order ARRAY_SIZE ( 0 )
+
+    count = 1
+
+    WHILE count <= comp_list_header_collection . size () DO
+
+        object = comp_list_header_collection . get_by_number ( count )
+        comp_list_header_order [ count ] = object . build_index ( "KEY0" )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_get ( screen_info )
+
+{
+*   Read the comp_list_headers from the database into a collection.
+*
+******************************************************************************}
+
+    DECLARE select_array
+
+    CREATE OBJECT "STD_OBJECT_DATABASE", comp_list_header_collection
+
+    comp_list_header_collection . initialise ( "VERSIONED_C_L_HEADER" )
+    comp_list_header_collection . class_to_use = COMP_LIST_HEADER_CLASS
+
+    IF screen_info . copy_analysis <> EMPTY THEN
+
+        select_array = array_select_key0_to_array (
+                                    "VERSIONED_C_L_HEADER"       ,
+                                     screen_info . copy_analysis )
+
+        comp_list_header_collection . select_copy ( select_array           ,
+                                            screen_info . analysis )
+
+    ELSE
+
+        select_array = array_select_key0_to_array (
+                                    "VERSIONED_C_L_HEADER"  ,
+                                     screen_info . analysis )
+
+        IF screen_info . mode = "DISPLAY" THEN
+
+            comp_list_header_collection . select ( select_array )
+
+        ELSE
+
+            comp_list_header_collection . select_for_update ( select_array )
+
+        ENDIF
+
+    ENDIF
+
+    comp_list_header_build_order ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_copy ( screen_info )
+
+{
+*   Get the header then go down the collection and copy all the lists
+*
+*******************************************************************************}
+
+    DECLARE count   ,
+        object
+
+
+    comp_list_header_get ( screen_info )
+
+    count = 1
+
+    WHILE count <= comp_list_header_collection . size () DO
+
+        object = comp_list_header_collection . get_by_number ( count )
+
+        comp_list_get_list ( screen_info . analysis              ,
+                     SELECT versioned_c_l_header . comp_list
+                      IN OBJECT object                   ,
+                     screen_info . copy_analysis         ,
+                     screen_info . mode                  ,
+                     object . entry_collection           )
+
+        count = count + 1
+
+    ENDWHILE
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_get_header_object (       grid   ,
+                      VALUE row    ,
+                            object )
+
+    DECLARE key0      ,
+        found_one
+
+    IF ( row > 0                                        ) AND
+       ( row <= size_of_array ( comp_list_header_order )) THEN
+
+        key0 = comp_list_header_order [ row ]
+
+        object = comp_list_header_collection . get_by_index
+                        ( "KEY0"   ,
+                               key0     )
+
+        found_one = TRUE
+
+    ELSE
+
+        found_one = FALSE
+
+    ENDIF
+
+    RETURN ( found_one )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_display_name (       self        ,
+                                  grid        ,
+                    VALUE cell_column ,
+                    VALUE cell_row    ,
+                            VALUE column      ,
+                            VALUE line        ,
+                            VALUE width_1     ,
+                              display_id  ,
+                            VALUE is_display  )
+
+    DECLARE comp_list_header_id
+
+    comp_list_header_id = SELECT versioned_c_l_header . comp_list
+                          IN OBJECT self
+
+    IF is_display THEN
+
+        DISPLAY comp_list_header_id ON LINE line FROM column
+                 IN WINDOW display_id
+
+    ELSE
+
+        PROMPT FOR comp_list_header_id
+               ON LINE line
+               FROM    column
+               TO      column + width_1 - 1
+               IN WINDOW display_id
+               WITH ( display_only = TRUE )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_display (       grid        ,
+                                   VALUE cell_column ,
+                           VALUE cell_row    ,
+                             screen      ,
+                           VALUE column      ,
+                           VALUE row         ,
+                           VALUE cell_width  ,
+                       VALUE cell_height )
+
+    DECLARE object       ,
+        screen_info
+
+    screen_info = grid . parent_prompt . user_info
+
+    IF ( screen_info . insert_new_entry ) OR
+       ( lib_grid_is_insert_line ( grid                           ,
+                       cell_row                       ,
+                       screen_info . mode = "DISPLAY" )) THEN
+
+        CLEAR LINE      row
+              FROM      column
+              TO        column + cell_width - 1
+              IN WINDOW screen
+
+    ELSE
+
+        IF comp_list_get_header_object ( grid     ,
+                                         cell_row ,
+                                         object   ) THEN
+
+            lib_grid_display_array (
+                             grid                            ,
+                             cell_column                     ,
+                             cell_row                        ,
+                             screen                          ,
+                             column                          ,
+                             row                             ,
+                             cell_width                      ,
+                             object                          ,
+                             comp_list_header_prompt_details ,
+                            "VERSIONED_C_L_HEADER"              ,
+                             FALSE                           ,
+                             PROMPT_DETAILS_310              )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_add_name (       grid        ,
+                                    VALUE cell_column ,
+                            VALUE cell_row    ,
+                          screen      ,
+                            VALUE column      ,
+                            VALUE row         ,
+                            VALUE cell_width  ,
+                            VALUE cell_height ,
+                      screen_info )
+
+
+    DECLARE accept_id            ,
+        delete_row           ,
+        create_insert_line   ,
+        new_key0             ,
+        new_object           ,
+        new_comp_list_header ,
+        can_leave
+
+    REPEAT
+
+        PROMPT FOR       new_comp_list_header
+               ON LINE   row
+               FROM      column
+               IN WINDOW screen
+               FORMAT    versioned_c_l_header . comp_list
+
+        can_leave = lib_grid_add_checks ( grid                           ,
+                                      blank ( new_comp_list_header ) ,
+                                  accept_id                      ,
+                          create_insert_line           ,
+                                  delete_row                      )
+
+        IF accept_id THEN
+
+            new_key0 = screen_info . analysis  :
+                    new_comp_list_header
+
+            new_object = comp_list_header_collection .
+                        reserve_entry ( new_key0 )
+
+            can_leave = new_object <> EMPTY
+
+        ENDIF
+
+    UNTIL ( can_leave )
+
+    screen_info . insert_new_entry  = FALSE
+
+    IF create_insert_line THEN
+
+        grid . insert_row ( grid . cell_rows + 1 ,
+                    1                    ,
+                    GRID_SEPARATOR_NONE  )
+
+    ENDIF
+
+    IF accept_id THEN
+
+        array_insert_slice ( comp_list_header_order ,
+                     1                      ,
+                     cell_row               )
+
+        comp_list_header_order [ cell_row ] = new_key0
+
+        grid . redisplay_row ( cell_row )
+
+    ELSEIF delete_row THEN
+
+        grid . remove_row ( cell_row )
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_prompt (       grid        ,
+                                  VALUE cell_column ,
+                          VALUE cell_row    ,
+                            screen      ,
+                          VALUE column      ,
+                          VALUE row         ,
+                      VALUE cell_width  ,
+                      VALUE cell_height )
+
+    DECLARE object       ,
+        screen_info
+
+    screen_info = grid . parent_prompt . user_info
+
+    IF ( screen_info . insert_new_entry ) OR
+       ( lib_grid_is_insert_line ( grid                           ,
+                       cell_row                       ,
+                       screen_info . mode = "DISPLAY" )) THEN
+
+        comp_list_header_add_name ( grid        ,
+                            cell_column ,
+                            cell_row    ,
+                            screen      ,
+                            column      ,
+                            row         ,
+                            cell_width  ,
+                            cell_height ,
+                        screen_info )
+
+        RETURN
+
+    ENDIF
+
+    comp_list_get_header_object ( grid     ,
+                      cell_row ,
+                      object   )
+
+    lib_grid_prompt_array ( grid                            ,
+                cell_column                     ,
+                cell_row                        ,
+                screen                          ,
+                column                          ,
+                row                             ,
+                cell_width                      ,
+                object                          ,
+                                comp_list_header_prompt_details ,
+                "VERSIONED_C_L_HEADER"              ,
+                 FALSE                          ,
+                 PROMPT_DETAILS_310             )
+
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_check_move (       grid           ,
+                                      VALUE current_column ,
+                          VALUE current_row    ,
+                            new_column     ,
+                            new_row        )
+
+    DECLARE screen_info
+
+    screen_info = grid  . parent_prompt . user_info
+
+    IF lib_grid_is_insert_line ( grid                           ,
+                     new_row                        ,
+                     screen_info . mode = "DISPLAY" ) THEN
+
+        new_column = 1
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_off_bottom ( self )
+
+    DECLARE current_row
+
+    self . parent_prompt . user_info . insert_new_entry = TRUE
+
+    current_row = self . current_row + 1
+    self . insert_row ( current_row , 1 , GRID_SEPARATOR_NONE )
+    self . set_position ( 1 , current_row )
+
+    RETURN ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_insert ( self )
+
+    DECLARE current_row
+
+    current_row    = self . current_row
+
+    IF current_row < 1 THEN
+
+        current_row = 1
+
+    ENDIF
+
+    self . parent_prompt . user_info . insert_new_entry = TRUE
+
+    self . insert_row ( current_row , 1 , GRID_SEPARATOR_NONE )
+    self . set_position ( 1 , current_row )
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_remove ( self )
+
+    DECLARE current_row ,
+        object      ,
+        screen_info
+
+    current_row = self . current_row
+
+    screen_info = self  . parent_prompt . user_info
+
+    IF NOT lib_grid_is_insert_line ( self                           ,
+                         current_row                    ,
+                         screen_info . mode = "DISPLAY" ) THEN
+
+        comp_list_get_header_object ( self        ,
+                          current_row ,
+                          object      )
+
+        self . remove_row ( current_row )
+
+        object . delete ()
+
+        array_remove_slice ( comp_list_header_order ,
+                     1                      ,
+                     current_row            )
+
+        self . set_position ( 1, self . current_row )
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_select ( grid_object )
+
+
+    DECLARE header_object ,
+        screen_info
+
+    screen_info = grid_object . parent_prompt . user_info
+
+    IF comp_list_get_header_object ( grid_object               ,
+                         grid_object . current_row ,
+                         header_object             ) THEN
+
+        comp_list_screen ( screen_info . mode                     ,
+                   screen_info . analysis                 ,
+                   SELECT versioned_c_l_header . comp_list
+                      IN OBJECT header_object         ,
+                   header_object . entry_collection       )
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_grid ( grid_object ,
+                    screen_info )
+
+    CREATE OBJECT  "STD_GRID_EDITOR", grid_object
+
+    grid_object . width   = global ( "SCREEN_WIDTH" ) - 4
+    grid_object . height  = 17
+
+    grid_object . column   = 1
+    grid_object . row      = 2
+
+    grid_object . border   = FALSE
+
+    grid_object . return_behaviour = GRID_RETURN_RIGHT
+
+    grid_object . vgl_library          = global ( "current_library" )
+
+    grid_object . prompt_cell_routine  = "comp_list_header_prompt"
+    grid_object . display_cell_routine = "comp_list_header_display"
+
+    IF screen_info . mode <> "DISPLAY" THEN
+
+        grid_object . insert_routine     = "comp_list_header_insert"
+        grid_object . remove_routine     = "comp_list_header_remove"
+        grid_object . check_move_routine = "comp_list_header_check_move"
+
+    ENDIF
+
+    grid_object . select_routine       = "comp_list_header_select"
+
+    grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+    grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+    grid_object . title_size_top        = 1
+    grid_object . fixed_columns_left    = 1
+
+    grid_object . cell_columns = size_of_array ( comp_list_header_prompt_details )
+    grid_object . cell_rows    =
+        lib_grid_number_of_lines ( screen_info . mode = "DISPLAY" ,
+                           size_of_array ( comp_list_header_order ))
+
+    lib_grid_setup_columns ( comp_list_header_prompt_details ,
+                 grid_object                     ,
+                 "VERSIONED_C_L_HEADER"          )
+
+    screen_info . insert_new_entry = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE comp_list_header_screen ( screen_info )
+
+{
+*   The main routine to call to modify the Component lists of an
+*   analysis.
+*
+*
+*******************************************************************************}
+
+    DECLARE form, grid, message, header_mess, toolbar, item, button_object
+
+    comp_list_header_grid ( grid, screen_info )
+
+    message_fetch ("COMP_LIST_HEADER_TOP" , message)
+    message_add_parameter (message, "(":lib_utils_contract_version(screen_info . analysis):")")
+    header_mess = message_get_text ( message, 1)
+
+    PROMPT OBJECT form
+           CLASS "STD_FORM"
+           ON LINE 7 FROM 3
+           WITH ( header = header_mess       ,
+                  width  = grid . width      ,
+                  height = grid . height + 3 )
+
+    form . user_info    = screen_info
+    form . help_context = "$COMP_LIST_HEADER_SCREEN"
+	form . prompt_id    = "COMP_LIST_HEADER_SCREEN"
+    form . button_style = FORM_BUTTON_NONE
+
+    form . add_prompt( grid )
+
+    CREATE OBJECT TOOLBAR_CLASS , toolbar
+    toolbar . column = 1
+    toolbar . height = 0.9
+
+    form . add_prompt( toolbar )
+
+    IF screen_info . mode <> "DISPLAY" THEN
+
+        CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+        item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_INSERT", 1 ) :" (F5)"
+        item . send_lastkey = "INSERT HERE"
+        item . set_icon( "INT_NEW_ITEM" )
+
+        toolbar . add_item ( item )
+
+        CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+        item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_REMOVE", 1 ) : " (F6)"
+        item . send_lastkey = "REMOVE"
+        item . set_icon( "INT_DELETE_ITEM" )
+
+        toolbar . add_item ( item )
+
+        toolbar . add_separator( )
+
+    ENDIF
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "COMP_LIST_LIST_BUTTON", 1 ) : " (F3)"
+    item . send_lastkey = "SELECT"
+    item . set_icon( "INT_MENU_SELECT" )
+
+    toolbar . add_item ( item )
+
+    toolbar . add_separator( )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . set_icon  ( "INT_HELP_BUBBLE" )
+    item . identity      = "HELP"
+    item . send_last_key = "HELP"
+    item . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+    toolbar . add_item ( item )
+
+    PROMPT OBJECT button_object
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( row          = form . height - 0.5 ,
+               column       = form . width - 9   ,
+               caption      = GET_USER_MESSAGE ( "SMP_PROMPT_BUTTON_CLOSE" , 1 ) ,
+               width        = 10   ,
+               send_lastkey = "DO" )
+
+    form . add_prompt ( button_object )
+
+    form . add_panel( 1                   ,
+                      form . height - 0.3 ,
+                      1                   ,
+                      form . width        ,
+                      PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+    form . start_prompt ()
+    form . wait_prompt  ()
+    form . end_prompt   ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_entry_print ( VALUE analysis  ,
+                VALUE comp_list )
+
+{
+*   The main routine to call to print the contents of a Component list.
+*   Assumes the COMP_LIST_HEADER is already selected.
+*
+*******************************************************************************}
+
+    DECLARE list_description  ,
+        name              ,
+        default_value     ,
+        title_1           ,
+        title_2           ,
+        select_array      ,
+            message
+
+    list_description = SELECT versioned_c_l_header . description
+
+    select_array = array_select_key0_to_array ( "VERSIONED_C_L_ENTRY" ,
+                                                analysis              )
+
+    array_select_add (  select_array    ,
+                        ARRAY_SELECT_EQ ,
+                       "COMP_LIST"      ,
+                        comp_list       )
+
+    array_select_add ( select_array           ,
+                       ARRAY_SELECT_ORDER     ,
+                       "ORDER_NUMBER"         ,
+                       ARRAY_SELECT_ASCENDING )
+
+    array_select ( "VERSIONED_C_L_ENTRY" ,
+                   FALSE                 ,
+                   select_array          )
+
+    name = SELECT versioned_c_l_entry . name
+
+    IF name = EMPTY THEN
+
+        message_fetch ("COMP_LIST_NO_LIST_COMPONENTS" , message)
+        message_add_parameter ( message, strip ( comp_list ))
+        title1 = message_get_text ( message, 1  )
+
+        title2 = get_user_message ( "COMP_LIST_LIST_DESCRIPTION", 1 )
+
+literal
+
+$title1_________________________________________________________________________
+$title2________ : $list_description_____________________________________________
+$endliteral
+
+    ELSE
+
+        title1 = get_user_message ( "COMP_LIST_COMPONENT_LIST"   , 1 )
+        title2 = get_user_message ( "COMP_LIST_LIST_DESCRIPTION" , 1 )
+
+literal
+
+$title1________ : $comp_list_________________
+$title2______   : $list_description_____________________________________________
+$endliteral
+
+    ENDIF
+
+        WHILE name <> EMPTY DO
+
+        default_value  = SELECT versioned_c_l_entry . default_value
+
+        title1 = get_user_message ( "COMP_LIST_NAME_TITLE" ,1 )
+        title2 = get_user_message ( "COMP_LIST_DEFAULT"    ,1 )
+
+literal
+
+    $title1________ : $name____________________________________________________
+    $title2________ : $default_value___________________________________________
+$endliteral
+
+        NEXT versioned_c_l_entry
+        name = SELECT versioned_c_l_entry . name
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_header_print ( VALUE analysis )
+
+{
+*   The main routine to call to print the Component lists of an
+*   analysis.
+*
+*
+*******************************************************************************}
+
+    DECLARE comp_list    ,
+        title1       ,
+        message      ,
+        select_array
+
+    select_array = array_select_key0_to_array ( "VERSIONED_ANALYSIS" ,
+                                                analysis             )
+
+    array_select ( "VERSIONED_ANALYSIS" ,
+                   FALSE                ,
+                   select_array         )
+
+    select_array = array_select_key0_to_array ( "VERSIONED_C_L_HEADER" ,
+                                                analysis               )
+
+    array_select ( "VERSIONED_C_L_HEADER" ,
+                   FALSE                  ,
+                   select_array           )
+
+    comp_list = SELECT versioned_c_l_header . comp_list
+
+    IF comp_list = EMPTY THEN
+
+        message_fetch ("COMP_LIST_NO_LISTS" , message)
+        message_add_parameter ( message ,
+                                lib_utils_contract_version ( analysis ))
+        title1 = message_get_text ( message, 1  )
+
+    ELSE
+
+        message_fetch ("COMP_LIST_TITLE1" , message)
+        message_add_parameter ( message ,
+                                lib_utils_contract_version ( analysis ))
+        title1 = message_get_text ( message, 1  )
+
+    ENDIF
+
+literal
+
+$TITLE1________________________________________________________________________
+$endliteral
+
+        WHILE comp_list <> EMPTY DO
+
+        comp_list_entry_print ( analysis  ,
+                    comp_list )
+
+        NEXT versioned_c_l_header
+        comp_list = SELECT versioned_c_l_header . comp_list
+
+    ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+
+ROUTINE labtable_input ( VALUE analysis_id     ,
+             VALUE old_analysis_id ,
+             VALUE operation       )
+
+{
+*   Main routine to call to edit component lists
+*
+*******************************************************************************}
+
+    DECLARE screen_info, analysis_value, version_value
+
+    comp_list_initialise ()
+
+    CREATE OBJECT comp_list_header_screen_class, screen_info
+
+    screen_info . analysis      = analysis_id
+    screen_info . copy_analysis = old_analysis_id
+    screen_info . mode          = operation
+
+    IF ( operation = "COPY"  ) THEN
+
+        lib_utils_key0_to_fields ( "VERSIONED_COMPONENT",
+                                   old_analysis_id      ,
+                                   analysis_value       ,
+                                   version_value        )
+
+        comp_list_read_components ( analysis_value, version_value )
+        comp_list_copy ( screen_info )
+        comp_list_data_read = TRUE
+
+    ELSEIF ( operation = "MODIFY"  ) OR
+           ( operation = "DISPLAY" )    THEN
+
+        lib_utils_key0_to_fields ( "VERSIONED_COMPONENT",
+                                   analysis_id          ,
+                                   analysis_value       ,
+                                   version_value        )
+
+        comp_list_read_components ( analysis_value, version_value )
+
+        IF NOT comp_list_data_has_been_read () THEN
+
+            comp_list_header_get      ( screen_info )
+
+            comp_list_data_read = TRUE
+
+        ENDIF
+
+        IF operation = "DISPLAY" THEN
+
+            SET DISPLAY TRUE
+            comp_list_header_screen   ( screen_info )
+            SET DISPLAY FALSE
+
+        ELSE
+
+            comp_list_header_screen   ( screen_info )
+
+        ENDIF
+
+    ELSEIF ( operation = "PRINT" ) THEN
+
+        comp_list_header_print ( analysis_id )
+
+    ELSEIF ( operation = "SAVE" ) THEN
+
+        IF ( NOT comp_list_data_has_been_read ()) AND
+           (     comp_list_components_have_been_read ()) THEN
+
+            comp_list_header_get      ( screen_info )
+            comp_list_data_read = TRUE
+
+        ENDIF
+
+        IF ( comp_list_data_has_been_read ()) OR
+           ( comp_list_components_have_been_read ()) THEN
+
+            comp_list_header_save ( screen_info )
+
+        ENDIF
+
+        comp_list_data_read       = FALSE
+        comp_list_components_read = FALSE
+
+    ELSEIF ( operation = "QUIT" ) THEN
+
+        comp_list_data_read       = FALSE
+        comp_list_components_read = FALSE
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+{******************************************************************************}
+{   Test assignment Code                                                   }
+{******************************************************************************}
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE comp_list_assign_initialise
+
+{
+*   Initialise the component list code.
+*
+*
+*******************************************************************************}
+
+    IF NOT variable_is_assigned ( comp_list_runtime_collection ) THEN
+
+        lib_re_list_initialise ()
+
+        CREATE OBJECT "STD_COLLECTION" , comp_list_runtime_collection
+        comp_list_runtime_collection . add_index ( "NAME" )
+
+
+        DEFINE CLASS COMP_LIST_ASSIGN_HEADER_CLASS
+
+        INHERIT "STD_COLLECTED"
+
+        PROPERTIES "ENTRIES" ,
+               "NAME"
+
+        END CLASS
+
+        DEFINE CLASS COMP_LIST_ASSIGN_ENTRY_CLASS
+
+        TABLES versioned_c_l_entry
+
+        END CLASS
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_assign_read_list ( VALUE analysis         ,
+                     VALUE analysis_version ,
+                     VALUE component_list   ,
+                           header_object    )
+
+    DECLARE count         ,
+        entry_object  ,
+        name          ,
+        header_name   ,
+        message
+
+    CREATE OBJECT COMP_LIST_ASSIGN_HEADER_CLASS , header_object
+
+    ARRAY header_object . entries
+
+    header_object . name = analysis : analysis_version : component_list
+
+    name = SELECT versioned_c_l_entry . name
+           WHERE  ( analysis         = analysis         ) AND
+                  ( analysis_version = analysis_version ) AND
+                  ( comp_list        = component_list   )
+           ORDER ON order_number
+
+    count = 0
+
+    WHILE name <> EMPTY DO
+
+        count = count + 1
+
+        CREATE OBJECT COMP_LIST_ASSIGN_ENTRY_CLASS , entry_object
+
+        object_copy_current_table (  entry_object         ,
+                        "VERSIONED_C_L_ENTRY" )
+
+        header_object . entries [ count ] = entry_object
+
+        NEXT versioned_c_l_entry
+        name = SELECT versioned_c_l_entry . name
+
+    ENDWHILE
+
+    IF count = 0 THEN
+
+        header_name = SELECT versioned_c_l_header . comp_list
+               WHERE  ( analysis         = analysis         ) AND
+                      ( analysis_version = analysis_version ) AND
+                      ( comp_list        = component_list   )
+
+        IF ( header_name = EMPTY )     AND
+           ( blank ( component_list )) THEN
+
+            header_object = EMPTY
+
+        ELSEIF header_name = EMPTY THEN
+
+            message_fetch ( "COMP_LIST_NO_EXIST", message )
+            message_add_parameter ( message                ,
+                                    STRIP ( component_list ))
+            message_add_parameter ( message , lib_utils_contract_version ( analysis:analysis_version ))
+            message_add_parameter (message, "(":lib_utils_contract_version(analysis:analysis_version):")")
+            flash_message ( message_get_text ( message, 1 ), TRUE )
+
+            header_object = EMPTY
+
+        ELSE
+
+            comp_list_runtime_collection . add ( header_object )
+
+        ENDIF
+
+    ELSE
+
+        comp_list_runtime_collection . add ( header_object )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_assign_get_header ( VALUE analysis         ,
+                      VALUE analysis_version ,
+                      VALUE component_list   ,
+                            header_object    )
+
+{
+*   Try to find the component list in the database - if its not there
+*   Create it.
+*
+*******************************************************************************}
+
+    header_object = comp_list_runtime_collection .
+                    get_by_index ( "NAME"            ,
+                            analysis         :
+                            analysis_version :
+                            component_list   )
+
+    IF header_object = EMPTY THEN
+
+        comp_list_assign_read_list ( analysis         ,
+                         analysis_version ,
+                         component_list   ,
+                         header_object    )
+
+    ENDIF
+
+    RETURN ( header_object <> EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE comp_list_create_results ( VALUE test_number      ,
+                       VALUE analysis         ,
+                       VALUE analysis_version ,
+                     order_number     ,
+                     entry_object     ,
+                         test_available   )
+
+{
+*
+*   Create result records of status U for the result in the result list.
+*
+*******************************************************************************}
+
+    DECLARE replicate_count ,
+        count           ,
+        result_name     ,
+        component       ,
+        default_value
+
+    component       = SELECT versioned_c_l_entry . name
+                IN OBJECT entry_object
+    replicate_count = SELECT versioned_c_l_entry . replicate_count
+                IN OBJECT entry_object
+    default_value   = SELECT versioned_c_l_entry . default_value
+                IN OBJECT entry_object
+    order_number    = SELECT versioned_c_l_entry . order_number
+                IN OBJECT entry_object
+
+    IF ( global ( "RESULT_REPLICATES_ENABLED" )) THEN
+
+        replicate_count = SELECT versioned_c_l_entry . replicate_count
+                        IN OBJECT entry_object
+
+        count = 1
+
+        WHILE count <= replicate_count DO
+
+                    result_name = lib_comp_add_replicate ( component ,
+                                   count     )
+
+            IF lib_re_list_new_result (  test_number      ,
+                             analysis         ,
+                             analysis_version ,
+                             result_name      ,
+                             component        ,
+                             default_value    ,
+                             order_number     ,
+                             FALSE            ,
+                             USER_ROUTINE     ,
+                             USER_LIBRARY     ,
+                             entry_object     ) THEN
+
+                test_available = TRUE
+
+            ENDIF
+
+                        count = count + 1
+
+        ENDWHILE
+
+
+    ELSE
+
+        IF lib_re_list_new_result ( test_number      ,
+                        analysis         ,
+                        analysis_version ,
+                        component        ,
+                        component        ,
+                        default_value    ,
+                        order_number     ,
+                        FALSE            ,
+                        USER_ROUTINE     ,
+                        USER_LIBRARY     ,
+                        entry_object     ) THEN
+
+            test_available = TRUE
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE comp_list_result_list_read (       self                ,
+                     VALUE component_list      ,
+                     VALUE look_at_create_flag ,
+                     VALUE add_at_end          )
+
+{
+*
+*
+*******************************************************************************}
+
+    DECLARE header_object    ,
+        count            ,
+        entry_object     ,
+        list_entry       ,
+        component        ,
+        default_value    ,
+        analysis_version
+
+    comp_list_assign_initialise ()
+
+    analysis_version = lib_utils_highest_version ( "VERSIONED_ANALYSIS" ,
+                                               self . analysis      )
+
+    IF comp_list_assign_get_header ( self . analysis  ,
+                                     analysis_version ,
+                                     component_list   ,
+                                     header_object    ) THEN
+
+        count = 1
+
+        WHILE count <= size_of_array ( header_object . entries ) DO
+
+            entry_object = header_object . entries [ count ]
+
+            component       = SELECT versioned_c_l_entry  . name
+                        IN OBJECT entry_object
+
+            default_value   = SELECT versioned_c_l_entry  . default_value
+                        IN OBJECT entry_object
+
+            CREATE OBJECT RESULT_LIST_CREATE_ENTRY, list_entry
+
+            list_entry . component_name = component
+            list_entry . result_name    = component
+            list_entry . default_value  = default_value
+
+            list_entry . comp_list_entry = entry_object
+
+            IF look_at_create_flag THEN
+
+                list_entry . create = SELECT versioned_c_l_entry  . create_always
+                            IN OBJECT entry_object
+
+            ELSE
+
+                list_entry . create = TRUE
+
+            ENDIF
+
+            IF add_at_end THEN
+
+                self . add_result_end ( list_entry )
+
+            ELSE
+
+                self . add_result ( list_entry ,
+                                    FALSE      )
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+
+ROUTINE comp_list_assign ( VALUE comp_list_name ,
+                 order_number   ,
+                 test_object    )
+
+{
+*   Assign a component list to a test.
+*   Must be called within a write transaction.
+*
+*******************************************************************************}
+
+    DECLARE analysis       ,
+        test_number    ,
+        test_available ,
+        header_object  ,
+        entry_object   ,
+        count          ,
+        analysis_version
+
+    IF variable_is_assigned ( test_object ) THEN
+
+        analysis         = SELECT test . analysis
+                                      IN OBJECT test_object
+        test_number      = SELECT test . test_number
+                                      IN OBJECT test_object
+        analysis_version = SELECT test . analysis_version
+                                      IN OBJECT test_object
+
+        ASSIGN test . has_result_list IN OBJECT test_object = TRUE
+
+    ELSE
+
+        analysis         = SELECT test . analysis
+        test_number      = SELECT test . test_number
+        analysis_version = SELECT test . analysis_version
+
+        ASSIGN test . has_result_list = TRUE
+
+    ENDIF
+
+    IF numeric ( analysis_version ) = 0 THEN
+
+        analysis_version = lib_utils_highest_version (
+                                              "VERSIONED_ANALYSIS" ,
+                                               analysis            )
+
+        IF variable_is_assigned ( test_object ) THEN
+
+            ASSIGN test . analysis_version
+                       IN OBJECT test_object = analysis_version
+
+        ELSE
+
+            ASSIGN test . analysis_version = analysis_version
+
+        ENDIF
+
+    ENDIF
+
+    test_available = FALSE
+
+    IF comp_list_assign_get_header ( analysis         ,
+                                     analysis_version ,
+                                     comp_list_name   ,
+                                     header_object    ) THEN
+
+        count = 1
+
+        WHILE count <= size_of_array ( header_object . entries ) DO
+
+            entry_object = header_object . entries [ count ]
+
+            comp_list_create_results ( test_number      ,
+                           analysis         ,
+                           analysis_version ,
+                           order_number     ,
+                           entry_object     ,
+                           test_available   )
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( test_available )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE comp_list_assign_from_c ( test_list    ,
+                  order_number )
+
+    DECLARE not_used       ,
+        test_available ,
+        result_list    ,
+        temp
+
+    comp_list_assign_initialise ()
+    test_editor_get_result_list ( result_list , test_list )
+
+    IF result_list <> EMPTY THEN
+
+        result_list . test_number      = SELECT test . test_number
+        result_list . analysis         = SELECT test . analysis
+        result_list . analysis_version = SELECT test . analysis_version
+        temp                           = result_list . create ()
+
+        ASSIGN test . has_result_list = TRUE
+
+    ELSE
+
+        temp = FALSE
+
+    ENDIF
+
+    test_available = comp_list_assign ( SELECT test . component_list ,
+                        order_number                 ,
+                            not_used                 )
+
+    test_available = test_available OR temp
+
+    RETURN ( test_available )
+
+ENDROUTINE
+
+{******************************************************************************}
+

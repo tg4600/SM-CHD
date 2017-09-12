@@ -1,0 +1,481 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $WKSBROWSE.RPF
+*
+* Purpose       : Worksheet Browsing Routines
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+{**AS 2003R1}
+{
+MODIFICATION HISTORY
+
+Vers Date
+------- ----------- ---------------- -----------------------------------
+1.1     22-MAR-2000 Ken Jacobs       Customisation in 3.1-0 transferred to here
+                                  a. In routine worksheet_entry
+                                     Add date_generated to information displayed
+                                     when browsing on worksheets
+                                  b. In routines first_standard and next_stadard
+                                     Change browse description for standards
+                                     Browse dresciption set in new routine
+                                     set_standard_browse_description
+2003R1  30-SEP-2003 Henrik Behrndt Changed migrated to SM2003R1
+}
+{**AE2003R1}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY $STD_VERS
+
+{--------------------------------------------------------------------------}
+
+ROUTINE first_worksheet
+
+	FIND_WKS = SELECT worksheet.identity
+                   WHERE ( worksheet_type = worksheet_type ) AND
+	                 ( identity >= first_worksheet_id )
+		   ORDER ON worksheet_type
+	first_worksheet_id = " "
+	worksheet_entry(find_wks)
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE next_worksheet
+
+        NEXT WORKSHEET
+	FIND_WKS = SELECT worksheet.identity
+	worksheet_entry(find_wks)
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE worksheet_entry(find_wks)
+
+	IF (findwks = EMPTY) OR
+	   (findwks = ERROR) OR
+	   (findwks = LOCKED) THEN
+
+		browse_entry(findwks,findwks," ")
+
+	ELSE
+
+		IF use_text_id THEN
+			s_id = SELECT sample.id_text
+					WHERE id_numeric = find_wks
+		ELSE
+			s_id = find_wks
+		ENDIF
+
+		IF (s_id = EMPTY) OR
+		   (s_id = ERROR) OR
+		   (s_id = LOCKED) THEN
+
+			next_worksheet()
+
+		ELSE
+{**MS2003R1}
+                {***************************************************************
+                * v1.1 (a) Add date_generated to information display in browse
+                ***************************************************************}
+{***
+		        status = SELECT worksheet.status
+			generator = SELECT worksheet.generator_operator
+		        user = SELECT worksheet.assigned_operator
+			browse_entry(find_wks,s_id,
+					status:" ":user:" ":generator)
+***}
+
+                status = SELECT worksheet.status
+		    generator = SELECT worksheet.generator_operator
+		    user = SELECT worksheet.assigned_operator
+                date_generated = LEFTSTRING( SELECT worksheet.date_generated, 11 )    {v1.1}
+		    browse_entry(find_wks,s_id,
+					date_generated : " " : status:" ":user:" ":generator)   {v1.1}
+
+                {***************************************************************
+                ***************************************************************}
+{**ME2003R1}
+		ENDIF
+	ENDIF
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE browse_on_worksheet ( VALUE worksheet_type,
+                                     worksheet_id )
+
+	DECLARE use_text_id
+
+	use_text_id = FALSE
+	IF worksheet_type = "SMPWKS" THEN
+		use_text_id = ( GLOBAL ( "SAMP_BROWSE" ) = "T" )
+	ENDIF
+
+	first_worksheet_id = worksheet_id
+
+        RETURN ( browse ( "first_worksheet",
+			  "next_worksheet",
+			  GLOBAL ( "current_library"),
+			  30,
+			  worksheet_id)  )
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE  prompt_for_worksheet ( VALUE worksheet_type,
+				             display_window,
+				       VALUE prompt_position,
+				       VALUE prompt_line )
+  worksheet_id = " "
+  REPEAT
+
+       PROMPT for worksheet_id IN WINDOW display_window
+			ON LINE prompt_line
+		        FROM prompt_position
+                        BROWSE ON IDENTITY_20
+
+       IF LASTKEY = "EXIT" THEN
+          RETURN (empty)
+       ELSEIF LASTKEY = "FIND" THEN
+          entered_wks = browse_on_worksheet ( worksheet_type,
+					      worksheet_id )
+          IF entered_wks THEN
+             DISPLAY worksheet_id IN WINDOW display_window
+			ON LINE prompt_line
+		        FROM prompt_position
+             RETURN ( worksheet_id )
+          ENDIF
+       ELSEIF worksheet_id <> " " THEN
+          worksheet_id = toupper ( worksheet_id )
+          IF valid_worksheet ( worksheet_type, worksheet_id ) THEN
+             RETURN( worksheet_id )
+          ENDIF
+       ENDIF
+
+  UNTIL false
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE valid_worksheet ( VALUE worksheet_type,
+				       worksheet_id )
+
+  DECLARE worksheet_text_id , error_window
+
+       IF worksheet_type = "SMPWKS" THEN
+         {Account for possibility of id_text being typed in}
+         IF  global ("SAMP_BROWSE") = "T" THEN
+           worksheet_text_id = SELECT sample.id_numeric
+                            WHERE id_text = worksheet_id
+
+           IF worksheet_text_id <> EMPTY THEN
+             worksheet_id = worksheet_text_id
+           ENDIF
+
+         ENDIF
+
+         worksheet_id = JUSTIFY(PAD(worksheet_id," ",10),"RIGHT")
+
+       ENDIF
+     
+       check_id = SELECT worksheet.identity
+            WHERE ( worksheet_type = worksheet_type )
+	    AND ( identity = worksheet_id )
+
+       IF check_id = worksheet_id THEN
+            RETURN(true)
+       ELSE
+           CREATE TEXT WINDOW error_window HEIGHT 1 WIDTH 80
+
+	   PASTE TEXT WINDOW error_window
+		ON LINE ( GLOBAL ( "SCREEN_HEIGHT" ) ) FROM 1
+	    
+	    DISPLAY GET_USER_MESSAGE ( "SMP_K_IDNONEX" , 1 )
+		 ON LINE 1 FROM 1 IN WINDOW error_window
+
+	    SLEEP FOR GLOBAL ( "READ_TIME" )
+
+	    UNPASTE TEXT WINDOW error_window
+	    
+            RETURN(false)
+       ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE first_standard
+
+        find_version = SELECT standard_versions.version
+                       WHERE (identity = standard_id )
+                       ORDER ON version
+
+        WHILE (NOT check_for_expired_standard ( standard_id,
+ 					   version, false, true)) AND
+                  (find_version <> empty) DO
+               NEXT standard_versions
+               find_version = SELECT standard_versions.version
+        ENDWHILE
+
+        comments = SELECT standard_versions.version_comment
+
+{**AS 2003R1}
+        {***************************************************************
+        * v1.1 (b) Different information for browse description
+        ***************************************************************}
+        set_standard_browse_description( comments )
+{**AE 2003R1}        
+        browse_entry ( find_version, find_version,comments )
+
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE next_standard
+
+
+        NEXT standard_versions
+        find_version = SELECT standard_versions.version
+        WHILE (NOT check_for_expired_standard ( standard_id,
+ 					   version, false, true)) AND
+                  (find_version <> empty) DO
+               NEXT standard_versions
+               find_version = SELECT standard_versions.version
+        ENDWHILE
+
+        comments = SELECT standard_versions.version_comment
+{**AS 2003R1}
+        {***************************************************************
+        * v1.1 (b) Different information for browse description
+        ***************************************************************}
+        set_standard_browse_description( comments )
+{**AE 2003R1}
+        browse_entry ( find_version, find_version,comments )
+
+ENDROUTINE
+{**AS 2003R1}
+{--------------------------------------------------------------------------}
+
+{*******************************************************************
+* v1.1 (b) Routine to define browse description for standard browse
+*******************************************************************}
+
+ROUTINE set_standard_browse_description
+    (
+          description
+    )
+
+    description =
+              "Batch No: "
+            : STRIP( SELECT standard_versions.std_batchname )
+            : "   Created: "
+            : LEFTSTRING( SELECT standard_versions.creation_date, 11 )
+            : "   Expires: "
+            : LEFTSTRING( SELECT standard_versions.expiry_date, 11 )
+
+    RETURN
+
+ENDROUTINE
+
+{*******************************************************************
+*******************************************************************}
+{**AE 2003R1}
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE browse_on_standard_version ( VALUE standard_id,
+                                             version)
+
+        RETURN ( browse ( "first_standard",
+			  "next_standard",
+			  GLOBAL ( "current_library"),
+			  10,
+		  	  version )   )
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE check_for_expired_standard ( VALUE standard_id,
+				            VALUE version,
+                                            VALUE do_expire,
+                                            VALUE call_from_browse )
+
+       IF (call_from_browse) THEN
+      {  OR  find_standard_version ( standard_id, version, do_expire ) THEN}
+          IF (SELECT standard_versions.status = "A") THEN
+             expiry_method = SELECT standard_versions.expiry_type
+             IF INDEX("U",expiry_method) > 0 THEN
+                RETURN( usage_expiry() )
+             ELSEIF INDEX("T",expiry_method) > 0 THEN
+                RETURN( time_expiry() )
+             ELSEIF INDEX("B", expiry_method) > 0 THEN
+                IF usage_expiry() THEN
+                   RETURN( time_expiry() )
+                ELSE
+                   RETURN(false)
+                ENDIF
+             ENDIF
+          ELSE
+             RETURN(false)
+          ENDIF
+       ELSE
+          RETURN(false)
+       ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE usage_expiry
+
+        max_usage = SELECT standard_versions.maximum_usage
+        curr_usage = SELECT standard_versions.usage_count
+        IF (curr_usage < max_usage) OR ( max_usage = 0 )  THEN
+           RETURN(true)
+        ELSE
+           IF do_expire THEN
+              expire_standard()
+           ENDIF
+           RETURN(false)
+        ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE time_expiry
+
+	lifetime = SELECT standard_versions.lifetime
+        expiry_date = SELECT standard_versions.expiry_date
+        IF (lifetime <> 0) AND (expiry_date <> DATE(" ") ) THEN
+           IF NOW > expiry_date THEN
+              IF do_expire THEN
+                 expire_standard()
+              ENDIF
+              RETURN(false)
+           ELSE
+              RETURN(true)
+           ENDIF
+        ELSE
+           RETURN(true)
+        ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+ROUTINE expire_standard
+
+        ASSIGN standard_versions.status = "B"
+        ASSIGN standard_versions.expiry_date = NOW
+        START WRITE TRANSACTION "standards"
+        UPDATE standard_versions
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE find_standard_version ( VALUE standard_id,
+				       VALUE version,
+                                       VALUE for_update )
+
+       new_version = format_standard_version ( version )
+
+       IF for_update THEN
+
+          START READ TRANSACTION "standards"
+          find_stan = SELECT standard_versions.identity
+		      FOR UPDATE
+		      WHERE ( identity = standard_id )
+		      AND (version = version )
+          IF find_stand = locked THEN
+             lock_flag_on ()
+             WHILE (find_stan = locked) AND (keypressed <> "EXIT") DO
+                   find_stan = SELECT standard_versions.identity
+	               	       FOR UPDATE
+		               WHERE ( identity = standard_id )
+		               AND (version = version )
+                   SLEEP FOR ("0 00:0:01")
+             ENDWHILE
+             lock_flag_off ( )
+          ENDIF
+       ELSE
+          find_stan = SELECT standard_versions.identity
+		      WHERE ( identity = standard_id )
+		      AND (version = version )
+       ENDIF
+
+       IF (find_stan <> empty) AND (find_stan <> locked) THEN
+          RETURN(true)
+       ELSE
+          RETURN(false)
+       ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE format_standard_version ( VALUE old_format )
+
+        FORMAT new_format FROM old_format USING standard_versions.version
+        RETURN ( JUSTIFY(new_format,"RIGHT") )
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}
+
+GLOBAL ROUTINE  prompt_for_standard_version ( VALUE standard_id,
+				                     display_window,
+				               VALUE prompt_position,
+				               VALUE prompt_line )
+
+  REPEAT
+
+       PROMPT for version IN WINDOW display_window
+			ON LINE prompt_line
+		        FROM prompt_position
+                        FORMAT TEXT10
+       IF LASTKEY = "EXIT" THEN
+          RETURN (empty)
+       ENDIF
+       IF NUMTEXT(version) THEN
+          version = format_standard_version ( version )
+          IF LASTKEY = "FIND" THEN
+             entered_wks = browse_on_standard_version ( standard_id,
+					             version )
+             IF entered_wks THEN
+                DISPLAY version IN WINDOW display_window
+			ON LINE prompt_line
+		        FROM prompt_position
+                RETURN ( format_standard_version (version ) )
+             ENDIF
+          ELSEIF LASTKEY = "INSERT HERE" THEN
+             std_vers_create_new_version ( standard_id )
+          ELSEIF version <> " " THEN
+             IF find_standard_version ( standard_id, version, false ) THEN
+                RETURN ( format_standard_version (version ) )
+             ENDIF
+          ENDIF
+       ENDIF
+  UNTIL false
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------}

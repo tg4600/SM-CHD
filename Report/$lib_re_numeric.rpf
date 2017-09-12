@@ -1,0 +1,845 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_NUMERIC
+*
+* Purpose       : Numeric result prompting code for Result Entry
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_FILTR
+JOIN LIBRARY $CALCULATOR
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_FLAGS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+CONSTANT LIB_RE_NUMERIC_PROMPT_CLASS = "LIB_RE_NUMERIC_PROMPT_CLASS"
+
+CONSTANT PRE_VALIDATION  = TRUE
+CONSTANT POST_VALIDATION = FALSE
+
+CONSTANT ALLOWED_FIRST_CHARS = "<>~="
+
+CONSTANT SIG_FIGS_ROUTINE = "SIG_FIGS_FILTER"
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+ROUTINE lib_re_numeric_initialise
+
+        DEFINE CLASS "LIB_RE_RESULT_N"
+
+		INHERIT
+			"LIB_RE_RESULT"
+
+                ACTIONS
+                        "SET_FORMAT"        ,
+			"GET_BROWSE_STRING" ,
+                        "PROMPT_FOR_TYPE"   ,
+			"ENTER_FOR_TYPE"
+
+        END CLASS
+
+        DEFINE CLASS LIB_RE_NUMERIC_PROMPT_CLASS
+
+                INHERIT
+                        PROMPT_CLASS_TEXT
+
+                PROPERTIES
+                        "FIRST_CHAR",
+                        "FOR_PTR"   ,
+                        "LASTERROR"
+
+                ACTIONS
+                        "FORMAT_BEFORE",
+                        "FORMAT_AFTER",
+                        "FORMAT_TEXT",
+                        "VALIDATION",
+                        "GET_LEADING_CHAR",
+                        "CHECK_COMPONENT_LIMITS",
+			"BROWSE" ,
+			"KEY_PRESS" ,
+                        "BUILD" ,
+                        "ENFORCE_DECIMALS"
+
+                INITIALISATION
+
+        END CLASS
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Numeric prompt initialisation                                                }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_class_initialisation ( self )
+
+	self . for_ptr   = FALSE
+	self . lasterror = EMPTY
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Numeric prompt actions                                                       }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_key_press ( self )
+
+	DECLARE status
+
+	status = TRUE
+
+	IF ( global ( "UNIT_CONVERSION" ) = "NONE"     ) OR
+ 	   ( global ( "UNIT_CONVERSION" ) = "VALIDATE" ) THEN
+
+        	status = object_invoke_class ( self                   ,
+			   	               PROMPT_CLASS_TEXT_REAL ,
+                         	               "KEY_PRESS"            )
+
+	ELSE
+
+	       	status = object_invoke_class ( self              ,
+			   	               PROMPT_CLASS_TEXT ,
+      	 			               "KEY_PRESS"       )
+
+      	ENDIF
+
+	return ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_check_component_limits
+                                                ( numeric_prompt )
+
+        DECLARE minimum_limit, maximum_limit, ret_value
+
+        { Select the component limits from the result record }
+
+        minimum_limit = SELECT result . minimum
+                        IN OBJECT numeric_prompt . user_info
+        maximum_limit = SELECT result . maximum
+                        IN OBJECT numeric_prompt . user_info
+
+        { Check the current result value against the component limits }
+
+        IF ( minimum_limit = 0.0 ) AND ( maximum_limit = 0.0 ) THEN
+
+                { No component range defined }
+                ret_value = TRUE
+
+        ELSEIF ( numeric_prompt . first_char = ">" )     THEN
+{fm ("first_char >")}
+                ret_value = TRUE
+
+        ELSEIF ( numeric_prompt . first_char = "<" )     THEN
+{fm ("first_char <")}
+                ret_value = TRUE
+{Change end}
+
+        ELSEIF numeric_prompt . user_info . result_val < minimum_limit THEN
+{fm ("res < min")}
+                ret_value = FALSE
+
+        ELSEIF numeric_prompt . user_info . result_val > maximum_limit THEN
+{fm ("res > max")}
+
+                ret_value = FALSE
+
+        ELSEIF ( numeric_prompt . user_info . result_val = maximum_limit ) AND
+               ( numeric_prompt . first_char = ">" )     THEN
+
+                ret_value = FALSE
+
+        ELSEIF ( numeric_prompt . user_info . result_val = minimum_limit ) AND
+               ( numeric_prompt . first_char = "<" )     THEN
+
+                ret_value = FALSE
+
+        ELSE
+
+                ret_value = TRUE
+
+        ENDIF
+
+
+        RETURN ( ret_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_reformat_result ( result_text ,
+                                         result_val  )
+
+	IF exponent ( result_val ) < -8 THEN
+
+        	set format "9.9999E999"
+	ELSE
+        	set format "9.99999999"
+	ENDIF
+
+	result_text = strip ( result_val )
+
+	IF ( index ( result_text , "." ) <> 0 ) AND
+	   ( index ( result_text , "E" ) = 0 ) THEN
+
+		WHILE ( right_string ( result_text , 1 ) = "0" ) DO
+
+                	result_text = left_string ( result_text                ,
+						    length ( result_text ) - 1 )
+
+		ENDWHILE
+	ENDIF
+
+	IF ( right_string ( result_text , 1 ) = "." ) THEN
+
+                result_text = left_string ( result_text                ,
+					    length ( result_text ) - 1 )
+
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_validation ( numeric_prompt )
+
+DECLARE ret_value ,
+	result_val ,
+	unit_val ,
+	new_val ,
+	error_status ,
+	comp_unit ,
+	no_check
+
+numeric_prompt . user_info . result_raw_str = numeric_prompt . text
+
+no_check = ( numeric_prompt . text = numeric_prompt . original_text )
+
+IF NOT no_check THEN
+
+	ret_value = object_invoke_class ( numeric_prompt    ,
+	                                  PROMPT_CLASS_TEXT ,
+	                                  "VALIDATION"      )
+
+ELSE
+	ret_value = TRUE
+ENDIF
+
+IF ( NOT no_check ) AND ret_value THEN
+
+	unit_split_result ( numeric_prompt . text ,
+	                    result_val            ,
+	                    unit_val              )
+
+	IF GLOBAL ( "RESULT_ENFORCE_DECIMAL_PLACES" )
+
+		ret_value = numeric_prompt . enforce_decimals ( )
+
+	ENDIF
+
+ENDIF
+
+IF ( NOT no_check ) AND ret_value THEN
+
+	IF ( NOT blank ( unit_val )                     ) AND
+	   ( ( global ( "UNIT_CONVERSION" ) = "CONVERT" ) OR
+	     ( global ( "UNIT_CONVERSION" ) = "CHECK"   )    ) THEN
+
+		error_status = EMPTY
+
+		comp_unit = SELECT result . units
+		            IN OBJECT numeric_prompt. user_info
+
+		IF blank ( comp_unit ) THEN
+			message_fetch ( "UNIT_NO_UNITS" , error_status )
+		ELSE
+			new_val = unit_convert ( result_val   ,
+			                         unit_val     ,
+			                         comp_unit    ,
+			                         error_status )
+		ENDIF
+
+		IF error_status = EMPTY THEN
+
+			IF global ( "UNIT_CONVERSION" ) = "CONVERT" THEN
+
+				lib_re_numeric_reformat_result ( numeric_prompt . text ,
+				                                 new_val               )
+
+			ELSEIF global ( "UNIT_CONVERSION" ) = "CHECK" THEN
+
+				numeric_prompt . text = result_val
+
+				numeric_prompt. user_info . result_unit
+				                        = strip ( unit_val )
+
+			ENDIF
+
+		ELSE
+
+			IF numeric_prompt . for_ptr THEN
+				numeric_prompt . lasterror =
+				   message_get_text ( error_status , 1 )
+			ELSE
+				flash_message ( message_get_text ( error_status , 1 ) ,
+				                TRUE                                  )
+			ENDIF
+
+			numeric_prompt . repaste ( )
+
+			return ( FALSE )
+
+		ENDIF
+
+	ENDIF
+
+	IF BLANK ( numeric_prompt . text )  THEN
+
+		ret_value = GLOBAL ( "RES_ALLOW_BLANK" )
+
+		IF ret_value THEN
+
+			numeric_prompt . user_info . blank_out_result (
+			                   numeric_prompt . user_info . grid )
+
+		ENDIF
+
+	ELSEIF numtext ( numeric_prompt . text )  THEN
+
+		numeric_prompt . user_info . result_str = numeric_prompt . text
+		numeric_prompt . get_leading_char ( )
+
+		numeric_prompt . user_info . result_val =
+		                   NUMERIC ( numeric_prompt .
+		                               user_info . result_str )
+		numeric_prompt . format_text ( )
+
+		IF GLOBAL ( "RES_ROUND_RESULTS" ) THEN
+
+			numeric_prompt . user_info . result_val =
+			           NUMERIC ( numeric_prompt .
+			                       user_info . result_str )
+
+		ENDIF
+
+		ret_value = numeric_prompt . check_component_limits ( )
+
+		{ If the limit check failed ask the user to
+		  confirm acceptance of the specified value }
+{New code:}		  
+
+		DECLARE test_number, test, test_ver, calc, form, yes_button, no_button
+
+		test_number = SELECT result . test_number IN OBJECT numeric_prompt . user_info
+                                            
+                test = select test.analysis where test_number = test_number 
+                        
+                test_ver = select test.analysis_version where test_number = test_number
+                        
+                calc = select versioned_analysis.calc where identity = test and analysis_version = test_ver
+   
+{      IF (NOT ret_value)  and (calc = "MEAN_SOL") THEN}
+  		IF (NOT ret_value)  and (calc = "MEAN_POP") THEN
+  		
+  			ret_value = TRUE
+  			
+  			CREATE OBJECT "STD_FORM", form
+  			
+  			form . height = 3
+  			form . width = 60
+  			form . row = 2
+  			form . column = 5
+  			form . border = TRUE
+  			form . header = "Accept Value?"
+  			form . footer = ""
+  			form . return_behaviour = FORM_RETURN_STAY
+  			form . button_style = FORM_BUTTON_NONE
+  			
+  			PROMPT OBJECT yes_button
+  			CLASS "STD_PROMPT_BUTTON"
+  			ON LINE 4
+  			FROM 5 to 15
+  			WITH (caption = "Yes",
+  			send_lastkey = "DO")
+  			
+  			PROMPT OBJECT no_button
+			CLASS "STD_PROMPT_BUTTON"
+			ON LINE 4
+			FROM 30 to 40
+			WITH (caption = "No",
+  			send_lastkey = "EXIT")
+  			
+  			form . add_display ("The value entered is above maximum/beneath minimum limit,",1,1,prompt_rendition_bold)
+  			form . add_display ( "do you want to include the result in the calculation?",1,2,prompt_rendition_bold)
+  			form . add_prompt (yes_button)
+  			form . add_prompt (no_button)
+  			
+  			form . start_prompt()
+  			form . wait_prompt ()
+  			form . end_prompt ()
+  		
+  			IF (form . get_last_key () = "EXIT") THEN
+  			  {Avoid extra "-" when result is entered with "-" - prefix  (DKTBG 20090610)}
+          if not ((substring(numeric_prompt . user_info . result_str,1,1) = "-") or 
+                  (substring(numeric_prompt . user_info . result_str,1,1) = "+") or 
+                  (substring(numeric_prompt . user_info . result_str,1,1) = "<") or 
+                  (substring(numeric_prompt . user_info . result_str,1,1) = ">")) then
+
+          {IF numeric_prompt . user_info . result_str >=0 THEN}
+
+    				numeric_prompt . user_info . result_str = "-":numeric_prompt . user_info . result_str
+
+          ENDIF  			
+
+  			ENDIF
+  			  			
+		ENDIF	
+
+		IF NOT ret_value THEN
+
+			numeric_prompt . user_info .
+			        set_confirm_message ( "MESSAGE_PRN_424" )
+
+		ELSE
+
+			numeric_prompt . user_info .
+			              set_confirm_message ( EMPTY )
+
+		ENDIF
+
+		numeric_prompt . text  = numeric_prompt . user_info . result_str
+		numeric_prompt . value = numeric_prompt . user_info . result_val
+
+		ret_value = TRUE
+
+	ELSE
+
+		ret_value = FALSE
+
+	ENDIF
+	
+ENDIF
+
+RETURN ( ret_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_format_before ( numeric_prompt )
+
+        numeric_prompt . text = numeric_prompt . value
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_format_after ( numeric_prompt )
+
+        numeric_prompt . value = numeric_prompt . text
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_format_text ( numeric_prompt )
+
+	DECLARE	sig_figs_number , sig_figs_rounding , sig_figs_places
+
+        IF numeric_prompt . user_info . result_str = " " THEN
+
+        ELSE
+		IF ( NOT BLANK ( SELECT result . sig_figs_filter
+				   IN OBJECT numeric_prompt . user_info ) ) THEN
+
+			sig_figs_number = SELECT result . sig_figs_number
+                                            IN OBJECT numeric_prompt . user_info
+
+			sig_figs_rounding = SELECT result . sig_figs_rounding
+                                            IN OBJECT numeric_prompt . user_info
+
+			sig_figs_places = SELECT result . places
+                                            IN OBJECT numeric_prompt . user_info
+
+			 IF GLOBAL ( "SIG_FIGS_ENABLED" ) THEN
+
+	                	CALL_ROUTINE SIG_FIGS_routine
+
+        	                  IN SIGFIGSLIBRARY
+				     ( SELECT result . sig_figs_filter
+				          IN OBJECT numeric_prompt . user_info )
+
+	                          NEW CONTEXT
+
+
+        	                  USING sig_figs_number                         ,
+                	                sig_figs_rounding                       ,
+                        	        sig_figs_places                         ,
+                                      	numeric_prompt . user_info . result_str ,
+                         	        numeric_prompt . user_info . result_val
+
+                          	  RETURNING numeric_prompt . user_info . result_str
+
+			 ENDIF
+
+                ELSEIF ( SELECT result . places in object
+                        numeric_prompt . user_info ) >= 0 THEN
+
+                        numeric_prompt . user_info . set_format ( )
+
+                        numeric_prompt . user_info . result_str =
+	                        strip ( numeric ( numeric_prompt . user_info .
+							result_str ))
+
+                        IF numeric_prompt . first_char <> " " THEN
+
+	                        numeric_prompt . user_info . result_str =
+                                        numeric_prompt . first_char :
+		                        numeric_prompt . user_info . result_str
+
+                        ENDIF
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_get_leading_char ( numeric_prompt )
+
+	DECLARE result_str, first_char
+
+	result_str = strip ( numeric_prompt . user_info . result_str )
+
+	{ Strip off all <, >, ~ and = characters }
+
+	numeric_prompt . first_char = ""
+	first_char = substring ( result_str, 1, 1 )
+
+	WHILE index ( ALLOWED_FIRST_CHARS, first_char ) > 0 DO
+
+		result_str = substring ( result_str, 2,
+		                         length ( result_str ) - 1 )
+		numeric_prompt . first_char = numeric_prompt . first_char :
+		                              first_char
+		first_char = substring ( result_str, 1, 1 )
+
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_browse ( numeric_prompt )
+
+	RETURN ( true )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_build ( numeric_prompt )
+
+	calculator_build_real (	numeric_prompt . length ,
+                                numeric_prompt . text   )
+
+        numeric_prompt . repaste ( )
+
+	RETURN ( true )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Actions specific to result type                                              }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_n_action_set_format ( result_object )
+
+    DECLARE places
+
+    places = SELECT result . places IN OBJECT result_object
+
+    IF places > 0 THEN
+
+        SET FORMAT pad ( "9", "9", find_max_number ( 10 - places - 1, 1 )) :
+                   "." : pad ( "9", "9", places )
+
+    ELSEIF places = 0 THEN
+
+        SET FORMAT pad ( "9", "9", 10 )
+
+    ELSE
+
+        SET FORMAT "999999.999"
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_n_action_get_browse_string ( result_object )
+
+        IF NOT result_object . browse_built THEN
+
+                DECLARE minimum_limit, maximum_limit
+
+                minimum_limit = SELECT result . minimum IN OBJECT result_object
+                maximum_limit = SELECT result . maximum IN OBJECT result_object
+
+		IF ( ( minimum_limit = 0 ) AND
+		     ( maximum_limit = 0 ) ) THEN
+
+			{ No limits defined }
+
+                	message_fetch ( "RESULT_ENTRY_NO_NUMERIC_BROWSE",
+					result_object . browse_string )
+		ELSE
+
+                	result_object . set_format ( )
+
+                	message_fetch ( "RESULT_ENTRY_NUMERIC_BROWSE",
+					result_object . browse_string )
+
+                	message_add_parameter ( result_object . browse_string,
+                                        	strip ( minimum_limit ))
+                	message_add_parameter ( result_object . browse_string,
+                                        	strip ( maximum_limit ))
+
+			result_object . browse_built = TRUE
+		ENDIF
+        ENDIF
+
+        RETURN ( result_object . browse_string )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_n_action_prompt_for_type (       result_object,
+						 VALUE cell_column,
+						 VALUE cell_row,
+						       window,
+						 VALUE column,
+						 VALUE row,
+						 VALUE cell_width,
+						 VALUE cell_height,
+						 VALUE display_only ,
+						 VALUE blink_mode ,
+						       result_context )
+
+	result_context . display_message ( strip ( result_object . get_browse_string ( ) ), TRUE )
+
+        PROMPT FOR result_object . result_str
+                ON LINE row FROM column TO ( column + cell_width - 1 )
+                IN WINDOW window
+                CLASS LIB_RE_NUMERIC_PROMPT_CLASS
+                WITH ( length        = 20                             ,
+		       user_info     = result_object                  ,
+		       double_entry  = global ( "RES_SUPPRESS_ECHO" ) ,
+		       display_only  = display_only                   ,
+		       zap_on_first  = TRUE                           ,
+		       blinking      = blink_mode                     ,
+		       strikethrough = blink_mode                     ,
+		       status_text   =
+				strip ( result_object . get_browse_string ()))
+
+	result_context . display_message ( "", FALSE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_n_action_enter_for_type (       result_object,
+						VALUE result_val   ,
+						      result_context)	
+
+        DECLARE prompt_object , return_value , unit_val , new_val ,
+		error_status , comp_unit , old_format
+
+	old_format = global ("FORMAT_TEXT")
+	SET FORMAT "999999999999999999.999999999999999999"
+
+        PROMPT OBJECT prompt_object
+                CLASS LIB_RE_NUMERIC_PROMPT_CLASS
+                WITH ( user_info    = result_object )
+
+	prompt_object . for_ptr = TRUE
+	prompt_object . original_text = SELECT result . text IN OBJECT result_object
+
+	prompt_object . set_text ( strip ( result_val ))
+
+	unit_val = result_object . result_unit
+
+	comp_unit = SELECT result . units IN OBJECT result_object
+
+	error_status = EMPTY
+
+	IF ( ( NOT blank ( unit_val )			  ) AND
+	     ( numtext ( result_val )		          ) AND
+	     ( global ( "UNIT_CONVERSION" ) <> "NONE"     ) AND
+	     ( global ( "UNIT_CONVERSION" ) <> "VALIDATE" ) ) THEN
+
+		IF NOT blank ( comp_unit ) THEN
+
+	        	new_val = unit_convert ( result_val   ,
+		                                 unit_val     ,
+               		                         comp_unit    ,
+                        	       	         error_status )
+                ENDIF
+
+        	IF error_status = EMPTY THEN
+
+			IF blank ( comp_unit ) THEN
+
+				prompt_object . text = strip ( result_val )
+				result_object . result_unit = strip ( unit_val )
+
+			ELSEIF global ( "UNIT_CONVERSION" ) = "CONVERT" THEN
+
+				lib_re_numeric_reformat_result ( prompt_object . text ,
+                                	                         new_val	       )
+
+				result_object . result_unit = comp_unit
+
+			ELSEIF global ( "UNIT_CONVERSION" ) = "CHECK" THEN
+
+				prompt_object . text = strip ( result_val )
+
+				result_object . result_unit = strip ( unit_val )
+			ENDIF
+		ENDIF
+	ENDIF
+
+	IF error_status = EMPTY THEN
+
+		DECLARE temp_context
+		temp_context = FALSE
+
+		IF ( prompt_object . user_info . grid = EMPTY )
+		
+			temp_context = TRUE
+			prompt_object . user_info . grid = result_context
+
+		ENDIF
+
+		IF ( NOT prompt_object . validation ( )) THEN
+			IF prompt_object . lasterror = EMPTY THEN
+				prompt_object . lasterror = "RPC_K_INVALRESL"
+			ENDIF
+        	ENDIF
+        	
+		IF temp_context THEN
+
+			prompt_object . user_info . grid = EMPTY
+
+		ENDIF
+
+     		return_value = prompt_object . lasterror
+
+	ELSE
+                return_value = error_status
+	ENDIF
+
+	SET FORMAT old_format
+
+	return ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_numeric_prompt_class_action_enforce_decimals ( numeric_prompt )
+
+	DECLARE result_object,
+		return_val,
+		res_value,
+		initial_value,
+		dp_position,
+		str_length,
+		dps_entered,
+		dps_needed
+
+	return_val = TRUE
+
+	result_object = numeric_prompt . user_info
+
+	res_value = numeric_prompt . text
+
+	initial_value = STRIP ( result_object . initial_result_val )
+
+	dps_needed = SELECT result . places IN OBJECT result_object
+
+	IF dps_needed < 0 THEN
+		dps_needed = 0
+	ENDIF
+
+	IF ( res_value <> initial_value ) THEN
+
+		dp_position = INDEX ( STRIP ( res_value ), "." )
+
+		IF ( dp_position = 0 ) AND
+		   ( dps_needed > 0 ) THEN
+
+			return_val = FALSE
+
+		ELSE
+
+			str_length = STRINGLENGTH ( STRIP ( res_value ) )
+
+			dps_entered = STRINGLENGTH ( RIGHTSTRING ( STRIP ( res_value ), str_length - dp_position ) )
+
+			IF dps_entered < dps_needed THEN
+
+				return_val = FALSE
+
+			ENDIF
+
+		ENDIF
+
+	ENDIF
+
+	IF NOT return_val THEN
+
+		IF numeric_prompt . for_ptr THEN
+			numeric_prompt . lasterror =
+			    GET_USER_MESSAGE ( "LIB_RE_NUMERIC_ENFORCE_DP_1", 1 ) :
+			    STRIP ( dps_needed ) :
+			    GET_USER_MESSAGE ( "LIB_RE_NUMERIC_ENFORCE_DP_2", 1 )
+		ELSE
+			flash_message ( GET_USER_MESSAGE ( "LIB_RE_NUMERIC_ENFORCE_DP_1", 1 ) :
+			                STRIP ( dps_needed ) :
+			                GET_USER_MESSAGE ( "LIB_RE_NUMERIC_ENFORCE_DP_2", 1 ) , TRUE )
+		ENDIF
+
+	ENDIF
+
+	RETURN ( return_val )
+
+ENDROUTINE { lib_re_numeric_prompt_class_action_enforce_decimals }
+
+{------------------------------------------------------------------------------}

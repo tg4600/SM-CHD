@@ -1,0 +1,400 @@
+{ SMP$REPORTS:ROSCOMWBTS.RPF }
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{**A00??        020693  LPE     Complete Worskheet by testschedule             }
+{------------------------------------------------------------------------------}
+{                                                                              }
+{**MIG          170895  JT     Migration changes                               }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+JOIN LIBRARY $WKSBROWSE
+JOIN STANDARD_LIBRARY STD_FLAGS
+JOIN LIBRARY $LIB_UTILS
+
+ENABLE WINDOWS
+
+SET NAME "/DISPLAY"
+
+SET NOTPROTECTED
+
+sched_worksheet_type = "$SCHEDULE"
+
+CONSTANT sched_idv = "SCHED_WORKSHEET"
+CONSTANT sched_works_idv = "SCHEDWKS"
+CONSTANT sched_ext = ".SCW"
+
+CONSTANT anal_id = 1
+CONSTANT smp_id = 1
+SET FORMAT ("99999999")
+doption  = "C"
+
+initialise()
+
+idv_name = sched_works_idv
+
+WHILE get_worksheet_id()
+   IF (perform_option(wks_file)=TRUE) THEN
+      FILE DELETE wks_file, status
+      PASTE TEXT WINDOW comp_win ON LINE 12 FROM 20
+      DISPLAY "Worksheet : ":STRIP(wks_name):" completed"
+               ON LINE 1 FROM 2 IN WINDOW comp_win
+      COMMIT
+      pause()
+      UNPASTE TEXT WINDOW comp_win
+   ELSE
+      flash_message( GET_USER_MESSAGE("WKS_NO_COMP_WKS  ",1), false)
+   ENDIF
+ ENDWHILE
+
+
+ ROUTINE perform_option ( wks_file )
+      compl_ok = TRUE
+
+      CREATE TEXT WINDOW mess_box
+                HEIGHT 5
+                WIDTH 24
+                BORDER
+      IF confirm() THEN
+         do_mess_head( GET_USER_MESSAGE("WKS_COMPLETE_WKS  ",1) )
+         IF (read_wks_file ()=TRUE) THEN
+            IF (number_of_samp <> 0) AND (number_of_anal <> 0) THEN
+                  complete_samples ()
+                  complete_tests ()
+                  UNPASTE TEXT WINDOW mess_box
+                  RETURN(compl_ok)
+            ENDIF
+         ENDIF
+      ENDIF
+ENDROUTINE
+
+ROUTINE lock_the_sample
+
+	DECLARE temp , id
+
+	id = SELECT sample . id_numeric
+
+	temp = SELECT sample . id_numeric
+		FOR UPDATE
+		WHERE id_numeric = id
+
+	IF temp = locked THEN
+              ON CONTROL_C
+                 RETURN(false)
+              ENDON
+              lock_flag_on ()
+              REPEAT
+                 ROLLBACK
+
+		temp = SELECT sample . id_numeric
+			FOR UPDATE
+			WHERE id_numeric = id
+
+                 IF temp = locked THEN
+                    SLEEP FOR ("0 00:00:01")
+                 ENDIF
+              UNTIL (temp <> locked)
+              lock_flag_off()
+           ENDIF
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+ROUTINE do_mess_head ( VALUE the_message )
+
+        display_top_line(the_message,mess_box,24)
+        PASTE TEXT WINDOW mess_box ON LINE 13 FROM 40
+
+ENDROUTINE
+
+ROUTINE get_worksheet_id
+
+  PASTE TEXT WINDOW prompt_win ON LINE 10 FROM 20
+  DISPLAY "      COMPLETING RKSHEET BY TESTSCHEDULE      "
+      ON LINE 1 FROM 1 INVERSE IN WINDOW prompt_win
+  DISPLAY "Enter Worksheet name : " ON LINE 3 FROM 2
+      IN WINDOW prompt_win
+  DISPLAY "              Press EXIT to Quit              "
+      ON LINE 5 FROM 1 INVERSE IN WINDOW prompt_win
+
+  done_ok = false
+
+  REPEAT
+    wks_name = " "
+
+    wks_name = prompt_for_worksheet ( sched_works_idv,prompt_win,25,3)
+
+    IF wks_name = empty THEN
+       RETURN(false)
+    ELSE
+       done_ok = true
+    ENDIF
+
+  UNTIL (wks_name <> " ") & (done_ok)
+
+  wks_file = "SMP$WORKSHEETS:":strip(wks_name):sched_ext
+
+  RETURN( valid_worksheet_file())
+ENDROUTINE
+
+ROUTINE del_file (VALUE wks_file)
+   SPAWN "DELETE ":wks_file:";*", status no_wait
+   IF status <> EMPTY THEN
+      flash_message("Failed to delete Worksheet file :":STRIP(wks_file):
+                    " - ":status,true)
+   ENDIF
+ENDROUTINE
+
+ROUTINE valid_worksheet_file
+
+         IF FILE EXISTS (wks_file) THEN
+{            START READ TRANSACTION "worksheets" }
+            RETURN(true)
+         ELSE
+            flash_message(GET_USER_MESSAGE("WKS_FILE_NOT_FOUND   ",1):wks_file,
+			  true)
+            RETURN(false)
+         ENDIF
+
+ENDROUTINE
+
+
+ROUTINE initialise
+  CREATE TEXT WINDOW prompt_win
+  HEIGHT 5
+  WIDTH 46
+  BORDER =""
+
+  CREATE TEXT WINDOW comp_win
+  HEIGHT 1
+  WIDTH 40
+  BORDER =""
+
+ARRAY anal_info
+ARRAY  samp_info
+ARRAY test_info
+ENDROUTINE
+
+ROUTINE complete_tests
+
+   anal_count = 1
+   samp_count = 1
+   test_no = 0
+
+   START READ TRANSACTION "worksheets"
+
+   WHILE samp_count <= number_of_samp
+      WHILE anal_count <= number_of_anal DO
+    { * Find alle tests og læg dem over i test_info * }
+
+         find_test = SELECT test.test_number
+                  WHERE (sample = samp_info[samp_count,smp_id])
+                        AND (status = "V")
+                        AND (analysis = anal_info[anal_count,anal_id])
+
+         IF find_test <> EMPTY THEN
+            test_no = test_no + 1
+            test_info [test_no] = find_test
+            NEXT test
+            find_test = SELECT test.test_number
+         ENDIF
+         anal_count = anal_count + 1
+      ENDWHILE
+      anal_count = 1
+      samp_count = samp_count + 1
+   ENDWHILE
+
+   count = 1
+
+   START WRITE TRANSACTION "worksheets"
+   WHILE count <= test_no DO
+
+      IF select_the_test ( test_info[count] ) THEN
+         IF SELECT test.status = "V" THEN
+            ASSIGN test.worksheet = 0
+            ASSIGN test.worksheet_position = 0
+            ASSIGN test.worksheet_name = PAD(" "," ",20)
+         ELSE
+            SET GLOBAL ("AUDITPROMPTSUPPRESS") TO TRUE
+            UPDATE test
+         ENDIF
+
+         UPDATE test
+      ELSE
+       flash_message("Testnumber :":test_number:" not found", false)
+      ENDIF
+      count = count + 1
+
+  ENDWHILE
+
+  {START READ TRANSACTION "worksheets"  }
+
+  find_idv = SELECT worksheet.identity
+                  FOR UPDATE
+                  WHERE ( worksheet_type = sched_works_idv )
+                  AND   ( identity = wks_name )
+
+{  START WRITE TRANSACTION "worksheets"  }
+
+  DELETE worksheet
+
+  COMMIT
+
+  { * Slet worksheetfil * }
+ENDROUTINE
+
+ROUTINE select_the_test ( VALUE test_number )
+
+
+           find_test = SELECT test.test_number
+                       FOR UPDATE
+                       WHERE test_number = test_number
+
+           IF find_test = locked THEN
+              lock_flag_on()
+              ON CONTROL_C
+                 RETURN(false)
+              ENDON
+              WHILE find_test = locked DO
+                    ROLLBACK
+                    find_test = SELECT test.test_number
+                                FOR UPDATE
+                                WHERE test_number = test_number
+                    IF find_test = locked THEN
+                       SLEEP FOR ("0 00:00:01")
+                    ENDIF
+              ENDWHILE
+              lock_flag_off()
+           ENDIF
+
+           IF (find_test <> empty) THEN
+              IF find_test <> locked THEN { a final check just in case
+					    the lock has been bypassed }
+                 RETURN(true)
+              ELSE
+                 RETURN(false)
+	      ENDIF
+           ELSE
+              RETURN(false)
+           ENDIF
+
+ENDROUTINE
+
+ROUTINE complete_samples
+
+   samp_count = 1
+
+   START READ TRANSACTION "worksheets"
+
+   WHILE samp_count <= number_of_samp DO
+
+         IF select_the_sample ( samp_info[samp_count,smp_id])
+
+
+{               cur_sampid = SELECT sample.id_numeric
+                  FOR UPDATE
+                  WHERE id_numeric =
+                  ORDER ON id_numeric }
+
+
+      { * Opdater sample så denne ikke mere har et worksheet * }
+
+         START WRITE TRANSACTION "worksheets"
+
+         ASSIGN sample.on_wks = FALSE
+         UPDATE sample
+         COMMIT
+
+      ENDIF
+
+         samp_count = samp_count + 1
+
+   ENDWHILE
+ENDROUTINE
+
+
+ROUTINE select_the_sample ( VALUE dsample_id )
+
+
+           find_samp = SELECT sample.id_numeric
+                       FOR UPDATE
+                       WHERE id_numeric = dsample_id
+
+           IF find_samp = locked THEN
+              lock_flag_on()
+              ON CONTROL_C
+                 RETURN(false)
+              ENDON
+              WHILE find_samp = locked DO
+                    ROLLBACK
+                    find_samp = SELECT sample.id_numeric
+                                FOR UPDATE
+                                WHERE id_numeric = dsample_id
+
+                    IF find_samp = locked THEN
+                       SLEEP FOR ("0 00:00:01")
+                    ENDIF
+              ENDWHILE
+              lock_flag_off()
+           ENDIF
+
+           IF (find_samp <> empty) THEN
+              IF find_samp <> locked THEN { a final check just in case
+					    the lock has been bypassed }
+                 RETURN(true)
+              ELSE
+                 RETURN(false)
+	      ENDIF
+           ELSE
+              RETURN(false)
+           ENDIF
+
+ENDROUTINE
+
+ROUTINE read_wks_file
+{ * Læs worksheetfil. Læg analyser over i anal_info. Læg samples over i * }
+{ * samp_info * }
+   anal_count = 0
+   samp_count = 0
+   number_of_samp = 0
+   number_of_anal = 0
+
+   FILE OPEN wks_file,success
+
+   IF success = EMPTY THEN
+      FILE READ wks_file, wks_type, success
+      FILE READ wks_file, wks_sname, success
+      FILE READ wks_file, wks_oper, success
+      FILE READ wks_file, wks_date, success
+      FILE READ wks_file, sign, success
+      IF sign = "*A" THEN
+         REPEAT
+            anal_count = anal_count + 1
+            FILE READ wks_file, anal_info[anal_count,anal_id],success
+            sign = anal_info[anal_count, anal_id]
+         UNTIL  (sign = "*S") OR (success <> EMPTY)
+      ENDIF
+      number_of_anal = anal_count -1
+      IF (sign= "*S") OR (success <> EMPTY) THEN
+         REPEAT
+            samp_count = samp_count + 1
+            FILE READ wks_file,samp_info [samp_count,smp_id], success
+         UNTIL success <> EMPTY
+      ENDIF
+      number_of_samp = samp_count - 1
+
+      FILE CLOSE wks_file, success
+
+      RETURN(TRUE)
+
+   ELSE
+
+      flash_message(GET_USER_MESSAGE("WKS_FILE_ERROR ",1):success,true)
+      RETURN(false)
+
+   ENDIF
+ENDROUTINE
+
+
+

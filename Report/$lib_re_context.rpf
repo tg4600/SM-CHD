@@ -1,0 +1,2273 @@
+
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_CONTEXT
+*
+* Purpose       : Generic class for a result context
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_GLOBAL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN STANDARD_LIBRARY STD_FLAGS
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $line_editor
+JOIN LIBRARY $lib_re_globals
+
+JOIN LIBRARY $lib_re_mlp
+JOIN LIBRARY $lib_re_audit
+JOIN LIBRARY $lib_re_incident
+JOIN LIBRARY $lib_re_graph
+JOIN LIBRARY $lib_re_tree
+JOIN LIBRARY $prompt_picture
+
+{******************************************************************************}
+
+GLOBAL CONSTANT RESULT_CONTEXT_CLASS = "RESULT_CONTEXT_CLASS"
+
+GLOBAL CONSTANT RE_CONTEXT_CACHE_HEADER_CLASS = "RE_CONTEXT_CACHE_HEADER_CLASS"
+GLOBAL CONSTANT RE_CONTEXT_CACHE_RESULT_CLASS = "RE_CONTEXT_CACHE_RESULT_CLASS"
+
+GLOBAL CONSTANT RE_TEST_CACHE_HEADER_CLASS = "RE_TEST_CACHE_HEADER_CLASS"
+GLOBAL CONSTANT RE_TEST_CACHE_CLASS        = "RE_TEST_CACHE_CLASS"
+
+GLOBAL CONSTANT RE_CONTEXT_RECALCULATE_AVI    = "\AVI\ResultRecalc.avi"
+
+GLOBAL CONSTANT RE_NO_AUDIT_SUPPRESS = FALSE
+GLOBAL CONSTANT RE_AUDIT_SUPPRESS    = TRUE
+
+{ Cluster constants for calculation speed improvement }
+
+CONSTANT LIB_RE_CLUSTER_NAME    = "LIB_RE_CLUSTER"
+CONSTANT LIB_RE_CLUSTER_CONTEXT = "RESULT_CONTEXT"
+
+CONSTANT COMPONENT_NAME_POS  = 1
+CONSTANT RESULT_TEXT_POS     = 2
+CONSTANT RESULT_VALUE_POS    = 3
+
+CONSTANT CLUSTER_ARRAY_SIZE  = 3
+
+{******************************************************************************}
+
+
+
+{***** GLOBAL ROUTINE lib_re_context_get_last_context.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_get_last_context
+
+{
+*
+*    Return the active context.
+*
+*******************************************************************************}
+
+    DECLARE result_context
+
+    result_context = EMPTY
+
+    IF ( user_cluster_exists ( LIB_RE_CLUSTER_NAME )) THEN
+
+        IF ( user_global_exists ( LIB_RE_CLUSTER_NAME    ,
+                                  LIB_RE_CLUSTER_CONTEXT )) THEN
+
+            result_context = read_user_global ( LIB_RE_CLUSTER_NAME    ,
+                                                LIB_RE_CLUSTER_CONTEXT )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( result_context )
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE lib_re_context_all_from_cluster.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_all_from_cluster ( VALUE test_number         ,
+                                                    result_object_array )
+
+{
+*
+*    Check the global cluster for result value caching
+*
+*******************************************************************************}
+
+    DECLARE result_context ,
+            result_cache   ,
+            count          ,
+            order_number   ,
+            pos            ,
+            current_test
+
+    result_context = lib_re_context_get_last_context ( )
+
+    IF result_context <> EMPTY THEN
+
+        result_cache = result_context . result_cache
+
+        count = 0
+        order_number = " "
+
+        pos = result_cache . find_index_GE ( "RESULT_ORDER"             ,
+                                             test_number : order_number )
+
+        WHILE ( pos > 0 ) DO
+
+            result_cache . set_by_index_number ( "RESULT_ORDER" ,
+                                                 pos            )
+
+            current_test = SELECT result . test_number
+                           IN OBJECT result_cache . current .result_object
+
+            IF ( current_test = test_number ) THEN
+
+                count = count + 1
+
+                result_object_array [ count ] = result_cache . current . result_object
+
+                order_number = PACKED_DECIMAL ( 1 + SELECT result . order_number
+                                    IN OBJECT result_cache .
+                                        current .
+                                          result_object )
+
+                pos = result_cache . find_index_GE ( "RESULT_ORDER"             ,
+                                     test_number : order_number )
+                                                 
+            ELSE
+            
+                pos = 0 
+                
+            ENDIF
+
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE lib_re_context_in_cluster.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_in_cluster ( VALUE test_number   ,
+                                        VALUE component     ,
+                                              result_text   ,
+                                              result_val    ,
+                                              result_object )
+
+{
+*
+*    Check the global cluster for result value caching
+*
+*******************************************************************************}
+
+    DECLARE result_context, return_value
+
+    return_value = FALSE
+
+    result_context = lib_re_context_get_last_context ( )
+
+    IF result_context <> EMPTY THEN
+
+        return_value = result_context .
+                           result_cache .
+                               get_result ( test_number   ,
+                                            component     ,
+                                            result_text   ,
+                                            result_val    ,
+                                            result_object )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE lib_re_context_add_to_cluster.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_add_to_cluster ( VALUE test_number   ,
+                                            VALUE component     ,
+                                            VALUE result_text   ,
+                                            VALUE result_val    ,
+                                                  result_object )
+
+{
+*
+*    Store the passed result in the global cluster
+*
+*******************************************************************************}
+
+    DECLARE result_context
+
+    result_context = lib_re_context_get_last_context ( )
+
+    IF result_context <> EMPTY THEN
+
+        result_context . result_cache . add_result ( test_number   ,
+                                                     component     ,
+                                                     result_text   ,
+                                                     result_val    ,
+                                                     result_object )
+                                
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_header_class_class_initialisation.rpf *****}
+
+ROUTINE re_context_cache_header_class_class_initialisation ( self )
+
+{
+*
+*    Initialise the cache class
+*
+*******************************************************************************}
+
+    self . add_index ( "RESULT_NAME"  )
+    self . add_index ( "RESULT_ORDER" )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_header_class_action_add_result.rpf *****}
+
+ROUTINE re_context_cache_header_class_action_add_result (       self          ,
+                                                          VALUE test_number   ,
+                                                          VALUE component     ,
+                                                          VALUE result_text   ,
+                                                          VALUE result_val    ,
+                                                                result_object )
+
+{
+*
+*    Add result to internal cache
+*
+*******************************************************************************}
+
+    DECLARE result_item
+
+    result_item = self . get_by_index ( "RESULT_NAME"           ,
+                                        test_number : component )
+
+    IF result_item = EMPTY THEN
+
+        CREATE OBJECT RE_CONTEXT_CACHE_RESULT_CLASS, result_item
+
+        result_item . result_object = result_object
+        result_item . result_name   = test_number : component
+        result_item . result_order  = test_number : SELECT result . order_number
+                                                   IN OBJECT result_object
+
+        self . add ( result_item )
+
+    ENDIF
+
+    result_item . result_text   = result_text
+    result_item . result_val    = result_val
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_header_class_action_get_result.rpf *****}
+
+ROUTINE re_context_cache_header_class_action_get_result (       self          ,
+                                                          VALUE test_number   ,
+                                                          VALUE component     ,
+                                                                result_text   ,
+                                                                result_val    ,
+                                                                result_object )
+
+{
+*
+*    Lookup the specified result in the internal cache
+*
+*******************************************************************************}
+
+    DECLARE result_item,
+            ret_value
+
+    result_item = self . get_by_index ( "RESULT_NAME"           ,
+                                        test_number : component )
+
+    IF result_item <> EMPTY THEN
+
+        result_text   = result_item . result_text
+        result_val    = result_item . result_val
+        result_object = result_item . result_object
+
+        ret_value = TRUE
+
+    ELSE
+
+        ret_value = FALSE
+
+    ENDIF
+
+    RETURN ( ret_value )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_header_class_action_remove_result.rpf *****}
+
+ROUTINE re_context_cache_header_class_action_remove_result (       self          ,
+                                                             VALUE test_number   ,
+                                                             VALUE component     )
+
+{
+*
+*    Remove result from internal cache
+*
+*******************************************************************************}
+
+    DECLARE result_item, item_number
+
+    result_item = self . get_by_index ( "RESULT_NAME"           ,
+                                        test_number : component )
+
+    IF result_item <> EMPTY THEN
+
+        item_number = self . find_object ( result_item )
+        self . remove_by_number ( item_number )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_result_class_action_lock_sample.rpf *****}
+
+ROUTINE re_context_cache_result_class_action_lock_sample ( self )
+
+{
+*
+*    Call the lock function on the sample object for each result object
+*    in the collection
+*
+*******************************************************************************}
+
+    DECLARE sample_was_upgraded
+
+    IF NOT self .
+              result_object .
+                 test_object .
+                    sample_object . lock_upgrade ( sample_was_upgraded ) THEN
+
+        self . collection . error_occurred = TRUE
+        self . collection . error_message  = "RESULT_ENTRY_SAMPLELOCKED"
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_result_class_action_flush_object.rpf *****}
+
+ROUTINE re_context_cache_result_class_action_flush_object ( self )
+
+{
+*
+*    Call the flush function on the object in the collection
+*
+*******************************************************************************}
+
+    self . result_object . flush_result ( self . result_object . grid )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_result_class_action_update_object.rpf *****}
+
+ROUTINE re_context_cache_result_class_action_update_object ( self )
+
+{
+*
+*    Call the update function on the object in the collection
+*
+*******************************************************************************}
+
+    self . result_object . update_result_object ( self . result_object . grid )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_result_class_action_redisplay_object.rpf *****}
+
+ROUTINE re_context_cache_result_class_action_redisplay_object ( self )
+
+{
+*
+*    Call the redisplay action on the object in the collection
+*
+*******************************************************************************}
+
+    self . result_object . redisplay ( ) 
+
+ENDROUTINE
+
+
+{***** ROUTINE re_context_cache_result_class_action_reset_object.rpf *****}
+
+ROUTINE re_context_cache_result_class_action_reset_object ( self )
+
+{
+*
+*    Call the reset action on the object in the collection
+*
+*******************************************************************************}
+
+    IF self . result_object . reset_result ( self . result_object . grid ) THEN
+
+        self . result_object . redisplay ( )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE re_test_cache_header_class_class_initialisation.rpf *****}
+
+ROUTINE re_test_cache_header_class_class_initialisation ( self )
+
+{
+*
+*    Initialise the test cache class
+*
+*******************************************************************************}
+
+    self . add_index ( "TEST_NUMBER" )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_test_cache_header_class_action_add_test.rpf *****}
+
+ROUTINE re_test_cache_header_class_action_add_test (       self           ,
+                                                     VALUE test_number    ,
+                                                           test_object    ,
+                                                           result_context )
+
+{
+*
+*    Add test to internal cache
+*
+*******************************************************************************}
+
+    DECLARE test_item
+
+    test_item = self . get_by_index ( "TEST_NUMBER" ,
+                                      test_number   )
+
+    IF test_item = EMPTY THEN
+
+        CREATE OBJECT RE_TEST_CACHE_CLASS, test_item
+
+        test_item . test_number = test_number
+        test_item . test_object = test_object
+        object_assign_uncounted ( test_item . result_context ,
+                                  result_context             )
+
+        self . add ( test_item )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE re_test_cache_class_action_flush_object.rpf *****}
+
+ROUTINE re_test_cache_class_action_flush_object ( self )
+
+{
+*
+*    Call the flush function on the object in the collection
+*
+*******************************************************************************}
+
+    self . test_object . flush_test ( self . result_context )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_test_cache_class_action_reset_object.rpf *****}
+
+ROUTINE re_test_cache_class_action_reset_object ( self )
+
+{
+*
+*    Call the reset action on the object in the collection
+*
+*******************************************************************************}
+
+    self . test_object . reset_test ( )
+    self . test_object . redisplay ( )
+
+ENDROUTINE
+
+
+{***** ROUTINE radio_toggle.rpf *****}
+
+ROUTINE radio_toggle ( self )
+
+{
+*
+*    Called when a radio is toggled
+*
+*******************************************************************************}
+
+    IF self . tag = 1 THEN
+
+        self . parent_prompt . prompt_objects [ 1 ] . set_text ( TRUE )
+        self . parent_prompt . prompt_objects [ 2 ] . set_text ( FALSE )
+        self . parent_prompt . prompt_objects [ 3 ] . set_text ( FALSE )
+
+        self . parent_prompt . prompt_objects [ 4 ] . set_enabled ( FALSE )
+
+    ELSEIF self . tag = 2 THEN
+
+        self . parent_prompt . prompt_objects [ 1 ] . set_text ( FALSE )
+        self . parent_prompt . prompt_objects [ 2 ] . set_text ( TRUE )
+        self . parent_prompt . prompt_objects [ 3 ] . set_text ( FALSE )
+
+        self . parent_prompt . prompt_objects [ 4 ] . set_enabled ( FALSE )
+
+    ELSEIF self . tag = 3 THEN
+
+        self . parent_prompt . prompt_objects [ 1 ] . set_text ( FALSE )
+        self . parent_prompt . prompt_objects [ 2 ] . set_text ( FALSE )
+        self . parent_prompt . prompt_objects [ 3 ] . set_text ( TRUE )
+
+        self . parent_prompt . prompt_objects [ 4 ] . set_enabled ( TRUE )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE lib_re_context_check_abort.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_check_abort ( VALUE test_count ,
+                                           warn_at    ,
+                                           run_to_end )
+
+{
+*
+*    Returns TRUE to abort select and sets the next warn event
+*
+*******************************************************************************}
+
+
+    DECLARE form     ,
+            pos      ,
+            row      ,
+            stop_now ,
+            mess_ptr
+
+    { Build the form }
+
+    CREATE OBJECT "STD_FORM", form
+
+    message_fetch ( "LIB_RE_CRITERIA_HEADER", mess_ptr )
+    message_add_parameter ( mess_ptr , STRIP ( test_count ))
+
+    form . header  = message_get_text ( mess_ptr, 1 )
+
+    form . width   = 43
+    form . height  = 4
+    form . row     = 10
+    form . column  = 37
+
+    form . return_behaviour  = FORM_RETURN_WRAP
+    form . confirm_required  = FALSE
+    form . button_style      = FORM_BUTTON_CLOSE
+
+    { Add the Prompts }
+
+    pos = 1
+    row = 1
+
+    PROMPT OBJECT form . prompt_objects [ pos ]
+         AT 2, row
+         BROWSE ON BOOLEAN
+         WITH ( value           = FALSE          ,
+                is_radio        = TRUE           ,
+                toggled_routine = "radio_toggle" ,
+                caption         = GET_USER_MESSAGE ( "LIB_RE_CRITERIA_STOP",1 ))
+
+    pos = 2
+    row = 2
+
+    PROMPT OBJECT form . prompt_objects [ pos ]
+         AT 2, row
+         BROWSE ON BOOLEAN
+         WITH ( value           = FALSE          ,
+                is_radio        = TRUE           ,
+                toggled_routine = "radio_toggle" ,
+                caption         = GET_USER_MESSAGE ( "LIB_RE_CRITERIA_RUN_TO_END",1 ))
+
+    pos = 3
+    row = 3
+
+    PROMPT OBJECT form . prompt_objects [ pos ]
+         AT 2, row
+         BROWSE ON BOOLEAN
+         WITH ( value           = TRUE           ,
+                is_radio        = TRUE           ,
+                toggled_routine = "radio_toggle" ,
+                caption         = GET_USER_MESSAGE ( "LIB_RE_CRITERIA_WARN",1 ))
+
+    pos = 4
+    row = 4
+
+    form . add_display ( GET_USER_MESSAGE ( "LIB_RE_CRITERIA_AMOUNT",1 ),
+                         4, row, PROMPT_RENDITION_NORMAL )
+
+    PROMPT OBJECT form . prompt_objects [ pos ]
+         AT 29, row
+         BROWSE ON INTEGER
+         WITH ( value = ( test_count * 2 ))
+
+    form . start_prompt ( )
+    form . wait_prompt  ( )
+
+    stop_now   = form . prompt_objects [ 1 ] . value
+    run_to_end = form . prompt_objects [ 2 ] . value
+    warn_at    = form . prompt_objects [ 4 ] . value
+
+    form . end_prompt   ( )
+
+    RETURN ( stop_now )
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE lib_re_context_initialise.rpf *****}
+
+GLOBAL ROUTINE lib_re_context_initialise
+
+{
+*
+*    Define result entry base class
+*
+*******************************************************************************}
+
+IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+    line_editor_initialise_new ()
+    set_up_std_prompt_picture_class ()
+
+        { Classes used by result cache }
+
+        DEFINE CLASS RE_CONTEXT_CACHE_HEADER_CLASS
+
+                INHERIT
+                        "STD_COLLECTION"
+
+                PROPERTIES
+            "ERROR_OCCURRED" ,
+            "ERROR_MESSAGE"
+
+                ACTIONS
+                        "ADD_RESULT"    ,
+                        "GET_RESULT"    ,
+                        "REMOVE_RESULT"
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS RE_CONTEXT_CACHE_RESULT_CLASS
+
+                INHERIT
+                        "STD_COLLECTED"
+
+                PROPERTIES
+                        "RESULT_ORDER"   ,
+                        "RESULT_NAME"    ,
+                        "RESULT_TEXT"    ,
+                        "RESULT_VAL"     ,
+                        "RESULT_OBJECT"
+
+        ACTIONS
+            "LOCK_SAMPLE"      ,
+            "FLUSH_OBJECT"     ,
+            "UPDATE_OBJECT"    ,
+            "REDISPLAY_OBJECT" ,
+            "RESET_OBJECT"
+
+        END CLASS
+
+        { Classes used by test cache }
+
+        DEFINE CLASS RE_TEST_CACHE_HEADER_CLASS
+
+                INHERIT
+                        "STD_COLLECTION"
+
+                ACTIONS
+                        "ADD_TEST"    ,
+                        "REMOVE_TEST" 
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS RE_TEST_CACHE_CLASS
+
+                INHERIT
+                        "STD_COLLECTED"
+
+                PROPERTIES
+                        "TEST_NUMBER" ,
+                        "TEST_OBJECT" ,
+                        "RESULT_CONTEXT"
+
+                ACTIONS
+                        "FLUSH_OBJECT" ,
+                        "RESET_OBJECT"
+
+        END CLASS
+
+    { Base class for result entry }
+
+        DEFINE CLASS RESULT_CONTEXT_CLASS
+
+                PROPERTIES
+
+                        "RE_MODE"                 ,
+                        "CREATE_MATRIX"           ,
+                        "COMPONENT_COLLECTION"    ,
+                        "BROWSE_ROW"              ,
+                        "BROWSE_ON"               ,
+                        "AVI_FORM"                ,
+                        "PLAY_AVI_ALLOWED"        ,
+                        "ALLOWED_TEST_STATUS"     ,
+                        "ALLOWED_SAMPLE_STATUS"   ,
+                        "SINGLE_RESULT_COMMIT"    ,
+                        "EXISTING_TRANSACTION"    ,
+                        "PROPAGATE_STATUS"        ,
+                        "MLP_FORM"                ,
+                        "AUDIT_FORM"              ,
+                        "TOOLBOX"                 ,
+                        "TOOLBOX_OR_BUTTONS"      ,
+                        "INTERACTIVE"             ,
+                        "DEFAULT_DILUTION_FACTOR" ,
+                        "AUDIT_BOX_ON"            ,
+                        "INFO_BOX_ON"             ,
+                        "LIMITS_BOX_ON"           ,
+                        "INCIDENTS_ON"            ,
+                        "GRAPH_ON"                ,
+                        "INCIDENTS_FORM"          ,
+                        "GRAPH_FORM"              ,
+                        "RE_TREE_ON"              ,
+                        "RE_TREE_FORM"            ,
+                        "PARENT_RESULT_CONTEXT"   ,
+                        "RESULTS_TO_STORE"        ,
+                        "RESULT_CACHE"            ,
+                        "TESTS_TO_STORE"          ,
+                        "TEST_CACHE"              ,
+                        "IN_UPDATE_PHASE"         ,
+                        "PRE_COMMIT_CALLBACK"     ,
+                        "PRE_COMMIT_PARAMETER"    ,
+                        "POST_COMMIT_CALLBACK"    ,
+                        "POST_COMMIT_PARAMETER"   ,
+                        "TR_OVERRIDE_CACHE"       , { Training Record override cache                      }
+                        "IS_OVERRIDE_CACHE"       , { Instrument Status override cache                    }
+                        "DEFAULT_STOCK_BATCH"
+
+                ACTIONS
+
+                        "MLP_FAIL_MESSAGE"        ,
+                        "DISPLAY_COMPONENT_LIMITS",
+                        "DISPLAY_MESSAGE"         ,
+                        "PLAY_AVI"                ,
+                        "RESULT_INFO_SETUP"       ,
+                        "RESULT_INFO_EXIT"        ,
+                        "RESULT_INFO_PRE_PROMPT"  ,
+                        "RESULT_INFO_UPDATE"      ,
+
+                        "INFO_SCREENS_SETUP"      ,
+                        "INFO_SCREENS_COUNT"      ,
+                        "PROMPT_DILUTION_FACTOR"  ,
+                        "DILUTION_ALLOWED"        ,
+
+                        "WORKSHEET_STATUS_UPDATE" ,
+
+                        "GET_RESULT"              ,
+                        "GET_RESULT_FIRST"        ,
+                        "GET_RESULT_NEXT"         ,
+                        "ASK_STORE_RESULTS"       ,
+                        "ABANDON_RESULTS"         ,
+                        "STORE_RESULTS"           ,
+
+                        "SET_RESULT_CACHE"         ,
+                        "RESTORE_RESULT_CACHE"     ,
+                        "ADD_TO_RESULT_CACHE"      ,
+                        "REMOVE_FROM_RESULT_CACHE" ,
+
+                        "ADD_TO_TEST_CACHE"        ,
+                        "REMOVE_FROM_TEST_CACHE"   ,
+
+                        "START_WRITE_TRANSACTION"   ,
+                        "COMMIT"                    ,
+                        "ROLLBACK"                  ,
+                        "LOCK_RETAIN_OBJECT"        ,
+                        "LOCK_UPGRADE_OBJECT"       ,
+                        "LOCK_DOWNGRADE_OBJECT"     ,
+                        "TRANSACTION_ESIG_OVERRIDE" ,
+                        
+                        "PRE_COMMIT"                ,
+                        "POST_COMMIT"
+                        
+                INITIALISATION
+
+        END CLASS
+
+    SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_class_initialisation.rpf *****}
+
+ROUTINE result_context_class_class_initialisation ( result_context )
+
+        result_context . single_result_commit = GLOBAL ( "RES_SINGLE_RESULT" )
+        result_context . existing_transaction = FALSE
+        result_context . results_to_store     = 0
+        result_context . tests_to_store       = 0
+
+        result_context . propagate_status     = TRUE
+        result_context . browse_on            = ( GLOBAL ( "TERMTYPE" ) = "GUI" )
+        result_context . toolbox_or_buttons   = TRUE
+        result_context . interactive          = TRUE
+        result_context . avi_form             = EMPTY
+        result_context . in_update_phase      = FALSE
+
+        IF ( global_exists ( "RES_TOOLBOX" ) ) THEN
+                result_context . toolbox_or_buttons = GLOBAL ( "RES_TOOLBOX" )
+        ENDIF
+
+    result_context . default_dilution_factor = 1.0
+
+    result_context . audit_box_on  = GLOBAL ( "RES_AUDIT_BOX_ON"  )
+    result_context . info_box_on   = GLOBAL ( "RES_INFO_BOX_ON"   )
+    result_context . limits_box_on = GLOBAL ( "RES_LIMITS_BOX_ON" )
+        result_context . incidents_on  = GLOBAL ( "RES_INCIDENTS_ON"  )
+        result_context . graph_on      = GLOBAL ( "RES_GRAPH_ON"      )
+        result_context . re_tree_on    = GLOBAL ( "RES_SPLITTER"      )
+        result_context . play_avi_allowed = GLOBAL ( "RES_CALC_PLAY_AVI" )
+
+    result_context . parent_result_context = EMPTY
+
+    result_context . create_matrix = TRUE
+    
+    result_context . pre_commit_callback   = EMPTY
+    result_context . pre_commit_parameter  = EMPTY
+    result_context . post_commit_callback  = EMPTY
+    result_context . post_commit_parameter = EMPTY
+
+    result_context . tr_override_cache = EMPTY
+    result_context . is_override_cache = EMPTY
+    
+    result_context . default_stock_batch = EMPTY
+
+    CREATE OBJECT RE_CONTEXT_CACHE_HEADER_CLASS,
+                  result_context . result_cache
+
+    IF NOT ( user_cluster_exists ( LIB_RE_CLUSTER_NAME )) THEN
+
+        add_global_cluster ( LIB_RE_CLUSTER_NAME )
+
+    ENDIF
+
+    IF NOT ( user_global_exists ( LIB_RE_CLUSTER_NAME    ,
+                                  LIB_RE_CLUSTER_CONTEXT )) THEN
+
+        add_user_global ( LIB_RE_CLUSTER_NAME    ,
+                          LIB_RE_CLUSTER_CONTEXT )
+
+        assign_user_global ( LIB_RE_CLUSTER_NAME    ,
+                             LIB_RE_CLUSTER_CONTEXT ,
+                             EMPTY                  )
+
+    ENDIF
+
+    CREATE OBJECT RE_TEST_CACHE_HEADER_CLASS,
+                  result_context . test_cache
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_info_screens_setup.rpf *****}
+
+ROUTINE result_context_class_action_info_screens_setup ( result_context )
+
+    IF result_context . parent_result_context <> EMPTY THEN
+
+        result_context . audit_box_on  = result_context . parent_result_context . audit_box_on
+        result_context . info_box_on   = result_context . parent_result_context . info_box_on
+        result_context . limits_box_on = result_context . parent_result_context . limits_box_on
+        result_context . incidents_on  = result_context . parent_result_context . incidents_on
+        result_context . graph_on      = result_context . parent_result_context . graph_on
+
+    ENDIF
+
+    lib_re_mlp_create_mlp_form ( result_context )
+
+    lib_re_audit_create_audit_form ( result_context )
+
+    lib_re_incident_create_incidents_form ( result_context )
+
+    lib_re_tree_create_re_tree_form ( result_context )
+
+    lib_re_graph_create_graph_form ( result_context )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_info_screens_count.rpf *****}
+
+ROUTINE result_context_class_action_info_screens_count ( result_context )
+
+    DECLARE count
+
+    count = 0
+
+    IF result_context . audit_box_on THEN
+        count = count + 1
+    ENDIF
+
+    IF result_context . limits_box_on THEN
+        count = count + 1
+    ENDIF
+
+    IF result_context . incidents_on THEN
+        count = count + 1
+    ENDIF
+
+    IF result_context . graph_on THEN
+        count = count + 1
+    ENDIF
+
+    RETURN ( count )
+
+ENDROUTINE
+
+
+{***** ROUTINE lib_re_context_default_dilution.rpf *****}
+
+ROUTINE lib_re_context_default_dilution (       result_context ,
+                                grid           ,
+                          VALUE cell_column    ,
+                          VALUE cell_row       ,    
+                          VALUE column         ,
+                                          VALUE row            ,
+                                          VALUE cell_width     , 
+                                screen         ,
+                                          VALUE is_display     )
+
+{Analysis = result_context . analysis
+Analysis_ver = result_context . analysis_version
+Name = result_context . name
+
+dil = SELECT versioned_component . dilution_factor WHERE (analysis = Analysis) and (analysis_version = Analysis_ver) and (name = Name)
+}
+
+    IF is_display THEN
+
+        DISPLAY grid . user_info . default_dilution_factor
+            ON LINE row
+            FROM    column
+            TO      column + cell_width - 1
+            IN WINDOW screen
+            FORMAT result . dilution_factor
+
+    ELSE
+
+
+        PROMPT  FOR grid . user_info . default_dilution_factor
+            ON LINE row
+            FROM    column
+            TO      column + cell_width - 1
+            IN WINDOW screen
+            FORMAT result . dilution_factor
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_dilution_allowed.rpf *****}
+
+ROUTINE result_context_class_action_dilution_allowed ( result_context ,
+                                                       result_object  )   
+
+    DECLARE edit_dilution
+
+        IF result_object = EMPTY THEN
+
+                edit_dilution = global ( "DILUTION_DEFAULT_ENABLE" )
+
+        ELSEIF result_object . get_result_type () <> "N" THEN
+
+                edit_dilution = FALSE
+
+        ELSE
+
+                edit_dilution = global ( "DILUTION_ENABLE" )
+
+        ENDIF
+
+    RETURN ( edit_dilution )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_prompt_dilution_factor.rpf *****}
+
+ROUTINE result_context_class_action_prompt_dilution_factor ( result_context ,
+                                                             result_object  )   
+
+
+    DECLARE form            ,
+            header_mess     ,
+            dilution        ,
+            spike           ,
+            reselected      ,
+            prompt_details  ,
+            the_line_editor ,
+            edit_default    ,
+            edit_result     ,
+            next_field      ,
+            max_grid_width  ,
+            max_grid_height ,
+            orig_dilution   ,
+            orig_spike    ,
+            analysis    ,
+            analysis_ver    ,
+            name        ,
+            dil
+
+analysis = result_object . analysis
+analysis_ver = result_object . analysis_version
+name = result_object . name
+
+dil = SELECT versioned_component . dilution_factor WHERE (analysis = Analysis) and (analysis_version = Analysis_ver) and (name = Name)
+
+result_object . set_field ( "DILUTION_FACTOR" , dil         ,    result_context   )
+
+    IF result_object = EMPTY THEN
+
+        edit_result  = FALSE
+        edit_default = global ( "DILUTION_DEFAULT_ENABLE" )
+
+    ELSEIF result_object . get_result_type () <> "N" THEN
+
+        edit_result  = FALSE
+        edit_default = global ( "DILUTION_DEFAULT_ENABLE" )
+
+    ELSE
+
+        edit_result  = global ( "DILUTION_ENABLE" )
+        edit_default = global ( "DILUTION_DEFAULT_ENABLE" )
+
+    ENDIF
+
+    ARRAY prompt_details ARRAY_SIZE ( 0 , 7 )
+
+    next_field = 1
+
+    IF edit_default THEN
+
+        prompt_details [ next_field , 1 ] = get_user_message ( "RESULT_ENTRY_DEFAULT_DILUTION",1) 
+        prompt_details [ next_field , 2 ] = "ROUTINE"
+        prompt_details [ next_field , 3 ] = global ( "current_library")
+        prompt_details [ next_field , 4 ] = "lib_re_context_default_dilution"
+        
+        next_field = next_field + 1
+
+        header_mess = get_user_message ( 
+                          "RESULT_ENTRY_DILUTION_UNENTERED", 1 )
+
+    ENDIF
+
+    IF edit_result THEN
+
+        orig_dilution = dil
+
+        orig_dilution = SELECT result . dilution_factor
+                               IN OBJECT result_object
+
+        orig_spike = SELECT result . spike_value
+                            IN OBJECT result_object
+
+        { Make sure dilution is up to date }
+        result_object . set_default_dilution ( result_context )
+
+        prompt_details [ next_field , 1 ] = get_user_message ( "RESULT_ENTRY_ENTER_DILUTION",1) 
+        prompt_details [ next_field , 2 ] = "FORMAT"
+        prompt_details [ next_field , 3 ] = "RESULT"
+        prompt_details [ next_field , 4 ] = "DILUTION_FACTOR"
+        
+        next_field = next_field + 1
+
+        prompt_details [ next_field , 1 ] = get_user_message ( "RESULT_ENTRY_ENTER_SPIKE",1) 
+        prompt_details [ next_field , 2 ] = "FORMAT"
+        prompt_details [ next_field , 3 ] = "RESULT"
+        prompt_details [ next_field , 4 ] = "SPIKE_VALUE"
+
+        header_mess = get_user_message ( 
+                          "RESULT_ENTRY_DILUTION_ENTERED", 1 ) :
+                          result_object . get_field ( "Name" ) 
+
+    ENDIF
+
+    IF edit_result OR edit_default THEN
+
+        max_grid_width  = 60
+        max_grid_height = global ( "SCREEN_HEIGHT" ) - 9
+
+        max_grid_height = find_min_number ( max_grid_height                ,
+                            size_of_array ( prompt_details ))
+
+            PROMPT OBJECT the_line_editor
+                          ON LINE 1
+                          FROM    2
+                          CLASS "STD_LINE_EDITOR"
+                          WITH ( title_width = 32                ,
+                                 height = max_grid_height        ,
+                                 width  = max_grid_width         ,
+                                 prompt_details = prompt_details ,
+                     user_info      = result_context )
+
+        IF edit_result THEN
+            the_line_editor . object = result_object
+        ENDIF
+
+            PROMPT OBJECT form
+                   CLASS PROMPT_CLASS_FORM
+                   ON LINE 10 FROM 10
+                   WITH ( header           = header_mess         ,
+                          width            = max_grid_width + 2  ,
+                          height           = max_grid_height     ,
+                          return_behaviour = FORM_RETURN_WRAP    ,   
+                          vgl_library      = global ( "current_library" ))
+
+        form . add_prompt ( the_line_editor )
+
+            form . start_prompt ()
+            form . wait_prompt  ()
+            form . stop_prompt  ()
+
+            IF form . get_lastkey () = "DO" THEN
+                
+            IF edit_result THEN
+
+                dilution = SELECT result . dilution_factor
+                                  IN OBJECT result_object
+
+                IF dilution <> orig_dilution THEN
+
+                    result_object . set_field ( "DILUTION_FACTOR" ,
+                                                 dilution         ,
+                                                 result_context   )
+
+                ENDIF
+
+                spike = SELECT result . spike_value
+                               IN OBJECT result_object
+
+                IF ( spike    <> orig_spike    ) OR
+                   ( dilution <> orig_dilution ) THEN
+
+                    IF result_object . upgrade_lock ( reselected ) THEN
+
+                        result_context .
+                           start_write_transaction ( "Dilution Factor" )
+
+                        result_object . update ( result_context )
+
+                        result_context . commit ( )
+                        result_object . downgrade_lock ( result_context )
+
+                        result_object . recalculate_formulas ( 
+                                          result_context )
+
+                    ELSE
+
+                        flash_message ( "RESULT_ENTRY_LOCKED" , TRUE )
+
+                    ENDIF
+
+                ENDIF
+
+            ENDIF
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( "RESULT_ENTRY_NO_DILUTION" , TRUE )
+
+    ENDIF
+                                        
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_mlp_fail_message.rpf *****}
+
+ROUTINE result_context_class_action_mlp_fail_message ( result_context ,
+                                                       mlp_level      ,
+                                                       mlp_component  ,
+                                                       mlp_operation  ,
+                                                       limit          )
+
+        DECLARE mlp_fail_window,window_line, message_array,
+        sample, analysis,name
+
+        ARRAY message_array ARRAYSIZE (4)
+
+    IF global ( "SAMP_BROWSE" ) = "T" THEN
+
+        sample = SELECT sample . id_text IN OBJECT mlp_operation .
+                               sample_row
+
+    ELSE    
+
+        sample = SELECT sample . id_numeric IN OBJECT mlp_operation .
+                                  sample_row
+
+    ENDIF
+
+    analysis = strip ( SELECT test . analysis IN OBJECT mlp_operation .
+                                 test_row     )  :
+           "/"                                                       :
+           strip ( number_to_text ( SELECT test . test_count 
+                        IN OBJECT mlp_operation . test_row,
+                        "999"                            ))        
+
+    name     = strip ( SELECT result . name IN OBJECT mlp_operation .
+                              result_row    )
+
+    message_array [ 1 ] = strip ( sample   ) : " /" :
+                  strip ( analysis ) : " /" :
+                  strip ( name     )
+
+        { Line two }
+
+        message_fetch ( "RESULT_ENTRY_MLP_LEVEL_ID",
+                        window_line )
+        message_add_parameter ( window_line,
+                                SELECT limit_view . level_id
+                                                IN OBJECT limit )
+        message_array [2] = window_line
+
+        { Line three }
+
+        message_array [3] = limit . message ( mlp_operation )
+
+        { Line four }
+
+        message_array [4] = SELECT mlp_level . display_message
+                        IN OBJECT mlp_level
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+                flash_messages ( "RESULT_ENTRY_MLP_TITLE" ,
+                                 "" ,
+                                 message_array ,
+                                 TRUE )
+
+        ELSE
+
+                CREATE TEXT WINDOW mlp_fail_window HEIGHT 4 WIDTH 70 BORDER
+
+                PASTE TEXT WINDOW mlp_fail_window
+                        ON LINE GLOBAL ( "SCREEN_HEIGHT" ) - 6
+                        FROM (( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) / 2 )
+
+                DISPLAY message_array [1] BOLD
+                        ON LINE 1 FROM 2
+                        IN WINDOW mlp_fail_window
+
+                DISPLAY message_array [2] BOLD
+                        ON LINE 2 FROM 2
+                        IN WINDOW mlp_fail_window
+
+                DISPLAY message_array [3] BOLD
+                        ON LINE 3 FROM 2
+                        IN WINDOW mlp_fail_window
+
+                DISPLAY message_array [4] BOLD
+                        ON LINE 4 FROM 2
+                        IN WINDOW mlp_fail_window
+
+                screen_beep ( )
+
+                pause ()
+
+                UNPASTE TEXT WINDOW mlp_fail_window
+
+        ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_display_component_limits.rpf *****}
+
+ROUTINE result_context_class_action_display_component_limits ( result_context ,
+                                                               result_object  )
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+        ELSEIF result_context . browse_on THEN
+
+                window_begin_update ( result_context . parent_prompt . window )
+
+                CLEAR LINE result_context . browse_row FROM 1
+                        IN WINDOW result_context . parent_prompt . window
+
+                DISPLAY result_object . get_browse_string ( )
+                        ON LINE result_context . browse_row
+                        FROM 1
+                        TO result_context . parent_prompt . width
+                        IN WINDOW result_context . parent_prompt . window
+                        WITH ( lowered = TRUE )
+
+                window_end_update ( result_context . parent_prompt . window )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_display_message.rpf *****}
+
+ROUTINE result_context_class_action_display_message (       result_context  ,
+                                                      VALUE message_id      ,
+                                                      VALUE show_message    )
+
+        DECLARE message_text,
+                main_form ,
+                status_prompt
+
+
+    IF result_context . parent_prompt . parent_prompt <> EMPTY THEN
+        main_form = result_context . parent_prompt . parent_prompt
+    ELSE
+        main_form = result_context . parent_prompt
+    ENDIF
+
+    status_prompt = main_form . display_objects [ main_form . status_prompt ]
+
+    IF show_message THEN
+
+        message_text = GET_USER_MESSAGE ( message_id, 1 )
+
+        IF message_text = ERROR THEN
+                message_text = message_id
+        ENDIF
+
+        status_prompt . set_text ( message_text )
+
+        ELSE
+
+        status_prompt . set_text ( "" )
+
+                ENDIF
+
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_play_avi.rpf *****}
+
+ROUTINE result_context_class_action_play_avi (       result_context  ,
+                                               VALUE message_id      ,
+                                               VALUE file_name       ,
+                                               VALUE show_message    )
+
+    DECLARE message_text,
+            animation,
+            client_name,
+            errors
+
+    IF ( NOT result_context . play_avi_allowed ) THEN
+
+        { Do Nothing }
+
+    ELSEIF show_message THEN
+
+            message_text = GET_USER_MESSAGE ( message_id, 1 )
+
+            IF message_text = ERROR THEN
+                    message_text = message_id
+            ENDIF
+
+        CREATE OBJECT "STD_FORM", result_context . avi_form
+
+        result_context . avi_form . icon   = "INT_BLANK"
+        result_context . avi_form . header = message_text
+        result_context . avi_form . width  = find_max_number ( 22                    ,
+                                                               length ( message_text ))
+        result_context . avi_form . height = 4
+        result_context . avi_form . row    = ( GLOBAL ( "GUI_HEIGHT" ) / 2 ) -
+                                             ( result_context . avi_form . height / 2 )
+        result_context . avi_form . column = ( GLOBAL ( "GUI_WIDTH"  ) / 2 ) -
+                                             ( result_context . avi_form . width  / 2 )
+
+        result_context . avi_form . button_style = FORM_BUTTON_NONE
+
+        errors = client_get_resource_name ( file_name, client_name )
+
+        IF errors = EMPTY THEN
+
+            CREATE OBJECT PROMPT_PICTURE_CLASS , animation
+
+            animation . row    = 1
+            animation . column = find_max_number (
+                                   3                                              ,
+                                   ( result_context . avi_form . width - 20 ) / 2 )
+    
+            animation . set_animate ( client_name )
+    
+            result_context . avi_form . add_prompt ( animation )
+    
+        ENDIF
+
+        result_context . avi_form . start_prompt ( )
+
+    ELSE
+
+        result_context . avi_form . end_prompt ( )
+        result_context . avi_form = EMPTY
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_result_info_setup.rpf *****}
+
+ROUTINE result_context_class_action_result_info_setup ( result_context )
+
+        IF result_context . info_box_on THEN
+
+                CALL_ROUTINE "RESULT_INFO_SETUP"
+                        IN LIBRARY "$RESL_USER"
+                        USING result_context . re_mode , result_context
+
+        ENDIF
+
+    IF result_context . audit_box_on THEN
+
+        lib_re_audit_set_visible ( result_context, TRUE )
+
+    ENDIF
+
+    IF result_context . limits_box_on THEN
+
+        lib_re_mlp_set_visible ( result_context, TRUE )
+
+    ENDIF
+
+    IF result_context . incidents_on THEN
+
+        lib_re_incident_set_visible ( result_context, TRUE )
+
+    ENDIF
+
+    IF result_context . graph_on THEN
+
+        lib_re_graph_set_visible ( result_context, TRUE )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_result_info_exit.rpf *****}
+
+ROUTINE result_context_class_action_result_info_exit ( result_context )
+
+    IF result_context . parent_result_context = EMPTY THEN
+
+        IF result_context . info_box_on THEN
+
+                    CALL_ROUTINE "RESULT_INFO_EXIT"
+                            IN LIBRARY "$RESL_USER"
+                            USING result_context . re_mode
+
+            ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_result_info_pre_prompt.rpf *****}
+
+ROUTINE result_context_class_action_result_info_pre_prompt ( result_context ,
+                                                             result_object  )
+
+        DECLARE re_mode , window , column , row , cell_width , cell_height
+
+        IF result_context . info_box_on AND
+       ( object_check_action ( result_context, "CONVERT_POSITION" )) THEN
+
+            row = 1
+            column = 1
+
+                result_context . convert_position
+                                          ( result_context . current_column ,
+                                            result_context . current_row    ,
+                                            window                          ,
+                                            column                          ,
+                                            row                             ,
+                                            cell_width                      ,
+                                            cell_height                     )
+
+                IF global ( "TERMTYPE" ) <> "GUI" THEN
+
+                        screen_get_abs_position ( window ,
+                                                  column ,
+                                                  row    ,
+                                                  column ,
+                                                  row    )
+                ENDIF
+
+                re_mode = RE_DISPLAY
+
+                object_set_current_table ( result_object , "RESULT" )
+
+                screen_end_update ( )
+
+                CALL_ROUTINE "RESULT_INFO_MAIN"
+                        IN LIBRARY "$RESL_USER"
+                        USING re_mode , column , row
+
+                screen_begin_update ( )
+
+                object_copy_current_table ( result_object ,  "RESULT" )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_result_info_update.rpf *****}
+
+ROUTINE result_context_class_action_result_info_update ( result_context ,
+                                                         result_object  )
+
+        DECLARE re_mode , new_status , window , column , row ,
+                cell_width , cell_height
+
+        IF result_context . info_box_on AND
+       ( object_check_action ( result_context, "CONVERT_POSITION" )) THEN
+
+            row = 1
+            column = 1
+
+                result_context . convert_position
+                                          ( result_context . current_column ,
+                                            result_context . current_row    ,
+                                            window                          ,
+                                            column                          ,
+                                            row                             ,
+                                            cell_width                      ,
+                                            cell_height                     )
+
+                IF global ( "TERMTYPE" ) <> "GUI" THEN
+
+                        screen_get_abs_position ( window ,
+                                                  column ,
+                                                  row    ,
+                                                  column ,
+                                                  row    )
+                ENDIF
+
+                object_set_current_table ( result_object , "RESULT" )
+
+                new_status = SELECT result . status
+
+                IF new_status = "E" THEN
+
+                        re_mode = RE_ADD
+
+                ELSEIF new_status = "M" THEN
+
+                        re_mode = RE_MODIFY
+
+                ELSEIF new_status = "A" THEN
+
+                        re_mode = RE_AUTHORISE
+
+                ELSEIF new_status = "R" THEN
+
+                        re_mode = RE_AUTHORISE
+                        
+        ELSE
+        
+            re_mode = RE_DISPLAY
+
+                ENDIF
+
+                CALL_ROUTINE "RESULT_INFO_MAIN"
+                        IN LIBRARY "$RESL_USER"
+                        USING re_mode , column , row
+
+                object_copy_current_table ( result_object ,  "RESULT" )
+
+        ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_worksheet_status_update.rpf *****}
+
+ROUTINE result_context_class_action_worksheet_status_update ( result_context )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_get_result.rpf *****}
+
+ROUTINE result_context_class_action_get_result (       result_context ,
+                                                 VALUE test_number    ,
+                                                 VALUE name           )
+
+        RETURN ( EMPTY )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_get_result_first.rpf *****}
+
+ROUTINE result_context_class_action_get_result_first (       result_context ,
+                                                       VALUE test_number    ,
+                                                       VALUE name           ,
+                                                             internal_param )
+
+        RETURN ( EMPTY )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_get_result_next.rpf *****}
+
+ROUTINE result_context_class_action_get_result_next (       result_context ,
+                                                      VALUE test_number    ,
+                                                      VALUE name           ,
+                                                            internal_param )
+
+        RETURN ( EMPTY )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_ask_store_results.rpf *****}
+
+ROUTINE result_context_class_action_ask_store_results ( self )
+
+{
+*    Ask if we want to save any outstanding results
+*
+******************************************************************************}
+
+    DECLARE answer, certain
+
+    IF ( self . results_to_store > 0 ) OR 
+       ( self . tests_to_store   > 0 ) THEN
+
+        REPEAT
+
+            answer = client_message_box (
+                       get_user_message ( "RESULT_ENTRY_SAVE_RES_MESS", 1 ),
+                       get_user_message ( "RESULT_ENTRY_SAVE_RES_HEAD", 1 ),
+                       MB_YESNOCANCEL + MB_ICONQUESTION                    )
+
+            IF answer = IDYES THEN
+
+                self . store_results ( RE_NO_AUDIT_SUPPRESS )
+                certain = TRUE
+
+            ELSEIF answer = IDNO THEN
+
+                certain = self . abandon_results ( )
+
+            ELSE
+
+                certain = TRUE
+
+            ENDIF
+
+        UNTIL certain
+
+    ELSE
+
+        answer = IDYES
+
+    ENDIF
+
+    answer = ( answer <> IDCANCEL )
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_abandon_results.rpf *****}
+
+ROUTINE result_context_class_action_abandon_results ( self )
+
+{
+*    Ask if we want to loose any outstanding results
+*
+******************************************************************************}
+
+    DECLARE certain
+
+    IF ( self . results_to_store > 0 ) OR
+       ( self . tests_to_store   > 0 ) THEN
+
+        certain = confirm_with_message ( "RESULT_ENTRY_LOOSE_CURRENT" )
+
+        IF certain THEN
+
+            ROLLBACK
+
+            { Do test first so that results use original test      }
+            { status when working out whether result is modifiable }
+
+            self . test_cache   . invoke_all ( "RESET_OBJECT" )
+            self . result_cache . invoke_all ( "RESET_OBJECT" )
+
+            self . result_cache . remove_all ( )
+            self . test_cache   . remove_all ( )
+
+            self . results_to_store = 0
+            self . tests_to_store   = 0
+
+            ROLLBACK
+
+        ENDIF
+
+    ELSE
+
+        certain = TRUE
+
+    ENDIF
+
+    RETURN ( certain )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_pre_commit.rpf *****}
+
+ROUTINE result_context_class_action_pre_commit ( self )
+
+{
+*    Trigger any callbacks before COMMIT
+*
+******************************************************************************}
+
+    DECLARE lib, rout
+
+    IF lib_utils_get_callback ( self . pre_commit_callback ,
+                                EMPTY                      ,
+                                lib                        ,
+                                rout                       ) THEN
+
+        IF self . pre_commit_parameter <> EMPTY THEN
+            CALL_ROUTINE rout
+                USING    self, self. pre_commit_parameter
+                IN LIBRARY lib
+        ELSE
+            CALL_ROUTINE rout
+                USING    self
+                IN LIBRARY lib
+        ENDIF
+        
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_post_commit.rpf *****}
+
+ROUTINE result_context_class_action_post_commit ( self )
+
+{
+*    Trigger any callbacks after COMMIT
+*
+******************************************************************************}
+
+    DECLARE lib, rout
+
+    IF lib_utils_get_callback ( self . post_commit_callback ,
+                                EMPTY                       ,
+                                lib                         ,
+                                rout                        ) THEN
+
+        IF self . post_commit_parameter <> EMPTY THEN
+            CALL_ROUTINE rout
+                USING    self, self. post_commit_parameter
+                IN LIBRARY lib
+        ELSE
+            CALL_ROUTINE rout
+                USING    self
+                IN LIBRARY lib
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_store_results.rpf *****}
+
+ROUTINE result_context_class_action_store_results (       self            ,
+                                                    VALUE suppress_audits )
+
+{
+*    Save any outstanding results
+*
+******************************************************************************}
+
+    DECLARE old_audit_suppression, do_store
+
+    IF ( self . results_to_store > 0 ) OR
+       ( self . tests_to_store   > 0 ) THEN
+
+        IF suppress_audits THEN
+            old_audit_suppression = GLOBAL ( "AUDIT_SUPPRESSION" )
+            SET GLOBAL "AUDIT_SUPPRESSION" TO "PROMPT"
+        ENDIF
+
+        self. in_update_phase = TRUE
+        self . result_cache . error_occurred = FALSE
+
+        IF GLOBAL ( "RES_OPT_SAMPLE" ) THEN
+            self . result_cache . invoke_all ( "LOCK_SAMPLE" )
+        ENDIF
+
+        IF self . result_cache . error_occurred THEN
+            flash_message ( self . result_cache . error_message, TRUE )
+            self . abandon_results ( )
+            do_store = FALSE
+        ELSE
+            do_store = TRUE
+        ENDIF
+
+        IF do_store THEN
+
+            START WRITE TRANSACTION
+                  GET_USER_MESSAGE ( "RESULT_ENTRY_TRANSACTION", 1 )
+
+            self . result_cache . invoke_all ( "FLUSH_OBJECT" )
+            self . test_cache   . invoke_all ( "FLUSH_OBJECT" )
+
+            self . result_cache . invoke_all ( "UPDATE_OBJECT" )
+
+            self . pre_commit ( )
+
+            COMMIT
+
+            self. in_update_phase = FALSE
+
+            self . result_cache . invoke_all ( "REDISPLAY_OBJECT" )
+
+            self . result_cache . remove_all ( )
+            self . test_cache   . remove_all ( )
+
+            IF suppress_audits THEN
+                SET GLOBAL "AUDIT_SUPPRESSION" TO old_audit_suppression
+            ENDIF
+
+            self . results_to_store = 0
+            self . tests_to_store   = 0
+
+            IF self . re_tree_on THEN
+                self . re_tree_form . reset ( )
+            ENDIF
+
+            self . post_commit ( )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_start_write_transaction.rpf *****}
+
+ROUTINE result_context_class_action_start_write_transaction (
+                                                    result_context ,
+                                              VALUE trans_message  )
+
+{
+*
+*    Start a write transaction if required
+*
+*******************************************************************************}
+
+    IF NOT transaction_is_write ( ) THEN
+
+        IF result_context . single_result_commit THEN
+
+            START WRITE TRANSACTION trans_message
+
+        ELSE
+
+            {
+
+            START WRITE TRANSACTION
+              GET_USER_MESSAGE ( "RESULT_ENTRY_TRANSACTION", 1 )
+
+            }
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_commit.rpf *****}
+
+ROUTINE result_context_class_action_commit ( result_context )
+
+{
+*
+*    Commit changes if in single result mode
+*
+*******************************************************************************}
+
+    DECLARE do_commit
+
+    do_commit = ( result_context . single_result_commit AND
+                  NOT result_context . existing_transaction )
+
+    IF do_commit THEN
+
+        COMMIT
+
+    ENDIF
+
+    RETURN ( do_commit )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_rollback.rpf *****}
+
+ROUTINE result_context_class_action_rollback ( result_context )
+
+{
+*
+*    Commit changes if in single result mode
+*
+*******************************************************************************}
+
+    DECLARE do_rollback
+
+    do_rollback = ( result_context . single_result_commit AND
+                    NOT result_context . existing_transaction )
+
+    IF do_rollback THEN
+
+        COMMIT
+
+    ENDIF
+
+    RETURN ( do_rollback )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_lock_retain_object.rpf *****}
+
+ROUTINE result_context_class_action_lock_retain_object (       result_context,
+                                                         VALUE tab_name      ,
+                                                               object        )
+
+{
+*
+*    Lock retain if required
+*
+*******************************************************************************}
+
+    IF result_context . re_mode = RE_DISPLAY THEN
+
+    ELSEIF result_context . single_result_commit THEN
+
+        lock_retain_object ( tab_name, object )
+
+    ELSE
+
+        lock_retain_as_current_object ( tab_name, object )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_lock_upgrade_object.rpf *****}
+
+ROUTINE result_context_class_action_lock_upgrade_object (       result_context,
+                                                          VALUE tab_name      ,
+                                                                object        ,
+                                                                reselected    )
+
+{
+*
+*    Lock upgrade
+*
+*******************************************************************************}
+
+    DECLARE was_reselected,
+            return_val
+
+    IF NOT lock_validate_object ( tab_name, object ) THEN
+    
+        object . reselect ( )
+        was_reselected = TRUE
+
+    ELSE
+    
+        was_reselected = FALSE
+
+    ENDIF
+
+    return_val = lock_upgrade_object ( tab_name   ,
+                                   object     ,
+                                       reselected )
+
+    IF was_reselected THEN
+        
+        reselected = TRUE
+
+    ENDIF
+
+    RETURN ( return_val )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_lock_downgrade_object.rpf *****}
+
+ROUTINE result_context_class_action_lock_downgrade_object (       result_context,
+                                                            VALUE tab_name      ,
+                                                                  object        )
+
+{
+*
+*    Lock downgrade if required
+*
+*******************************************************************************}
+
+    IF result_context . single_result_commit THEN
+
+        lock_downgrade_object ( tab_name, object )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_transaction_esig_override.rpf *****}
+
+ROUTINE result_context_class_action_transaction_esig_override ( result_context )
+
+{
+*
+*    Transaction Esig Override if required
+*
+*******************************************************************************}
+
+    IF result_context . single_result_commit THEN
+
+        transaction_esig_override ( )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_set_result_cache.rpf *****}
+
+ROUTINE result_context_class_action_set_result_cache ( self )
+
+{
+*
+*    Set the global cluster to point this contexts cache
+*
+*******************************************************************************}
+
+    DECLARE old_value
+
+    old_value  = read_user_global ( LIB_RE_CLUSTER_NAME    ,
+                                    LIB_RE_CLUSTER_CONTEXT )
+
+    assign_user_global ( LIB_RE_CLUSTER_NAME    ,
+                         LIB_RE_CLUSTER_CONTEXT ,
+                         self                   )
+
+    RETURN ( old_value )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_restore_result_cache.rpf *****}
+
+ROUTINE result_context_class_action_restore_result_cache ( self        ,
+                                                           old_context )
+
+{
+*
+*    Set the global cluster to point this contexts cache
+*
+*******************************************************************************}
+
+    assign_user_global ( LIB_RE_CLUSTER_NAME    ,
+                         LIB_RE_CLUSTER_CONTEXT ,
+                         old_context            )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_add_to_result_cache.rpf *****}
+
+ROUTINE result_context_class_action_add_to_result_cache (       self          ,
+                                                          VALUE test_number   ,
+                                                          VALUE component     ,
+                                                          VALUE result_text   ,
+                                                          VALUE result_val    ,
+                                                                result_object )
+
+{
+*
+*    Add a result to the result cache mechanism
+*
+*******************************************************************************}
+
+    self . result_cache . add_result ( test_number   ,
+                                       component     ,
+                                       result_text   ,
+                                       result_val    ,
+                                       result_object )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_remove_from_result_cache.rpf *****}
+
+ROUTINE result_context_class_action_remove_from_result_cache (       self          ,
+                                                               VALUE test_number   ,
+                                                               VALUE component     )
+
+{
+*
+*    Remove a result to the result cache mechanism
+*
+*******************************************************************************}
+
+    self . result_cache . remove_result ( test_number   ,
+                                          component     )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_add_to_test_cache.rpf *****}
+
+ROUTINE result_context_class_action_add_to_test_cache (       self        ,
+                                                        VALUE test_number ,
+                                                              test_object )
+
+{
+*
+*    Add a test to the test cache mechanism
+*
+*******************************************************************************}
+
+    self . test_cache . add_test ( test_number ,
+                                   test_object ,
+                                   self        )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_context_class_action_remove_from_test_cache.rpf *****}
+
+ROUTINE result_context_class_action_remove_from_test_cache (       self        ,
+                                                             VALUE test_number ,
+                                                                   test_object )
+
+{
+*
+*    Remove a test from the test cache mechanism
+*
+*******************************************************************************}
+
+    self . test_cache . remove_test ( test_number ,
+                                      test_object ,
+                                      self        )
+
+ENDROUTINE
+
+
+{***** ROUTINE re_test_cache_header_class_action_remove_test.rpf *****}
+
+ROUTINE re_test_cache_header_class_action_remove_test (       self           ,
+                                                        VALUE test_number    ,
+                                                              test_object    ,
+                                                              result_context )
+
+{
+*
+*    Remove test from internal cache
+*
+*******************************************************************************}
+
+    DECLARE test_item, item_number
+
+    test_item = self . get_by_index ( "TEST_NUMBER" ,
+                                      test_number   )
+                                      
+    IF ( test_item <> EMPTY ) THEN
+    
+        item_number = self . find_object( test_item )
+        self . remove_by_number( item_number )
+        
+    ENDIF
+                                      
+ENDROUTINE
+

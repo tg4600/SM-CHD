@@ -1,0 +1,560 @@
+{SMP$REPORTS:ROSPRJOBLA.RPF}
+{---------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                       }
+{---------------------------------------------------------------------------------}
+{**A0047        270294  LPE     For selected Job Id, find Sampling Points in      }
+{                               prod_sched with Job Id's Product name.            }
+{                               Sampling points = "START" or <600 are passed      }
+{                               to routine print_labels                           }
+{**AS1082       020398  JDY     Modified structure to make it possible to         }
+{                               print labels for a known job name without         }
+{                               prompting the user for some job id.               }
+{**DS1101       140498  JDY     Removed restrictions on START and <600            }
+{**M1267        220800  HBe     Label format choise added                         }
+{**M1287        230101  HBe     Restrict search on prod_sched to group_id as      }
+{                               on the job                                        }
+{**M1351        240901  HBe     Restrict search on prod_sched to login_plant      }
+{                               on the job. (1287 modified)                       }
+{**M1413        240902  HBe     Enable ad-hoc label print for batches not in LIMS }
+{**M1436        06-12-02 HBe    Leading blanks included for all label formats     }
+{**M2003R1      05-10-03 HBe    Including versions on table PROD_SCHED selects    }
+{**M1539        25-02-03 HBe    Including select on physical samples on the job   }
+{---------------------------------------------------------------------------------}
+
+SET NAME "DISPLAY/"
+
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+
+JOIN LIBRARY ROSSAMPLAB
+
+
+{**M1267 22-8-00 HBe: Added sheet_defined to print_job_labels routine 
+                                                    and call for this}
+{**AS1082 2/3/98 JDy Added call to new global routine  }
+
+sheet = EMPTY
+
+print_job_labels ( EMPTY, sheet )
+
+GLOBAL ROUTINE print_job_labels (VALUE i_job_id, sheet_defined )
+
+         JOIN LIBRARY TOOLBOX
+         JOIN STANDARD_LIBRARY std_utils
+
+ENABLE WINDOWS
+
+{**AS1476 HBe 20-6-2003}
+group_checking = global ( "CHECK_GROUPS" )
+SET SECURITY FALSE
+{**AE1476}
+
+{**AE1082 2/3/98 JDy }
+
+ARRAY slogin_points
+ARRAY sam_points
+ARRAY txt_points ARRAYSIZE (0)
+ARRAY sample_temp
+
+{**MS1476 HBe 20-6-2003
+SET JOB_STATUS "V"
+}
+SET JOB_STATUS "UVC"
+{**ME1476}
+
+{**AS1082 2/3/98 JDy Added call to new global routine  }
+job_id = EMPTY
+
+IF   i_job_id <> EMPTY
+THEN job_id = i_job_id
+ELSE get_identity (  job_id , "Enter a Job Name. Cancel for Adhoc Labels" ,
+                              "Production Sample Labels" , "JOB_HEADER" , empty )
+ENDIF
+
+{**AS1413 HBe 24-9-2004: Handle adhoc labels}
+
+ARRAY empty_arr
+adhoc       = FALSE
+adhoc_mat   = EMPTY
+adhoc_batch = EMPTY
+adhoc_group = EMPTY
+
+IF ((job_id = EMPTY) OR (BLANK(job_id))) THEN
+
+   IF prompt_user ( "MLP_HEADER", "Enter Material number for the Adhoc label",
+                               EMPTY,
+                               TRUE, "Enter Material number for the Adhoc label:",
+                               empty_arr, adhoc_mat, l_k_j ) 
+   THEN
+      adhoc_mat = strip(adhoc_mat)
+      IF prompt_user ( "TEXT", "Enter up to 10 character batch number for the Adhoc label",
+                               EMPTY,
+                               FALSE, "Enter batch number for the Adhoc label",
+                               empty_arr, adhoc_batch, l_k_n ) 
+      THEN
+         IF length(adhoc_batch) > 10
+            FLASH_MESSAGE("Batch number exceeds 10 characters, exiting", TRUE)
+            EXIT
+         ENDIF
+         adhoc_group = STRIP(GLOBAL("default_group"))
+         ARRAY plant_select_arr
+               plant_select_arr[1,1] =  ARRAY_SELECT_EQ
+               plant_select_arr[1,2] =  "REMOVEFLAG"
+               plant_select_arr[1,3] =  FALSE
+         IF prompt_user ( "group_header", "Plant code selection", "identity", TRUE,
+                                       "Enter plant code to print labels for.",
+                                       plant_select_arr, adhoc_group, l_k_g )
+         THEN
+            IF  (adhoc_mat <> EMPTY)    AND (NOT BLANK(adhoc_mat))
+            AND (adhoc_batch <> EMPTY)  AND (NOT BLANK(adhoc_batch))
+            AND (adhoc_group <> EMPTY)  AND (NOT BLANK(adhoc_group))
+            THEN
+               adhoc = TRUE
+            ELSE
+               EXIT
+            ENDIF
+         ELSE
+            EXIT
+         ENDIF
+      ELSE
+         EXIT
+      ENDIF
+   ELSE
+      EXIT
+   ENDIF
+ENDIF
+
+{**AE1413}
+IF job_id <> EMPTY THEN
+{**AE1082 2/3/98 JDy }
+
+{**DS1082 2/3/98 JDy }
+{  get_identity (  job_id , "Enter Job ID for printing labels" ,
+                            "Enter Job ID :" , "JOB_HEADER" , empty )   }
+{**DE1082 2/3/98 JDy }
+
+{*AS1413}
+   IF adhoc then
+      samp_todo = 0
+{**AS 2003R1}
+      adhoc_prodver      = SELECT max_active_mlp_ver.max_version
+                           WHERE identity = adhoc_mat
+{**AE 2003R1}
+      adhoc_ts = SELECT prod_sched.test_schedule
+                 WHERE product_name = adhoc_mat
+                 AND product_version = adhoc_prodver
+                 AND group_id = adhoc_group
+      WHILE adhoc_ts <> EMPTY
+         samp_todo = samp_todo + 1
+         NEXT prod_sched
+         adhoc_ts = SELECT prod_sched.test_schedule
+      ENDWHILE
+   ELSE
+{AE1413}
+      samp_todo = SELECT job_header.samples_to_do
+                WHERE job_name = job_id
+{**AS1413}
+   ENDIF
+{**AE1413}
+
+
+   IF samp_todo <> 0 THEN
+      slogin_count    = 0
+      tmpl_count      = 0
+      sp_count        = 0
+      txt_count       = 0
+{**AS1413}
+      IF adhoc THEN
+         job_prodname = adhoc_mat
+         job_batch    = adhoc_batch
+         job_prodver  = adhoc_prodver
+      ELSE
+{**AE1413}
+         job_prodname    = SELECT job_header.product_name
+         job_batch       = SELECT job_header.batch_name
+         job_prodver     = SELECT MIN sample.product_version
+                           WHERE job_name = job_id
+                             AND status <> "X"
+{**AS1413}
+   ENDIF
+{**AE1413}
+
+{**MS1351 HBe 23-9-01: Using login_plant insteat of group_id
+[**AS1287 HBe 23/1-01]
+      job_group       = SELECT job_header.group_id
+[**AE1287]
+}
+{**AS1413}
+      IF adhoc THEN
+         job_group = adhoc_group
+      ELSE
+{**AE1413}
+         job_group       = SELECT job_header.login_plant
+         IF ((job_group = EMPTY) OR (BLANK(job_group)))
+         THEN
+         FLASH_MESSAGE("Login plant not available, please select plant code manually.", TRUE)
+
+         manual_group   = SELECT job_header.group_id
+
+            ARRAY plant_select_arr
+               plant_select_arr[1,1] =  ARRAY_SELECT_EQ
+               plant_select_arr[1,2] =  "REMOVEFLAG"
+               plant_select_arr[1,3] =  FALSE
+            IF prompt_user ( "group_header", "Plant code selection", "identity", TRUE,
+                                       "Enter plant code to print labels for.",
+                                       plant_select_arr, manual_group, l_k_c )
+            THEN
+               job_group = manual_group
+            ELSE
+               FLASH_MESSAGE("Group ID not available, Label print not possible.", TRUE)
+            ENDIF
+         ENDIF
+{**AS1413}
+      ENDIF
+{**AE1413}
+{**ME1351}
+
+      mlp_code = SELECT mlp_header.product_code
+                  WHERE identity = job_prodname
+                  AND product_version = job_prodver
+                   
+      mlp_code = SELECT mlp_header.product_code
+      IF mlp_code = EMPTY THEN
+         mlp_code = PAD(" "," ",10)
+      ELSE
+         l_c = LENGTH(mlp_code)
+         mlp_code = STRIP(mlp_code):PAD(" "," ",(10-l_c))
+      ENDIF
+
+{**M1287 HBe 23/1-01: "AND   group_id     = job_group" added in select below}
+
+{**M1539 HBe 24-2-2004: Base labels on actual login instead of prod_sched
+      cur_spoint = SELECT prod_sched.sampling_point
+                    WHERE product_name    = job_prodname
+                    AND   product_version = job_prodver
+                    AND   group_id        = job_group
+}
+
+{**AS1539 HBe 24-2-2004}
+
+     IF adhoc THEN
+        cur_spoint = SELECT prod_sched.sampling_point
+                        WHERE product_name    = job_prodname
+                        AND   product_version = job_prodver
+                        AND   group_id        = job_group
+     ELSE
+        cur_spoint = SELECT prod_sched.sampling_point
+                        WHERE product_name    = job_prodname
+                        AND   product_version = job_prodver
+                        AND   group_id        = job_group
+                        AND   test_schedule   = "NONE"     
+     ENDIF
+
+
+      WHILE cur_spoint <> EMPTY DO
+         IF NUMTEXT(cur_spoint) THEN
+            IF NOT point_exist (cur_spoint, sam_points)
+            THEN
+               sp_count = sp_count + 1
+               sam_points [sp_count,1] = STRIP(cur_spoint)
+            ENDIF
+         ELSE
+            IF NOT point_exist (cur_spoint, txt_points)
+            THEN
+               txt_count = txt_count + 1
+               txt_points [txt_count]  = STRIP(cur_spoint)
+            ENDIF
+         ENDIF
+         NEXT prod_sched
+         cur_spoint = SELECT prod_sched.sampling_point
+      ENDWHILE
+                   
+
+{**AE1539}
+
+      cur_spoint = SELECT sample.sampling_point
+                    WHERE job_name    = job_id
+                    AND status <> "X"
+
+
+      WHILE cur_spoint <> EMPTY DO
+         IF NUMTEXT(cur_spoint) THEN
+            IF NOT point_exist (cur_spoint, sam_points)
+            THEN 
+               sp_count = sp_count + 1
+               sam_points [sp_count,1] = STRIP(cur_spoint)
+            ENDIF
+         ELSE
+            IF NOT point_exist (cur_spoint, txt_points)
+            THEN
+               txt_count = txt_count + 1
+               txt_points [txt_count]  = STRIP(cur_spoint)
+            ENDIF
+         ENDIF
+{**AE1101 JDy 14/4/98 }
+{**MS1539 HBe 24-2-2004
+            NEXT prod_sched
+            cur_spoint = SELECT prod_sched.sampling_point
+
+}
+         NEXT sample
+         cur_spoint = SELECT sample.sampling_point
+{**ME1539}            
+      ENDWHILE
+
+
+      sort_num_points(sam_points,sp_count)
+      sort_txt_points(txt_points,txt_count)
+
+      count = 1
+      WHILE count <= txt_count DO
+         sp_count = sp_count + 1
+         sam_points [sp_count,1] = txt_points[count]
+         count = count + 1
+      ENDWHILE
+
+      count = 1
+      WHILE count <= sp_count DO
+        cur_sp = SELECT sample_point.identity
+                  WHERE identity = sam_points[count,1]
+
+        sam_points[count,2] = SELECT sample_point.deliv_location
+        sam_points[count,3] = SELECT sample_point.label_count
+        sam_points[count,4] = SELECT sample_point.description
+        sam_points[count,6] = SELECT sample_point.volume
+        count = count + 1
+      ENDWHILE
+
+      taken_date = " "
+      count = 1
+      WHILE count <= sp_count DO
+         cur_sample = SELECT sample.id_numeric
+                        WHERE ((sampling_point = sam_points[count,1]) AND
+                               (job_name = job_id))
+{**AS1413}
+        IF adhoc THEN
+           cur_sample = "ADHOC"
+        ENDIF
+{**AE1413}
+        IF cur_sample = EMPTY THEN
+           sam_points[count,5] = " "
+        ELSE
+           sam_points[count,5] = cur_sample
+{**AS1413}
+           IF adhoc THEN
+              taken_date = NOW
+           ELSE
+{**AE1413}
+              taken_date = SELECT sample.sampled_date
+{**AS1413}
+           ENDIF
+{**AE1413}
+           
+        ENDIF
+        count = count + 1
+      ENDWHILE
+
+      IF sp_count > 0 THEN
+{**AS1082 JDy 2/3/1998 Added condition to showing message       }
+         IF ( i_job_id = EMPTY ) OR (sheet_defined <> TRUE)
+{**DS 1267 HBe 22-8-00
+            flash_message("Remember 4 x 11 labels paper in printer",TRUE)
+ **DE 1267}
+
+{**AS1267 HBe 22-8-00}
+         JOIN LIBRARY TOOLBOX
+         JOIN STANDARD_LIBRARY std_utils
+
+         {label_arr column 1= Identifier}
+         {label_arr column 2= Description}
+         {label_arr column 3= Spaces between columns}
+         {label_arr column 4= Lines per label}
+         {label_arr column 5= Horisontal label count per sheet}
+         {label_arr column 6= Blanks before each line}
+{**MS1371 HBe 27-11-2001: New label format for France included}
+              ARRAY label_arr
+                 label_arr[1,1] = "Europe -AVERY L7159 "
+                 label_arr[1,2] = "AVERY L7159 8x3 A4 format labels - shifted 1 character further right"
+                 label_arr[1,3] = 3 {Ændret fra væriden "2" d. 20-1-2003 af HBe for at afhjælpe TCa, SDu og Avedøre}
+                 label_arr[1,4] = 8
+                 label_arr[1,5] = 8
+                 label_arr[1,6] = 2 {Ændret fra væriden "3" d. 20-1-2003 af HBe for at afhjælpe TCa, SDu og Avedøre}
+                 label_arr[2,1] = "USA - AVERY 5160 "
+                 label_arr[2,2] = "AVERY 5160 10x3 LETTER format labels"
+                 label_arr[2,3] = 5
+                 label_arr[2,4] = 6
+                 label_arr[2,5] = 10
+                 label_arr[2,6] = 1
+                 label_arr[3,1] = "France - Niceday 801116/3 "
+                 label_arr[3,2] = "French labels similar to AVERY L7159"
+                 label_arr[3,3] = 3
+                 label_arr[3,4] = 8
+                 label_arr[3,5] = 8
+                 label_arr[3,6] = 2 {*M1459: Ændret fra væriden "1" d. 25-3-2003 af HBe for at afhjælpe SH}
+                 label_arr[4,1] = "Old Europe - AVERY L7159"
+                 label_arr[4,2] = "AVERY L7159 8x3 A4 format labels"
+                 label_arr[4,3] = 3
+                 label_arr[4,4] = 8
+                 label_arr[4,5] = 8
+                 label_arr[4,6] = 1
+                 label_arr[5,1] = "GERMANY - AVERY L7159"
+                 label_arr[5,2] = "AVERY L7159 8x3 A4 format labels - shifted 1 characters further right"
+                 label_arr[5,3] = 3
+                 label_arr[5,4] = 8
+                 label_arr[5,5] = 8
+                 label_arr[5,6] = 2
+
+
+              IF STRIP(GLOBAL("default_group")) = "4000"
+              THEN
+                 label_format = "USA - AVERY 5160 "
+              ELSEIF STRIP(GLOBAL("default_group")) = "2020"
+                 Label_format = "France - Niceday 801116/3 "
+              ELSEIF STRIP(GLOBAL("default_group")) = "2210"
+                 Label_format = "GERMANY - AVERY L7159"
+              ELSE
+                 Label_format = "Europe -AVERY L7159 "
+              ENDIF
+{**ME1371}
+              The_key = "Error"
+              WHILE the_key <> EMPTY
+                 prompt_user(EMPTY, "Label Format", EMPTY,
+                            TRUE, "Select Label Format:", label_arr,
+                            Label_format, the_key)
+              ENDWHILE
+
+              found = FALSE
+              arr_counter = 0
+              label_arr_size = SIZE_OF_ARRAY(label_arr)
+              WHILE (found <> TRUE) AND (arr_counter < label_arr_size)
+                 arr_counter = arr_counter + 1
+
+
+                 IF strip(label_arr[arr_counter,1]) = strip ( label_format)
+                 THEN
+                    found = TRUE
+                    label_spaces      = label_arr[arr_counter,3]
+                    label_lines       = label_arr[arr_counter,4]
+                    count_labels_down = label_arr[arr_counter,5] 
+                    leading_blanks    = label_arr[arr_counter,6] 
+                    sheet_defined = TRUE
+                 ENDIF
+              ENDWHILE
+
+{**AE1267 HBe 22-8-00}
+
+
+         ENDIF
+{**AE1082 JDy 2/3/1998 Added condition to showing message       }
+{**DS1082 JDy 2/3/1998 Added condition to showing message       }
+{        flash_message("Remember 4 x 11 labels paper in printer",TRUE) }
+{**DE1082 JDy 2/3/1998 Added condition to showing message       }
+{**MS 1267 HBe 22-8-00
+         print_labels (sam_points, sp_count, job_prodname, job_batch,
+                       mlp_code, taken_date, " ")
+**}
+
+print_labels (sam_points, sp_count, job_prodname, job_batch,
+                       mlp_code, taken_date, " ", label_spaces, label_lines,
+                       count_labels_down, leading_blanks)
+
+
+{**AS1476 HBe 20-6-2003}
+SET SECURITY group_checking
+{**AE1476}
+
+
+
+{**ME 1267}
+{**AS1082 JDy 2/3/1998 }
+           return ( TRUE  )
+      ELSE return ( FALSE )
+{**AE1082 JDy 2/3/1998 }
+      ENDIF
+
+   ENDIF
+ENDIF
+
+{**AS1082 2/3/98 JDy }
+return ( FALSE )
+
+ENDROUTINE
+{**AE1082 2/3/98 JDy }
+
+
+{-------------------------------- sort_points --------------------------------}
+
+GLOBAL ROUTINE sort_txt_points (      sam_points ,
+                                 VALUE count   )
+
+declare i, j
+i = 1
+WHILE i <= count DO
+   j = 1
+   WHILE j < count DO
+      IF sam_points[j] > sam_points[(j+1)] THEN
+         old = sam_points[(j + 1)]
+         sam_points[(j + 1)] = sam_points[j]
+         sam_points[j] = old
+      ENDIF
+      j = j + 1
+   ENDWHILE
+   i = i + 1
+ENDWHILE
+
+ENDROUTINE   {sort_points}
+
+{-------------------------------- sort_points --------------------------------}
+
+GLOBAL ROUTINE sort_num_points (      sam_points ,
+                                 VALUE count   )
+
+declare i, j
+i = 1
+WHILE i <= count DO
+   j = 1
+   WHILE j < count DO
+      IF NUMERIC(sam_points[j,1]) > NUMERIC(sam_points[(j+1),1]) THEN
+         old = sam_points[(j + 1),1]
+         sam_points[(j + 1),1] = sam_points[j,1]
+         sam_points[j,1] = old
+      ENDIF
+      j = j + 1
+   ENDWHILE
+   i = i + 1
+ENDWHILE
+
+ENDROUTINE   {sort_points}
+
+{**AS1539 HBe 25-2-2004}
+{----------- check if current sampling point was already included -----------}
+
+GLOBAL ROUTINE point_exist (cur_spoint, point_array)
+
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+declare counter, array_rows
+
+array_rows = size_of_array(point_array)
+counter = 1
+
+WHILE counter <= array_rows DO
+   IF (array_get_dimensions ( point_array ) = 1) THEN
+      IF STRIP(cur_spoint) = STRIP(point_array[counter] ) THEN
+         RETURN(TRUE)
+      ENDIF
+   ELSE
+      IF STRIP(cur_spoint) = STRIP(point_array[counter,1] ) THEN
+         RETURN(TRUE)
+      ENDIF
+   ENDIF
+   counter = counter + 1
+ENDWHILE
+
+
+RETURN(FALSE)
+
+ENDROUTINE   {check_points}
+{**AE1539}

@@ -1,0 +1,409 @@
+{ This definition is required at the top of all calculations }
+GLOBAL ROUTINE calculation(cur_sample,
+               cur_test_number,
+               cur_component_name)
+
+{---------------------------------------------------------------------------------------
+   CHG          DATE    PGMR    DESCRIPTION
+ ---------------------------------------------------------------------------------------
+ **M1605        060105  HBe     Created based on MPN-3-3 using the MacGrady
+ **M1663        291105  HBe     Modified in order to specify component names
+                                using flags as specified in the parameter MACGRADY01.
+                                Modified to eliminate use of paramters. The neede
+                                components will be selected based on component name
+                                Component %ml or %-0 will be included
+                                }
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN STANDARD_LIBRARY STD_UTILS
+
+initialize ()
+DECLARE comp, res_array, index_array, mpn_res, a1, a2, a3
+ARRAY res_array
+ARRAY index_array
+
+comp = SELECT result.name
+       WHERE test_number = cur_test_number
+         AND name <> cur_component_name
+       ORDER ON order_number
+
+WHILE comp <> EMPTY DO
+
+    IF (RIGHTSTRING(TOUPPER(STRIP(comp)),2) = "ML") OR
+       (RIGHTSTRING(TOUPPER(STRIP(comp)),2) = "-0") THEN
+        res_array[SIZE_OF_ARRAY(res_array) + 1, 1] = comp
+    ENDIF
+NEXT result
+    comp = SELECT result.name
+ENDWHILE
+
+IF SIZE_OF_ARRAY(res_array) <> 3 THEN
+    fm("Number of components <> 3:":ASCII(10):
+       GetArray(res_array):ASCII(10):ASCII(10):
+       "Calculation not possible.")
+       RETURN (EMPTY)
+{ELSE
+     fm("Use components:":ASCII(10):
+       GetArray(res_array):ASCII(10):
+       "for MacGrady calculation.")}
+ENDIF
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(res_array) DO
+    res_txt = SELECT result.text WHERE test_number = cur_test_number and name = res_array[i, 1]
+    IF NUMTEXT(res_txt) THEN
+        res = NUMERIC(res_txt)
+    ELSE
+        fm("Result must be numeric...":ASCII(10):ASCII(10):
+           res_array[i,1]:STRIP(res_txt):ASCII(10):ASCII(10):
+           "Please reenter results.")
+        RETURN (EMPTY)
+    ENDIF
+    IF res < 0 THEN
+        fm("Negatives are not allowed...":ASCII(10):ASCII(10):
+           res_array[i,1]:STRIP(res_txt):ASCII(10):ASCII(10):
+           "Please reenter results.")
+        RETURN (EMPTY)
+    ELSEIF res <> TRUNC(res)
+        fm("Decimals are not allowed...":ASCII(10):ASCII(10):
+           res_array[i,1]:STRIP(res_txt):ASCII(10):ASCII(10):
+           "Please reenter results.")
+        RETURN (EMPTY)
+    ENDIF
+
+    IF INDEX(res_array[i,1], "50") > 0 THEN
+        a1 = res
+    ELSEIF INDEX(res_array[i,1], "10") > 0 THEN
+        a2 = res
+    ELSEIF INDEX(res_array[i,1], "1") > 0 THEN
+        a3 = res
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+mpn_res = "ERROR"
+
+index_array[1] = NUMERIC(a1) + 1
+index_array[2] = NUMERIC(a2) + 1
+index_array[3] = NUMERIC(a3) + 1
+
+IF NOT array_element_exists (mpn, index_array) THEN
+    fm("Atypical MPN result. - Contact supervisor.":ASCII(10):ASCII(10):
+       "MPN[":STRIP(ROUND(NUMERIC(a1))):",":STRIP(ROUND(NUMERIC(a2))):",":STRIP(ROUND(NUMERIC(a3))):"] is unknown.")
+    RETURN ("ERROR")
+ENDIF
+
+a1 = NUMERIC(a1) + 1
+a2 = NUMERIC(a2) + 1
+a3 = NUMERIC(a3) + 1
+
+mpn_res = mpn[a1,a2,a3]
+
+{fm("mpn[":a1:", ":a2:", ":a3:"] = ":mpn_res)}
+
+IF (mpn_res = "ERROR") OR (STRIP(mpn_res) = "") OR (STRIP(mpn_res) = NULL) OR (STRIP(mpn_res) = EMPTY) THEN
+    mpn_res = "NEWTEST"
+    cr_new_test()
+ENDIF
+
+
+SET FORMAT "99999"
+RETURN (mpn_res)
+ENDROUTINE
+EXIT
+{**************************************************************}
+
+{IF get_results () > 0 THEN
+
+   IF results_ok() THEN
+
+      a1 = NUMERIC(res_str[1]) + 1
+      a2 = NUMERIC(res_str[2]) + 1
+      a3 = NUMERIC(res_str[3]) + 1
+      mpn_res = mpn[a1,a2,a3]
+
+      IF NUMTEXT(mpn_res) THEN
+         IF NUMERIC(mpn_res) = 0 THEN
+            mpn_res = "NEWTEST"
+            cr_new_test()
+         ENDIF
+      ELSEIF (STRIP(mpn_res) = "") OR (STRIP(mpn_res) = NULL) OR (STRIP(mpn_res) = EMPTY) THEN
+            mpn_res = "NEWTEST"
+            cr_new_test()
+      ENDIF
+   ELSE
+      FLASH_MESSAGE(error_mess, TRUE)
+      mpn_res = "NOTOK"
+   ENDIF
+ELSE
+   mpn_res = EMPTY
+ENDIF
+SET FORMAT "99999"
+RETURN (mpn_res)
+ENDROUTINE}
+
+{ * * * * * * * * * HER SLUTTER HOVEDPROGRAMMET * * * * * * * * * * * * * * * }
+
+{- - - - - - - - - - - - - START CR_NEW_TEST- - - - - - - - - - - - - - -  - - }
+ROUTINE cr_new_test
+
+SET NOTPROTECTED
+
+new_test_nr = ""
+
+samp_id = SELECT test.sample_id
+          WHERE test_number = cur_test_number
+
+
+anal_id = SELECT test.analysis
+
+IF NOT(new_test_created) THEN
+   new_test_nr = NEWTEST(samp_id,anal_id)
+ENDIF
+
+IF new_test_nr = ERROR THEN
+   FLASH_MESSAGE("ERROR CREATING NEWTEST ":new_test_nr, TRUE)
+ELSE
+   FLASH_MESSAGE("The Result Combination not found in MacGrady table. New analysis  :"
+   : STRIP(anal_id) : " created for the sample.", TRUE)
+ENDIF
+
+ENDROUTINE
+{- - - - - - - - - - - - - END CR_NEW_TEST - - - - - - - - - - - - - - -  - - }
+{------------------------START INITIALIZE------------------------------------}
+
+ROUTINE initialize
+
+ENABLE WINDOWS
+
+
+ARRAY mpn ARRAYSIZE (2,6,6) = 0
+ARRAY res_val
+ARRAY res_str
+
+mpn [1,1,1] = "<1"
+
+mpn [1,1,2] = 1
+mpn [1,1,3] = 2
+mpn [1,2,1] = 1
+mpn [1,2,2] = 2
+mpn [1,2,3] = 3
+mpn [1,3,1] = 2
+mpn [1,3,2] = 3
+mpn [1,3,3] = 4
+mpn [1,4,1] = 3
+mpn [1,4,2] = 5
+mpn [1,5,1] = 5
+mpn [2,1,1] = 1
+mpn [2,1,2] = 3
+mpn [2,1,3] = 4
+mpn [2,1,4] = 6
+mpn [2,2,1] = 3
+mpn [2,2,2] = 5
+mpn [2,2,3] = 7
+mpn [2,2,4] = 9
+mpn [2,3,1] = 5
+mpn [2,3,2] = 7
+mpn [2,3,3] = 10
+mpn [2,3,4] = 12
+mpn [2,4,1] = 8
+mpn [2,4,2] = 11
+mpn [2,4,3] = 14
+mpn [2,4,4] = 18
+mpn [2,4,5] = 21
+mpn [2,5,1] = 13
+mpn [2,5,2] = 17
+mpn [2,5,3] = 22
+mpn [2,5,4] = 28
+mpn [2,5,5] = 35
+mpn [2,5,6] = 43
+mpn [2,6,1] = 24
+mpn [2,6,2] = 35
+mpn [2,6,3] = 54
+mpn [2,6,4] = 92
+mpn [2,6,5] = 161
+mpn [2,6,6] = ">180"
+
+ENDROUTINE
+
+{------------------------END INITIALIZE--------------------------------------}
+
+{- - - - - - - - - - - - - START GET_RESULTS - - - - - - - - - - - - - - - - -}
+{ Henter resultater }
+
+ROUTINE get_results
+
+
+DECLARE parm_arr, par_vals, comp_arr, n_sets, err_mess, analysis_id, analysis_ver
+DECLARE comp_1, comp_2, comp_3, comp_n, res_arr
+ARRAY parm_arr
+ARRAY comp_arr
+ARRAY res_arr
+
+n_sets = 0
+err_mess = EMPTY
+
+new_test_created = FALSE
+
+analysis_id  = SELECT test.analysis
+               WHERE test_number = cur_test_number
+
+analysis_ver = SELECT test.analysis_version
+
+
+{Find ingoing values by parameter setup, if this exists}
+
+IF mlp_analysis_parameters ( "A", "MACGRADY01", 1, analysis_id, analysis_ver,
+                                                 parm_arr, n_sets, err_mess )
+THEN
+   IF n_sets > 1 THEN
+      FLASH_MESSAGE("Error, more than 1 set of MACGRADY01 parameters supplied, now EXITING", TRUE)
+      EXIT
+   ENDIF
+
+   parm_string = parm_arr[1,1]
+
+   next_pos = INDEX(parm_string, "]")
+   par_vals = 0
+
+   WHILE (next_pos <> 0) AND (par_vals < 10)
+      par_vals = par_vals + 1
+      comp_arr[par_vals] = SUBSTRING(parm_string, 1 ,next_pos)
+      comp_arr[par_vals] = SUBSTITUTE(comp_arr[par_vals], ";[] ", "")
+      parm_string = SUBSTRING(parm_string, next_pos+1, LENGTH(parm_string)-next_pos)
+      next_pos = INDEX(parm_string, "]")
+   ENDWHILE
+
+   IF (par_vals <> 3) THEN
+      FLASH_MESSAGE("More or Less than 3 flags defined in the parameter MACGRADY01, exiting", TRUE)
+      EXIT
+   ENDIF
+
+   {Getting result array}
+   res_arr[1,1] = "NAME"
+   res_arr[1,2] = "REP_CONTROL"
+   res_arr[1,3] = "TEXT"
+   res_arr[1,4] = "VALUE"
+
+   err_mess = EMPTY
+
+   GET_TEST_RESULTS cur_test_number, res_arr, err_mess
+   total_res = size_of_array(res_arr) {Actually one less, since the header is included in the array}
+
+{Matching specified flags with those on the results}
+   match_count = 0
+   count_par = 0
+   WHILE (count_par < par_vals)
+      count_par = count_par + 1
+      count_res = 1 {Not comparing the header information in the result array}
+      WHILE (count_res < total_res)
+         count_res = count_res + 1
+         IF STRIP(comp_arr[count_par]) = STRIP(res_arr[count_res,2])  THEN
+            match_count = match_count + 1
+            res_val[match_count] = res_arr[count_res,3]
+            res_str[match_count] = res_arr[count_res,4]
+         ENDIF
+      ENDWHILE
+   ENDWHILE
+
+   IF match_count <> 3 THEN
+      FLASH_MESSAGE("More or Less than 3 components with flags found, EXITING", TRUE)
+      EXIT
+   ENDIF
+
+   number_of_res = par_vals
+   RETURN(number_of_res)
+
+{If no MACGRADY01 parameter setup exists, use default setup}
+ELSE
+   RETURN (results_by_position())
+ENDIF
+
+ENDROUTINE
+{- - - - - - - - - - - - - END GET_RESULTS - - - - - - - - - - - - - - - - -}
+
+{- - - - - - - - - - - - - START RESULTS_BY_POSITION - - - - - - - - - - - - - - - - -}
+{ Henter resultater }
+
+ROUTINE results_by_position
+ARRAY comp_anal
+
+declare comp_n
+declare strip_comp_n
+declare strip_cur_comp_n
+
+
+number_of_res = 0
+
+comp_n  = SELECT result.component_name
+             WHERE (test_number = cur_test_number)
+             ORDER ON order_number
+
+WHILE comp_n <> EMPTY DO
+
+   strip_cur_comp_n = TOUPPER(cur_component_name)
+   strip_comp_n = TOUPPER(LEFTSTRING(comp_n,LENGTH(cur_component_name)))
+
+   IF ((strip_comp_n = strip_cur_comp_n) AND
+      (strip_cur_comp_n <> "")) THEN
+      result_type = SELECT result.result_type
+      res_txt = SELECT result.text
+      IF result_type = "N" THEN
+         number_of_res = number_of_res + 1
+         res_str[number_of_res] = res_txt
+         res_val[number_of_res] = SELECT result.value
+      ELSE
+         IF STRIP(res_txt) = "NEWTEST" THEN
+            new_test_created = TRUE
+         ENDIF
+      ENDIF
+   ENDIF
+   NEXT result
+   comp_n  = SELECT result.component_name
+ENDWHILE
+
+RETURN (number_of_res)
+
+ENDROUTINE
+{- - - - - - - - - - - END RESULTS_BY_POSITION - - - - - - - - - - - - - - -}
+
+{- - - - - - - - - - - - - START RESULTS_OK - - - - - - - - - - - - - - - - -}
+
+ROUTINE results_ok
+
+res_ok = TRUE
+count = 1
+
+WHILE ((count <= number_of_res) AND res_ok) DO
+   IF (res_val[count] < 0) THEN
+      res_ok = FALSE
+      error_mess= "Negatives are not allowed - Please reenter results."
+   ELSEIF ((res_val[count] - TRUNC(res_val[count])) <> 0) THEN
+      res_ok = FALSE
+      error_mess = "Decimals are not allowed - Please reenter results."
+   ENDIF
+   count = count + 1
+ENDWHILE
+RETURN(res_ok)
+ENDROUTINE
+
+{- - - - - - - - - - - - - END RESULTS_OK - - - - - - - - - - - - - - - - -}
+
+{- - - - - - - - - - - - - START STRIP_VOL - - - - - - - - - - - - - -  - - }
+ROUTINE strip_vol (strip_name)
+declare n
+declare ml_pos
+declare rest_string
+
+strip_nam = TOUPPER(STRIP(strip_name))
+ml_pos = INDEX(strip_nam,"ML") - 1
+WHILE (SUBSTRING(strip_nam,ml_pos,1) <> " ") AND (ml_pos > 0) DO
+   ml_pos = ml_pos - 1
+ENDWHILE
+rest_string = SUBSTRING(strip_nam,1,ml_pos)
+RETURN(rest_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END STRIP_VOL - - - - - - - - - - - - - -  - - }
+
+

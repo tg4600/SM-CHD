@@ -1,0 +1,431 @@
+SET NAME "/DEFER"
+ENABLE WINDOWS
+
+GLOBAL ROUTINE get_comb_results ( current_test_number, cur_comp_name,
+                                  VALUE cur_no, cur_arr,
+                                  VALUE ref_no, ref_arr )
+
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $LIB_UTILS
+
+ARRAY result_arr
+ARRAY new_result_arr
+ARRAY parm_arr
+ARRAY comp_value
+
+calcresult = EMPTY
+
+err_mess = EMPTY
+IF     NOT find_results( current_test_number, result_arr, n_res )
+THEN   err_mess = "No results entered"
+ELSEIF NOT get_component_row(cur_comp_name,result_arr,n_res,c_row)
+THEN   err_mess = "Error: Could not find component:":cur_comp_name
+ENDIF
+
+IF err_mess <> EMPTY THEN
+   flash_message( err_mess, TRUE )
+   RETURN ( FALSE )
+ENDIF
+
+the_flag = strip(result_arr[ c_row, result_cont_pos ])
+IF (the_flag = EMPTY) OR (blank(the_flag)) THEN
+   flash_message("Error in analysis setup - No flag on calculated component",
+                  TRUE )
+   return ( FALSE )
+ELSE
+   { find components with this flag set (not the same as current component) }
+   parm_cnt = 0
+   used_comp_cnt = 0
+   WHILE ((parm_cnt < n_res) AND
+          (used_comp_cnt < cur_no))  DO
+      parm_cnt = parm_cnt + 1
+      cur_comp = result_arr[ parm_cnt, result_name_pos ]
+      cur_flag = result_arr[ parm_cnt, result_cont_pos ]
+      IF NOT ((cur_flag = EMPTY)     OR
+              (blank(cur_flag))      OR
+              (cur_comp = cur_comp_name))
+      THEN
+         IF INDEX(result_arr[ parm_cnt, result_cont_pos ],the_flag)>0
+         THEN
+            used_comp_cnt = used_comp_cnt + 1
+            cur_arr[used_comp_cnt] = result_arr[ parm_cnt, result_valu_pos ]
+            IF     NOT check_val ( cur_arr[used_comp_cnt],
+                                   result_arr[ parm_cnt, result_name_pos ] )
+            THEN   return ( FALSE )
+            ELSEIF not numtext( cur_arr[used_comp_cnt] )
+            THEN   flash_message("Result must be numeric in " :
+                                 result_arr[ parm_cnt, result_name_pos ], TRUE)
+                   return ( FALSE )
+            ELSE   cur_arr[used_comp_cnt] = NUMERIC(cur_arr[used_comp_cnt])
+            ENDIF
+         ENDIF
+      ENDIF
+   ENDWHILE
+   IF used_comp_cnt < cur_no THEN
+      flash_message("At least " : strip(cur_no) :
+                    " components must have the flag: ":the_flag, TRUE)
+      return( FALSE )
+   ENDIF
+ENDIF
+
+anal_id = SELECT test.analysis
+          WHERE  test_number = current_test_number
+anal_ver = SELECT test.analysis_version
+smp_id  = SELECT test.sample
+
+prod_id = SELECT sample.product
+          WHERE  id_numeric = smp_id
+
+IF prod_id = EMPTY THEN
+   flash_message("Error: This sample does not refer to any product",TRUE)
+   return ( FALSE )
+ENDIF
+
+IF   NOT mlp_analysis_parameters ( "A", "ANAL_COMB", 4, anal_id, anal_ver,
+                                    parm_arr, n_parms, err_mess )
+THEN flash_message( err_mess, TRUE )
+     return ( FALSE )
+ENDIF
+
+parm_cnt = 0
+prod_found = FALSE
+
+WHILE (parm_cnt < n_parms) AND
+      (NOT(prod_found))        DO
+
+   parm_cnt = parm_cnt + 1
+
+   { get product id and analysis id to search for }
+   IF parm_arr[parm_cnt,1] = prod_id THEN
+
+      anal_id = strip(parm_arr[parm_cnt,2])
+      skip_it = skip_flag(strip(parm_arr[parm_cnt,3]))
+      anal_txt= strip(parm_arr[parm_cnt,4])
+
+      IF     (NOT BLANK(anal_id)) AND (anal_id <> EMPTY)
+      THEN   IF (NOT skip_it) THEN
+                IF   NOT handle_analysis ( anal_id, prod_found )
+                THEN return ( FALSE )
+                ENDIF
+             ENDIF
+      ELSEIF (NOT BLANK(anal_txt)) AND (anal_txt <> EMPTY)
+      THEN   anal_str = anal_txt : "%"
+             anal_id = select analysis . identity
+                       where  identity like anal_str
+                       and    removeflag = FALSE
+                       order  on identity
+             WHILE (anal_id <> EMPTY) AND (NOT prod_found) DO
+
+{               Check if this analysis should be excluded               }
+                skip_cnt = parm_cnt
+                skip_this = FALSE
+                cont = TRUE
+
+                WHILE (skip_cnt<n_parms) AND (NOT skip_this) AND (cont) DO
+                   skip_cnt = skip_cnt+1
+                   skip_it  = skip_flag(strip(parm_arr[skip_cnt,3]))
+                   skip_anal= STRIP(parm_arr[skip_cnt,2])
+                   IF    (NOT skip_it)
+                   THEN   cont = FALSE
+                   ELSEIF (BLANK(skip_anal)) OR (skip_anal=EMPTY)
+                   THEN   flash_message("Error: Wrong setup - " :
+                         "Missing analysis name to skip in line:":skip_cnt,TRUE)
+                          return ( FALSE )
+                   ELSEIF skip_anal = anal_id
+                   THEN   skip_this = TRUE
+                   ENDIF
+                ENDWHILE
+
+                IF (NOT skip_this) THEN
+                   IF   NOT handle_analysis ( anal_id, prod_found )
+                   THEN return ( FALSE )
+                   ENDIF
+                ENDIF
+
+                NEXT analysis
+                anal_id = select analysis . identity
+
+             ENDWHILE
+
+      ELSE   flash_message("Error in setup of parameter line:":parm_count,TRUE)
+             return ( FALSE )
+      ENDIF
+
+   ENDIF
+
+ENDWHILE
+
+IF NOT prod_found THEN
+   flash_message("No suitable tests found for this analysis":
+                 " and product", TRUE)
+   return( FALSE )
+ENDIF
+
+return ( TRUE )
+
+ENDROUTINE
+
+ROUTINE  skip_flag ( VALUE the_flag )
+
+      IF    (BLANK(the_flag)) OR (the_flag = EMPTY)
+      THEN   return ( FALSE )
+      ELSEIF the_flag <> TRUE
+      THEN   return ( FALSE )
+      ELSE   return ( TRUE  )
+      ENDIF
+
+ENDROUTINE
+
+ROUTINE  handle_analysis ( VALUE analysis_id_1, prod_found )
+
+   { check that a test with status "C" exists for this analysis }
+   { (get the newest test (ordered on test_count)) }
+   { and that the sample for this test is defined for the current product }
+
+      test_no = SELECT test.test_number
+                WHERE  analysis = analysis_id_1
+                AND    status   = "C"
+                AND    sample   = smp_id
+                AND    test_number != current_test_number
+                ORDER  ON test_count descending
+
+      IF test_no <> EMPTY  THEN
+         { check whether the result contains numeric data }
+         { or we must continue with the next parameter set }
+
+         tst_cnt = select test.test_count
+
+         ref_value = 0
+
+         IF NOT find_results( test_no, new_result_arr, new_n_res ) THEN
+            flash_message("Reference result cannot be retrieved", TRUE)
+         ELSE
+            { find components with the_flag set }
+            { - ignore the remaining ones }
+            new_parm_cnt = 0
+            new_comp_cnt = 0
+            all_numbers  = TRUE
+            WHILE ((new_parm_cnt < new_n_res) AND
+                   (new_comp_cnt < ref_no)    AND
+                   (all_numbers))             DO
+               new_parm_cnt = new_parm_cnt + 1
+               cur_flag = new_result_arr[ new_parm_cnt, result_cont_pos ]
+               IF NOT ((cur_flag = EMPTY)  OR
+                       (blank(cur_flag)))  THEN
+                  IF INDEX(new_result_arr[ new_parm_cnt, result_cont_pos ],
+                           the_flag) > 0
+                  THEN
+                     new_comp_cnt = new_comp_cnt + 1
+                     { the component may not contain valid numeric data }
+                     { we use the value stored in the text field }
+                     ref_value = new_result_arr[ new_parm_cnt, result_text_pos ]
+                     IF   NOT check_val (
+                              ref_value,
+                              analysis_id_1 : "/" :
+                              new_result_arr[ new_parm_cnt, result_text_pos ] )
+                     THEN   return ( FALSE )
+                     ELSEIF NOT NUMTEXT( ref_value )
+                     THEN   all_numbers = FALSE
+                     ELSE   ref_arr[new_comp_cnt] = NUMERIC(ref_value)
+                     ENDIF
+                  ENDIF
+               ENDIF
+            ENDWHILE
+            IF new_comp_cnt < ref_no THEN
+               flash_message("At least " : strip(ref_no) :
+                             " components must have the flag:" : the_flag:
+                             " in analysis " : analysis_id_1, TRUE)
+               return(FALSE)
+            ENDIF
+
+            { if the component contains text which cannot be converted }
+            { to a number the value cannot be used }
+            { we continue with the next parameter set }
+            IF   all_numbers
+            THEN prod_found = TRUE
+                 flash_message("Found results on analysis:":
+                                analysis_id_1:"/":strip(tst_cnt),TRUE)
+            ENDIF
+
+         ENDIF
+      ENDIF
+
+      return ( TRUE )
+
+ENDROUTINE
+
+
+ROUTINE  check_val ( VALUE val, VALUE comp_name )
+   IF (cur_arr[used_comp_cnt] = EMPTY) OR
+      (BLANK(cur_arr[used_comp_cnt]))
+   THEN flash_message("Missing result on component:":comp_name,TRUE)
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+ENDROUTINE
+
+
+{**AS 1374 HBe 29-11-2001}
+{**M1426 HBe 5-11-2002: supr_mes included in routine call}
+GLOBAL ROUTINE get_other_result ( current_test_number, 
+                                  cur_comp_name,
+                                  VALUE cur_no,
+                                  VALUE ref_no, 
+                                  ref_arr     ,
+                                  supr_mes)
+
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $LIB_UTILS
+
+ARRAY result_arr
+ARRAY new_result_arr
+ARRAY parm_arr
+ARRAY comp_value
+
+
+calcresult = EMPTY
+
+err_mess = EMPTY
+unused_val = find_results( current_test_number, result_arr, n_res )
+IF n_res < 1 
+THEN   err_mess = "No components found"
+ELSEIF (NOT get_component_row(cur_comp_name,result_arr,n_res,c_row))
+   OR (NOT get_calc_num(c_row, result_arr, parm_no))
+THEN   err_mess = "Error: Could not find component:":cur_comp_name
+ENDIF
+
+IF err_mess <> EMPTY THEN
+   flash_message( err_mess, TRUE )
+   RETURN ( FALSE )
+ENDIF
+
+the_flag = strip(result_arr[ c_row, result_cont_pos ])
+IF (the_flag = EMPTY) OR (blank(the_flag)) THEN
+   flash_message("Error in analysis setup - No flag on calculated component",
+                  TRUE )
+   return ( FALSE )
+ENDIF
+
+anal_id = SELECT test.analysis
+          WHERE  test_number = current_test_number
+anal_ver = SELECT test.analysis_version
+smp_id  = SELECT test.sample
+
+{**M1426 HBe  5-11-2002: 2 parameters from ANAL_OTH instead of 1}
+{**M1589 HBe 11-11-2004: 3 parameters from ANAL_OTH instead of 2}
+IF   NOT mlp_analysis_parameters ( "A", "ANAL_OTH", 3, anal_id, anal_ver,
+                                    parm_arr, n_parms, err_mess )
+THEN flash_message( err_mess, TRUE )
+     return ( FALSE )
+ENDIF
+
+
+parm_cnt = 0
+prod_found = FALSE
+
+anal_id  = strip(parm_arr[parm_no,1])
+{**AS1426}
+supr_mes = strip(parm_arr[parm_no,2])
+{**AE1426}
+{**AS1589}
+exact_match = strip(parm_arr[parm_no,3])
+{**AE1589}
+
+
+IF     (NOT BLANK(anal_id)) AND (anal_id <> EMPTY)
+THEN   
+{**M1426 HBe 5-11-2002: supr_mes included in routine call}
+   IF   NOT handle_all_analysis ( anal_id, prod_found, supr_mes, exact_match ) 
+   THEN 
+      return ( FALSE )
+   ENDIF
+ELSE   flash_message("Error in setup of parameter line:":parm_count,TRUE)
+       return ( FALSE )
+ENDIF
+
+
+IF NOT prod_found THEN
+   flash_message("No suitable tests found for this analysis":
+                 " and product", TRUE)
+   return( FALSE )
+ENDIF
+
+return ( TRUE )
+
+ENDROUTINE
+
+{**M1426 HBe 5-11-2002: supr_mes included in routine call}
+ROUTINE  handle_all_analysis ( VALUE analysis_id_1, prod_found, VALUE supr_mes, VALUE exact_match )
+
+   { check that a test with status "C" exists for this analysis }
+   { (get the newest test (ordered on test_count)) }
+   { and that the sample for this test is defined for the current product }
+
+      test_no = SELECT test.test_number
+                WHERE  analysis = analysis_id_1
+                AND    status   = "C"
+                AND    sample   = smp_id
+                AND    test_number != current_test_number
+                ORDER  ON test_count descending
+
+      IF test_no <> EMPTY  THEN
+         { check whether the result contains numeric data }
+         { or we must continue with the next parameter set }
+
+         tst_cnt = select test.test_count
+
+         ref_value = 0
+
+         IF NOT find_results( test_no, new_result_arr, new_n_res ) THEN
+            flash_message("Reference result cannot be retrieved", TRUE)
+         ELSE
+            { find components with the_flag set }
+            { - ignore the remaining ones }
+            new_parm_cnt = 0
+            new_comp_cnt = 0
+            all_numbers  = TRUE
+            WHILE (new_parm_cnt < new_n_res) DO
+               new_parm_cnt = new_parm_cnt + 1
+               cur_flag = new_result_arr[ new_parm_cnt, result_cont_pos ]
+               IF NOT ((cur_flag = EMPTY)  OR
+                       (blank(cur_flag)))  THEN
+{**MS1589 HBe 11/11-04: Introducing choice for exact matching parameters (a=a) or included parameters ( a in ab)}        
+                  IF ((exact_match) AND (STRIP(new_result_arr[ new_parm_cnt, result_cont_pos ]) = STRIP(the_flag)))
+                     OR ((NOT exact_match) AND (INDEX(new_result_arr[ new_parm_cnt, result_cont_pos ], the_flag) > 0))
+{**ME1589}                     
+                  THEN
+                        new_comp_cnt = new_comp_cnt + 1
+                        { the component may not contain valid numeric data, that's no problem here. }
+                        { we use the value stored in the text field - and don't check for anything! }
+                        ref_value = new_result_arr[ new_parm_cnt, result_text_pos ]
+                        ref_arr[new_comp_cnt] = ref_value
+                  ENDIF   
+               ENDIF
+            ENDWHILE
+            IF new_comp_cnt <> 1 THEN
+               flash_message("There must be 1 and only 1 " :
+                             "component containing the flag: '" : STRIP(the_flag):
+                             "' in analysis " : STRIP(analysis_id_1), TRUE)
+               return(FALSE)
+            ENDIF
+
+            { if the component contains text which cannot be converted }
+            { to a number the value cannot be used }
+            { we continue with the next parameter set }
+            IF   all_numbers
+            THEN prod_found = TRUE
+{**MS1426 2/11-2002: Only flash is suppression is false}
+               IF supr_mes = "FALSE" THEN
+                 flash_message("Found results on analysis:":supr_mes:
+                                analysis_id_1:"/":strip(tst_cnt),TRUE)
+               ENDIF
+            ENDIF
+
+         ENDIF
+      ENDIF
+
+      return ( TRUE )
+
+ENDROUTINE
+
+{**AE1374}

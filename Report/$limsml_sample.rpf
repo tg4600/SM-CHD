@@ -1,0 +1,3648 @@
+
+{*******************************************************************************
+*
+* Module Name   : $LIMSML_SAMPLE
+*
+* Purpose       : Sample LIMSML Entity Handling
+*
+* Document Ref  : N/a
+*
+*******************************************************************************}
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN LIBRARY $LIMSML_LIB
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $BL
+JOIN LIBRARY $BL_IDS_BUILDER
+JOIN LIBRARY $BL_ITEM_DATATABLE
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $LIMSML_PROCESS
+JOIN LIBRARY $BL_ITEM_DATACOLUMN
+JOIN LIBRARY $BL_COLUMN
+JOIN LIBRARY $BL_IDT_FORMATTED
+JOIN LIBRARY $LIMSML_COLUMN_DT
+JOIN LIBRARY $BL_PROMPT_INFO
+JOIN LIBRARY $LIB_MLPS
+JOIN LIBRARY $LIMSML_SAMPLE_USER
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+{*******************************************************************************
+*                              C O N S T A N T S
+*******************************************************************************}
+
+{CONSTANT BUILDER_VERSION  = "10.0.0.0"}
+{CONSTANT BUILDER_VERSION  = "9.2.1.0" 9.2.1}
+{CONSTANT BUILDER_ASSEMBLY = "Thermo.SM.BL.Data, Culture=" : ASCII(34) : ASCII(34) :", PublicKeyToken=c8f5c7c0d4405e65, Version=" : BUILDER_VERSION}
+CONSTANT BUILDER_ASSEMBLY = "Thermo.SM.BL.Data"
+CONSTANT BUILDER_CLASS    = "Thermo.SM.BL.Data.DataSetBuilder"
+
+{*******************************************************************************
+*                              M A I N   C O D E
+*******************************************************************************}
+
+EXIT
+
+{*******************************************************************************
+*                               R O U T I N E S
+*******************************************************************************}
+
+
+
+{***** ROUTINE sample_create_by_template.rpf *****}
+
+ROUTINE sample_create_by_template ( processor, entity, action, response )
+
+{ Login a Sample using a specified Template.
+*
+* Note: The type of response class depends on what the response_type is within
+*       the request. Example if response_type is DATA, little initial xml is
+*       needed. Therefore HELPER_DOCUMENT class is used.
+*
+*       If it is SYSTEM, header xml is needed and build functionality is needed.
+*       Therefore HELPER_RICHDOCUMENT class is used.
+*       (See $limsml_process.rpf action create_system/create_data for more info)
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : [Text], (Optional)If only one return value is needed, this
+*                will override any response.
+*                Works by copying request entity information and adding
+*                a field call 'RETURN', with the return value as its value.
+*
+*******************************************************************************}
+
+    DECLARE param, replicates, samp_type, samp_builder,new_samples,
+            new_tests, tests, item, child, sample_obj, samps_enum, tests_enum,
+            test_num, test_count, childxml, entity_copy, test_obj,
+            ignore_test_schedule, test_schedule_id
+
+    {**********************************************************************}
+    {* Create the Base Business Object                                    *}
+    {**********************************************************************}
+
+    samp_type    = bl_system ( ) . get_type ( "SAMPLE" )
+    samp_builder = samp_type . new_builder ( )
+
+    {**********************************************************************}
+    {* Deal with any Appropriate Parameters.                              *}
+    {**********************************************************************}
+
+    replicates = action . get_param_default ( "REPLICATES", 1 )
+
+    samp_builder . set_replicates ( replicates )
+
+    param = action . get_param_default ( "TEMPLATE", "BLANK" )
+    samp_builder . set_template_id ( param )
+
+    param = action . get_param_default ( "JOB_NAME", EMPTY )
+    IF param <> EMPTY THEN
+        samp_builder . set_job_id ( param )
+    ENDIF
+
+    ignore_test_schedule = action . get_param_default ( "IGNORE_TEST_SCHEDULE", FALSE )
+
+    {**********************************************************************}
+    {* Add the Test Schedule Tests if appropriate                         *}
+    {**********************************************************************}
+
+    IF ignore_test_schedule THEN
+
+        samp_builder . set_test_schedule_id ( "" )
+
+    ELSE
+        test_schedule_id = entity . get_field_value( "TEST_SCHEDULE" )
+
+        IF test_schedule_id <> EMPTY THEN
+            samp_builder . set_test_schedule_id( test_schedule_id )
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Add the tests to the Sample Records ready for login                *}
+    {**********************************************************************}
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+        samp_builder . build ( )
+
+        new_samples = samp_builder . get_new_items ( )
+
+        samps_enum = new_samples . get_enumerator ( )
+
+        WHILE samps_enum . move_next ( ) DO
+
+            sample_obj = samps_enum . get_current ()
+
+            entity . fields_bl_get ( sample_obj )
+
+            test_num = entity . childtotal()
+            test_count = 0
+
+            WHILE ( test_count <= test_num - 1 ) DO
+
+                test_obj = entity . getchild( test_count )
+
+                new_tests = utility_create_test ( test_obj , entity )
+
+                IF new_tests <> EMPTY THEN
+
+                    sample_obj . add_tests ( new_tests )
+
+                ENDIF
+
+                test_count = test_count + 1
+
+                test_obj . reset ( )
+
+            ENDWHILE
+
+        ENDWHILE
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Create the Samples and build up the Response                       *}
+    {**********************************************************************}
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+        new_samples . update ( )
+
+        entity_copy = entity . copy ( FALSE )
+
+
+        samps_enum = new_samples . get_enumerator ( )
+
+        WHILE samps_enum . move_next ( ) DO
+
+            item = response . addentityxml ( entity_copy . returnxml() )
+
+            sample_obj = samps_enum . get_current ( )
+
+            item . bl_update ( sample_obj  )
+
+            tests  = sample_obj . get_added_tests ( )
+
+            tests_enum = tests . get_enumerator ( )
+            tests_enum . reset ( )
+
+            test_count = 0
+
+            WHILE tests_enum . move_next ( ) DO
+
+                test_obj    = tests_enum . get_current ( )
+
+    {**********************************************************************}
+    {* Only return child data which was within our request.               *}
+    {**********************************************************************}
+
+                childxml = test_obj . get_custom_value ( "REQUEST" )
+
+                IF ( childxml <> EMPTY ) THEN
+                    child = item . addchildxml ( childxml )
+                    child . bl_update ( test_obj )
+
+                    child . reset()
+                    test_count =  test_count + 1
+                ENDIF
+
+            ENDWHILE
+
+        ENDWHILE
+
+
+    ENDIF
+
+
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_result_analysis(.rpf *****}
+
+ROUTINE column_routine_result_analysis( result_item )
+
+{
+* BL Item Datatable column callback routine. Returns the analysis name for a
+* result.
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Text] the concatenation of analysis id and test count
+*
+*******************************************************************************}
+
+    DECLARE test_relationship, test_items, test_item, return_value
+
+    return_value = ""
+
+    test_relationship = bl_system ( ) . get_relationship ( "TEST_RESULT" )
+
+    test_items = test_relationship . get_inversely_related_items ( result_item )
+
+    IF test_items . count ( ) = 1 THEN
+
+        test_item = test_items . item ( 1 )
+        return_value = test_item . get_value ( "ANALYSIS" )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_analysis_id_composite.rpf *****}
+
+ROUTINE column_routine_analysis_id_composite ( result_item )
+
+{
+* BL Item Datatable column callback routine. Returns the concatenation of the
+* analysis id and test count from the passed result. (e.g. PH/1)
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Text] the concatenation of analysis id and test count
+*
+*******************************************************************************}
+
+    DECLARE test_relationship, test_items, test_item, return_value
+
+    return_value = ""
+
+    test_relationship = bl_system ( ) . get_relationship ( "TEST_RESULT" )
+
+    test_items = test_relationship . get_inversely_related_items ( result_item )
+
+    IF test_items . count ( ) = 1 THEN
+
+        test_item = test_items . item ( 1 )
+
+        return_value = test_item . get_value ( "ANALYSIS" ) : "/" :
+                       test_item . get_value ( "TEST_COUNT" )
+
+        return_value = test_item . get_value ( "ORDER_NUM" ) : " " :
+                       return_value
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_test_status.rpf *****}
+
+ROUTINE column_routine_test_status ( result_item )
+
+{
+* BL Item Datatable column callback routine. Returns the status of the
+* parent test
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Text] test status
+*
+*******************************************************************************}
+
+    DECLARE test_relationship, test_items, test_item, return_value
+
+    return_value = ""
+
+    test_relationship = bl_system ( ) . get_relationship ( "TEST_RESULT" )
+
+    test_items = test_relationship . get_inversely_related_items ( result_item )
+
+    IF test_items . count ( ) = 1 THEN
+
+        test_item = test_items . item ( 1 )
+        return_value = test_item . get_value ( "STATUS" )
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_result_composite.rpf *****}
+
+ROUTINE column_routine_result_composite ( result_item )
+{
+* BL Item Datatable column callback routine. Returns the conatenation of the
+* result's text and units (e.g. 10g)
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Text] the conatenation of the result's text and units
+*
+*******************************************************************************}
+
+    DECLARE res_text, composite
+
+    composite = ""
+
+    res_text = result_item . get_value ( "TEXT" )
+
+    IF NOT BLANK( res_text ) THEN
+
+        composite = res_text : " " : result_item . get_value ( "UNITS" )
+
+    ENDIF
+
+    RETURN ( composite )
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_in_spec.rpf *****}
+
+ROUTINE column_routine_in_spec ( result_item )
+{
+* BL Item Datatable column callback routine.
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Boolean] returns true if result is in spec
+*
+*******************************************************************************}
+
+    RETURN ( NOT result_item . get_value ( "OUT_OF_RANGE" ) )
+
+ENDROUTINE
+
+
+{***** ROUTINE column_routine_order_number.rpf *****}
+
+ROUTINE column_routine_order_number ( result_item )
+{
+* BL Item Datatable column callback routine. Returns column order number
+*
+* Parameters : result_item , [BL_ITEM] the result item
+*
+* Return Value : [Integer] the column order number
+*
+*******************************************************************************}
+
+    DECLARE return_number
+
+    return_number = result_item . get_value ( "ORDER_NUMBER" )
+
+    IF return_number = 0 THEN
+
+        return_number = 9999
+
+    ENDIF
+
+    RETURN ( return_number )
+
+ENDROUTINE
+
+
+{***** ROUTINE build_blank_result(.rpf *****}
+
+ROUTINE build_blank_result( test_item, comp_item )
+
+{
+* Builds and returns a new result based on the passed in test and component
+*
+* Parameters : test_item , [BL_ITEM] , test item
+*              comp_item , [BL_ITEM] , analysis component item
+*
+*******************************************************************************}
+
+    DECLARE result_type, result_builder, test_num, comp_name, result_key, new_item
+
+    result_type = bl_system ( ) . get_type ( "RESULT" )
+
+    result_builder = result_type . new_builder ( )
+
+    test_num  = test_item . get_value ( "TEST_NUMBER" )
+    comp_name = comp_item . get_value ( "NAME" )
+
+    result_key = result_type . id_builder ( ) . build ( test_num , comp_name )
+
+    result_builder . set_identity ( result_key )
+
+    result_builder . build ( )
+
+    new_item = result_builder . get_new_item ( )
+
+    new_item . set_value ( "RESULT_TYPE" , comp_item . get_value ( "RESULT_TYPE" ) )
+    new_item . set_value ( "ORDER_NUMBER" , comp_item . get_value ( "ORDER_NUMBER" ) )
+
+    RETURN( new_item )
+
+ENDROUTINE
+
+
+{***** ROUTINE new_result_datatable.rpf *****}
+
+ROUTINE new_result_datatable
+
+{
+*
+* Parameters :
+*
+*******************************************************************************}
+
+    DECLARE dt, column, result_type
+
+    result_type = bl_system ( ) . get_type ( "RESULT" )
+
+    dt = new_bl_item_datatable ( result_type )
+
+    column = new_bl_item_datacolumn_routine ( "ANALYSIS_ID"                          ,
+                                              GLOBAL( "CURRENT_LIBRARY" )            ,
+                                              "COLUMN_ROUTINE_ANALYSIS_ID_COMPOSITE" )
+
+    dt . add_column( column )
+
+    dt . add_property_column ( "NAME" , "NAME" )
+
+    column = new_bl_item_datacolumn_routine ( "RESULT"                           ,
+                                              GLOBAL( "CURRENT_LIBRARY" )        ,
+                                              "COLUMN_ROUTINE_RESULT_COMPOSITE" )
+
+    dt . add_column( column )
+
+    dt . add_property_column ( "STATUS"       , "STATUS"       )
+    dt . add_property_column ( "RESULT_TYPE"  , "RESULT_TYPE"  )
+
+    column = new_bl_item_datacolumn_routine ( "IN_SPEC"                   ,
+                                              GLOBAL( "CURRENT_LIBRARY" ) ,
+                                              "COLUMN_ROUTINE_IN_SPEC "   )
+
+    column . set_datatype_id ( "BOOLEAN" )
+
+    dt . add_column ( column )
+
+
+    column = new_bl_item_datacolumn_routine ( "ORDER_NUMBER"                   ,
+                                              GLOBAL( "CURRENT_LIBRARY" ) ,
+                                              "COLUMN_ROUTINE_ORDER_NUMBER"   )
+
+    column . set_datatype_id ( "INTEGER" )
+
+    dt . add_column ( column )
+
+
+    column = new_bl_item_datacolumn_routine ( "TEST_STATUS"                   ,
+                                              GLOBAL( "CURRENT_LIBRARY" ) ,
+                                              "COLUMN_ROUTINE_TEST_STATUS"   )
+
+    column . set_datatype_id ( "TEXT" )
+
+    dt . add_column ( column )
+
+    RETURN( dt )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_result_prompt(.rpf *****}
+
+ROUTINE get_result_prompt( result )
+
+{
+* Returns the prompt info object
+*
+* Parameters : result , [BL_ITEM_RESULT]
+*
+* Return Value : [BL_PROMPT_INFO]
+*
+*******************************************************************************}
+
+    DECLARE prompt_type, phrase_id, prompt_info, allowed_chars, pos,
+            selection_item
+
+    prompt_info = EMPTY
+
+
+    prompt_type = result . get_value ( "RESULT_TYPE" )
+
+
+    IF prompt_type = "O" THEN
+
+        prompt_info = new_bl_prompt_info_selection( )
+
+        phrase_id = result . get_value ( "CALCULATION" )
+
+        IF phrase_id <> EMPTY THEN
+            prompt_info . load_from_phrase_id( phrase_id )
+        ENDIF
+
+    ELSEIF prompt_type = "N" THEN
+
+        prompt_info = new_bl_prompt_info_real ( )
+
+    ELSEIF prompt_type = "T" THEN
+
+        prompt_info = new_bl_prompt_info_text ( )
+        prompt_info . set_allowed_characters ( result . get_value ( "ALLOWED_CHARACTERS" ) )
+
+    ELSEIF prompt_type = "B" THEN
+
+        prompt_info = new_bl_prompt_info_boolean ( )
+        prompt_info . set_true_word ( result . get_value ( "TRUE_WORD" ) )
+        prompt_info . set_false_word ( result . get_value ( "FALSE_WORD" ) )
+
+    ELSEIF prompt_type = "C" THEN
+
+        prompt_info = new_bl_prompt_info_selection( )
+
+        pos = 1
+        allowed_chars = result . get_value ( "ALLOWED_CHARACTERS" )
+        WHILE pos <= LENGTH( allowed_chars ) DO
+
+            CREATE OBJECT "BL_PROMPT_INFO_SELECTION_ITEM", selection_item
+            selection_item . set_text ( GET_CHARACTER_AT ( allowed_chars , pos ) )
+            selection_item . set_value( GET_CHARACTER_AT ( allowed_chars , pos ) )
+
+            prompt_info . get_items( ) . add( selection_item )
+
+            pos = pos + 1
+
+        ENDWHILE
+
+    ELSEIF prompt_type = "D" THEN
+
+        prompt_info = new_bl_prompt_info_date ( )
+
+    ELSEIF prompt_type = "I" THEN
+
+        prompt_info = new_bl_prompt_info_interval ( )
+
+    ELSEIF prompt_type = "F" THEN
+
+        prompt_info = new_bl_prompt_info_text ( )
+
+    ELSE
+
+        prompt_info = new_bl_prompt_info_text ( )
+        prompt_info . set_read_only ( true )
+
+    ENDIF
+
+
+    RETURN( prompt_info )
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_get_component_limits.rpf *****}
+
+ROUTINE sample_get_component_limits ( processor, entity, action, response )
+
+{
+* LIMSML : Parameters : SAMPLE_ID, The sample related to the result
+*                       TEST_ID, The test related to the result
+*                       COMPONENT_NAME, The result's component name
+*
+*          Return Value : Returns a datatable of MLP data for the given result
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : None
+*
+*******************************************************************************}
+
+    DECLARE mlp_obj, sample_id, test_id, component_name, sample_type, sample_item,
+            test_type, test_item, dataset_builder, array_counter, array_inner_counter,
+            result_obj, select_array, new_error
+
+
+    sample_id      = action . get_param_default ( "SAMPLE_ID"     , ERROR )
+    test_id        = action . get_param_default ( "TEST_ID"       , ERROR )
+    component_name = action . get_param_default ( "COMPONENT_NAME", ERROR )
+
+    sample_type = bl_system ( ) . get_type ( "SAMPLE" )
+    test_type   = bl_system ( ) . get_type ( "TEST"   )
+
+    IF sample_id <> EMPTY THEN
+
+        sample_item = sample_type . get_item ( sample_id )
+    ELSE
+        sample_item = EMPTY
+    ENDIF
+
+    IF sample_item = EMPTY THEN
+
+        new_error = bl_system( ) . error_flag( "BL_ERROR_ITEM_NOT_EXIST" )
+        new_error . add_parameter( sample_id )
+        new_error . add_parameter( sample_type . get_table ( ) . get_identity ( ))
+
+    ENDIF
+
+    IF test_id <> EMPTY THEN
+
+        test_item = test_type . get_item ( test_id )
+    ELSE
+        test_item = EMPTY
+    ENDIF
+
+    IF test_item = EMPTY THEN
+
+        new_error = bl_system( ) . error_flag( "BL_ERROR_ITEM_NOT_EXIST" )
+        new_error . add_parameter( test_id )
+        new_error . add_parameter( test_type . get_table ( ) . get_identity ( ))
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+    ARRAY select_array
+
+    CREATE OBJECT "STD_OBJECT_DATABASE", result_obj
+
+    result_obj . initialise( "RESULT" )
+
+    array_select_add( select_array            ,
+                      ARRAY_SELECT_EQ         ,
+                      "TEST_NUMBER"            ,
+                      PACKED_DECIMAL ( test_id ) )
+
+    array_select_add( select_array            ,
+                      ARRAY_SELECT_AND         ,
+                      EMPTY            ,
+                      EMPTY )
+
+    array_select_add( select_array            ,
+                          ARRAY_SELECT_EQ         ,
+                          "NAME"            ,
+                      component_name )
+
+    result_obj . select( select_array )
+
+    lib_mlps_initialise ( )
+
+    CREATE OBJECT MLP_OPERATION_CLASS , mlp_obj
+
+    mlp_obj . mlp_identity = sample_item . get_value ( "PRODUCT"         )
+    mlp_obj . mlp_version  = sample_item . get_value ( "PRODUCT_VERSION" )
+    mlp_obj . analysis     = test_item   . get_value ( "ANALYSIS"        )
+    mlp_obj . component    = component_name
+    IF NOT ( result_obj . get_by_number ( 1 ) = EMPTY ) THEN
+
+        mlp_obj . result_row = result_obj . get_by_number ( 1 )
+
+    ENDIF
+    mlp_obj . build ( )
+    mlp_obj . format( )
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+    {Now we need to build up a datatable, unfortunatly, we have to do this
+    at quite a low level}
+
+    CREATE OBJECT "STD_NET_SERVER" , dataset_builder
+    dataset_builder . create( BUILDER_ASSEMBLY , BUILDER_CLASS )
+
+    dataset_builder . NewDataSet ( )
+    dataset_builder . AddTable ( "LIMITS" )
+
+    array_counter = 1
+
+    {add columns}
+
+    WHILE array_counter <= SIZE_OF_ARRAY ( mlpobj . formatobject . titles )
+
+        dataset_builder . AddColumnCaption ( mlpobj . formatobject . titles [ array_counter ] ,
+                          "System.String", mlpobj . formatobject . titles [ array_counter ] )
+
+        array_counter = array_counter + 1
+
+    ENDWHILE
+
+
+    array_counter = 1
+
+    {add rows}
+
+    WHILE array_counter <= SIZE_OF_ARRAY ( mlpobj . formatobject . limits )
+
+        dataset_builder . NewRow ( )
+
+        dataset_builder . AddRowValue ( mlpobj . formatobject . titles [ 1 ],
+                          STRING ( mlpobj . formatobject . levels [ array_counter ] ) )
+
+        array_inner_counter = 2
+
+        WHILE array_inner_counter <= SIZE_OF_ARRAY ( mlpobj . formatobject . titles )
+
+            dataset_builder . AddRowValue ( mlpobj . formatobject . titles [ array_inner_counter ] ,
+                              STRING ( mlpobj . formatobject . limits [ array_counter , array_inner_counter - 1 ] ) )
+
+            array_inner_counter = array_inner_counter + 1
+
+        ENDWHILE
+
+        dataset_builder . AddRow ( )
+
+        array_counter = array_counter + 1
+
+    ENDWHILE
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+        response . adddata ( dataset_builder . FullXml )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_re_get_results_prompts.rpf *****}
+
+ROUTINE sample_re_get_results_prompts ( processor, entity, action, response )
+
+{
+* LIMSML : Parameters : SAMPLE_ID, The sample from which the results will be
+*                                  obtained
+*
+*          Return Value : Returns a datatable of results for the specified sample
+*                         and a datatable of prompt information for results
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : None
+*
+*******************************************************************************}
+
+    DECLARE sample_id_count, sample_id, sample_list_node, sample_type,
+            sample_item, test_items, test_enum, test_item, result_type,
+            results, ds_builder, dt, result_enum, result_item,
+            col_dt, column_id, prompt_info, column, name, col,
+            new_error
+
+    sample_id_count = 0
+
+    sample_list_node = entity . getchild ( sample_id_count )
+
+    ds_builder = new_bl_item_dataset_builder ( )
+
+    result_type = bl_system ( ) . get_type ( "RESULT" )
+
+    dt = new_bl_item_datatable ( result_type )
+
+    col = dt . add_action_column( "_KEY0", "GET_IDENTITY" )
+    col . set_name( "Key0" )
+
+    column = new_bl_item_datacolumn_routine ( "ANALYSIS_ID"                          ,
+                                                  GLOBAL( "CURRENT_LIBRARY" )            ,
+                                                  "COLUMN_ROUTINE_ANALYSIS_ID_COMPOSITE" )
+
+    dt . add_column( column )
+
+    column = new_bl_item_datacolumn_routine ( "ANALYSIS"                          ,
+                                                      GLOBAL( "CURRENT_LIBRARY" )            ,
+                                                  "COLUMN_ROUTINE_RESULT_ANALYSIS" )
+
+    dt . add_column( column )
+
+    column = new_bl_item_datacolumn_routine ( "ORDER_NUMBER"                          ,
+                                                      GLOBAL( "CURRENT_LIBRARY" )            ,
+                                                  "COLUMN_ROUTINE_ORDER_NUMBER" )
+
+    dt . add_column( column )
+
+    dt . add_property_column ( "ALLOWED_CHARACTERS" , "ALLOWED_CHARACTERS" )
+    dt . add_property_column ( "CALCULATION" , "CALCULATION" )
+    dt . add_property_column ( "COLUMN_NAME" , "COLUMN_NAME" )
+    dt . add_property_column ( "ENTERED_ON" , "ENTERED_ON" )
+    dt . add_property_column ( "FALSE_WORD" , "FALSE_WORD" )
+    dt . add_property_column ( "MAXIMUM" , "MAXIMUM" )
+    dt . add_property_column ( "MINIMUM" , "MINIMUM" )
+    dt . add_property_column ( "NAME" , "NAME" )
+    dt . add_property_column ( "OUT_OF_RANGE" , "OUT_OF_RANGE" )
+    dt . add_property_column ( "RESULT_TYPE" , "RESULT_TYPE" )
+    dt . add_property_column ( "STATUS" , "STATUS" )
+    dt . add_property_column ( "TEST_NUMBER" , "TEST_NUMBER" )
+    dt . add_property_column ( "TEXT" , "TEXT" )
+    dt . add_property_column ( "TRUE_WORD" , "TRUE_WORD" )
+    dt . add_property_column ( "UNITS" , "UNITS" )
+
+    WHILE ( sample_list_node <> EMPTY ) AND
+          ( NOT bl_system ( ) . error_flagged ( ) ) DO
+
+        {Get the current sample ID to get tests from}
+
+        sample_id = sample_list_node . get_field_value ( "_KEY0" )
+        sample_id_count = sample_id_count + 1
+        sample_list_node = entity . getchild ( sample_id_count )
+
+        sample_type = bl_system ( ) . get_type ( "SAMPLE" )
+        sample_item = sample_type . get_item ( sample_id )
+
+        IF sample_item <> EMPTY THEN
+
+        test_items = sample_item . get_tests( )
+        test_enum = test_items . get_enumerator ( )
+
+        {loop through the tests for the current sample}
+
+        WHILE test_enum . move_next ( ) DO
+
+            test_item = test_enum . get_current ( )
+
+            results = test_item . get_results_and_components ( )
+
+            dt . add_items ( results )
+
+        ENDWHILE
+
+        ELSE
+
+            new_error = bl_system( ) . error_flag( "BL_ERROR_ITEM_NOT_EXIST" )
+            new_error . add_parameter( sample_id )
+            new_error . add_parameter( sample_type . get_table ( ) . get_identity ( ))
+
+        ENDIF
+
+    ENDWHILE
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+    col_dt = new_limsml_column_datatable ( )
+    col_dt . set_identity( "COMPONENT_PROMPTS" )
+
+    result_enum = dt . get_objects ( ) . get_enumerator ( )
+
+
+    WHILE ( result_enum . move_next ( ) )  DO
+
+
+        result_item = result_enum . get_current ( )
+
+        IF result_item . get_value( "ORDER_NUMBER" ) > 0 THEN
+
+
+            column_id = result_item . get_value( "NAME" ) :
+                ":" : COLUMN_ROUTINE_RESULT_ANALYSIS ( result_item )
+
+        ELSE
+
+            column_id = result_item . get_value( "NAME" )
+
+        ENDIF
+
+
+        IF  NOT (col_dt . get_objects ( ) . exists ( column_id )) THEN
+
+            prompt_info = get_result_prompt ( result_item )
+
+            column = new_bl_column( column_id, prompt_info )
+
+
+            name = result_item . get_value( "NAME" )
+            column . set_name( name )
+
+
+            col_dt . get_objects( ) . add( column )
+
+        ENDIF
+
+
+    ENDWHILE
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+    ds_builder . get_datatables ( ) . add ( dt )
+    ds_builder . get_datatables ( ) . add ( col_dt )
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+        ds_builder . build ( )
+
+    ENDIF
+
+    IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+        response . adddata ( ds_builder . get_serialized_dataset ( TRUE ) )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_get_results.rpf *****}
+
+ROUTINE sample_get_results ( processor, entity, action, response )
+
+{
+* LIMSML : Parameters : SAMPLE_ID, The sample from which the results will be
+*                                  obtained
+*
+*          Return Value : Returns a datatable of results for the specified sample
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : None
+*
+*******************************************************************************}
+
+    DECLARE sample_id, sample_type, sample_item, test_items, ds_builder,
+            test_enum, test_item, result_items, dt, comp_relationship,
+            comp_items, analysis_item, comp_item, comp_enum, result_item,
+            new_result_item, result_name
+
+    sample_id = action . get_param_default ( "SAMPLE_ID", ERROR )
+
+    sample_type = bl_system ( ) . get_type ( "SAMPLE" )
+
+    IF sample_id <> EMPTY THEN
+
+        sample_item = sample_type . get_item ( sample_id )
+
+    ENDIF
+
+    IF sample_item <> EMPTY THEN
+
+        comp_relationship = bl_system ( ) . get_relationship ( "ANALYSIS_COMPONENT" )
+
+        test_items = sample_item . get_tests( )
+
+        ds_builder = new_bl_item_dataset_builder ( )
+
+        dt = new_result_datatable( )
+
+        test_enum = test_items . get_enumerator ( )
+        WHILE test_enum . move_next ( ) DO
+
+            test_item = test_enum . get_current ( )
+
+            result_items = test_item . get_results( )
+
+            dt . add_items ( result_items )
+
+            IF NOT test_item . get_value ( "HAS_RESULT_LIST" ) THEN
+
+                analysis_item = test_item . get_analysis( )
+                comp_items = comp_relationship . get_related_items ( analysis_item )
+
+                comp_enum = comp_items . get_enumerator ( )
+                WHILE comp_enum . move_next ( ) DO
+
+                    comp_item = comp_enum . get_current ( )
+
+                    result_name = comp_item . get_value ( "NAME" )
+                    result_item = test_item . get_result_by_name( result_name )
+
+                    IF result_item = EMPTY THEN
+
+                        new_result_item = build_blank_result( test_item, comp_item )
+
+                        dt . add_item ( new_result_item )
+
+                    ENDIF
+
+                ENDWHILE
+
+            ENDIF
+
+        ENDWHILE
+
+        ds_builder . get_datatables ( ) . add ( dt )
+
+        IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+            ds_builder . build ( )
+
+        ENDIF
+
+        IF NOT bl_system ( ) . error_flagged ( ) THEN
+
+            response . adddata ( ds_builder . get_serialized_dataset ( TRUE ) )
+
+        ENDIF
+
+
+    ENDIF
+
+
+ENDROUTINE
+
+
+{***** ROUTINE utility_create_test.rpf *****}
+
+ROUTINE utility_create_test ( test , sample )
+{WriteToLog("Start")}
+{ Build up a New Test Object
+*
+* Parameters   : Test - LIMSML Test Entity Class
+* Return Value : Collection - Of Test Items
+*
+*******************************************************************************}
+
+    DECLARE test_items, reps, test_builder, analysis, test_type, test_item,
+        tests_enum, testxml, test_copy
+
+    test_items = EMPTY
+
+    test_type = bl_system ( ) . get_type ( "TEST" )
+
+    IF ( test . gettype() = "TEST" ) THEN
+
+        {**************************************************************}
+        {* Take a copy of the test so it can be tagged to the BL.     *}
+        {**************************************************************}
+        test_copy = test.copy( FALSE )
+        testxml = test_copy . returnxml()
+
+        test_builder = test_type . new_builder ( )
+
+        {**************************************************************}
+        {* Work out the Analysis ID and Number of Reps we wish to do. *}
+        {**************************************************************}
+
+        analysis = test . get_field_default ( "ANALYSIS", EMPTY )
+        test_builder . set_analysis_id ( analysis )
+
+        reps = test . get_field_default ( "TEST_COUNT", 1 )
+        test_builder . set_replicates ( reps )
+
+        {**************************************************************}
+        {* Create the Tests and then Update the appropriate fields    *}
+        {**************************************************************}
+
+        test_builder . build ( )
+
+        test_items = test_builder . get_new_items ( )
+
+        tests_enum = test_items . get_enumerator ( )
+
+        WHILE tests_enum . move_next ( ) DO
+
+            test_item = tests_enum . get_current ( )
+            test_item . set_custom_value ( "REQUEST", testxml )
+
+            test . fields_bl_get ( test_item )
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( test_items )
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_result_entry.rpf *****}
+
+ROUTINE sample_result_entry ( processor, entity, action, response )
+
+{
+* Enter results for a sample
+*
+* Note: The type of response class depends on what the response_type is within
+*       the request. Example if response_type is DATA, little initial xml is
+*       needed. Therefore HELPER_DOCUMENT class is used.
+*
+*       If it is SYSTEM, header xml is needed and build functionality is needed.
+*       Therefore HELPER_RICHDOCUMENT class is used.
+*       (See $limsml_process.rpf action create_system/create_data for more info)
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : [Text], (Optional)If only one return value is needed, this
+*                will override any response.
+*                Works by copying request entity information and adding
+*                a field call 'RETURN', with the return value as its value.
+*
+*******************************************************************************}
+
+    DECLARE id_numeric, test_number, test_count, test_entity, test_list, analysis, status, sample, id_text
+
+    {**********************************************************************}
+    {* Create test list helper object to keep track of progress           *}
+    {**********************************************************************}
+
+    limsml_samp_re_test_list_define_class ( )
+    CREATE OBJECT "SAMP_RE_TEST_LIST", test_list
+    test_list . test_reps_on = get_test_rep_mode ( action )
+
+    {**********************************************************************}
+    {* Do Result Entry                                                    *}
+    {**********************************************************************}
+
+    id_numeric = get_sample_id_numeric ( entity, action )
+
+    IF ( id_numeric <> EMPTY )
+
+        test_count  = 0
+        test_entity = entity . get_child ( test_count )
+
+        WHILE ( test_entity <> EMPTY ) DO
+
+            test_number = get_test_number ( processor   ,
+                                            entity      ,
+                                            action      ,
+                                            test_entity ,
+                                            id_numeric  ,
+                                            test_list   )
+
+            IF (NOT NUMTEXT(test_number)) AND (test_number <> EMPTY) THEN
+                WriteToLog("Skip test number: ":test_number)
+                test_number = EMPTY
+            ENDIF
+
+            IF ( test_number <> EMPTY ) THEN
+
+                {****************************************************}
+                {* Enter the result values                          *}
+                {****************************************************}
+
+                status = SELECT test . status WHERE test_number = test_number
+                analysis = SELECT test . analysis
+                sample = SELECT test . sample
+                id_text = SELECT sample . id_text WHERE id_numeric = sample
+                WriteToLog("Test number: ":STRIP(test_number):", Status: ":STRIP(status):", Sample: ":STRIP(sample):"-":STRIP(id_text):", Analysis: ":analysis)
+
+                process_test_results ( processor   ,
+                                       test_entity ,
+                                       action      ,
+                                       test_number )
+
+
+                {****************************************************}
+                {* Update the tests                                 *}
+                {****************************************************}
+
+                IF ( get_update_tests ( action ) ) THEN
+
+                    update_entity ( test_entity, test_number )
+
+                ENDIF
+
+                {****************************************************}
+                {* Optionally force completion of the test          *}
+                {****************************************************}
+
+                IF ( get_complete_tests ( action ) ) THEN
+
+                    complete_test ( test_entity, test_number )
+
+                ENDIF
+
+                {****************************************************}
+                {* End user callback in $LIMSML_SAMPLE_USER         *}
+                {****************************************************}
+
+                limsml_result_entry_post_test_update ( test_entity ,
+                                                       test_number )
+
+            ELSE
+
+                {****************************************************}
+                {* Optionally throw an error if test can't be found *}
+                {****************************************************}
+
+                handle_missing_test_number ( processor   ,
+                                             test_entity ,
+                                             action      ,
+                                             id_numeric  )
+
+            ENDIF
+
+            test_count = test_count + 1
+            test_entity = entity . get_child ( test_count )
+
+        ENDWHILE
+
+        {****************************************************************}
+        {* Optionally update the sample entity with the field values    *}
+        {****************************************************************}
+
+        IF ( get_update_sample ( action ) ) THEN
+
+            update_entity ( entity, id_numeric )
+
+        ENDIF
+
+        {****************************************************************}
+        {* Optionally force completion of the Sample                    *}
+        {****************************************************************}
+
+        IF ( get_complete_sample ( action ) ) THEN
+
+            complete_sample ( entity, id_numeric )
+
+        ENDIF
+
+        {****************************************************************}
+        {* End user callback in $LIMSML_SAMPLE_USER                     *}
+        {****************************************************************}
+
+        limsml_result_entry_post_sample_update ( entity, id_numeric )
+
+    ELSE
+
+        {****************************************************************}
+        {* Optionally throw an error if a sample can not be identified  *}
+        {****************************************************************}
+
+        handle_missing_sample_id ( processor, entity, action )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE get_sample_id_numeric.rpf *****}
+
+ROUTINE get_sample_id_numeric ( sample_entity, action )
+
+{
+* Returns the id numeric of the sample in sample_entity.
+*
+* Parameters   : sample_entity, [HELPER_ENTITY]
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+* Return Value : return_id [PACKED_DECIMAL] The id numeric of the sample
+*
+*******************************************************************************}
+
+    DECLARE sample, test, test_num
+
+    {**********************************************************************}
+    {* See if we have a ID_NUMERIC to use                                 *}
+    {**********************************************************************}
+
+    sample = sample_entity . get_field_value ( "ID_NUMERIC" )
+
+    IF ( sample <> EMPTY ) THEN
+
+        IF ( convert_to_id_numeric ( sample ) ) THEN
+
+            sample = get_sample_by_number ( sample )
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* See if we have a ID_TEXT to use                                    *}
+    {**********************************************************************}
+
+    IF ( sample = EMPTY ) THEN
+
+        sample = sample_entity . get_field_value ( "ID_TEXT" )
+
+        If ( sample <> EMPTY ) THEN
+
+            sample = get_sample_by_text ( sample )
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* See if we have a TEST_NUMBER to use                                *}
+    {**********************************************************************}
+
+    IF ( sample = EMPTY )
+
+        test = sample_entity . get_child ( 0 )
+
+        IF ( test <> EMPTY ) THEN
+            test_num = test . get_field_value ( "TEST_NUMBER" )
+            IF ((NOT NUMTEXT(test_num)) AND (test_num <> EMPTY)) OR (LENGTH(test_num) > 10) THEN
+                WriteToLog("Skip test number: ":test_num)
+                test_num = EMPTY
+            ELSE    
+                test_num = SELECT test.test_number WHERE test_number = test_num
+            ENDIF
+            IF ( test_num <> EMPTY )
+                sample = SELECT test . sample
+                         WHERE test_number = test_num
+            ENDIF
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Create a new sample if appropriate                                 *}
+    {**********************************************************************}
+
+    IF ( sample = EMPTY )
+
+        sample = create_new_sample ( sample_entity, action )
+
+    ENDIF
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    sample = limsml_result_entry_get_sample ( sample_entity, sample )
+
+    RETURN ( sample )
+
+ENDROUTINE
+
+
+{***** ROUTINE create_new_sample.rpf *****}
+
+ROUTINE create_new_sample ( sample_entity, action )
+
+{
+* Create a new sample record
+*
+* Parameters   : sample_entity, [HELPER_ENTITY]
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+* Return Value : return_id [PACKED_DECIMAL] The id numeric of the sample
+*
+*******************************************************************************}
+
+    DECLARE samp_type, builder, samples, sample, sample_id, template
+    sample_id = EMPTY
+
+    IF ( get_create_sample ( action ) ) THEN
+
+        samp_type = bl_system ( ) . get_type ( "SAMPLE" )
+        builder = samp_type . new_builder ( )
+
+        template = get_create_sample_template ( action )
+
+        builder . set_template_id ( template )
+        builder . set_replicates ( 1 )
+
+        builder . build ( )
+
+        samples = builder . get_new_items ( )
+        sample = samples . item ( 1 )
+
+        IF ( sample <> EMPTY ) THEN
+
+            update_fields ( sample, sample_entity )
+
+            sample . update ( )
+            sample_id = sample . get_value( "ID_NUMERIC" )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( sample_id )
+
+ENDROUTINE
+
+
+{***** ROUTINE convert_to_id_numeric.rpf *****}
+
+ROUTINE convert_to_id_numeric ( num_value )
+
+{
+* Converts num_value to a packed decimal.
+*
+* Parameters   : num_value
+* Return Value : success [BOOLEAN] Return true if can convert
+*
+*******************************************************************************}
+
+    DECLARE success
+
+    success   = TRUE
+    num_value = PACKED_DECIMAL ( num_value )
+
+    IF ( num_value = ERROR ) THEN
+
+        success = FALSE
+
+    ENDIF
+
+    RETURN ( success )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_sample_by_number.rpf *****}
+
+ROUTINE get_sample_by_number ( id_numeric )
+
+{
+* Returns the id numeric of the sample represented by id_numeric.
+*
+* Parameters   : id_numeric [PACKED_DECIMAL]
+* Return Value : return_id [PACKED_DECIMAL] The id numeric of the sample
+*
+*******************************************************************************}
+
+    DECLARE return_id
+
+    return_id = SELECT sample . id_numeric
+                WHERE  id_numeric = id_numeric
+
+    RETURN ( return_id )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_sample_by_text.rpf *****}
+
+ROUTINE get_sample_by_text ( id_text )
+
+{
+* Returns the id numeric of the sample reprented by id_text.
+*
+* Parameters   : id_text [TEXT]
+* Return Value : return_id [PACKED_DECIMAL] The id numeric of the sample
+*
+*******************************************************************************}
+
+    DECLARE return_id
+
+    return_id = SELECT sample . id_numeric
+                WHERE  id_text = id_text
+
+    RETURN ( return_id )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_test_number.rpf *****}
+
+ROUTINE get_test_number (       processor     ,
+                                sample_entity ,
+                                action        ,
+                                test_entity   ,
+                          VALUE sample_id     ,
+                                test_list     )
+
+{
+* Returns the test number for the given sample_id and test_entity.
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Sample Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                test_entity [HELPER_ENTITY] Test Helper Entity
+*                sample_id [PACKED_DECIMAL] Sample ID
+*                test_list [TEST_LIST] List of processed tests
+* Return Value : return_num [PACKED_DECIMAL] The test number
+*
+*******************************************************************************}
+
+    DECLARE analysis, test, replicate, status_set
+
+    {**********************************************************************}
+    {* See if the user just passed in the test number                     *}
+    {**********************************************************************}
+
+    test = test_entity . get_field_value ( "TEST_NUMBER" )
+
+    IF ( NOT NUMTEXT ( test ) )
+
+        test = EMPTY
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Otherwise work it out - using the analysis and optional rep count  *}
+    {**********************************************************************}
+
+    IF ( ( test = EMPTY ) AND ( sample_id <> EMPTY ) ) THEN
+
+        analysis  = get_analysis_id ( test_entity )
+        replicate = get_test_replicate ( sample_entity, test_entity,
+                                         test_list    , analysis   )
+
+        IF ( analysis = EMPTY ) THEN
+
+            {**********************************************************}
+            {* We can't deduce the test without the analysis          *}
+            {**********************************************************}
+
+        ELSEIF ( replicate = EMPTY ) THEN
+
+            {**********************************************************}
+            {* Determine which statuses are valid for the next test   *}
+            {**********************************************************}
+
+            status_set = get_test_status_set ( action )
+
+            {**********************************************************}
+            {* The test replicate was not specified - look for the    *}
+            {* next available test replicate                          *}
+            {**********************************************************}
+
+            replicate = test_list . get_test_count ( analysis )
+            replicate = replicate + 1
+
+            {**********************************************************}
+            {* Get the next test                                      *}
+            {**********************************************************}
+
+            test = get_next_test_number ( sample_id, analysis   ,
+                                          replicate, status_set )
+
+        ELSEIF ( ( analysis <> EMPTY ) AND ( replicate <> EMPTY ) )
+
+            test = SELECT test. test_number
+                   WHERE  sample_id  = sample_id
+                   AND    analysis   = analysis
+                   AND    test_count = replicate
+
+        ENDIF
+
+        {****************************************************************}
+        {* Create the test if appropriate                               *}
+        {****************************************************************}
+
+        IF ( test = EMPTY ) THEN
+
+            test = create_new_test ( test_entity, action   ,
+                                     sample_id  , analysis )
+
+            IF ( test <> EMPTY ) THEN
+
+                test = SELECT test . test_number
+                       WHERE test_number = test
+
+            ENDIF
+
+        ENDIF
+
+        {****************************************************************}
+        {* Keep track of this replicate as it has been consumed         *}
+        {****************************************************************}
+
+        replicate = SELECT test . test_count
+
+        IF ( replicate <> EMPTY )
+
+            test_list . set_test_count ( analysis, replicate )
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    test = limsml_result_entry_get_test ( sample_entity, test_entity,
+                                          sample_id    , test       )
+
+    RETURN ( test )
+
+ENDROUTINE
+
+
+{***** ROUTINE create_new_test.rpf *****}
+
+ROUTINE create_new_test ( entity, action, VALUE sample_id, VALUE analysis  )
+
+{
+* Create a new test record
+*
+* Parameters   : sample_entity, [HELPER_ENTITY]
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+* Return Value : return_id [PACKED_DECIMAL] The id numeric of the sample
+*
+*******************************************************************************}
+
+    DECLARE samp_type, builder, tests, test, sample, test_type,
+            test_number, enum
+
+    test_number = EMPTY
+
+    IF ( get_create_tests ( action ) ) THEN
+
+        test_type = bl_system ( ) . get_type ( "TEST" )
+        builder = test_type . new_builder ( )
+
+        builder . set_analysis_id ( analysis )
+        builder . set_replicates ( 1 )
+        builder . build ( )
+
+        tests = builder . get_new_items ( )
+
+        enum = tests . get_enumerator ( )
+        enum . move_next ( )
+        test = enum . get_current ( )
+
+        IF ( test <> EMPTY ) THEN
+
+            update_fields ( test, entity )
+
+            samp_type = bl_system ( ) . get_type ( "SAMPLE" )
+            sample = samp_type . get_item ( sample_id )
+
+            IF ( sample <> EMPTY ) THEN
+
+                sample . add_tests ( tests )
+                sample . update ( )
+
+                test_number = test . get_value ( "TEST_NUMBER" )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( test_number )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_next_test_number.rpf *****}
+
+ROUTINE get_next_test_number ( VALUE sample_id  ,
+                               VALUE analysis   ,
+                               VALUE replicate  ,
+                               VALUE status_set )
+
+{
+* Determine the next test based on the Sample, Analysis and Test Status
+*
+* Parameters   : Sample Id [PACKED_DECIMAL] Sample ID
+*                Analysis [IDENTITY] Analysis ID
+*                Replicate [INTEGER] Next Replicate to Use
+*                Status Set [STRING] List of valid test status
+* Return Value : [PACKED_DECIMAL] The test number
+*
+*******************************************************************************}
+
+    DECLARE test, found, status
+    found = FALSE
+
+    test = SELECT test. test_number
+           WHERE  sample_id = sample_id
+           AND    analysis   = analysis
+           AND    test_count >= replicate
+           ORDER ON test_count
+
+    WHILE ( ( test <> EMPTY ) AND ( NOT found ) ) DO
+
+        status = SELECT test . status
+
+        IF ( INDEX ( status_set, status ) <> 0 )
+
+            found = TRUE
+
+        ELSE
+
+            NEXT test
+            test = SELECT test . test_number
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( test )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_analysis_id.rpf *****}
+
+ROUTINE get_analysis_id ( test_entity )
+
+{
+* Returns the analusis identity from within the test_entity.
+*
+* Parameters   : test_entity [HELPER_ENTITY]
+* Return Value : return_id [IDENTITY] Analysis id, EMPTY if not valid
+*
+*******************************************************************************}
+
+    DECLARE analysis
+
+    analysis = test_entity . get_field_value ( "ANALYSIS" )
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    analysis = limsml_result_entry_get_analysis ( test_entity, analysis )
+
+    RETURN ( analysis )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_test_replicate.rpf *****}
+
+ROUTINE get_test_replicate ( sample_entity, test_entity, test_list, VALUE analysis )
+
+{
+* Returns the test replicate from within the test_entity.
+*
+* Parameters   : sample_entity [HELPER_ENTITY] Sample Entity
+*                test_entity [HELPER_ENTITY] Test Entity
+*                Test List [TEST_LIST] Test Tracker
+*                Analysis [IDENTITY] Analysis ID
+* Return Value : return_id [INTEGER] Replicate, EMPTY if just use first
+*
+*******************************************************************************}
+
+    DECLARE test_rep
+
+    {**********************************************************************}
+    {* See if the user passed in an explicit test count                   *}
+    {**********************************************************************}
+
+    test_rep = test_entity . get_field_value ( "TEST_COUNT" )
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    test_rep = limsml_result_entry_get_test_rep ( test_entity, test_rep )
+
+    RETURN ( test_rep )
+
+ENDROUTINE
+
+
+{***** ROUTINE process_test_results.rpf *****}
+
+ROUTINE process_test_results ( processor, test_entity, action, test_number )
+
+{ Processes all the results within the test_entity.
+
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                test_number [PACKED_DECIMAL] The test_number
+*                test_entity [HELPER_ENTITY]
+* Return Value : result_ok [BOOLEAN] Indicates success of result entry
+*
+*******************************************************************************}
+
+    DECLARE results, fields, values, status_array, ignore_adhoc, i , Analysis, IM_Analysis, ok
+
+    {**********************************************************************}
+    {* Get a distinct list of the fields involved                         *}
+    {**********************************************************************}
+
+    fields = get_result_fields ( processor, test_entity, action )
+
+    {**********************************************************************}
+    {* See if we just ignore adhoc results                                *}
+    {**********************************************************************}
+
+    ignore_adhoc = get_test_adhoc_mode ( action )
+    
+    {**********************************************************************}
+    {* Get the results to process                                         *}
+    {**********************************************************************}
+
+    values = get_result_values ( test_number, test_entity  ,
+                                 fields     , ignore_adhoc )
+
+    results = get_valid_results ( test_number, test_entity, ignore_adhoc )
+
+    {**********************************************************************}
+    {* If we have some results then store them and check the results      *}
+    {**********************************************************************}
+
+    {*** Check out if this line gets the correct values ***}
+    {values = get_result_values ( results, fields )}
+
+    IF ( SIZE_OF_ARRAY ( values ) > 1 )
+
+        Analysis = SELECT test.analysis WHERE test_number = test_number
+        IM_Analysis = EMPTY
+
+        i = 1
+        WHILE i < SIZE_OF_ARRAY(values) DO
+            IF TOUPPER(values[i,1]) = "ANALYSIS" THEN
+                IM_Analysis = values[i,2]
+            ENDIF
+            i = i + 1
+        ENDWHILE
+
+
+        IF (IM_Analysis <> EMPTY) THEN
+            WriteToLog("Input Analysis = ":IM_Analysis:"; Target Analysis = ":Analysis)
+            CleanUpValues(test_number, values)
+        ENDIF
+
+        WriteToLog("PUT_TEST_RESULTS, Enter ":STRIP(SIZE_OF_ARRAY(values)):" results to test_number: " : test_number) { :" With array values: ":GetArray(values))}
+
+        PUT_TEST_RESULTS test_number, values, status_array
+
+    ok = TRUE
+    
+    IF status_array [ 1 ] = ERROR THEN
+        {WriteToLog("status_array: ERROR")}
+            ok = process_status_array ( processor, test_entity, action, values, results, status_array )
+            i = 1
+            WHILE i <= SIZE_OF_ARRAY(status_array) DO
+                values[i, 3] = status_array[i]
+                i = i + 1
+            ENDWHILE
+            {WriteToLog("There were errors while processing test number:":test_number)}
+    ELSEIF status_array [ 1 ] = EMPTY THEN
+        {WriteToLog("status_array: EMPTY") }
+    ELSE
+        WriteToLog("status_array: ": status_array [ 1 ])
+    ENDIF
+
+{**************************************************************************************************************
+    WriteToLog(ASCII(10):ASCII(10):
+              "ARRAY values:":ASCII(10):
+              GetArray(values):ASCII(10)) 
+***************************************************************************************************************}
+
+    {**********************************************************************}
+    {* Optionally Recalculate Results                                     *}
+    {**********************************************************************}
+        {WriteToLog("get_recalculate(action) = ":get_recalculate(action))}
+
+        IF ( get_recalculate ( action ) ) THEN
+            {WriteToLog("add_calculated_results") }
+            add_calculated_results ( test_number, fields, values )
+        ELSE
+            {WriteToLog("do NOT add_calculated_results") }
+        ENDIF
+
+        {****************************************************************}
+        {* Update the internal fields such as entered on and entered by *}
+        {****************************************************************}
+
+        IF ( ( ok ) AND ( LIMSML_SAMPLE_UPDATE_INTERNAL_FIELDS ) ) THEN
+        {WriteToLog("update_internal_result_fields")      }
+            {*** Check if this line put update results correctly ***}
+            {update_internal_result_fields ( test_number, results )}
+            update_internal_result_fields ( test_number, test_entity )
+        {WriteToLog("update_internal_result_fields, DONE")        }
+    ELSE
+        {WriteToLog("do NOT update_internal_result_fields")       }
+        ENDIF
+
+    ENDIF
+
+    RETURN (ok)
+
+ENDROUTINE
+
+
+{***** ROUTINE update_internal_result_fields.rpf *****}
+
+ROUTINE update_internal_result_fields ( VALUE test_number , test_entity )
+{WriteToLog("Start")}
+{
+* Save the internal result field values
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                test_entity [HELPER_ENTITY] The test entity
+*
+*******************************************************************************}
+
+    DECLARE count, result, record, comp_name, entered_on, entered_by
+
+    count  = 0
+    record = EMPTY
+    result = test_entity . get_child ( count )
+
+    WHILE ( result <> EMPTY ) DO
+
+        {****************************************************************}
+        {* Get the result name                                          *}
+        {****************************************************************}
+
+        comp_name = result . get_field_value ( "NAME" )
+
+        IF ( comp_name = EMPTY )
+
+            comp_name = result . get_field_value ( "COMPONENT_NAME" )
+
+        ENDIF
+
+        {****************************************************************}
+        {* Entered On                                                   *}
+        {****************************************************************}
+
+        entered_on = result . get_field_value ( "ENTERED_ON" )
+
+        IF ( entered_on <> EMPTY ) THEN
+
+            IF ( record = EMPTY ) THEN
+
+                record = SELECT result . test_number
+                         FOR UPDATE
+                         WHERE test_number = test_number
+                         AND name = comp_name
+
+            ENDIF
+
+            ASSIGN result . entered_on = entered_on
+            UPDATE result
+
+        ENDIF
+
+        {****************************************************************}
+        {* Entered By                                                   *}
+        {****************************************************************}
+
+        entered_by = result . get_field_value ( "ENTERED_BY" )
+
+        IF ( entered_by <> EMPTY ) THEN
+
+            record = SELECT result . test_number
+                     FOR UPDATE
+                     WHERE test_number = test_number
+                     AND name = comp_name
+
+            IF (record <> EMPTY) and (record <> LOCKED) THEN
+                ASSIGN result . entered_by = entered_by
+                UPDATE result
+            ENDIF
+
+        ENDIF
+
+        count  = count + 1
+        result = test_entity . get_child ( count )
+
+    ENDWHILE
+
+ENDROUTINE
+
+{***** ROUTINE get_valid_results.rpf *****}
+
+ROUTINE get_valid_results ( VALUE test_number, test_entity, VALUE ignore_adhoc )
+
+{
+* Generate a list of results that are valid
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                test_entity [HELPER_ENTITY] The test entity
+*                Ignore Adhoc [BOOLEAN] Ignore Adhoc Results
+* Return Value : [ARRAY] List of appropriate results
+*
+*******************************************************************************}
+
+    DECLARE results, count, result, valid, row
+    ARRAY results
+
+    count  = 0
+    row    = 1
+    result = test_entity . get_child ( count )
+
+    WHILE ( result <> EMPTY ) DO
+
+        valid = result_is_valid ( test_number, result, ignore_adhoc )
+
+        IF ( valid ) THEN
+
+            results [ row ] = result
+            row = row + 1
+
+        ENDIF
+
+        {*****************************************************************}
+        {* Get the next result                                           *}
+        {*****************************************************************}
+
+        count  = count + 1
+        result = test_entity . get_child ( count )
+
+    ENDWHILE
+
+    RETURN ( results )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_result_values.rpf *****}
+
+ROUTINE get_result_values ( VALUE test_number  , test_entity  , fields       ,VALUE ignore_adhoc )
+{WriteToLog("Start")}
+{
+* Generate a list of results to submit to PTR
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                test_entity [HELPER_ENTITY] The test entity
+*                fields [ARRAY] list of fields
+*                Ignore Adhoc [BOOLEAN] Ignore Adhoc Results
+* Return Value : [ARRAY] Put Test Results Array
+*
+*******************************************************************************}
+
+    DECLARE values, count, result, field, field_count, name, val, valid
+    ARRAY values
+
+    count = 1
+
+    WHILE ( count <= SIZE_OF_ARRAY ( fields ) ) DO
+
+        values [ 1, count ] = fields [ count ]
+        count = count + 1
+
+    ENDWHILE
+
+    count  = 0
+    result = test_entity . get_child ( count )
+
+    WHILE ( result <> EMPTY ) DO
+
+        {****************************************************************}
+        {* See if this is a valid result                                *}
+        {****************************************************************}
+
+        valid = result_is_valid ( test_number, result, ignore_adhoc )
+
+        {****************************************************************}
+        {* Add all the fields to Put Test Results                       *}
+        {****************************************************************}
+
+        field_count = 0
+        field = result . get_field_by_index ( field_count )
+
+        WHILE ( ( field <> EMPTY ) AND ( valid ) ) DO
+
+            name = field . get_name  ( )
+            val  = field . get_value ( )
+
+            {**********************************************************}
+            {* Insert at position + 2 - as we have a zero based count *}
+            {* and a header row for the field names.                  *}
+            {**********************************************************}
+
+            add_result_value ( fields, count + 2, values, name, val )
+
+            field_count  = field_count + 1
+            field = result . get_field_by_index ( field_count )
+
+        ENDWHILE
+
+        count  = count + 1
+        result = test_entity . get_child ( count )
+
+    ENDWHILE
+
+    RETURN ( values )
+
+ENDROUTINE
+
+
+{***** ROUTINE add_calculated_results.rpf *****}
+
+ROUTINE add_calculated_results ( VALUE test_number ,
+                                       fields      ,
+                                       values      )
+{
+* Add Calculated Results
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                fields [ARRAY] list of fields
+*                values [ARRAY] list of fields
+*
+*******************************************************************************}
+
+    DECLARE count, result, version, comp_name, table, analysis, name
+
+    {************************************************************************}
+    {* Determine the name field                                             *}
+    {************************************************************************}
+
+    count = 1
+    name  = "NAME"
+
+    WHILE ( fields [ count ] <> EMPTY ) DO
+
+        IF ( fields [ count ] = "COMPONENT_NAME" )
+
+            name = "COMPONENT_NAME"
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    {************************************************************************}
+    {* Whiz through the calculated components and add them                  *}
+    {************************************************************************}
+
+    count = SIZE_OF_ARRAY ( values ) + 1
+
+    analysis = SELECT test . analysis
+               WHERE test_number = test_number
+
+    IF ( analysis <> EMPTY ) THEN
+
+        result  = SELECT test . has_result_list
+        version = SELECT test . analysis_version
+
+        IF result THEN
+
+            table = "RESULT"
+            comp_name = SELECT result . name
+                        WHERE  test_number = test_number
+                        AND    result_type = "K"
+
+        ELSE
+
+            table = "VERSIONED_COMPONENT"
+            comp_name = SELECT versioned_component . name
+                        WHERE  analysis = analysis
+                        AND    analysis_version = version
+                        AND    result_type = "K"
+
+        ENDIF
+
+        WHILE ( comp_name <> EMPTY )
+
+            add_result_value ( fields, count, values, name, comp_name )
+
+            NEXT 'table'
+            comp_name = SELECT 'table' . name
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( values )
+
+ENDROUTINE
+
+
+{***** ROUTINE add_result_value.rpf *****}
+
+ROUTINE add_result_value ( fields, VALUE count, values, VALUE name, VALUE val )
+
+{
+* Add a result value to the result array
+*
+* Parameters   : [ARRAY]  Fields
+*                [STRING] Field Name
+* Return Value : N/a
+*
+*******************************************************************************}
+
+    DECLARE pos
+
+    pos = get_result_field_position ( fields, name )
+
+    {**********************************************************************}
+    {* If we can find this field then add it to the list of values        *}
+    {**********************************************************************}
+
+    IF ( pos > 0 ) THEN
+
+        values [ count, pos ] = val
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE get_result_fields.rpf *****}
+
+ROUTINE get_result_fields ( processor, test_entity, action )
+
+{
+* Spin through the result set and pick up all the fields that are being touched
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Test Helper Entity Class
+*                Action  [HELPER_ACTIONML] Helper Action Class
+* Return Value : [ARRAY] List of Fields to play with
+*
+*******************************************************************************}
+
+    DECLARE fields, count, result, field, field_count, field_name
+    ARRAY fields
+
+    count  = 0
+    result = test_entity . get_child ( count )
+
+    WHILE ( result <> EMPTY ) DO
+
+        field_count = 0
+        field = result . get_field_by_index ( field_count )
+
+        WHILE ( field <> EMPTY )
+
+            field_name = field . get_name ( )
+
+            {**********************************************************}
+            {* Add the value if this is valid                         *}
+            {**********************************************************}
+
+            IF ( result_field_is_valid ( processor   ,
+                                         test_entity ,
+                                         action      ,
+                                         result      ,
+                                         field_name   ) ) THEN
+
+                add_result_field ( fields, field_name )
+
+            ENDIF
+
+            field_count  = field_count + 1
+            field = result . get_field_by_index ( field_count )
+
+        ENDWHILE
+
+        count  = count + 1
+        result = test_entity . get_child ( count )
+
+    ENDWHILE
+
+    RETURN ( fields )
+
+ENDROUTINE
+
+
+{***** ROUTINE add_result_field.rpf *****}
+
+ROUTINE add_result_field ( fields, VALUE field_name )
+
+{
+* Add a field to the array
+*
+* Parameters   : [ARRAY]  Fields
+*                [STRING] Field Name
+* Return Value : N/a
+*
+*******************************************************************************}
+
+    DECLARE pos
+
+    pos = get_result_field_position ( fields, field_name )
+    fields [ pos ] = field_name
+
+ENDROUTINE
+
+
+{***** ROUTINE get_result_field_position.rpf *****}
+
+ROUTINE get_result_field_position ( fields, VALUE field_name )
+
+{
+* Spin through the result set and pick up all the fields that are being touched
+*
+* Parameters   : [ARRAY]  Fields
+*                [STRING] Field Name
+* Return Value : [INTEGER] Index
+*
+*******************************************************************************}
+
+    DECLARE count, found
+    found = FALSE
+    count = 1
+
+    WHILE ( ( count <= SIZE_OF_ARRAY ( fields ) ) AND ( NOT found ) ) DO
+
+        IF ( fields [ count ] = field_name )
+
+            found = TRUE
+
+        ELSE
+
+            count = count + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( count )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_is_valid.rpf *****}
+
+ROUTINE result_is_valid ( VALUE test_number, result_entity, VALUE ignore_adhoc )
+
+{
+* Determine if this result is valid
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                result_entity [HELPER ENTITY] The Result Entity
+*                ignore_adhoc [BOOLEAN] Ignore Adhoc Results
+* Return Value : valid [BOOLEAN] Result is valid
+*
+*******************************************************************************}
+
+    DECLARE valid
+    valid = TRUE
+
+    IF ( ignore_adhoc AND result_is_adhoc ( test_number, result_entity ) )
+
+        valid = FALSE
+
+    ENDIF
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    valid = limsml_result_entry_valid_result ( test_number, result_entity ,
+                                               valid                      )
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_is_adhoc.rpf *****}
+
+ROUTINE result_is_adhoc ( VALUE test_number, result_entity )
+
+{
+* Determine if this result is adhoc
+*
+* Parameters   : test_number [PACKED_DECIMAL] The Test Number
+*                result_entity [HELPER ENTITY] The Result Entity
+* Return Value : adhoc [BOOLEAN] Result is Adhoc
+*
+*******************************************************************************}
+
+    DECLARE analysis, comp_name, version, adhoc, result
+    adhoc = FALSE
+
+    {**********************************************************************}
+    {* Get hold of the component name                                     *}
+    {**********************************************************************}
+
+    comp_name = result_entity . get_field_value ( "NAME" )
+
+    IF ( comp_name = EMPTY )
+
+        comp_name = result_entity . get_field_value ( "COMPONENT_NAME" )
+
+    ENDIF
+
+    {**********************************************************************}
+    {* See if this is a real result on the Test/Analysis                  *}
+    {**********************************************************************}
+
+    IF ( comp_name <> EMPTY )
+
+        analysis = SELECT test . analysis
+                   WHERE test_number = test_number
+
+        IF ( analysis <> EMPTY ) THEN
+
+            result  = SELECT test . has_result_list
+            version = SELECT test . analysis_version
+
+            IF result THEN
+
+                comp_name = SELECT result . name
+                            WHERE name = comp_name
+                            AND test_number = test_number
+
+            ELSE
+
+                comp_name = SELECT versioned_component . name
+                            WHERE  analysis = analysis
+                            AND    analysis_version = version
+                            AND    name = comp_name
+
+            ENDIF
+
+            adhoc = ( comp_name = EMPTY )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( adhoc )
+
+ENDROUTINE
+
+
+{***** ROUTINE result_field_is_valid.rpf *****}
+
+ROUTINE result_field_is_valid (       processor     ,
+                                      test_entity   ,
+                                      action        ,
+                                      result_entity ,
+                                VALUE field_name    )
+
+{
+* Check if the 'Value' field is being used.
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Test Helper Entity Class
+*                Action  [HELPER_ACTIONML] Helper Action Class
+*                Result Entity [HELPER_ENTITY] Result Helper Entity
+*                Field Name [STRING] Name of the Field
+* Return Value : field_is_value [BOOLEAN] 'Value' field found.
+*
+*******************************************************************************}
+
+    DECLARE err_mess, handler, valid
+
+    valid = TRUE
+    handler = processor . get_root_error ( )
+
+    field_name = STRIP ( TOUPPER ( field_name ) )
+
+    IF ( field_name = "VALUE" ) THEN
+
+        message_fetch( "LIMSML_RE_ERROR_VALUE_FIELD" , err_mess )
+
+        message_add_parameter ( err_mess, get_entity_summary ( test_entity ) )
+        message_add_parameter ( err_mess, get_entity_summary ( result_entity ) )
+
+        handler . adderrorall ( message_get_text ( err_mess, 1 ),
+                                message_get_text ( err_mess, 2 ),
+                                message_get_text ( err_mess, 3 ),
+                                message_get_severity ( err_mess ),
+                                GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ) )
+
+        valid = FALSE
+
+    ELSEIF (( field_name = "ENTERED_ON" ) OR ( field_name = "ENTERED_BY" )) AND
+           ( LIMSML_SAMPLE_UPDATE_INTERNAL_FIELDS                         ) THEN
+
+        {****************************************************************}
+        {* Skip these, we'll update them elsewhere                      *}
+        {****************************************************************}
+
+        valid = FALSE
+
+    ELSE
+
+        {****************************************************************}
+        {* User Callback in $LIMSML_SAMPLE_USER                         *}
+        {****************************************************************}
+
+        valid = limsml_result_entry_valid_result_field ( test_entity ,
+                                                         field_name  ,
+                                                       valid       )
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+
+{***** ROUTINE process_status_array.rpf *****}
+
+ROUTINE process_status_array ( processor, entity , action       ,
+                               values   , results, status_array )
+
+{
+* Check the status_array returned from result entry.
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Test Helper Entity Class
+*                Action [HELPER_ACTIONML] Helper Action Class
+*                Values [ARRAY] Put Test Results Values
+*                Results [ARRAY] Array of appropriate result objects
+*                status_array [ARRAY] Put Test Results Error Return
+* Return Value : no_errors [BOOLEAN] Indicates existence or errors.
+*
+*******************************************************************************}
+
+    DECLARE error_id, count, result, no_errors
+
+    no_errors = TRUE
+
+    IF ( status_array [ 1 ] = ERROR ) THEN
+
+        {****************************************************************}
+        {* This means that there was a problem with one or more results *}
+        {****************************************************************}
+
+        count = 2
+
+        WHILE ( count <= SIZE_OF_ARRAY ( values ) ) DO
+
+            error_id = status_array [ count ]
+
+            IF ( error_id <> EMPTY ) THEN
+                WriteToLog("ERROR in row ":STRIP(count):") error_id = " : error_id)
+
+                result = results [ count - 1 ]
+
+                handle_result_error ( processor, entity,
+                                      action   , result, error_id )
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+        no_errors = FALSE
+
+    ELSEIF ( status_array [ 1 ] <> EMPTY )
+
+        {****************************************************************}
+        {* This means that there was a general problem                  *}
+        {****************************************************************}
+
+        error_id = status_array [ 1 ]
+        result = EMPTY
+
+        handle_result_error ( processor, entity,
+                              action   , result, error_id )
+        WriteToLog("ERROR (General) error_id = " : error_id)
+
+        no_errors = FALSE
+
+    ENDIF
+
+    RETURN ( no_errors )
+
+ENDROUTINE
+
+
+{***** ROUTINE handle_result_error.rpf *****}
+
+ROUTINE handle_result_error (       processor     ,
+                                    entity        ,
+                                    action        ,
+                                    result_entity ,
+                              VALUE error_id      )
+
+{
+* Check the status_array returned from result entry.
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Test Helper Entity Class
+*                Action [HELPER_ACTIONML] Helper Action Class
+*                Values [ARRAY] Put Test Results Values
+*                status_array [ARRAY] Put Test Results Error Return
+* Return Value : no_errors [BOOLEAN] Indicates existence or errors.
+*
+*******************************************************************************}
+
+    DECLARE err_mess, handler, valid
+
+    valid = get_all_result_errors_allowed ( action )
+
+    IF ( NOT valid )
+
+        valid = check_result_error_allowed ( processor , entity        ,
+                                             action    , result_entity ,
+                                             error_id                  )
+
+    ENDIF
+
+    IF ( NOT valid )
+
+        handler = processor . get_root_error()
+
+        IF ( result_entity <> EMPTY )
+
+            message_fetch( "LIMSML_RE_ERROR_PTR" , err_mess  )
+
+            message_add_parameter ( err_mess, GET_USER_MESSAGE ( error_id, 1 ) )
+            message_add_parameter ( err_mess, get_entity_summary ( entity ) )
+            message_add_parameter ( err_mess, get_entity_summary ( result_entity ) )
+
+        ELSE
+
+            message_fetch( "LIMSML_RE_ERROR_PT" , err_mess  )
+
+            message_add_parameter ( err_mess, GET_USER_MESSAGE ( error_id, 1 ) )
+            message_add_parameter ( err_mess, get_entity_summary ( entity ) )
+
+        ENDIF
+
+        handler . adderrorall ( message_get_text ( err_mess, 1 ) ,
+                                message_get_text ( err_mess, 2 ) ,
+                                message_get_text ( err_mess, 3 ) ,
+                                message_get_severity ( err_mess ) ,
+                                GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ))
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE check_result_error_allowed.rpf *****}
+
+ROUTINE check_result_error_allowed (       processor     ,
+                                           entity        ,
+                                           action        ,
+                                           result_entity ,
+                                     VALUE error_id      )
+
+{
+* See if this specific result error is allowed
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Sample Helper Entity Class
+*                Action [HELPER_ACTIONML] Helper Action Class
+*                Values [ARRAY] Put Test Results Values
+*                status_array [ARRAY] Put Test Results Error Return
+* Return Value : no_errors [BOOLEAN] Indicates existence or errors.
+*
+* These status values indicate database or parsing/mapping errors
+*
+* RPC_K_BADFIELD      The specified result field does not exist
+* RPC_K_BADFLDSTATUS  The status field cannot be updated
+* RPC_K_BADFLDENTON   The entered_on field cannot be updated
+* RPC_K_BADFLDENTBY   The entered_by field cannot be updated
+* RPC_K_BADFLDTEST    The test_number field cannot be updated
+* RPC_K_BADFLDVALUE   The value field cannot be updated
+* RPC_K_COMPISMAND    Mandatory field component_name is missing
+* RPC_K_NORESTYPE     Mandatory field result type is required for adhoc results
+*
+*******************************************************************************}
+
+    DECLARE valid
+    valid = get_result_errors_allowed ( action )
+
+    IF ( valid ) THEN
+
+        IF ( error_id = "RPC_K_BADFIELD"     ) OR
+           ( error_id = "RPC_K_BADFLDSTATUS" ) OR
+           ( error_id = "RPC_K_BADFLDENTON"  ) OR
+           ( error_id = "RPC_K_BADFLDENTBY"  ) OR
+           ( error_id = "RPC_K_BADFLDTEST"   ) OR
+           ( error_id = "RPC_K_BADFLDVALUE"  ) OR
+           ( error_id = "RPC_K_COMPISMAND"   ) OR
+           ( error_id = "RPC_K_NORESTYPE"    ) THEN
+
+            valid = FALSE
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* User Callback in $LIMSML_SAMPLE_USER                               *}
+    {**********************************************************************}
+
+    valid = limsml_result_entry_valid_result_error ( entity        ,
+                                                     result_entity ,
+                                                     error_id      ,
+                                                     valid         )
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+
+{***** ROUTINE handle_missing_sample_id.rpf *****}
+
+ROUTINE handle_missing_sample_id ( processor, entity, action )
+
+{
+* Handle a Missing Sample Identity
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Sample Helper Entity Class
+*                Action [HELPER_ACTIONML] Helper Action Class
+*
+*******************************************************************************}
+
+    DECLARE err_mess, handler, valid
+
+    valid = get_missing_sample_allowed ( action )
+
+    IF ( NOT valid )
+
+        handler = processor . get_root_error()
+
+        message_fetch ( "LIMSML_RE_ERROR_NO_SAMPLE", err_mess )
+
+        message_add_parameter ( err_mess, get_entity_summary ( entity ) )
+
+        handler . adderrorall ( message_get_text ( err_mess, 1 ) ,
+                                  message_get_text ( err_mess, 2 ) ,
+                                message_get_text ( err_mess, 3 ) ,
+                                message_get_severity ( err_mess ) ,
+                                GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ))
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE handle_missing_test_number.rpf *****}
+
+ROUTINE handle_missing_test_number ( processor, entity, action, VALUE sample )
+
+{
+* Handle a Missing Test Number
+*
+* Parameters   : Processor [LIMSML_PROCESS] Controls and validates xml input.
+*                Entity [HELPER_ENTITY] Test Helper Entity Class
+*                Action [HELPER_ACTIONML] Helper Action Class
+*
+*******************************************************************************}
+
+    DECLARE err_mess, handler, valid
+
+    valid = get_missing_test_allowed ( action )
+
+    IF ( NOT valid )
+
+        handler = processor . get_root_error()
+
+        message_fetch ( "LIMSML_RE_ERROR_NO_TEST", err_mess )
+
+        message_add_parameter ( err_mess, sample )
+        message_add_parameter ( err_mess, get_entity_summary ( entity ) )
+
+        handler . adderrorall( message_get_text ( err_mess, 1 ) ,
+                               message_get_text ( err_mess, 2 ) ,
+                               message_get_text ( err_mess, 3 ) ,
+                               message_get_severity ( err_mess ) ,
+                               GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ))
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE complete_sample.rpf *****}
+
+ROUTINE complete_sample ( sample_entity, VALUE id_numeric )
+
+{
+* Complete the Sample
+*
+* Parameters   : sample_entity, [HELPER_ENTITY]
+*                Id Numeric ,[IDENTITY] Sample ID
+* Return Value : N/a
+*
+*******************************************************************************}
+
+    DECLARE sample
+
+    sample = SELECT sample . id_numeric
+             FOR UPDATE
+             WHERE id_numeric = id_numeric
+
+    IF (( sample <> EMPTY ) AND ( sample <> LOCKED)) THEN
+
+        CHANGE SAMPLE STATUS TO "C"
+        UPDATE SAMPLE
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE complete_test.rpf *****}
+
+ROUTINE complete_test ( test_entity, VALUE test_number )
+
+{
+* Complete the Test
+*
+* Parameters   : test_entity, [HELPER_ENTITY]
+*                test_number ,[IDENTITY] Test Identity
+* Return Value : N/a
+*
+*******************************************************************************}
+
+    DECLARE test
+
+    test = SELECT test . test_number
+           FOR UPDATE
+           WHERE test_number = test_number
+
+    IF (( test <> EMPTY ) AND ( test <> LOCKED ))THEN
+
+        CHANGE TEST STATUS TO "C"
+        UPDATE TEST
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE get_entity_summary.rpf *****}
+
+ROUTINE get_entity_summary ( entity )
+
+{
+* Generate a String summary of the specified entity
+*
+* Parameters   : Entity [HELPER_ENTITY] Test Helper Entity Class
+* Return Value : [STRING] Summary of the Entity
+*
+*******************************************************************************}
+
+    DECLARE field, count, val, name, summary
+
+    IF ( entity = EMPTY )
+
+        summary = ""
+
+    ELSE
+
+        summary = "[" : entity . get_type ( ) : "{"
+
+        count = 0
+        field = entity . get_field_by_index ( count )
+
+        WHILE ( field <> EMPTY )
+
+            name = field . get_name ( )
+            val = field . get_value ( )
+
+            summary = summary : name : "='" : val : "' "
+
+            count = count + 1
+            field = entity . get_field_by_index ( count )
+
+        ENDWHILE
+
+        summary = ( STRIP ( summary ) : "}]" )
+
+    ENDIF
+
+    RETURN ( summary )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_create_sample.rpf *****}
+
+ROUTINE get_create_sample ( action )
+
+{
+* Check whether the result entry code should create a sample if it's missing
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Create the Sample entity
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "CREATE_SAMPLE" ,
+                                            LIMSML_SAMPLE_CREATE_SAMPLE )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_create_sample_template.rpf *****}
+
+ROUTINE get_create_sample_template ( action )
+
+{
+* Get the template to use when creating a new sample
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [IDENTITY], Sample Template
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "CREATE_SAMPLE_TEMP" ,
+                                            LIMSML_SAMPLE_CREATE_SAMPLE_TEMPLATE )
+
+    RETURN ( param_val )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_update_sample.rpf *****}
+
+ROUTINE get_update_sample ( action )
+
+{
+* Check whether the result entry code should update the Sample
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Update the Sample entity
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "UPDATE_SAMPLE" ,
+                                            LIMSML_SAMPLE_UPDATE_SAMPLE )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_create_tests.rpf *****}
+
+ROUTINE get_create_tests ( action )
+
+{
+* Check whether the result entry code should create a test if one is not there
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Create test entities
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "CREATE_TESTS" ,
+                                            LIMSML_SAMPLE_CREATE_TESTS )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_update_tests.rpf *****}
+
+ROUTINE get_update_tests ( action )
+
+{
+* Check whether the result entry code should update the Tests
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Update the Test Entities
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "UPDATE_TESTS" ,
+                                            LIMSML_SAMPLE_UPDATE_TESTS )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_test_rep_mode.rpf *****}
+
+ROUTINE get_test_rep_mode ( action )
+
+{
+* Check whether the result entry code should process test replicates.
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Increment the Test Replicate Number
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "TEST_REPS_ENABLED" ,
+                                            LIMSML_SAMPLE_REPLICATES )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_test_adhoc_mode.rpf *****}
+
+ROUTINE get_test_adhoc_mode ( action )
+
+{
+* Check whether the result entry code should process test replicates.
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Ignore Adhoc Results
+*
+*******************************************************************************}
+
+    {WriteToLog("get_test_adhoc_mode ( action )") }
+    DECLARE param_val
+
+    param_val = action . get_param_default( "IGNORE_ADHOC" ,
+                                            LIMSML_SAMPLE_IGNORE_ADHOC )
+
+    param_val = TOUPPER ( param_val )
+    {WriteToLog("param_val = ":param_val) }
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_missing_sample_allowed.rpf *****}
+
+ROUTINE get_missing_sample_allowed ( action )
+
+{
+* Check whether the result entry code should ignore invalid samples
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Require a valid sample number
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "REQUIRE_VALID_SAMPLE" ,
+                                            LIMSML_SAMPLE_REQUIRE_SAMPLE )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val <> "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_missing_test_allowed.rpf *****}
+
+ROUTINE get_missing_test_allowed ( action )
+
+{
+* Check whether the result entry code should ignore invalid tests
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Require a valid test number
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "REQUIRE_VALID_TEST" ,
+                                            LIMSML_SAMPLE_REQUIRE_TEST )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val <> "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_all_result_errors_allowed.rpf *****}
+
+ROUTINE get_all_result_errors_allowed ( action )
+
+{
+* Check whether the result entry code should allow all errors
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Allow all results
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "IGNORE_ALL_RESULT_ER" ,
+                                            LIMSML_SAMPLE_IGNORE_ALL_RESULT_ERRORS )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_result_errors_allowed.rpf *****}
+
+ROUTINE get_result_errors_allowed ( action )
+
+{
+* Check whether the result entry code should allow non fatal errors
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Result Errors Allowed
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "IGNORE_RESULT_ERRORS" ,
+                                            LIMSML_SAMPLE_IGNORE_RESULT_ERRORS )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_test_status_set.rpf *****}
+
+ROUTINE get_test_status_set ( action )
+
+{
+* Return back the list of valid Test Statuses
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [STRING], Valid Statuses
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "VALID_TEST_STATUS" ,
+                                            LIMSML_SAMPLE_VALID_TEST_STATUS )
+
+    RETURN ( param_val )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_complete_tests.rpf *****}
+
+ROUTINE get_complete_tests ( action )
+
+{
+* Return back whether we should complete the test
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Force Completion
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "COMPLETE_TESTS" ,
+                                            LIMSML_SAMPLE_COMPLETE_TESTS )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_complete_sample.rpf *****}
+
+ROUTINE get_complete_sample ( action )
+
+{
+* Return back whether we should complete the sample
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Force Completion
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "COMPLETE_SAMPLE" ,
+                                            LIMSML_SAMPLE_COMPLETE_SAMPLE )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_recalculate.rpf *****}
+
+ROUTINE get_recalculate ( action )
+
+{
+* Return back whether we should recalculate the results
+*
+* Parameters   : action ,[HELPER_ACTIONML] Helper Action Class
+* Return       : [BOOLEAN], Recalculate
+*
+*******************************************************************************}
+
+    DECLARE param_val
+
+    param_val = action . get_param_default( "RECALCULATE" ,
+                                            LIMSML_SAMPLE_RECALCULATE )
+
+    param_val = TOUPPER ( param_val )
+    RETURN ( param_val = "TRUE" )
+
+ENDROUTINE
+
+
+{***** ROUTINE limsml_samp_re_test_list_define_class.rpf *****}
+
+ROUTINE limsml_samp_re_test_list_define_class
+
+{ This routine is used for defining the SAMP_RE_TEST_LIST class.
+*
+* Parameters   : None
+* Return Value : None
+*
+*******************************************************************************}
+
+    DEFINE CLASS "SAMP_RE_TEST_LIST"
+
+    INITIALISATION
+
+    PROPERTIES
+
+        "test_reps_on"   ,
+        "analyses"
+
+    ACTIONS
+
+        "set_test_count" ,
+        "get_test_count"
+
+    END CLASS
+
+ENDROUTINE
+
+
+{***** ROUTINE samp_re_test_list_class_initialisation.rpf *****}
+
+ROUTINE samp_re_test_list_class_initialisation ( self )
+
+{ This routine is used for initialising the SAMP_RE_TEST_LIST class.
+*
+* Parameters   : self, the instance of samp_re_test_list
+* Return Value : None
+*
+*******************************************************************************}
+
+    ARRAY self . analyses
+    self . test_reps_on = FALSE
+
+ENDROUTINE
+
+
+{***** ROUTINE samp_re_test_list_action_set_test_count.rpf *****}
+
+ROUTINE samp_re_test_list_action_set_test_count (       self     ,
+                                                  VALUE analysis ,
+                                                  VALUE last     )
+
+{
+* Keep track of the last used test replicate
+*
+*******************************************************************************}
+
+    DECLARE count, found
+    found = FALSE
+    count = 1
+
+    WHILE (( count <= SIZE_OF_ARRAY ( self . analyses )) AND ( NOT found )) DO
+
+        IF ( self . analyses [ count, 1 ] = analysis )
+
+            found = TRUE
+
+        ELSE
+
+            count = count + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    self . analyses [ count, 1 ] = analysis
+    self . analyses [ count, 2 ] = last
+
+ENDROUTINE
+
+
+{***** ROUTINE samp_re_test_list_action_get_test_count.rpf *****}
+
+ROUTINE samp_re_test_list_action_get_test_count ( self, VALUE analysis  )
+
+{
+* Get the last used replicate count
+*
+*******************************************************************************}
+
+    DECLARE count, found, answer
+    count = 0
+
+    {**********************************************************************}
+    {* If Test Reps are FALSE - then always return 0                      *}
+    {**********************************************************************}
+
+    found = ( NOT self . test_reps_on )
+
+    WHILE (( count < SIZE_OF_ARRAY ( self . analyses ) ) AND ( NOT found )) DO
+
+        count = count + 1
+
+        IF ( self . analyses [ count, 1 ] = analysis )
+
+            found = TRUE
+
+        ENDIF
+
+    ENDWHILE
+
+    answer = self . analyses [ count, 2 ]
+
+    IF (( NOT found ) OR ( answer = EMPTY )) THEN
+
+        answer = 0
+
+    ENDIF
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+
+{***** ROUTINE update_entity.rpf *****}
+
+ROUTINE update_entity ( entity, identity )
+
+{
+* Update the Fields on the Item and its children on the Passed in Values
+*
+*******************************************************************************}
+
+    DECLARE item
+
+    item = get_bl_item_from_entity ( entity, identity, EMPTY )
+
+    IF ( item <> EMPTY )
+
+        item . lock ( )
+        update_fields ( item, entity )
+        item . update ( )
+
+    ENDIF
+
+    RETURN ( item )
+
+ENDROUTINE
+
+
+{***** ROUTINE get_bl_item_from_entity.rpf *****}
+
+ROUTINE get_bl_item_from_entity ( entity, VALUE id, VALUE version_num )
+
+{
+* Returns the business logic item identified by the actions IDENTITY and VERSION
+* parameters. The item will be of the type specified by the entity
+*
+* Parameters : entity
+*              action
+*
+* Return Value : [BL_ITEM]
+*
+*******************************************************************************}
+
+    DECLARE type_id, type, item
+
+    type_id = entity . gettype ( )
+    type = bl_system ( ) . get_type ( type_id )
+
+    IF version_num = EMPTY THEN
+
+        item = type . get_item ( id )
+
+    ELSE
+
+        item = type . get_item_version ( id, version_num )
+
+    ENDIF
+
+RETURN ( item )
+
+ENDROUTINE
+
+
+{***** ROUTINE update_fields.rpf *****}
+
+ROUTINE update_fields ( item, entity )
+
+{
+* Update the Fields on the Item based on the Passed in Values
+*
+*******************************************************************************}
+
+    DECLARE num, field, name, val, property
+    num = 0
+
+    WHILE ( num < entity . fieldtotal ( ) ) DO
+
+        field = entity . get_field_by_index ( num )
+
+        name = field . getname  ( )
+        val  = field . getvalue ( )
+
+        property = item . get_type ( ) . get_property ( name )
+
+        IF ( ( property <> EMPTY ) AND ( NOT property . is_key ( ) ) )
+
+            item . set_value ( name, val )
+
+        ENDIF
+
+        num = num + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_add_test.rpf *****}
+
+ROUTINE sample_add_test ( processor, entity, action, response )
+
+{
+* Add Tests to an Existing Sample
+*
+* Note: The type of response class depends on what the response_type is within
+*       the request. Example if response_type is DATA, little initial xml is
+*       needed. Therefore HELPER_DOCUMENT class is used.
+*
+*       If it is SYSTEM, header xml is needed and build functionality is needed.
+*       Therefore HELPER_RICHDOCUMENT class is used.
+*       (See $limsml_process.rpf action create_system/create_data for more info)
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*                Action ,[HELPER_ACTIONML] Helper Action Class
+*                Response,[HELPER_RICHDOCUMENT,HELPER_DOCUMENT] Class to help
+*                build xml response.
+*
+* Return Value : [Text], (Optional)If only one return value is needed, this
+*                will override any response.
+*                Works by copying request entity information and adding
+*                a field call 'RETURN', with the return value as its value.
+*
+*******************************************************************************}
+
+    DECLARE sample, sample_obj, test_num, test_count, new_tests, item,
+            test_obj, childxml, child, tests, tests_enum, entity_copy
+
+    {**********************************************************************}
+    {* Get an appropriate sample                                          *}
+    {**********************************************************************}
+
+    sample =  sample_add_test_get_sample ( processor, entity )
+
+    {**********************************************************************}
+    {* Spin through the test entities and add them - Same logic as Login  *}
+    {**********************************************************************}
+
+    IF ( sample <> EMPTY ) THEN
+
+        sample_obj = update_entity ( entity, sample )
+
+        IF ( sample_obj <> EMPTY ) THEN
+
+            test_num = entity . childtotal()
+            test_count = 0
+
+            WHILE ( test_count <= test_num - 1 ) DO
+
+                test_obj = entity . getchild( test_count )
+                new_tests = utility_create_test ( test_obj , entity )
+
+                IF new_tests <> EMPTY THEN
+
+                    sample_obj . add_tests ( new_tests )
+
+                ENDIF
+
+                test_count = test_count + 1
+                test_obj . reset ( )
+
+            ENDWHILE
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Update the Sample and build the response - Same logic as Login     *}
+    {**********************************************************************}
+
+    IF ( sample <> EMPTY ) AND ( sample_obj <> EMPTY ) AND
+       ( NOT bl_system ( ) . error_flagged ( ) ) THEN
+
+        sample_obj . update ( )
+        entity_copy = entity . copy ( FALSE )
+
+        item = response . addentityxml ( entity_copy . returnxml() )
+        item . bl_update ( sample_obj  )
+
+        tests = sample_obj . get_added_tests ( )
+
+        tests_enum = tests . get_enumerator ( )
+        tests_enum . reset ( )
+
+        test_count = 0
+
+        WHILE tests_enum . move_next ( ) DO
+
+            test_obj = tests_enum . get_current ( )
+            childxml = test_obj . get_custom_value ( "REQUEST" )
+
+            IF ( childxml <> EMPTY ) THEN
+
+                child = item . addchildxml ( childxml )
+                child . bl_update ( test_obj )
+
+                child . reset()
+                test_count =  test_count + 1
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE sample_add_test_get_sample.rpf *****}
+
+ROUTINE sample_add_test_get_sample ( processor, entity )
+
+{
+* Get hold of an existing sample to add tests to.
+*
+* Parameters   : Processor ,[LIMSML_PROCESS] Controls and validates xml input.
+*                Entity,[HELPER_ENTITY] Helper Entity Class
+*
+*******************************************************************************}
+
+    DECLARE sample, handler, err_mess
+
+    sample = entity . get_field_value ( "ID_NUMERIC" )
+
+    IF ( sample <> EMPTY ) THEN
+
+        IF ( convert_to_id_numeric ( sample ) ) THEN
+
+            sample = get_sample_by_number ( sample )
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* See if we have a ID_TEXT to use                                    *}
+    {**********************************************************************}
+
+    IF ( sample = EMPTY ) THEN
+
+        sample = entity . get_field_value ( "ID_TEXT" )
+
+        If ( sample <> EMPTY ) THEN
+
+            sample = get_sample_by_text ( sample )
+
+        ENDIF
+
+    ENDIF
+
+    {**********************************************************************}
+    {* Throw an appropriate error if the sample cannot be identified      *}
+    {**********************************************************************}
+
+    IF ( sample = EMPTY )
+
+        handler = processor . get_root_error ( )
+
+        message_fetch ( "LIMSML_RE_ERROR_NO_SAMPLE", err_mess )
+        message_add_parameter ( err_mess, get_entity_summary ( entity ) )
+
+        handler . adderrorall ( message_get_text ( err_mess, 1 ) ,
+                                  message_get_text ( err_mess, 2 ) ,
+                                message_get_text ( err_mess, 3 ) ,
+                                message_get_severity ( err_mess ) ,
+                                GET_USER_MESSAGE("LIMSML_ERROR_BUSINESS_LAYER", 1 ))
+
+    ENDIF
+
+    RETURN ( sample )
+
+ENDROUTINE
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+
+

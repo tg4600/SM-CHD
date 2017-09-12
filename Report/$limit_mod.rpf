@@ -1,0 +1,3129 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIMIT_MOD.RPF
+*
+* Purpose       : General Limit library. Provides vgl routines for modifying/
+*                 using limits.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+
+JOIN LIBRARY $LAB_USER
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $PROMPT_TOOLBAR
+JOIN LIBRARY $TOOLBOX
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+GLOBAL CONSTANT LIMIT_ENTRY_CLASS  = "STD_LIMIT_ENTRY"
+
+{* LOCAL CONSTANTS ************************************************************}
+
+CONSTANT LIMIT_MODIFY_BASE_CLASS     = "STD_LIMIT_BASE_MODIFY"
+CONSTANT LIMIT_MODIFY_NUMERIC_CLASS  = "STD_LIMIT_NUMERIC_MODIFY"
+CONSTANT LIMIT_MODIFY_TEXT_CLASS     = "STD_LIMIT_TEXT_MODIFY"
+CONSTANT LIMIT_MODIFY_BOOLEAN_CLASS  = "STD_LIMIT_BOOLEAN_MODIFY"
+CONSTANT LIMIT_MODIFY_INTERVAL_CLASS = "STD_LIMIT_INTERVAL_MODIFY"
+CONSTANT LIMIT_MODIFY_REAL_CLASS     = "STD_LIMIT_REAL_CLASS"
+
+CONSTANT LIMIT_MOD_LINES_PER_LIMIT   = 4
+
+CONSTANT LIMIT_MOD_CHOOSE_PROPAGATE_ALL   = 1
+CONSTANT LIMIT_MOD_CHOOSE_PROPAGATE_LEFT  = 2
+CONSTANT LIMIT_MOD_CHOOSE_PROPAGATE_RIGHT = 3
+CONSTANT LIMIT_MOD_CHOOSE_PROPAGATE_DOWN  = 4
+CONSTANT LIMIT_MOD_CHOOSE_PROPAGATE_UP    = 5
+
+
+{* VARIABLES ******************************************************************}
+
+DECLARE entry_list            ,
+        LIMIT_MODIFY_DATABASE ,
+        boolean_choose_array
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_initialise
+
+{
+*       Initialise the limit library.
+*
+*******************************************************************************}
+
+
+        CREATE OBJECT "STD_COLLECTION" , LIMIT_MODIFY_DATABASE
+        LIMIT_MODIFY_DATABASE . add_index ( "OBJECT_NAME" )
+
+        IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" )) THEN
+
+                prompt_toolbar_initialise ( )
+                limit_mod_class_define ()
+                entry_list = EMPTY
+
+                ARRAY boolean_choose_array ARRAY_SIZE ( 0 ,2 )
+
+                boolean_choose_array [1,1] =
+                        get_user_message ( "LIMIT_MOD_NO_BOOLEAN" , 1 )
+                boolean_choose_array [1,2] = " "
+
+                boolean_choose_array [2,1] =
+                        get_user_message ( "LIMIT_MOD_PASS_BOOLEAN" , 1 )
+                boolean_choose_array [2,2] = "T"
+
+                boolean_choose_array [3,1] =
+                        get_user_message ( "LIMIT_MOD_FALSE_BOOLEAN" , 1 )
+                boolean_choose_array [3,2] = "F"
+
+
+                SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_class_define
+
+{
+*       Define the classed used by the limit package.
+*
+*******************************************************************************}
+
+
+        DEFINE CLASS LIMIT_ENTRY_CLASS
+
+                PROPERTIES "ENTRY_CODE"       ,
+                           "COPY_ENTRY_CODE"  ,
+                           "TITLE"            ,
+                           "DATATYPE"         ,
+                           "PLACES"           ,
+                           "UNITS"            ,
+                           "COMPONENT_OBJECT"
+
+                INITIALISATION
+
+        END CLASS
+
+        DEFINE CLASS LIMIT_MODIFY_REAL_CLASS
+
+                INHERIT
+                        PROMPT_CLASS_TEXT_REAL
+
+
+                ACTIONS
+                        "FORMAT_BEFORE",
+                        "FORMAT_AFTER"
+
+        END CLASS
+
+
+        DEFINE CLASS LIMIT_MODIFY_BASE_CLASS
+
+                INHERIT "STD_COLLECTED"
+
+                PROPERTIES "ALREADY_EXISTS"   ,
+                           "OBJECT_NAME"      ,
+                           "PLACES"           ,
+                           "UNITS"            ,
+                           "COMPONENT_OBJECT"
+
+                TABLES   LIMIT
+
+                ACTIONS "PROMPT"     ,
+                        "DISPLAY"    ,
+                        "PRINT"      ,
+                        "VALIDATE"   ,
+                        "PROPAGATE"  ,
+                        "PROPERTIES" ,
+                        "STORE"      ,
+                        "DEFINED"    ,
+                        "COPY"
+
+        END CLASS
+
+        DEFINE CLASS LIMIT_MODIFY_NUMERIC_CLASS
+
+                INHERIT LIMIT_MODIFY_BASE_CLASS
+
+                ACTIONS "PROMPT"     ,
+                        "PRINT"
+
+        END CLASS
+
+        DEFINE CLASS LIMIT_MODIFY_TEXT_CLASS
+
+                INHERIT LIMIT_MODIFY_BASE_CLASS
+
+                ACTIONS "PROMPT"     ,
+                        "DISPLAY"    ,
+                        "PROPAGATE"  ,
+                        "PRINT"      ,
+                        "PROPERTIES" ,
+                        "VALIDATE"   ,
+                        "DEFINED"
+
+
+        END CLASS
+
+        DEFINE CLASS LIMIT_MODIFY_BOOLEAN_CLASS
+
+                INHERIT LIMIT_MODIFY_BASE_CLASS
+
+                PROPERTIES "CURRENT_VALUE"
+
+                ACTIONS "PROMPT"     ,
+                        "DISPLAY"    ,
+                        "PROPAGATE"  ,
+                        "PRINT"      ,
+                        "PROPERTIES" ,
+                        "VALIDATE"   ,
+                        "DEFINED"    ,
+                        "COPY"
+
+        END CLASS
+
+        DEFINE CLASS LIMIT_MODIFY_INTERVAL_CLASS
+
+                INHERIT LIMIT_MODIFY_BASE_CLASS
+
+                ACTIONS "PROMPT"    ,
+                        "PRINT"
+
+
+        END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_entry_class_initialisation ( self )
+
+{
+*       Initialise a limit modify class
+*
+*******************************************************************************}
+
+        ARRAY self . title ARRAY_SIZE ( 0 )
+
+        self . component_object = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_properties (       self     ,
+                                                  VALUE property )
+{
+*       Return the name of the property.
+*
+*******************************************************************************}
+
+        DECLARE name
+
+        IF property = 1 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_MIN",1 )
+
+        ELSEIF property = 2 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_MAX" , 1)
+
+        ELSEIF property = 3 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_CALC" ,1 )
+
+        ELSE
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_AQL" ,1 )
+
+        ENDIF
+
+        RETURN ( name )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_is_open_ended ( VALUE limit )
+
+{
+*       Check to see if the limit is an open ended limit.
+*
+*******************************************************************************}
+
+        RETURN ( ( index ( limit , ">" ) > 0 ) OR
+                 ( index ( limit , "<" ) > 0 ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_display (       self       ,
+                                               VALUE property   )
+
+{
+*       Display a numeric limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        IF SELECT limit . min_limit IN OBJECT self = EMPTY THEN
+
+                limit = " "
+
+        ELSEIF property = 1 THEN
+
+                limit = SELECT limit . min_limit IN OBJECT self
+
+        ELSE
+
+                limit = SELECT limit . max_limit IN OBJECT self
+
+        ENDIF
+
+        RETURN ( limit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_validate (  self      ,
+                                                 redisplay )
+
+{
+*       Validate a numeric limit. Set redisplay to true if the limits need
+*       to be redisplayed.
+*
+*******************************************************************************}
+
+        DECLARE valid
+
+        valid = TRUE
+
+        IF (  blank ( SELECT limit . min_limit IN OBJECT self )) AND
+           ( blank ( SELECT limit . max_limit IN OBJECT self )) THEN
+
+        ELSEIF (     blank ( SELECT limit . min_limit IN OBJECT self )) AND
+               ( NOT blank ( SELECT limit . max_limit IN OBJECT self )) THEN
+
+                flash_message ( get_user_message ( "LIMIT_MOD_NO_MINIMUM" ,1),
+                                TRUE                                         )
+                valid = FALSE
+
+        ELSEIF ( NOT limit_mod_is_open_ended (
+                         SELECT limit . min_limit IN OBJECT self )) AND
+               ( blank ( SELECT limit . max_limit IN OBJECT self )) THEN
+
+                flash_message ( get_user_message ( "LIMIT_MOD_NO_MAXIMUM" ,1),
+                                TRUE                                         )
+                valid = FALSE
+
+        ENDIF
+
+        redisplay = FALSE
+
+        RETURN ( valid AND lab_user_validate_limit( self ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_propagate ( self     ,
+                                                 original )
+
+{
+*       Copy the limits from one limit object to another.
+*
+*******************************************************************************}
+
+        ASSIGN limit . min_limit IN OBJECT self =
+                 SELECT limit . min_limit   IN OBJECT original
+        ASSIGN limit . max_limit IN OBJECT self =
+                 SELECT limit . max_limit   IN OBJECT original
+        ASSIGN limit . calculation IN OBJECT self =
+                 SELECT limit . calculation  IN OBJECT original
+        ASSIGN limit . aql_value IN OBJECT self =
+                 SELECT limit . aql_value  IN OBJECT original
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_defined (  self )
+
+{
+*       Check to see if the numeric limit has any data defined.
+*
+*******************************************************************************}
+
+        DECLARE defined
+
+
+
+        IF ( BLANK( SELECT limit . min_limit   IN OBJECT self ) ) AND
+           ( BLANK( SELECT limit . max_limit   IN OBJECT self ) ) AND
+           ( BLANK( SELECT limit . aql_value   IN OBJECT self ) ) AND
+           ( BLANK( SELECT limit . calculation IN OBJECT self ) ) THEN
+
+                defined = FALSE
+
+        ELSE
+
+                defined = TRUE
+
+        ENDIF
+
+        RETURN ( defined )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_base_modify_action_copy (  self )
+
+{
+*       Copy a limit.
+*
+*******************************************************************************}
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_modify_action_prompt (       self            ,
+                                         VALUE property        ,
+                                               grid            ,
+                                         VALUE cell_column     ,
+                                         VALUE cell_row        ,
+                                         VALUE column          ,
+                                         VALUE row             ,
+                                               screen          ,
+                                         VALUE cell_width      ,
+                                         VALUE prompt_routine  ,
+                                         VALUE compare_routine )
+
+{
+*       Prompt for a limit which is in the min_limit/max_limit fields.
+*
+*******************************************************************************}
+
+        DECLARE min_limit ,
+                max_limit ,
+                allright
+
+        min_limit = SELECT limit . min_limit IN OBJECT self
+        max_limit = SELECT limit . max_limit IN OBJECT self
+
+        IF property = 1 THEN
+
+                CALL_ROUTINE prompt_routine
+                       USING self       ,
+                             column     ,
+                             row        ,
+                             screen     ,
+                             cell_row   ,
+                             cell_width ,
+                             min_limit
+
+                IF lastkey <> "EXIT" THEN
+
+                        IF ( limit_mod_is_open_ended ( min_limit )) AND
+                           ( strip ( max_limit ) <> " " ) THEN
+
+                                { We have an open ended limit remove the
+                                  max limit }
+
+                                ASSIGN limit . max_limit IN OBJECT self = " "
+                                IF cell_row < grid . cell_rows THEN
+                                        grid . redisplay_cell ( cell_column  ,
+                                                                cell_row + 1 )
+                                ENDIF
+                                IF cell_column < grid . cell_columns THEN
+                                        grid . redisplay_cell ( cell_column + 1 ,
+                                                                cell_row        )
+                                ENDIF
+                        ENDIF
+
+                        ASSIGN limit . min_limit IN OBJECT self = min_limit
+
+                ENDIF
+
+        ELSEIF ( limit_mod_is_open_ended ( min_limit )) THEN
+
+                PROMPT FOR       max_limit
+                       ON LINE   row
+                       FROM      column
+                       TO        column
+                       IN WINDOW screen
+                       BROWSE ON DISPLAY
+
+        ELSE
+
+                REPEAT
+
+                        CALL_ROUTINE prompt_routine
+                               USING self       ,
+                                     column     ,
+                                     row        ,
+                                     screen     ,
+                                     cell_row   ,
+                                     cell_width ,
+                                     max_limit
+
+                UNTIL ( NOT ( limit_mod_is_open_ended ( max_limit )) OR
+                            ( lastkey = "EXIT" ))
+
+                IF lastkey <> "EXIT" THEN
+
+                        ASSIGN limit . max_limit IN OBJECT self = max_limit
+
+                ENDIF
+
+        ENDIF
+
+        IF lastkey <> "EXIT" THEN
+
+                min_limit = SELECT limit . min_limit IN OBJECT self
+                max_limit = SELECT limit . max_limit IN OBJECT self
+
+                IF ( strip ( min_limit ) <> " " ) AND
+                   ( strip ( max_limit ) <> " " ) AND
+                   ( NOT limit_mod_is_open_ended ( min_limit )) THEN
+
+                        CALL_ROUTINE compare_routine
+                           RETURNING allright
+                           USING     min_limit ,
+                                     max_limit
+
+                        IF NOT allright THEN
+
+                                ASSIGN limit . min_limit IN OBJECT self = max_limit
+                                ASSIGN limit . max_limit IN OBJECT self = min_limit
+
+                                IF property = 1 THEN
+
+
+                                        grid . redisplay_cell ( cell_column  ,
+                                                                cell_row     )
+                                        IF cell_row < grid . cell_rows THEN
+                                                grid . redisplay_cell (
+                                                              cell_column  ,
+                                                              cell_row + 1 )
+
+                                        ENDIF
+                                        IF cell_column < grid . cell_columns THEN
+                                                grid . redisplay_cell (
+                                                              cell_column + 1 ,
+                                                              cell_row        )
+                                        ENDIF
+
+                                ELSE
+
+                                        IF cell_row > 1 THEN
+                                                grid . redisplay_cell (
+                                                              cell_column  ,
+                                                              cell_row - 1 )
+                                        ENDIF
+                                        IF cell_column > 1 THEN
+                                                grid . redisplay_cell (
+                                                              cell_column - 1 ,
+                                                              cell_row        )
+                                        ENDIF
+                                        grid . redisplay_cell ( cell_column  ,
+                                                                cell_row     )
+
+                                ENDIF
+
+                        ENDIF
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_real_class_action_format_before ( self )
+
+        self . text = self . value
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_real_class_action_format_after ( self )
+
+        self .value = self . text
+
+        format_for_dp ( self . value, self . places )
+
+        self . text = self . value
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE format_for_dp ( value_string, VALUE places )
+
+        DECLARE current_format, first_char ,temp
+
+        current_format = GLOBAL ( "FORMAT_TEXT" )
+
+        IF value_string = " " THEN
+
+        ELSEIF NOT numtext ( value_string ) THEN
+
+        ELSE
+
+                value_string = strip ( value_string )
+
+                first_char = substring ( value_string, 1, 1 )
+                IF ( first_char <> "<" ) AND ( first_char <> ">" ) THEN
+                        first_char = ""
+                ENDIF
+
+                temp = substring ( value_string, 2, 1 )
+                IF ( temp = "=" ) THEN
+                        first_char = first_char : "="
+                ENDIF
+
+                IF places > 0 THEN
+
+                        SET FORMAT RIGHTSTRING ( pad ( "9", "9", 10 ) : "." :
+                                                 pad ( "9", "9", places ),
+                                                 10 )
+
+                        value_string = first_char :
+                                       strip ( numeric ( value_string ))
+
+                ELSEIF places = 0 THEN
+
+                        SET FORMAT pad ( "9", "9", 10 )
+
+                        value_string = first_char :
+                                       strip ( numeric ( value_string ))
+
+                ENDIF
+
+        ENDIF
+
+        SET FORMAT current_format
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_numeric_prompt (        limit_object    ,
+                                    VALUE column          ,
+                                    VALUE row             ,
+                                          screen          ,
+                                    VALUE cell_row        ,
+                                    VALUE cell_width      ,
+                                          data            )
+
+{
+*       Prompt for a limit which is in the min_limit/max_limit fields.
+*
+*******************************************************************************}
+
+        PROMPT FOR data
+               ON LINE   row
+               FROM      column
+               TO        column + cell_width - 2
+               IN WINDOW screen
+               CLASS     LIMIT_MODIFY_REAL_CLASS
+               WITH ( places = limit_object . places  )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_numeric_compare (  VALUE min_limit ,
+                                     VALUE max_limit )
+
+{
+*       Prompt for a limit which is in the min_limit/max_limit fields.
+*
+*******************************************************************************}
+
+        RETURN ( numeric ( min_limit ) < numeric ( max_limit ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_numeric_modify_action_prompt (       self        ,
+                                                 VALUE property    ,
+                                                       grid        ,
+                                                 VALUE cell_column ,
+                                                 VALUE cell_row    ,
+                                                 VALUE column      ,
+                                                 VALUE row         ,
+                                                       screen      ,
+                                                 VALUE cell_width  )
+
+{
+*       Prompt for a numeric limit.
+*
+*******************************************************************************}
+
+        std_limit_modify_action_prompt ( self                        ,
+                                         property                    ,
+                                         grid                        ,
+                                         cell_column                 ,
+                                         cell_row                    ,
+                                         column                      ,
+                                         row                         ,
+                                         screen                      ,
+                                         cell_width                  ,
+                                         "LIMIT_MOD_NUMERIC_PROMPT"  ,
+                                         "LIMIT_MOD_NUMERIC_COMPARE" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_prompt (       self        ,
+                                              VALUE property    ,
+                                                    grid        ,
+                                              VALUE cell_column ,
+                                              VALUE cell_row    ,
+                                              VALUE column      ,
+                                              VALUE row         ,
+                                                    screen      ,
+                                              VALUE cell_width  )
+
+{
+*       Prompt for a textual limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        IF property = 1 THEN
+
+                limit = SELECT limit . text_spec IN OBJECT self
+                PROMPT FOR limit ON LINE   row
+                                 FROM      column
+                                 TO        column + cell_width - 1
+                                 IN WINDOW screen
+                                 FORMAT limit . text_spec
+
+                IF lastkey <> "EXIT" THEN
+
+                        ASSIGN limit . text_spec IN OBJECT self = limit
+
+                ENDIF
+
+
+        ELSE
+
+                limit = SELECT limit . text_phrase IN OBJECT self
+
+                PROMPT FOR limit ON LINE   row
+                                 FROM      column
+                                 TO        column + cell_width - 1
+                                 IN WINDOW screen
+                                 FORMAT limit . text_phrase
+
+                IF lastkey <> "EXIT" THEN
+
+                        ASSIGN limit . text_phrase IN OBJECT self = limit
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_display (       self     ,
+                                               VALUE property )
+
+{
+*       Display a textual limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        IF SELECT limit . text_spec IN OBJECT self = EMPTY THEN
+
+                limit = " "
+
+        ELSEIF property = 1 THEN
+
+                limit = SELECT limit . text_spec IN OBJECT self
+
+        ELSE
+
+                limit = SELECT limit . text_phrase IN OBJECT self
+
+        ENDIF
+
+        RETURN ( limit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_properties (       self     ,
+                                                  VALUE property )
+{
+*       Return the name of the properties for a text type.
+*
+*******************************************************************************}
+
+        DECLARE name
+
+        IF property = 1 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_TEXT" , 1)
+
+        ELSEIF property = 2 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_PHRASE" ,1 )
+
+        ELSEIF property = 3 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_CALC" ,1 )
+
+        ELSE
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_AQL" ,1 )
+
+        ENDIF
+
+        RETURN ( name )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_propagate ( self     ,
+                                                 original )
+
+{
+*       Copy the limits from one limit object to another.
+*
+*******************************************************************************}
+
+        ASSIGN limit . text_spec IN OBJECT self =
+                 SELECT limit . text_spec   IN OBJECT original
+        ASSIGN limit . text_phrase IN OBJECT self =
+                 SELECT limit . text_phrase   IN OBJECT original
+        ASSIGN limit . calculation IN OBJECT self =
+                 SELECT limit . calculation  IN OBJECT original
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_validate (  self      ,
+                                                 redisplay )
+
+{
+*       Validate a textual limit. Set redisplay to true if the limits need
+*       to be redisplayed.
+*
+*******************************************************************************}
+
+        DECLARE valid
+
+        valid = TRUE
+
+        IF strip ( SELECT limit . calculation IN OBJECT self ) = " " THEN
+
+                IF (strip ( SELECT limit . text_spec IN OBJECT self )
+                                                             <> " " ) AND
+                   (strip ( SELECT limit . text_phrase IN OBJECT self )
+                                                              <> " " ) THEN
+
+                        flash_message ( "LIMIT_MOD_TEXT_AND_PHRASE" , TRUE )
+                        valid = FALSE
+
+                ENDIF
+
+        ENDIF
+
+        redisplay = FALSE
+        RETURN ( valid AND lab_user_validate_limit( self ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_text_modify_action_defined (  self )
+
+{
+*       Check to see if the textual limit has any data defined.
+*
+*******************************************************************************}
+
+        DECLARE defined
+
+        IF (  blank ( SELECT limit . text_spec   IN OBJECT self )) AND
+           (  blank ( SELECT limit . text_phrase IN OBJECT self )) AND
+           (  blank ( SELECT limit . calculation IN OBJECT self )) THEN
+
+                defined = FALSE
+
+        ELSE
+
+                defined = TRUE
+
+        ENDIF
+
+        RETURN ( defined )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_get_current_value ( boolean_limit )
+
+{
+*       Return the current state of the boolean limit.
+*
+*******************************************************************************}
+
+        IF NOT variable_is_assigned ( boolean_limit . current_value ) THEN
+
+                IF boolean_limit . already_exists THEN
+
+                        IF SELECT limit . boolean_pass
+                                        IN OBJECT boolean_limit THEN
+
+                                boolean_limit . current_value = "T"
+
+                        ELSE
+
+                                boolean_limit . current_value = "F"
+
+                        ENDIF
+
+
+                ELSE
+
+                        boolean_limit . current_value = " "
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_prompt (       self        ,
+                                                 VALUE property    ,
+                                                       grid        ,
+                                                 VALUE cell_column ,
+                                                 VALUE cell_row    ,
+                                                 VALUE column      ,
+                                                 VALUE row         ,
+                                                       screen      ,
+                                                 VALUE cell_width  )
+
+{
+*       Prompt for a boolean limit.
+*
+*******************************************************************************}
+
+        DECLARE    limit
+
+        limit_mod_get_current_value ( self )
+
+        limit     = self . current_value
+
+        IF property = 1 THEN
+
+                PROMPT FOR limit ON LINE   row
+                                 FROM      column
+                                 TO        column + cell_width - 1
+                                 IN WINDOW screen
+                                 CHOOSE OUTOF boolean_choose_array
+
+                self . current_value = limit
+
+                ASSIGN limit . boolean_pass IN OBJECT self = ( limit = "T" )
+
+        ELSE
+
+                PROMPT ON LINE   row
+                       FROM      column
+                       TO        column + cell_width - 1
+                       IN WINDOW screen
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_display (       self     ,
+                                                  VALUE property )
+
+{
+*       Display a boolean limit.
+*
+*******************************************************************************}
+
+        DECLARE limit  ,
+                count
+
+        IF SELECT limit . boolean_pass IN OBJECT self = EMPTY THEN
+
+                limit = " "
+
+        ELSEIF property = 1 THEN
+
+                limit_mod_get_current_value ( self )
+
+                limit = " "
+                count = 1
+
+                WHILE count <= size_of_array ( boolean_choose_array ) DO
+
+                        IF self . current_value =
+                                boolean_choose_array [ count , 2 ] THEN
+
+                                limit = boolean_choose_array [ count , 1 ]
+
+                        ENDIF
+
+                        count = count + 1
+
+                ENDWHILE
+
+        ELSE
+
+                limit = " "
+
+        ENDIF
+
+        RETURN ( limit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_properties (       self     ,
+                                                     VALUE property )
+{
+*       Return the name of the properties for a text type.
+*
+*******************************************************************************}
+
+        DECLARE name
+
+        IF property = 1 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_PASS" , 1 )
+
+        ELSEIF property = 2 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_FAIL" ,1 )
+
+        ELSEIF property = 3 THEN
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_CALC" ,1 )
+
+        ELSE
+
+                name = get_user_message ( "LIMIT_MOD_PROPERTY_AQL" ,1 )
+
+        ENDIF
+
+        RETURN ( name )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_propagate ( self     ,
+                                                    original )
+
+{
+*       Copy the limits from one limit object to another.
+*
+*******************************************************************************}
+
+        ASSIGN limit . boolean_pass IN OBJECT self =
+                 SELECT limit . boolean_pass   IN OBJECT original
+        ASSIGN limit . calculation IN OBJECT self =
+                 SELECT limit . calculation  IN OBJECT original
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_validate (  self      ,
+                                                    redisplay )
+
+{
+*       Validate a textual limit. Set redisplay to true if the limits need
+*       to be redisplayed.
+*
+*******************************************************************************}
+
+
+        DECLARE valid
+
+        valid = TRUE
+        redisplay = FALSE
+
+        RETURN ( valid AND lab_user_validate_limit( self ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_defined (  self )
+
+{
+*       Check to see if the boolean limit has any data defined.
+*
+*******************************************************************************}
+
+        limit_mod_get_current_value ( self )
+        RETURN ( self . current_value <> " " )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_boolean_modify_action_copy (  self )
+
+{
+*       Copy a boolean limit.
+*
+*******************************************************************************}
+
+        IF SELECT limit . boolean_pass IN OBJECT self THEN
+
+                self . current_value = "T"
+
+        ELSE
+
+                self . current_value = "F"
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limit_mod_interval_prompt (        limit_object    ,
+                                     VALUE column          ,
+                                     VALUE row             ,
+                                           screen          ,
+                                     VALUE cell_row        ,
+                                     VALUE cell_width      ,
+                                           data            )
+
+{
+*       Prompt for a limit which is in the min_limit/max_limit fields.
+*
+*******************************************************************************}
+
+        DECLARE keep_prompting,
+                temp
+
+        keep_prompting = TRUE
+
+        WHILE keep_prompting DO
+
+                PROMPT FOR data ON LINE   row
+                                FROM      column
+                                TO        column + cell_width - 1
+                                IN WINDOW screen
+                                FORMAT    TEXT13
+
+                IF lastkey <> "EXIT" THEN
+
+                        temp = strip ( data )
+
+                        IF ( substring ( temp , 1 , 2 ) = "<=" ) OR
+                               ( substring ( temp , 1 , 2 ) = ">=" ) THEN
+
+                                temp = substring ( data , 3 , length ( temp ) - 2 )
+
+                        ELSEIF ( substring ( temp , 1 , 1 ) = "<" ) OR
+                               ( substring ( temp , 1 , 1 ) = ">" ) THEN
+
+                                temp = substring ( data , 2 , length ( temp ) - 1 )
+
+
+                        ENDIF
+
+                        keep_prompting = interval ( temp ) = ERROR
+
+                ELSE
+
+                        keep_prompting = FALSE
+
+                ENDIF
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_interval_compare (  VALUE min_limit ,
+                                      VALUE max_limit )
+
+{
+*       Prompt for a limit which is in the min_limit/max_limit fields.
+*
+*******************************************************************************}
+
+        RETURN ( interval ( min_limit ) < interval ( max_limit ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_limit_interval_modify_action_prompt (       self        ,
+                                                  VALUE property    ,
+                                                        grid        ,
+                                                  VALUE cell_column ,
+                                                  VALUE cell_row    ,
+                                                  VALUE column      ,
+                                                  VALUE row         ,
+                                                        screen      ,
+                                                  VALUE cell_width  )
+
+{
+*       Prompt for a numeric limit.
+*
+*******************************************************************************}
+
+        std_limit_modify_action_prompt ( self                         ,
+                                         property                     ,
+                                         grid                         ,
+                                         cell_column                  ,
+                                         cell_row                     ,
+                                         column                       ,
+                                         row                          ,
+                                         screen                       ,
+                                         cell_width                   ,
+                                         "LIMIT_MOD_INTERVAL_PROMPT"  ,
+                                         "LIMIT_MOD_INTERVAL_COMPARE" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_get_object_from_grid (       limit_grid  ,
+                                         VALUE cell_column ,
+                                         VALUE cell_row    )
+
+{
+*       Search the object database for the given object.
+*
+*******************************************************************************}
+
+        DECLARE object_name ,
+                limit_object
+
+        object_name = limit_grid . user_info [ cell_row , cell_column ]
+
+        limit_object = LIMIT_MODIFY_DATABASE . get_by_index ( "OBJECT_NAME" ,
+                                                              object_name   )
+
+        RETURN ( limit_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_display_calculation ( self )
+
+{
+*       Display a calculation for a limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        limit = SELECT limit . calculation IN OBJECT self
+
+        IF limit = EMPTY THEN
+
+                limit = " "
+
+        ENDIF
+
+        RETURN ( limit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_display_aql ( self )
+
+{
+*       Display a calculation for a limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        limit = SELECT limit . aql_value IN OBJECT self
+
+        IF limit = EMPTY THEN
+
+                limit = " "
+
+        ENDIF
+
+        RETURN ( limit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_prompt_calculation (       self       ,
+                                             grid       ,
+                                       VALUE column     ,
+                                       VALUE row        ,
+                                             screen     ,
+                                       VALUE cell_width )
+
+{
+*       Prompt for a calculation for a limit.
+*
+*******************************************************************************}
+
+        DECLARE limit
+
+        limit = SELECT limit . calculation IN OBJECT self
+
+        PROMPT FOR limit ON LINE   row
+                         FROM      column
+                         TO        column + cell_width - 1
+                         IN WINDOW screen
+                         BROWSE ON LIMIT_CALCULATION
+
+        IF lastkey <> "EXIT" THEN
+
+                ASSIGN limit . calculation IN OBJECT self = limit
+
+        ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_row_sampling_plan_type( VALUE row )
+
+        DECLARE analysis, sampling_plan_type
+
+        analysis = entry_list [ ( row + LIMIT_MOD_LINES_PER_LIMIT - 1 )
+                                   DIV LIMIT_MOD_LINES_PER_LIMIT ] . title [ 1 ]
+
+
+        IF NOT BLANK( analysis ) THEN
+
+                sampling_plan_type = SELECT versioned_analysis . sampling_plan_type
+                                        WHERE identity         = analysis
+                                        AND   analysis_version = 1
+
+        ELSE
+
+                sampling_plan_type = EMPTY
+
+        ENDIF
+
+        RETURN( sampling_plan_type )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_prompt_aql (       self       ,
+                                     grid       ,
+                               VALUE column     ,
+                               VALUE row        ,
+                                     screen     ,
+                               VALUE cell_width )
+
+{
+*       Prompt for a calculation for a limit.
+*
+*******************************************************************************}
+
+        DECLARE aql, phrase, sampling_plan_type, level_id, is_aql_level
+
+        aql = SELECT limit . aql_value IN OBJECT self
+
+        level_id = SELECT limit . level_id IN OBJECT self
+
+        is_aql_level = SELECT mlp_level . aql_level
+                        WHERE level_id = level_id
+
+        sampling_plan_type = get_row_sampling_plan_type( grid . current_row )
+
+        IF ( sampling_plan_type = "FIXED" ) OR
+           ( sampling_plan_type = EMPTY   ) OR
+           ( is_aql_level = FALSE         ) THEN
+
+                aql = ""
+
+                PROMPT FOR aql ON LINE   row
+                        FROM      column
+                        TO        column + cell_width - 1
+                        IN WINDOW screen
+                        BROWSE ON DISPLAY
+
+        ELSE
+
+                IF sampling_plan_type = "VAR_SINGLE" THEN
+                        phrase = "STAT_AQL_V"
+                ELSE
+                        phrase = "STAT_AQL_A"
+                ENDIF
+
+                PROMPT FOR aql ON LINE   row
+                                 FROM      column
+                                 TO        column + cell_width - 1
+                                 IN WINDOW screen
+                                 BROWSE ON valid_phrase . 'phrase'
+
+        ENDIF
+
+        IF lastkey <> "EXIT" THEN
+
+                ASSIGN limit . aql_value IN OBJECT self = aql
+
+        ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_display_limits (       limit_grid  ,
+                                   VALUE cell_column ,
+                                   VALUE cell_row    ,
+                                         cell_screen ,
+                                   VALUE column      ,
+                                   VALUE row         ,
+                                   VALUE cell_width  ,
+                                   VALUE cell_height )
+
+{
+*       Display the limits on the screen.
+*       The first column is the component name.
+*       The second column is the property name.
+*
+*******************************************************************************}
+
+        DECLARE property     ,
+                name         ,
+                limit_object ,
+                limit
+
+        property = ( cell_row MOD LIMIT_MOD_LINES_PER_LIMIT ) { Determine which property we are dealing with }
+
+        IF property = 0 THEN
+
+                property = LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDIF
+
+        IF cell_column = 1 THEN
+
+                { We are displaying the component name - check to see if
+                  a name is defined for this property line }
+
+                name = entry_list [ ( cell_row + LIMIT_MOD_LINES_PER_LIMIT - 1 )
+                                  DIV LIMIT_MOD_LINES_PER_LIMIT ] . title [ property ]
+
+                IF name <> EMPTY THEN
+
+                        DISPLAY name ON LINE   row
+                                     FROM      column
+                                     TO        column + cell_width - 1
+                                     IN WINDOW cell_screen
+                                     {BOLD}
+
+                ENDIF
+
+        ELSEIF cell_column = 2 THEN
+
+                { Display the property name }
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                                cell_column + 1,
+                                                                cell_row       )
+                name = limit_object . properties ( property )
+
+                DISPLAY name ON LINE   row
+                             FROM      column
+                             TO        column + cell_width - 1
+                             IN WINDOW cell_screen
+                             {BOLD}
+
+        ELSE
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid  ,
+                                                                cell_column ,
+                                                                cell_row    )
+
+                IF property = 3 THEN
+
+                        limit = limit_mod_display_calculation ( limit_object )
+
+                ELSEIF property = 4 THEN
+
+                        limit = limit_mod_display_aql ( limit_object )
+
+                ELSE
+
+                        limit = limit_object . display ( property )
+
+                ENDIF
+
+                DISPLAY limit ON LINE   row
+                              FROM      column
+                              TO        column + cell_width - 1
+                              IN WINDOW cell_screen
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_display_prompt_limits (       limit_grid  ,
+                                          VALUE cell_column ,
+                                          VALUE cell_row    ,
+                                                cell_screen ,
+                                          VALUE column      ,
+                                          VALUE row         ,
+                                          VALUE cell_width  ,
+                                          VALUE cell_height )
+
+{
+*       Allow user to control K limits on the screen.
+*       The first column is the component name.
+*       The second column is the property name.
+*
+*******************************************************************************}
+
+        DECLARE property     ,
+                name         ,
+                limit_object ,
+                limit
+
+        property = ( cell_row MOD LIMIT_MOD_LINES_PER_LIMIT ) { Determine which property we are dealing with }
+
+        IF property = 0 THEN
+
+                property = LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDIF
+
+        IF cell_column = 1 THEN
+
+                { We are on the component name - check to see if
+                  a name is defined for this property line }
+
+                name = entry_list [ ( cell_row + LIMIT_MOD_LINES_PER_LIMIT - 1 )
+                                DIV LIMIT_MOD_LINES_PER_LIMIT ] . title [ property ]
+
+                IF name <> EMPTY THEN
+
+                        PROMPT FOR name ON LINE   row
+                                        FROM      column
+                                        TO        column + cell_width - 1
+                                        IN WINDOW cell_screen
+                                        BOLD
+                                        BROWSE ON DISPLAY
+
+                ENDIF
+
+        ELSEIF cell_column = 2 THEN
+
+                { Display the property name }
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                                cell_column + 1,
+                                                                cell_row       )
+                name = limit_object . properties ( property )
+
+                PROMPT FOR name ON LINE   row
+                                FROM      column
+                                TO        column + cell_width - 1
+                                IN WINDOW cell_screen
+                                BROWSE ON DISPLAY
+
+                DISPLAY name ON LINE   row
+                             FROM      column
+                             TO        column + cell_width - 1
+                             IN WINDOW cell_screen
+
+        ELSE
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid  ,
+                                                                cell_column ,
+                                                                cell_row    )
+
+
+                IF property = 3 THEN
+
+                        limit = limit_mod_display_calculation ( limit_object )
+
+                ELSEIF property = 4 THEN
+
+                        limit = limit_mod_display_aql ( limit_object )
+
+                ELSE
+
+                        limit = limit_object . display ( property )
+
+                ENDIF
+
+                PROMPT FOR limit ON LINE   row
+                                 FROM      column
+                                 TO        column + cell_width - 1
+                                 IN WINDOW cell_screen
+                                 BROWSE ON DISPLAY
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_prompt_limits (       limit_grid  ,
+                                  VALUE cell_column ,
+                                  VALUE cell_row    ,
+                                        cell_screen ,
+                                  VALUE column      ,
+                                  VALUE row         ,
+                                  VALUE cell_width  ,
+                                  VALUE cell_height )
+
+{
+*       Prompt for limits on the screen.
+*       The first column is the component name.
+*       The second column is the property name.
+*
+*******************************************************************************}
+
+        DECLARE property    ,
+                name        ,
+                limit_object
+
+        property = ( cell_row MOD LIMIT_MOD_LINES_PER_LIMIT ) { Determine which property we are dealing with }
+
+        IF property = 0 THEN
+
+                property = LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDIF
+
+        IF cell_column = 1 THEN
+
+                { We are on the component name - check to see if
+                  a name is defined for this property line }
+
+                name = entry_list [ ( cell_row + LIMIT_MOD_LINES_PER_LIMIT - 1 )
+                                   DIV LIMIT_MOD_LINES_PER_LIMIT ] . title [ property ]
+
+                IF name <> EMPTY THEN
+
+                        PROMPT FOR name ON LINE   row
+                                        FROM      column
+                                        TO        column + cell_width - 1
+                                        IN WINDOW cell_screen
+                                        {BOLD}
+                                        BROWSE ON DISPLAY
+
+                ELSE
+
+                        PROMPT ON LINE   row
+                               FROM      column
+                               TO        column + cell_width - 1
+                               IN WINDOW cell_screen
+
+                ENDIF
+
+        ELSEIF cell_column = 2 THEN
+
+                { Display the property name }
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                                cell_column + 1,
+                                                                cell_row       )
+                name = limit_object . properties ( property )
+
+                PROMPT FOR name ON LINE   row
+                                FROM      column
+                                TO        column + cell_width - 1
+                                IN WINDOW cell_screen
+                                BROWSE ON DISPLAY
+
+        ELSE
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid  ,
+                                                                cell_column ,
+                                                                cell_row    )
+
+                IF property < 3 THEN
+
+                        limit_object . prompt ( property    ,
+                                                limit_grid  ,
+                                                cell_column ,
+                                                cell_row    ,
+                                                column      ,
+                                                row         ,
+                                                cell_screen ,
+                                                cell_width  )
+
+                ELSEIF property = 3 THEN
+
+                        limit_mod_prompt_calculation ( limit_object ,
+                                                       limit_grid   ,
+                                                       column       ,
+                                                       row          ,
+                                                       cell_screen  ,
+                                                       cell_width   )
+
+                ELSE
+
+                        limit_mod_prompt_aql ( limit_object ,
+                                                       limit_grid   ,
+                                                       column       ,
+                                                       row          ,
+                                                       cell_screen  ,
+                                                       cell_width   )
+
+
+                ENDIF
+
+        ENDIF
+
+        IF lastkey = "EXIT" THEN
+
+                SET GLOBAL "LASTKEY" TO "DO"
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limit_mod_check_move (       limit_grid     ,
+                               VALUE current_column ,
+                               VALUE current_row    ,
+                                     new_column     ,
+                                     new_row        )
+
+{
+*       Check to see if we are leaving a given limit - if so then
+*       validate to see if any changes are needed.
+*
+*
+*******************************************************************************}
+
+        DECLARE can_move     ,
+                limit_object ,
+                redisplay
+
+        can_move = TRUE
+
+        IF ( current_column <= 2 ) OR ( current_row = 0 ) THEN
+
+        ELSEIF ( new_column <> current_column                      ) OR
+               ( limit_mod_get_component_number ( current_row ) <>
+                 limit_mod_get_component_number ( new_row     )    ) THEN
+
+                limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                                current_column ,
+                                                                current_row    )
+
+                can_move = limit_object . validate ( redisplay )
+
+        ENDIF
+
+        IF NOT can_move THEN
+
+                new_column = current_column
+                new_row    = current_row
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_validation ( limit_grid )
+
+        DECLARE limit_object ,
+                redisplay    ,
+                return_value
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        limit_grid . current_column ,
+                                                        limit_grid . current_row    )
+
+        IF limit_object <> EMPTY THEN
+
+                return_value = limit_object . validate ( redisplay )
+
+        ELSE
+
+                return_value = TRUE
+
+        ENDIF
+
+        RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_propagate (       limit_grid   ,
+                                    limit_object ,
+                              VALUE to_column    ,
+                              VALUE to_row       )
+
+        DECLARE copy_to_object
+
+        copy_to_object = limit_mod_get_object_from_grid ( limit_grid  ,
+                                                          to_column   ,
+                                                          to_row      )
+
+        IF object_get_class_name ( copy_to_object ) =
+           object_get_class_name ( limit_object   ) THEN
+
+                copy_to_object . propagate ( limit_object )
+
+        ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE limit_mod_get_top ( VALUE current_row )
+
+{
+*
+*       Returns the top grid row of the current limit's rows.
+*
+******************************************************************************}
+
+        DECLARE property
+
+        property = ( current_row + ( LIMIT_MOD_LINES_PER_LIMIT - 1 ) )
+                        MOD LIMIT_MOD_LINES_PER_LIMIT
+
+        RETURN( current_row - property )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE limit_mod_get_bottom ( VALUE current_row )
+
+{
+*
+*       Returns the bottom grid row of the current limit's rows.
+*
+******************************************************************************}
+
+        DECLARE property
+
+        property = ( current_row + ( LIMIT_MOD_LINES_PER_LIMIT - 1 ) )
+                        MOD LIMIT_MOD_LINES_PER_LIMIT
+
+       RETURN( current_row + LIMIT_MOD_LINES_PER_LIMIT - ( property + 1 ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE limit_mod_get_component_number ( VALUE current_row )
+
+{
+*     Returns the number of the current limit's component. The top component
+*     is number 1.
+*
+******************************************************************************}
+
+        DECLARE component_number
+
+        component_number = ( current_row + ( LIMIT_MOD_LINES_PER_LIMIT - 1 ) )
+                              DIV LIMIT_MOD_LINES_PER_LIMIT
+
+        RETURN( component_number )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_propagate_all ( limit_grid )
+
+        DECLARE current_row          ,
+                current_column       ,
+                propagate_column     ,
+                propagate_row        ,
+                limit_object
+
+        current_column = limit_grid . current_column
+        current_row    = limit_grid . current_row
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        current_column ,
+                                                        current_row    )
+        propagate_row = 1
+
+        WHILE propagate_row <= limit_grid . cell_rows DO
+
+                propagate_column = 3
+
+                WHILE propagate_column <= limit_grid . cell_columns DO
+
+                        limit_mod_propagate ( limit_grid       ,
+                                              limit_object     ,
+                                              propagate_column ,
+                                              propagate_row    )
+
+                        propagate_column = propagate_column + 1
+
+                ENDWHILE
+
+                propagate_row = propagate_row + LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDWHILE
+
+        limit_grid . redisplay_contents ( )
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE limit_redisplay_row ( grid, VALUE current_row )
+
+{
+*     redisplays all of the current limit's rows
+*
+******************************************************************************}
+
+        DECLARE update_row, top_row, bottom_row
+
+        top_row    = limit_mod_get_top( current_row )
+        bottom_row = limit_mod_get_bottom( current_row )
+
+        update_row = top_row
+
+        WHILE update_row <= bottom_row DO
+
+                grid . redisplay_row ( update_row )
+
+                update_row = update_row + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+
+ROUTINE limit_mod_propagate_left ( limit_grid )
+
+        DECLARE current_row          ,
+                current_column       ,
+                propagate_column     ,
+                limit_object
+
+        current_column = limit_grid . current_column
+        current_row    = limit_grid . current_row
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        current_column ,
+                                                        current_row    )
+
+        propagate_column = 3
+
+        WHILE propagate_column < current_column DO
+
+                limit_mod_propagate ( limit_grid       ,
+                                      limit_object     ,
+                                      propagate_column ,
+                                      current_row      )
+
+                propagate_column = propagate_column + 1
+
+        ENDWHILE
+
+        limit_redisplay_row( limit_grid, current_row )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_propagate_right ( limit_grid )
+
+        DECLARE current_row          ,
+                current_column       ,
+                propagate_column     ,
+                limit_object
+
+
+        current_column = limit_grid . current_column
+        current_row    = limit_grid . current_row
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        current_column ,
+                                                        current_row    )
+
+        propagate_column = current_column + 1
+
+        WHILE propagate_column <= limit_grid . cell_columns DO
+
+                limit_mod_propagate ( limit_grid       ,
+                                      limit_object     ,
+                                      propagate_column ,
+                                      current_row      )
+
+                propagate_column = propagate_column + 1
+
+        ENDWHILE
+
+        limit_redisplay_row( limit_grid, current_row )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_propagate_up ( limit_grid )
+
+        DECLARE current_row        ,
+                current_column     ,
+                propagate_row      ,
+                limit_object       ,
+                top_current_row
+
+        current_column = limit_grid . current_column
+        current_row    = limit_grid . current_row
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        current_column ,
+                                                        current_row    )
+
+        top_current_row = limit_mod_get_top( current_row )
+
+        propagate_row = 1
+
+        WHILE propagate_row < top_current_row DO
+
+                limit_mod_propagate ( limit_grid     ,
+                                      limit_object   ,
+                                      current_column ,
+                                      propagate_row  )
+
+                propagate_row = propagate_row + LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDWHILE
+
+        limit_grid . redisplay_column ( current_column )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_propagate_down ( limit_grid )
+
+        DECLARE current_row        ,
+                current_column     ,
+                propagate_row      ,
+                limit_object       ,
+                bottom_current_row
+
+        current_column = limit_grid . current_column
+        current_row    = limit_grid . current_row
+
+        limit_object = limit_mod_get_object_from_grid ( limit_grid     ,
+                                                        current_column ,
+                                                        current_row    )
+
+        bottom_current_row = limit_mod_get_bottom( current_row )
+
+        propagate_row = bottom_current_row + 1
+
+        WHILE propagate_row <= limit_grid . cell_rows  DO
+
+                limit_mod_propagate ( limit_grid     ,
+                                      limit_object   ,
+                                      current_column ,
+                                      propagate_row  )
+
+                propagate_row = propagate_row + LIMIT_MOD_LINES_PER_LIMIT
+
+        ENDWHILE
+
+        limit_grid . redisplay_column ( current_column )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_select ( limit_grid )
+
+        DECLARE choose_array       ,
+                required_direction
+
+
+        IF limit_grid . current_column > 2 THEN
+
+                ARRAY choose_array ARRAY_SIZE ( 0 , 3 )
+
+                choose_array [ 1, 1 ] = "*"
+                choose_array [ 1, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_HEADER" ,1 )
+
+                choose_array [ 2, 1 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_ALL" ,1 )
+                choose_array [ 2, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_ALL" ,2 )
+                choose_array [ 2, 3 ] =  LIMIT_MOD_CHOOSE_PROPAGATE_ALL
+
+                choose_array [ 3, 1 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_DOWN" ,1 )
+                choose_array [ 3, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_DOWN" ,2 )
+                choose_array [ 3, 3 ] =  LIMIT_MOD_CHOOSE_PROPAGATE_DOWN
+
+                choose_array [ 4, 1 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_RIGHT" ,1 )
+                choose_array [ 4, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_RIGHT" ,2 )
+                choose_array [ 4, 3 ] =  LIMIT_MOD_CHOOSE_PROPAGATE_RIGHT
+
+                choose_array [ 5, 1 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_UP" ,1 )
+                choose_array [ 5, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_UP" ,2 )
+                choose_array [ 5, 3 ] =  LIMIT_MOD_CHOOSE_PROPAGATE_UP
+
+                choose_array [ 6, 1 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_LEFT" ,1 )
+                choose_array [ 6, 2 ] =
+                        get_user_message ( "LIMIT_MOD_CHOOSE_PROP_LEFT" ,2 )
+                choose_array [ 6, 3 ] =  LIMIT_MOD_CHOOSE_PROPAGATE_LEFT
+
+                CHOOSE required_direction OUTOF choose_array AT 10,10
+
+                IF lastkey = "EXIT" THEN
+
+                        { Do nothing }
+
+                ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_ALL
+
+                        limit_mod_propagate_all ( limit_grid )
+
+                ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_LEFT
+
+                        limit_mod_propagate_left ( limit_grid )
+
+                ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_RIGHT
+
+                        limit_mod_propagate_right ( limit_grid )
+
+                ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_DOWN
+
+                        limit_mod_propagate_down ( limit_grid )
+
+                ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_UP
+
+                        limit_mod_propagate_up ( limit_grid )
+
+                ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limit_mod_toolbox_callback ( self )
+
+        DECLARE form               ,
+                limit_grid         ,
+                required_direction
+
+        required_direction = self . user_info
+        form               = self . parent_prompt
+        limit_grid         = form . prompt_objects [ 1 ]
+
+        IF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_ALL
+
+                limit_mod_propagate_all ( limit_grid )
+
+        ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_LEFT
+
+                limit_mod_propagate_left ( limit_grid )
+
+        ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_RIGHT
+
+                limit_mod_propagate_right ( limit_grid )
+
+        ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_DOWN
+
+                limit_mod_propagate_down ( limit_grid )
+
+        ELSEIF required_direction = LIMIT_MOD_CHOOSE_PROPAGATE_UP
+
+                limit_mod_propagate_up ( limit_grid )
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_get_entry_code
+
+{
+*       Get next entry code number - checking to see if its bigger than
+*       any other value in the table.
+*
+*******************************************************************************}
+
+        DECLARE keep_looking, max_value, entry_number
+
+        keep_looking = TRUE
+
+        WHILE keep_looking DO
+
+                entry_number = packed_decimal ( increment ( "MLP_COMPS"  ,
+                                                            "ENTRY_CODE" ))
+
+                max_value = SELECT MAX limit . entry_code
+
+                IF ( max_value <> EMPTY       ) AND
+                   ( max_value > entry_number ) THEN
+
+                        set_increment ("MLP_COMPS" , "ENTRY_CODE" , max_value)
+
+                ELSE
+
+                        keep_looking = FALSE
+
+                ENDIF
+
+        ENDWHILE
+
+        RETURN ( entry_number )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_find_limit ( VALUE mode            ,
+                               VALUE level_name      ,
+                               VALUE entry_code      ,
+                               VALUE copy_entry_code ,
+                               VALUE datatype        ,
+                               VALUE places          ,
+                               VALUE units           )
+
+{
+*       Look in the object database for the given set of limits - if they
+*       aren't there then create the object and read/reserve (if not display
+*       mode) the row.
+*
+*******************************************************************************}
+
+        DECLARE object_name  ,
+                limit_object ,
+                found        ,
+                status       ,
+                message_ptr
+
+        object_name = entry_code : level_name
+
+        limit_object = LIMIT_MODIFY_DATABASE . get_by_index ( "OBJECT_NAME" ,
+                                                               object_name  )
+
+        found = limit_object <> EMPTY
+
+        IF found THEN
+
+                IF limit_object = EMPTY THEN
+
+                        found = FALSE
+
+                ENDIF
+
+        ENDIF
+
+        IF NOT found THEN
+
+                { It's not there - find the correct class type and create it }
+
+                IF datatype = "N" THEN
+
+                        CREATE OBJECT LIMIT_MODIFY_NUMERIC_CLASS, limit_object
+
+                ELSEIF datatype = "T" THEN
+
+                        CREATE OBJECT LIMIT_MODIFY_TEXT_CLASS, limit_object
+
+                ELSEIF datatype = "B" THEN
+
+                        CREATE OBJECT LIMIT_MODIFY_BOOLEAN_CLASS, limit_object
+
+                ELSEIF datatype = "I" THEN
+
+                        CREATE OBJECT LIMIT_MODIFY_INTERVAL_CLASS, limit_object
+
+                ELSE
+
+                        message_fetch ( "LIMIT_MOD_UNKNOWN_TYPE" ,
+                                         message_ptr             )
+                        message_add_parameter ( message_ptr ,
+                                                datatype    )
+                        fatal_error ( message_get_text ( message_ptr,1))
+
+                ENDIF
+
+                { Try to find the row in the limit table -
+                  it it doesn't exist then reserve it     }
+
+                IF ( mode = "DISPLAY" ) OR
+                   ( mode = "PRINT"   ) THEN
+
+
+                        status = SELECT limit . entry_code
+                                 WHERE ( entry_code = entry_code ) AND
+                                       ( level_id   = level_name )
+
+                        object_copy_current_table (  limit_object ,
+                                                    "limit"       )
+
+                        limit_object . already_exists = status <> EMPTY
+
+                ELSEIF  mode = "MODIFY" THEN
+
+                        status = SELECT limit . entry_code
+                                 FOR UPDATE
+                                 WHERE ( entry_code = entry_code ) AND
+                                       ( level_id   = level_name )
+
+
+                        object_copy_current_table (  limit_object ,
+                                                    "limit"       )
+
+                        IF status = EMPTY
+
+                                RESERVE ENTRY limit IN OBJECT limit_object ,
+                                              entry_code : level_name      ,
+                                              status
+
+                                IF status <> EMPTY THEN
+
+                                        fatal_error ( status )
+
+                                ENDIF
+
+                                limit_object . already_exists = FALSE
+
+                        ELSE
+
+                                limit_object . already_exists = TRUE
+
+
+                        ENDIF
+
+                ELSEIF  mode = "ADD" THEN
+
+
+                        RESERVE ENTRY limit IN OBJECT limit_object ,
+                                      entry_code : level_name      ,
+                                      status
+
+                        IF status <> EMPTY THEN
+
+                                fatal_error ( status )
+
+                        ENDIF
+
+                        limit_object . already_exists = FALSE
+
+
+                ELSEIF  mode = "COPY" THEN
+
+
+                        RESERVE ENTRY limit IN OBJECT limit_object ,
+                                      entry_code : level_name
+                             COPY_FROM copy_entry_code : level_name ,
+                                      status
+
+                        IF status <> EMPTY THEN
+
+                                fatal_error ( status )
+
+                        ENDIF
+
+                        limit_object . copy ()
+                        limit_object . already_exists = FALSE
+
+
+                ENDIF
+
+                { Now put it into the object database }
+
+                limit_object . object_name = object_name
+                LIMIT_MODIFY_DATABASE . add ( limit_object )
+
+        ENDIF
+
+        limit_object . places = places
+        limit_object . units  = units
+
+        RETURN ( limit_object )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE limit_mod_create_grid ( VALUE mode       ,
+                                      limit_grid ,
+                                      level_list ,
+                                      entry_list )
+
+{
+*       Create the grid object based on the size of the level array and
+*       the entry list array.
+*
+*******************************************************************************}
+
+        DECLARE column, row, temp, limit
+
+        CREATE OBJECT "STD_GRID_EDITOR" , limit_grid
+
+        limit_grid . cell_columns       = size_of_array  ( level_list ) + 2
+        limit_grid . fixed_columns_left = 2
+
+        limit_grid . cell_rows = LIMIT_MOD_LINES_PER_LIMIT *
+                                 size_of_array ( entry_list )
+
+        limit_grid . row    = 2
+        limit_grid . width  = 18 + 7 + ( 16 * size_of_array ( level_list ))
+        limit_grid . height = limit_grid . cell_rows + 2
+
+        limit_grid . vgl_library = global ( "current_library" )
+
+        limit_grid . display_cell_routine = "limit_mod_display_limits"
+
+        IF mode = "DISPLAY" THEN
+
+                limit_grid . prompt_cell_routine  = "limit_mod_display_prompt_limits"
+
+        ELSE
+
+                limit_grid . prompt_cell_routine  = "limit_mod_prompt_limits"
+                limit_grid . check_move_routine   = "limit_mod_check_move"
+                limit_grid . select_routine       = "limit_mod_select"
+                limit_grid . validation_routine   = "limit_mod_validation"
+
+        ENDIF
+
+        { Define the titles at the top }
+
+        limit_grid . title_size_top      = 1
+        limit_grid . title_separator_top = GRID_SEPARATOR_CELLS
+        limit_grid . title_rendition_top = PROMPT_RENDITION_BOLD
+
+        limit_grid . column_size      [1]   = 18
+        limit_grid . title_text_top   [1,1] =
+                        get_user_message ( "LIMIT_MOD_COMPONENT_TITLE" ,1 )
+
+        limit_grid . column_size      [2]   = 6
+        limit_grid . title_text_top   [2,1] =
+                        get_user_message ( "LIMIT_MOD_PROPERTY_TITLE" ,1 )
+        limit_grid . column_separator [2]   = GRID_SEPARATOR_BOTH
+
+
+        column = 1
+
+        WHILE column <= size_of_array ( level_list ) DO
+
+                limit_grid . column_size      [column+2]   = 15
+                limit_grid . title_text_top   [column+2,1] = level_list [ column ]
+                limit_grid . column_separator [column+2]   = GRID_SEPARATOR_BOTH
+
+                column = column + 1
+
+        ENDWHILE
+
+        { Set up the user info array }
+
+        ARRAY limit_grid . user_info
+
+        row = 1
+
+        WHILE row <= size_of_array ( entry_list ) DO
+
+                temp   = LIMIT_MOD_LINES_PER_LIMIT * ( row - 1 )
+                column = 1
+
+                limit_grid . row_separator [temp]   = GRID_SEPARATOR_BOTH
+
+                WHILE column <= size_of_array ( level_list ) DO
+
+                        limit = limit_mod_find_limit ( mode                                ,
+                                                      level_list [ column ]                ,
+                                                      entry_list [ row ] . entry_code      ,
+                                                      entry_list [ row ] . copy_entry_code ,
+                                                      entry_list [ row ] . datatype        ,
+                                                      entry_list [ row ] . places          ,
+                                                      entry_list [ row ] . units           )
+
+                        limit . component_object = entry_list [ row ] . component_object
+
+                        limit_grid . user_info [ temp + 1 , column + 2 ] =
+                                        entry_list [ row ] . entry_code :
+                                        level_list [ column ]
+
+                        limit_grid . user_info [ temp + 2 , column + 2 ] =
+                                        entry_list [ row ] . entry_code :
+                                        level_list [ column ]
+
+                        limit_grid . user_info [ temp + 3 , column + 2 ] =
+                                        entry_list [ row ] . entry_code :
+                                        level_list [ column ]
+
+                        limit_grid . user_info [ temp + 4 , column + 2 ] =
+                                        entry_list [ row ] . entry_code :
+                                        level_list [ column ]
+
+                        column = column + 1
+
+                ENDWHILE
+
+                row = row + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_create_toolbox ( VALUE mode    ,
+                                         form    )
+
+        DECLARE toolbox, item
+
+        IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+                CREATE OBJECT TOOLBAR_CLASS , toolbox
+
+                toolbox . header = get_user_message ("LIMIT_MOD_TOOLBOX_HEADER",
+                                                     1                         )
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+
+                item . bitmap_number        = ICON_ARROW_ALL
+                item . status_text          = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_ALL",1)
+                item . balloon_text         = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_ALL",1)
+                item . mouse_click_callback = "limit_mod_toolbox_callback"
+                item . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+                item . user_info            = LIMIT_MOD_CHOOSE_PROPAGATE_ALL
+                item . enabled              = ( mode <> "DISPLAY" )
+
+                toolbox . add_button ( item )
+
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+
+                item . bitmap_number        = ICON_ARROW_LEFT
+                item . status_text          = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_LEFT",1)
+                item . balloon_text         = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_LEFT",1)
+                item . mouse_click_callback = "limit_mod_toolbox_callback"
+                item . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+                item . user_info            = LIMIT_MOD_CHOOSE_PROPAGATE_LEFT
+                item . enabled              = ( mode <> "DISPLAY" )
+
+
+                toolbox . add_button ( item )
+
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+
+                item . bitmap_number        = ICON_ARROW_RIGHT
+                item . status_text          = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_RIGHT",1)
+                item . balloon_text         = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_RIGHT",1)
+                item . mouse_click_callback = "limit_mod_toolbox_callback"
+                item . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+                item . user_info            = LIMIT_MOD_CHOOSE_PROPAGATE_RIGHT
+                item . enabled              = ( mode <> "DISPLAY" )
+
+                toolbox . add_button ( item )
+
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+
+                item . bitmap_number        = ICON_ARROW_UP
+                item . status_text          = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_UP",1)
+                item . balloon_text         = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_UP",1)
+                item . mouse_click_callback = "limit_mod_toolbox_callback"
+                item . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+                item . user_info            = LIMIT_MOD_CHOOSE_PROPAGATE_UP
+                item . enabled              = ( mode <> "DISPLAY" )
+
+                toolbox . add_button ( item )
+
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+
+                item . bitmap_number        = ICON_ARROW_DOWN
+                item . status_text          = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_DOWN",1)
+                item . balloon_text         = GET_USER_MESSAGE ( "LIMIT_MOD_TOOLBOX_DOWN",1)
+                item . mouse_click_callback = "limit_mod_toolbox_callback"
+                item . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+                item . user_info            = LIMIT_MOD_CHOOSE_PROPAGATE_DOWN
+                item . enabled              = ( mode <> "DISPLAY" )
+
+                toolbox . add_button ( item )
+
+                toolbox . add_separator( )
+
+                CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+                item . set_icon  ( "INT_HELP_BUBBLE" )
+                item . identity      = "HELP"
+                item . send_last_key = "HELP"
+                item . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+                toolbox . add_item ( item )
+
+                form . add_prompt ( toolbox )
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_copy ( VALUE old_entry_code  ,
+                         VALUE new_entry_code  ,
+                         VALUE datatype        )
+
+{
+*       Select all entries from the database and copy them.
+*
+*
+*******************************************************************************}
+
+        DECLARE level_id
+
+        level_id = SELECT limit . level_id
+                   WHERE  entry_code = old_entry_code
+
+        WHILE level_id <> EMPTY DO
+
+                limit_mod_find_limit ( "COPY"         ,
+                                       level_id       ,
+                                       new_entry_code ,
+                                       old_entry_code ,
+                                       datatype       ,
+                                       EMPTY          ,
+                                       EMPTY          )
+
+                NEXT limit
+
+                level_id = SELECT limit . level_id
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_print ( VALUE mode            ,
+                                level_list      ,
+                                entry_list      )
+
+{
+*       The main routine to call to print the given limits.
+*
+*
+
+*******************************************************************************}
+
+        DECLARE row         ,
+                column      ,
+                output_line ,
+                calc        ,
+                limit_object
+
+        row = 1
+
+        WHILE row <= size_of_array ( entry_list ) DO
+
+                column = 1
+
+
+                WHILE column <= size_of_array ( level_list ) DO
+
+                        limit_object =
+                          limit_mod_find_limit ( mode                                 ,
+                                                 level_list [ column ]                ,
+                                                 entry_list [ row ] . entry_code      ,
+                                                 entry_list [ row ] . copy_entry_code ,
+                                                 entry_list [ row ] . datatype        ,
+                                                 entry_list [ row ] . places          ,
+                                                 entry_list [ row ] . units           )
+
+
+
+                        output_line = level_list [ column ]
+                        output_line = output_line : " "
+
+                        output_line = output_line :
+                                      substring (limit_object . display ( 1 ),
+                                                 1 , 20)
+                        output_line = output_line : " "
+
+                        output_line = output_line :
+                                      substring (limit_object . display ( 2 ),
+                                                 1 , 20)
+                        output_line = output_line : " "
+
+                        calc = SELECT limit . calculation IN OBJECT limit_object
+
+                        IF calc <> EMPTY THEN
+
+                                output_line = output_line : calc
+
+                        ENDIF
+
+literal
+$output_line____________________________________________________________________
+$endliteral
+
+                        column = column + 1
+
+                ENDWHILE
+
+                row = row + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_screen ( VALUE mode            ,
+                                 level_list      ,
+                                 entry_list      )
+
+{
+*       The main routine to call to modify the given limits.
+*
+*
+*******************************************************************************}
+
+        DECLARE form, limit_grid, button_list, header_message, ID, footer_message
+        DECLARE button_object
+
+
+        IF mode = "PRINT" THEN
+
+                limit_mod_print ( mode        ,
+                                  level_list  ,
+                                  entry_list  )
+
+        ELSEIF size_of_array ( level_list ) = 0 THEN
+
+                flash_message ( get_user_message ( "LIMIT_MOD_NO_LEVELS",1) ,
+                                TRUE                                        )
+
+
+        ELSEIF size_of_array ( entry_list ) = 0 THEN
+
+                flash_message ( get_user_message ( "LIMIT_MOD_NO_COMPONENTS",1) ,
+                                TRUE                                           )
+
+        ELSE
+
+                IF mode = "MODIFY" THEN
+
+                        header_message = get_user_message ("LIMIT_MOD_HEADER_MODIFY",1)
+                        footer_message = get_user_message ("LIMIT_MOD_FOOTER_MODIFY",1)
+
+                ELSE
+
+                        header_message = get_user_message ("LIMIT_MOD_HEADER_DISPLAY",1)
+                        footer_message = get_user_message ("LIMIT_MOD_FOOTER_DISPLAY",1)
+
+                ENDIF
+
+                ID =   STRIP(SELECT mlp_components . product_id IN OBJECT entry_list [1]. component_object )
+                ID =   ID : "/" :STRIP(SELECT mlp_components . product_version IN OBJECT entry_list [1]. component_object )
+                header_message = header_message : " (" : ID :")"
+
+                ARRAY button_list
+
+                limit_mod_create_grid (  mode            ,
+                                         limit_grid      ,
+                                         level_list      ,
+                                         entry_list      )
+
+
+                lib_grid_create_form ( limit_grid      ,
+                                       form            ,
+                                       FALSE           ,
+                                       0               ,
+                                       header_message  ,
+                                       footer_message  ,
+                                       button_list     )
+
+                limit_mod_create_toolbox ( mode ,
+                                           form )
+
+
+                PROMPT OBJECT button_object
+                    CLASS "STD_PROMPT_BUTTON"
+                    WITH ( row          = form . height - 0.5 ,
+                           column       = form . width - 9   ,
+                           caption      = GET_USER_MESSAGE ( "SMP_PROMPT_BUTTON_CLOSE" , 1 ) ,
+                           width        = 10   ,
+                           send_lastkey = "DO" )
+
+                form . add_prompt ( button_object )
+
+                form . add_panel( 1                   ,
+                                  form . height - 0.3 ,
+                                  1                   ,
+                                  form . width        ,
+                                  PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+                form . prompt_id = GLOBAL ("CURRENT_LIBRARY") : "_LIMITS"
+                form . start_prompt ()
+                form . prompt_objects [1] . set_position (3,1)
+                form . wait_prompt  ()
+                form . end_prompt   ()
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_delete ( VALUE entry_code  )
+
+{
+*       Select all entries from the database and delete them.
+*
+*
+*******************************************************************************}
+
+        DECLARE level_id ,
+                status
+
+        level_id = SELECT limit . level_id
+                   FOR UPDATE
+                   WHERE  entry_code = entry_code
+
+        WHILE level_id <> EMPTY DO
+
+                DELETE limit , status
+
+                IF status <> EMPTY THEN
+
+                        flash_message ( status   ,
+                                        TRUE     )
+
+                ENDIF
+
+                NEXT limit
+
+                level_id = SELECT limit . level_id
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE limit_mod_update_one ( limit_object )
+
+{
+*       Update one limit.
+*
+*
+*******************************************************************************}
+
+        DECLARE status
+
+        IF limit_object . defined () THEN
+
+                UPDATE limit IN OBJECT limit_object , status
+
+                IF status <> EMPTY THEN
+
+                        flash_message ( status , TRUE )
+
+                ENDIF
+
+        ELSEIF limit_object . already_exists THEN
+
+                DELETE limit IN OBJECT limit_object , status
+
+                IF status <> EMPTY THEN
+
+                        flash_message ( status , TRUE )
+
+                ENDIF
+
+        ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_update (       level_list ,
+                           VALUE entry_code )
+
+{
+*       Update all the elements that have been modified.
+*
+*
+*******************************************************************************}
+
+        DECLARE limit_object ,
+                count        ,
+                limit_name
+
+        count = 1
+
+        WHILE count <= size_of_array ( level_list ) DO
+
+                limit_name = entry_code : level_list [ count ]
+
+                limit_object = LIMIT_MODIFY_DATABASE . get_by_index ( "OBJECT_NAME" ,
+                                                                       limit_name   )
+
+                IF limit_object <> EMPTY THEN
+
+                        limit_mod_update_one ( limit_object )
+
+                ENDIF
+
+                count = count + 1
+
+        ENDWHILE
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_delete_levels (       level_list ,
+                                  VALUE entry_code )
+
+{
+*       Delete all the entries for the deleted levels.
+*
+*
+*******************************************************************************}
+
+        DECLARE status    ,
+                level_id  ,
+                count
+
+        count = 1
+
+        WHILE count <= size_of_array ( level_list ) DO
+
+                level_id  = SELECT limit . level_id
+                            FOR UPDATE
+                            WHERE ( entry_code = entry_code          ) AND
+                                  ( level_id   = level_list [ count ])
+
+
+                IF level_id <> EMPTY THEN
+
+                        DELETE limit , status
+
+
+                        IF status <> EMPTY THEN
+
+                                flash_message ( status , TRUE )
+
+                        ENDIF
+
+                ENDIF
+
+
+                count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE limit_mod_change_type (       level_list      ,
+                                VALUE entry_code      ,
+                                VALUE datatype        )
+
+{
+*       Change the datatype of a limit. First need to see if the limit is in
+*       the database - if it is delete it.
+*
+*
+*
+*******************************************************************************}
+
+        DECLARE object_name    ,
+                level_name     ,
+                level_count    ,
+                field_names    ,
+                count          ,
+                is_key         ,
+                default_value  ,
+                temp           ,
+                limit_object
+
+        level_count = 1
+
+        WHILE level_count <= size_of_array ( level_list ) DO
+
+                level_name = level_list [ level_count ]
+
+                object_name = entry_code : level_name
+
+                limit_object = LIMIT_MODIFY_DATABASE . get_by_index ( "OBJECT_NAME" ,
+                                                                       object_name  )
+
+                {
+                collection_pos =
+                        LIMIT_MODIFY_DATABASE . find_index ( "OBJECT_NAME" ,
+                                                              object_name  )
+                }
+
+                IF limit_object <> EMPTY THEN
+
+                        count = 1
+
+                        WHILE count <= limit_modify_database . size () DO
+
+                                temp = limit_modify_database . get_by_number ( count )
+
+                                IF temp = limit_object THEN
+
+                                        LIMIT_MODIFY_DATABASE . remove_by_number ( count )
+                                        count = limit_modify_database . size ()
+
+                                ENDIF
+
+                                count = count + 1
+
+                        ENDWHILE
+
+
+                ENDIF
+
+                limit_mod_find_limit ( "MODIFY"   ,
+                                       level_name ,
+                                       entry_code ,
+                                       EMPTY      ,
+                                       datatype   ,
+                                       EMPTY      ,
+                                       EMPTY      )
+
+                limit_object = LIMIT_MODIFY_DATABASE . get_by_index ( "OBJECT_NAME" ,
+                                                                       object_name  )
+
+                get_field_names ( "LIMIT"      ,
+                                   field_names )
+
+                count = 1
+
+                WHILE count <= size_of_array ( field_names ) DO
+
+                        GET_FIELD_DETAILS  limit . 'field_names [count,1] ' ,
+                                           "KEY0_FIELD"                     ,
+                                           is_key
+
+                        IF NOT is_key THEN
+
+
+                                GET_FIELD_DETAILS  limit . 'field_names [count,1] ' ,
+                                                   "DEFAULT_VALUE" ,
+                                                   default_value
+
+                                ASSIGN limit . 'field_names [count,1]'
+                                  IN OBJECT limit_object = default_value
+
+                        ENDIF
+
+                        count = count + 1
+
+                ENDWHILE
+
+                level_count = level_count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+
+
+

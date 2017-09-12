@@ -1,0 +1,92 @@
+SET NOTPROTECTED
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $MLPS_CONST
+JOIN LIBRARY TOOLBOX
+
+ROUTINE limit_calculation (       limit_object  ,
+			          mlp_operation ,
+			          mlp_component ,
+			    VALUE mode	        )
+
+ARRAY   parm_arr
+
+IF mode = "UPDATE" THEN
+   tst_no = select result.test_number IN OBJECT mlp_operation.result_row
+   res_no = select result.text        IN OBJECT mlp_operation.result_row
+
+   IF    (NOT NUMTEXT(res_no)) THEN
+          flash_message("This result is not numeric",TRUE)
+   ELSEIF NOT get_parameters ( "M", "RANGE_TEST", 3, tst_no, parm_arr, n_sets )
+   THEN   { Do Nothing }
+   ELSEIF n_sets <= 0
+   THEN   flash_message("No Range Test parameters available",TRUE)
+   ELSE   n_set = 0
+          the_anal = EMPTY
+          no_err = TRUE
+          res_no = NUMERIC(res_no)
+          WHILE (n_set<n_sets) AND (the_anal=EMPTY) AND (no_err) DO
+              n_set = n_set + 1
+              IF     ((NOT NUMTEXT(parm_arr[n_set,1])) OR
+                      (NOT NUMTEXT(parm_arr[n_set,2])))
+              THEN     flash_message("Error in setup - Parameters not numeric",
+                                      TRUE)
+                       no_err = FALSE
+              ELSEIF ((parm_arr[n_set,1] = EMPTY) OR
+                      (parm_arr[n_set,2] = EMPTY))
+              THEN     flash_message("Error in setup - Empty Parameters Found",
+                                      TRUE)
+                       no_err = FALSE
+              ELSEIF   parm_arr[n_set,3] = EMPTY
+              THEN     flash_message("Error in setup - No Analysis specified",
+                                      TRUE)
+                       no_err = FALSE
+              ELSE     low_lim  = NUMERIC(parm_arr[n_set,1])
+                       high_lim = NUMERIC(parm_arr[n_set,2])
+                       IF   ((res_no >= low_lim) AND
+                             (res_no <= high_lim))
+                       THEN rf = select analysis.removeflag
+                                 where  identity = parm_arr[n_set,3]
+                            IF     rf = EMPTY
+                            THEN   flash_message("Analysis:":parm_arr[n_set,3]:
+                                                 " does not exist",TRUE)
+                                   no_err = FALSE
+                            ELSEIF rf
+                            THEN   flash_message("Analysis:":parm_arr[n_set,3]:
+                                                 " is removed",TRUE)
+                                   no_err = FALSE
+                            ELSE   the_anal = parm_arr[n_set,3]
+                            ENDIF
+                       ENDIF
+              ENDIF
+          ENDWHILE
+
+          IF   the_anal = EMPTY
+          THEN IF no_err THEN
+                  flash_message("This result does not match any Parameter ":
+                                "range",TRUE)
+               ENDIF
+          ELSE smp_no = select sample.id_numeric 
+                        IN OBJECT mlp_operation.sample_row
+               is_there = EMPTY
+               is_there = select test.test_number
+                          where  sample = smp_no
+                          and    analysis = the_anal
+               IF   is_there <> EMPTY
+               THEN flash_message("Analysis:":the_anal:"already on this sample",
+                                   TRUE)
+               ELSE SET NOTPROTECTED
+                    new_test_no = NEWTEST( strip(smp_no), strip(the_anal) )
+                    IF   new_test_no = ERROR
+                    THEN flash_message("New test NOT created due to error",TRUE)
+                    ELSE flash_message("Created new test:":strip(new_test_no):
+                                       " on analysis:":the_anal,TRUE)
+                    ENDIF
+               ENDIF
+          ENDIF
+   ENDIF 
+ENDIF
+
+RETURN ( MLP_CONST_COMPARE )
+
+ENDROUTINE

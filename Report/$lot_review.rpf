@@ -1,0 +1,1551 @@
+
+{******************************************************************************
+*
+* Module Name   : $LOT_REVIEW
+*
+* Purpose       : Lot Review Routines
+*
+* Document Ref. : SW/WU:15813/1
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_LOGIN
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_VGL
+
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_FORMULATION
+JOIN LIBRARY $EXPLORER_UTILS
+JOIN LIBRARY $EXPLORER_RMB
+JOIN LIBRARY $EXPLORER_AUX
+JOIN LIBRARY $EXPLORER_LIB
+JOIN LIBRARY $PROMPT_SPLIT
+JOIN LIBRARY $LINE_EDITOR
+JOIN LIBRARY $PROMPT_TREE
+JOIN LIBRARY $PROMPT_TAB
+JOIN LIBRARY $LOT_LOGIN
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LOT_USER
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_TEMP
+JOIN LIBRARY $ROLE_LIB
+JOIN LIBRARY $TOOLBOX
+
+{*******************************************************************************
+*                           C O N S T A N T S
+*******************************************************************************}
+
+GLOBAL CONSTANT LOT_REVIEW_CLASS        = "LOTREVIEW"
+GLOBAL CONSTANT LOT_TREE_CLASS          = "LOTTREE"
+GLOBAL CONSTANT JOB_TREE_CLASS          = "JOBTREE"
+GLOBAL CONSTANT GENERAL_CONTAINER_CLASS = "GENERALCONTAINER"
+
+CONSTANT DEFAULT_TEMPLATE           = "DEFAULT"
+CONSTANT DEFAULT_ICON               = 105
+CONSTANT JOB_ICON                   = 72
+CONSTANT SAMPLE_ICON                = 73
+
+CONSTANT MESS_POSITION              = 1
+CONSTANT TYPE_POSITION              = 2
+CONSTANT TABLE_POSITION             = 3
+CONSTANT FIELD_POSITION             = 4
+CONSTANT WIDTH_POSITION             = 6
+
+{*******************************************************************************
+*                           M A I N   C O D E
+*******************************************************************************}
+
+lot_review ( "" )
+
+{*******************************************************************************
+*                         M E N U   R O U T I N E S
+*******************************************************************************}
+
+
+
+{***** ROUTINE lot_review.rpf *****}
+
+ROUTINE lot_review ( VALUE option )
+
+{ 
+*    Login a New Lot.
+*
+*******************************************************************************}
+
+    DECLARE lot
+    define_lot_review_class ( )
+    CREATE OBJECT LOT_REVIEW_CLASS, lot
+
+    IF get_identity ( lot . lot_id, 
+                      GET_USER_MESSAGE ( "LOT_REVIEW_ID"      , 1 ), 
+                      GET_USER_MESSAGE ( "LOT_REVIEW_MINIHEAD", 1 ), 
+                      "LOT_DETAILS", ""                            ) THEN
+
+        lot . load ( )
+
+    ENDIF
+
+ENDROUTINE { lot_review }
+
+
+{***** GLOBAL ROUTINE define_lot_review_class.rpf *****}
+
+GLOBAL ROUTINE define_lot_review_class
+
+{ 
+*    Define the Explorer RMB Classes
+*
+*******************************************************************************}
+
+    set_up_std_prompt_tree_class  ( )
+    set_up_std_prompt_tab_class   ( )
+    set_up_std_prompt_split_class ( )
+    define_lot_login_class        ( )
+    line_editor_initialise_new    ( )
+    lib_grid_initialise           ( )
+    define_lot_login_class        ( )
+    define_explorer_aux_class     ( )
+
+    {**********************************************************************}
+    {* Lot Review Class                                                   *}
+    {**********************************************************************}
+
+    DEFINE CLASS LOT_REVIEW_CLASS
+
+        INHERIT "STD_FORM" 
+        INITIALISATION
+
+        PROPERTIES 
+
+            "lot_id"             , { The Lot Textual Identity      }
+            "display_lot"        , { The Current Display Lot.      }
+            "line_form"          , { The Line Form                 }
+            "buttons"            , { Array of Button Objects       }
+            "template"           , { The Template to Use           }
+            "prompt_details"     , { Prompt Details Array          }
+            "field_controls"     , { List of Template Fields       }
+            "container"          , { Table Container               }
+            "line_editor"        , { The Line Editor               }
+            "details"            , { Sample Details                }
+            "child_lots"         , { Child Lot Collection          }
+            "parent_lots"        , { Parent Lot Collection         }
+            "from_tree"          , { The From Tree                 }
+            "to_tree"              { The To Tree                   }
+
+        ACTIONS
+
+            "build_form"         , { Build up the Form             }
+            "change_lot"         , { Change the Current Lot.       }
+            "load_details"       , { Load the Template Details     }
+            "load_relations"     , { Load Relationships            }
+            "load_buttons"       , { Load a Button Array           }
+            "load_jobs"          , { Load the Job Information      }
+            "load_lot"           , { Load in Lot Information       }
+            "load"                 { Load in a Lot                 }
+
+    END CLASS
+
+    {**********************************************************************}
+    {* Lot Tree Class                                                     *}
+    {**********************************************************************}
+
+    DEFINE CLASS LOT_TREE_CLASS
+
+        INHERIT "STD_PROMPT_TREE" 
+        INITIALISATION
+
+        PROPERTIES 
+
+            "lot_id"             , { The Lot Textual Identity      }
+            "from_field"         , { From Linking Field            }
+            "to_field"             { To Linking Field              }
+
+        ACTIONS
+
+            "load_lots"          , { Load in the Lot Information   }
+            "add_lot"            , { Add a Lot to Lots             }
+            "get_icon"           , { Get Icons                     }
+            "load"                 { Load in a Lot Entry           }
+            
+    END CLASS
+
+    {**********************************************************************}
+    {* Job Tree Class                                                     *}
+    {**********************************************************************}
+
+    DEFINE CLASS JOB_TREE_CLASS
+
+        INHERIT "STD_PROMPT_TREE" 
+        INITIALISATION
+
+        ACTIONS
+
+            "edit_rmb"           , { Edit the RMB Configuration      }
+            "build_info"         , { Build the User Info             }
+            "get_icon"           , { Determine the correct Icon.     }
+            "get_icons"          , { Determine the correct Icons.    }
+            "add_job"            , { Insert a Job Into the Tree      }
+            "add_sample"         , { Add a Sample Into the Tree      }
+            "add_child_samples"  , { Add a Samples children          }
+            "add_test"           , { Add a Test Into the Tree        }
+            "add_result"         , { Add a Result Into the Tree      }
+            "selected_job_header", { Called when job is selected     }
+            "selected_sample"    , { Called when sample is selected  }
+            "selected_test"      , { Called when test is selected    }
+            "selected_result"      { Called when result is selected  }
+            
+    END CLASS
+
+    {**********************************************************************}
+    {* General Container Class                                            *}
+    {**********************************************************************}
+
+    DEFINE CLASS GENERAL_CONTAINER_CLASS
+
+        INHERIT "STD_OBJECT_RECORD"
+        PROPERTIES 
+
+            "folder"             , { The Folder Number             }
+            "cabinet"              { Cabinet Name                  }
+            
+    END CLASS
+
+
+ENDROUTINE { define_lot_review_class }
+
+
+{***** ROUTINE lot_review_class_initialisation.rpf *****}
+
+ROUTINE lot_review_class_initialisation ( self )
+
+{ 
+*    Class Initialisation
+*
+*******************************************************************************}
+
+    ARRAY self . field_controls
+    ARRAY self . prompt_details
+    ARRAY self . buttons
+
+    self . line_form   = EMPTY
+    self . display_lot = EMPTY
+    self . lot_id      = EMPTY
+    self . template    = DEFAULT_TEMPLATE
+    self . line_editor = EMPTY
+    self . from_tree   = EMPTY
+    self . to_tree     = EMPTY
+
+    CREATE OBJECT LOT_CONTAINER_CLASS, self . container
+
+ENDROUTINE { lot_review_class_initialisation }
+
+
+{***** ROUTINE lot_review_action_build_form.rpf *****}
+
+ROUTINE lot_review_action_build_form ( self )
+
+{ 
+*    Build a Form
+*
+*******************************************************************************}
+
+    DECLARE tree_width, line_width, tree_form1, tree_form2, line_form,
+            line_height, split, split2, split3, job_form, message
+
+    tree_width  = 15
+
+    self . width  = 80
+    self . height = 21
+
+    self . column = TRUNC (( GLOBAL ( "GUI_WIDTH"  ) - self . width  ) / 2 )
+    self . row    = TRUNC (( GLOBAL ( "GUI_HEIGHT" ) - self . height ) / 2 )
+
+    message_fetch ( "LOT_REVIEW_HEADER", message )
+    message_add_parameter ( message, self . lot_id )
+    message = message_get_text ( message, 1 )
+
+    self . header           = message
+    self . button_style     = FORM_BUTTON_NONE
+    self . return_behaviour = FORM_RETURN_STAY
+    self . confirm_required    = FALSE
+    self . vgl_library      = GLOBAL ( "CURRENT_LIBRARY" )
+
+    {***********************************************************************
+    * Set up the Prompts
+    ***********************************************************************}
+
+    line_width  = TRUNC ( self . width  / 2 )
+    line_height = TRUNC ( ( self . height ) DIV 3 * 2.2 )
+
+    CREATE OBJECT PROMPT_SPLIT_CLASS , split
+
+    split . height = self . height - 2
+    split . width  = self . width  - 2
+    split . row    = 1
+    split . column = 1
+
+    split . set_size ( 1, 2 )
+
+    CREATE OBJECT PROMPT_SPLIT_CLASS , split2
+
+    split2 . height = self . height - 2
+    split2 . width  = self . width  - 4
+    split2 . row    = 1
+    split2 . column = 1
+
+    split2 . set_size ( 2, 1 )
+
+    CREATE OBJECT PROMPT_SPLIT_CLASS , split3
+
+    split3 . height = self . height - 2
+    split3 . width  = self . width  - 4
+    split3 . row    = 1
+    split3 . column = 1
+
+    split3 . set_size ( 2, 1 )
+
+    {**********************************************************************}
+    {* Setup the Line Editor                                              *}
+    {**********************************************************************}
+
+    CREATE OBJECT "STD_FORM", line_form
+    line_form . width  = line_width  - 3
+    line_form . height = line_height - 2
+    line_form . row    = 1
+    line_form . column = 1
+
+    PROMPT OBJECT self . line_editor
+        CLASS "STD_LINE_EDITOR"
+        AT 1, 1
+        WITH ( height           = line_height - 2      ,
+               title_width      = 12                   ,
+               width            = line_width - 3       ,
+               prompt_details   = self . prompt_details,
+               object           = self . container     ,
+               display_only     = TRUE                 )
+
+    line_form . add_prompt ( self . line_editor )
+
+    self . line_form = line_form
+
+    {**********************************************************************}
+    {* Create the Job Information.                                        *}
+    {**********************************************************************}
+
+    CREATE OBJECT "STD_FORM", job_form
+    job_form . width  = 1
+    job_form . height = 1
+    job_form . row    = 1
+    job_form . column = 1
+
+    CREATE OBJECT JOB_TREE_CLASS, self . details
+
+    self . details . full_screen = TRUE
+    self . details . row         = 1
+    self . details . column      = 1 
+
+    job_form . add_prompt ( self . details )
+
+    {**********************************************************************}
+    {* Create the Trees for the Related Lots.                             *}
+    {**********************************************************************}
+
+    CREATE OBJECT LOT_TREE_CLASS, self . from_tree
+
+    self . from_tree . height = 2
+    self . from_tree . width  = tree_width - 2
+    self . from_tree . column = 1
+    self . from_tree . row    = 1
+    self . from_tree . text   = GET_USER_MESSAGE ( "LOT_REVIEW_FROM", 1 ) 
+
+    CREATE OBJECT "STD_FORM", tree_form1
+    tree_form1 . width  = tree_width - 2
+    tree_form1 . height = 2
+    tree_form1 . row    = 1
+    tree_form1 . column = 1
+
+    self . from_tree . full_screen = TRUE
+    tree_form1 . add_prompt ( self . from_tree )
+
+    CREATE OBJECT LOT_TREE_CLASS, self . to_tree
+
+    self . to_tree . height = 2
+    self . to_tree . width  = tree_width - 2
+    self . to_tree . column = 1
+    self . to_tree . row    = 1
+    self . to_tree . text   = GET_USER_MESSAGE ( "LOT_REVIEW_FOR", 1 ) 
+
+    CREATE OBJECT "STD_FORM", tree_form2
+    tree_form2 . width  = tree_width - 2
+    tree_form2 . height = 2
+    tree_form2 . row    = 1
+    tree_form2 . column = 1
+
+    self . to_tree . full_screen = TRUE
+    tree_form2 . add_prompt ( self . to_tree )
+
+    split2 . add_form  ( 1, 1, tree_form1 )
+    split2 . add_form  ( 2, 1, tree_form2 )
+
+    split3 . add_form  ( 1, 1, line_form )
+    split3 . add_form  ( 2, 1, job_form  )
+
+    split  . add_split ( 1, 2, split2 )
+    split  . add_split ( 1, 1, split3 )
+
+    split2 . set_column_width ( 1, line_width )
+    split3 . set_column_width ( 1, line_width )
+    split  . set_row_height ( 1, line_height )
+
+    self . add_prompt ( split )
+
+ENDROUTINE { lot_review_action_build_form }
+
+
+{***** ROUTINE lot_review_action_load_details.rpf *****}
+
+ROUTINE lot_review_action_load_details ( self )
+
+{ 
+*    Load in the Lot Template Details from the template
+*
+*******************************************************************************}
+
+    DECLARE field_num, table, include_copy, message, count
+
+    include_copy = TRUE
+    table        = "LOT_DETAILS"
+
+    read_in_template_fields ( self . template      ,
+                              table                ,
+                              self . field_controls,
+                              TRUE                 ,
+                              TRUE                 )
+
+    create_prompt_array ( self . field_controls,
+                          table                ,
+                          self . prompt_details,
+                          self . display_only  ,
+                          field_num            ,
+                          include_copy         )
+
+    ARRAY_INSERT_SLICE ( self . prompt_details, 1, 1 )
+
+    message = GET_USER_MESSAGE ( "LOT_REVIEW_IDENTITY", 1 ) 
+    
+    self . prompt_details [ 1, MESS_POSITION  ] = message
+    self . prompt_details [ 1, TYPE_POSITION  ] = "DISPLAY"
+    self . prompt_details [ 1, TABLE_POSITION ] = "LOT_DETAILS"
+    self . prompt_details [ 1, FIELD_POSITION ] = "LOT_ID"
+    self . prompt_details [ 1, WIDTH_POSITION ] = 20
+
+    count = 1
+
+    WHILE count <= SIZE_OF_ARRAY ( self . prompt_details ) DO
+
+        IF self . prompt_details [ count, 3 ] = "$SAMP_JOB" THEN
+            self. prompt_details [ count, 3 ] = "$LOT_LOGIN"
+        ENDIF
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE { lot_review_action_load_details }
+
+
+{***** ROUTINE lot_review_action_load_lot.rpf *****}
+
+ROUTINE lot_review_action_load_lot ( self, VALUE lot_id )
+
+{ 
+*    Load in the Lot Information using the Lot Number
+*
+*******************************************************************************}
+
+    DECLARE ok, line_edit, original_temp, details
+
+    ok = SELECT lot_details . lot_id
+         IN OBJECT self . container
+         WHERE lot_id = lot_id
+
+    IF ( ok <> EMPTY ) THEN
+
+        original_temp   = self . template
+        self . template = SELECT lot_details . template
+                          IN OBJECT self . container
+
+        ok = self . load_details ( )
+
+        line_edit = self . line_editor
+        details   = self . prompt_details
+        
+        IF self . template <> original_temp THEN
+
+            line_edit . change_prompt_details ( details )
+
+        ELSE
+            line_edit . redisplay_contents ( )
+        ENDIF
+
+        self . display_lot = lot_id
+        self . load_jobs ( lot_id )
+
+    ELSE
+
+        flash_message ( "LOT_REVIEW_NOLOAD", TRUE )
+
+    ENDIF
+
+    RETURN ( ok <> EMPTY )
+
+ENDROUTINE { lot_review_action_load_lot }
+
+
+{***** ROUTINE lot_review_action_load_jobs.rpf *****}
+
+ROUTINE lot_review_action_load_jobs ( self, VALUE lot )
+
+{ 
+*    Load in Jobs for the Specified Lots.
+*
+*******************************************************************************}
+
+    DECLARE job
+
+    self . details . remove_all ( )
+
+    job = SELECT job_header . job_name
+          WHERE lot_id = lot
+
+    WHILE job <> EMPTY DO
+
+        self . details . add_job ( job )
+        NEXT job_header
+        job = SELECT job_header . job_name
+
+    ENDWHILE
+
+ENDROUTINE { lot_review_action_load_jobs }
+
+
+{***** ROUTINE lot_review_action_load_relations.rpf *****}
+
+ROUTINE lot_review_action_load_relations ( self )
+
+{ 
+*    Load in any relations.
+*
+*******************************************************************************}
+
+    self . from_tree . from_field = "TO_LOT"
+    self . from_tree . to_field   = "FROM_LOT"
+    self . to_tree   . from_field = "FROM_LOT"
+    self . to_tree   . to_field   = "TO_LOT"
+
+    self . from_tree . load ( self . lot_id )
+    self . to_tree   . load ( self . lot_id )
+
+ENDROUTINE { lot_review_action_load_relations }
+
+
+{***** ROUTINE lot_review_action_load.rpf *****}
+
+ROUTINE lot_review_action_load ( self )
+
+{ 
+*    Load an Existing Lot into the form.
+*
+*******************************************************************************}
+
+    DECLARE line_edit
+
+    self . build_form ( )
+    self . load_lot ( self . lot_id )
+    self . load_buttons ( )
+    self . load_relations ( )
+
+    line_edit = self . line_editor
+    line_edit . change_prompt_details ( self . prompt_details )
+
+    self . start_prompt ( )
+    self . wait_prompt  ( )
+    self . end_prompt   ( )
+
+ENDROUTINE { lot_review_action_load }
+
+
+{***** ROUTINE lot_review_action_load_buttons.rpf *****}
+
+ROUTINE lot_review_action_load_buttons ( self )
+
+{ 
+*    Load Buttons.
+*
+*******************************************************************************}
+
+    DECLARE count, message, row, free, total, rows, col_count, column
+
+    count   = 1
+    message = GET_USER_MESSAGE ( "LOT_REVIEW_MODIFY", 1 ) 
+
+    PROMPT OBJECT self . buttons [ count ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( caption             = message                      ,
+               vgl_library         = GLOBAL ( "CURRENT_LIBRARY" ) ,
+               user_info           = self . container             ,
+               mouse_click_routine = "lot_review_button_modify"   )
+
+    count   = count + 1
+    message = GET_USER_MESSAGE ( "LOT_REVIEW_AUTHORISE", 1 ) 
+
+    PROMPT OBJECT self . buttons [ count ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( caption             = message                       ,
+               vgl_library         = GLOBAL ( "CURRENT_LIBRARY" )  ,
+               user_info           = self . container              ,
+               mouse_click_routine = "lot_review_button_authorise" )
+
+    count   = count + 1
+    message = GET_USER_MESSAGE ( "LOT_REVIEW_DISPLAY", 1 ) 
+
+    PROMPT OBJECT self . buttons [ count ]
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( caption             = message                      ,
+               vgl_library         = GLOBAL ( "CURRENT_LIBRARY" ) ,
+               user_info           = self . container             ,
+               mouse_click_routine = "lot_review_button_display"  )
+
+    lot_user_lot_review_buttons ( self, self . buttons )
+
+    {**********************************************************************}
+    {* Work out the Positioning.                                          *}
+    {**********************************************************************}
+    
+    count = 1
+    row   = self . line_editor . row + self . line_editor . height
+    total = SIZE_OF_ARRAY ( self . buttons ) * 11
+    rows  = total DIV ( self . line_form . width + 3 )
+
+    IF SIZE_OF_ARRAY ( self . buttons ) > 0 THEN
+
+        row   = self . line_editor . height + 2
+        self . line_editor . height = row - ( rows + 4 )
+        row   = self . line_editor . height + 2
+
+        message = GET_USER_MESSAGE ( "LOT_REVIEW_OPTIONS", 1 ) 
+        self . line_form . add_frame ( message, 1, row, rows + 1, 
+                                       self . line_editor . width ) 
+
+    ENDIF
+
+    free = 3
+    IF rows = 0 THEN
+        free = ( ( self . line_form . width - total ) DIV 2 ) + 2
+    ENDIF
+
+    {**********************************************************************}
+    {* Now add the Buttons to the Array.                                  *}
+    {**********************************************************************}
+
+    col_count = 1
+    
+    WHILE count <= SIZE_OF_ARRAY ( self . buttons ) DO
+
+        column = ( ( col_count - 1 ) * 11 ) + free
+
+        IF column > ( self . line_editor . width ) - 5 THEN
+
+            row = row + 1
+            col_count = 1
+            column = ( ( col_count - 1 ) * 11 ) + free
+
+        ENDIF    
+
+        self . buttons [ count ] . character_sized = rows > 0
+        self . buttons [ count ] . width           = 10
+        self . buttons [ count ] . row             = row
+        self . buttons [ count ] . column          = column
+
+        self . line_form . add_prompt ( self . buttons [ count ] )
+
+        col_count = col_count + 1
+        count     = count + 1
+
+    ENDWHILE
+
+ENDROUTINE { lot_review_action_load_buttons }
+
+
+{***** ROUTINE lot_tree_class_initialisation.rpf *****}
+
+ROUTINE lot_tree_class_initialisation ( self )
+
+{ 
+*    Class Initialisation
+*
+*******************************************************************************}
+
+    self . lot_id     = EMPTY
+    self . from_field = EMPTY
+    self . to_field   = EMPTY
+    self . use_images ( EMPTY, 0 )
+
+    self . selected_routine    = "lot_tree_selected_routine"
+    self . right_mouse_routine = "general_right_mouse_routine"    
+    self . vgl_library         = GLOBAL ( "CURRENT_LIBRARY" )
+
+ENDROUTINE { lot_tree_class_initialisation }
+
+
+{***** ROUTINE lot_tree_action_load_lots.rpf *****}
+
+ROUTINE lot_tree_action_load_lots ( self, VALUE root, VALUE parent_lot )
+
+{ 
+*    Load Lots into the Tree.
+*
+*******************************************************************************}
+
+    DECLARE lot, pos, icon1, icon2, relatives, count, info
+    ARRAY relatives
+    count = 1
+
+    {**********************************************************************}
+    {* Go and Get the Relatives.                                          *}
+    {**********************************************************************}
+
+    lot = SELECT lot_relation . 'self . to_field'
+          WHERE 'self . from_field' = parent_lot
+
+    WHILE lot <> EMPTY DO
+
+        relatives [ count ] = STRIP ( lot )
+
+        NEXT lot_relation
+        lot = SELECT lot_relation . 'self . to_field'
+        count = count + 1
+
+    ENDWHILE
+
+    {**********************************************************************}
+    {* Now Go Build the Tree.                                             *}
+    {**********************************************************************}
+
+    count = 1
+
+    WHILE count <= SIZE_OF_ARRAY ( relatives ) DO
+
+        lot = SELECT lot_details . lot_id
+              WHERE lot_id = relatives [ count ]
+
+        self . get_icon ( icon1, icon2 )
+
+        info = build_info ( "LOT_DETAILS", FOLDER_LOT )
+
+        pos = self . insert_item ( relatives [ count ], 
+                                   root               , 
+                                   TREE_INSERT_LAST   ,
+                                   icon1, icon2       , 
+                                   info               )
+
+        {**************************************************************}
+        {* Recursively add Lots, watching out for circular references *}
+        {**************************************************************}
+
+        IF self . add_lot ( relatives [ count ], pos ) THEN
+
+            self . load_lots ( pos, relatives [ count ] )
+
+        ELSE
+
+            flash_message ( "LOT_REVIEW_CIRCLE", TRUE )
+            count = SIZE_OF_ARRAY ( relatives ) + 1
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE { lot_tree_action_load_lots }
+
+
+{***** ROUTINE lot_tree_action_add_lot.rpf *****}
+
+ROUTINE lot_tree_action_add_lot ( self, VALUE lot, VALUE pos )
+
+{ 
+*    Add a lot to the Lots Array. This is to make sure we do not end up with
+*    some sort of circular reference.
+*
+*******************************************************************************}
+
+    DECLARE found, object
+    found = FALSE
+
+    pos = self . parents [ pos ]
+
+    WHILE ( pos <> 0 ) DO
+
+        object = self . get_user_info ( pos )
+        found  = ( SELECT lot_details . lot_id IN OBJECT object = lot )
+        pos    = self . parents [ pos ]
+
+    ENDWHILE
+
+    RETURN ( NOT found )
+
+ENDROUTINE { lot_tree_action_add_lot }
+
+
+{***** ROUTINE lot_tree_action_load.rpf *****}
+
+ROUTINE lot_tree_action_load ( self, VALUE lot )
+
+{ 
+*    Load a Specific Lot.
+*
+*******************************************************************************}
+
+    DECLARE icon1, icon2, pos, info
+
+    IF lot <> SELECT lot_details . lot_number THEN
+    
+        lot = SELECT lot_details . lot_number
+              WHERE  lot_number = lot
+
+    ENDIF
+
+    IF lot <> EMPTY THEN
+
+        self . get_icon ( icon1, icon2 )
+
+        self . lot_id = lot
+        self . remove_all ( )
+
+        info = build_info ( "LOT_DETAILS", FOLDER_LOT )
+
+        pos = self . insert_item ( self . text     ,
+                                   0               , 
+                                   TREE_INSERT_LAST,
+                                   icon1, icon2    , 
+                                   info            )
+
+        self . load_lots ( pos, self . lot_id )
+
+    ENDIF
+
+ENDROUTINE { lot_tree_action_load }
+
+
+{***** ROUTINE lot_tree_selected_routine.rpf *****}
+
+ROUTINE lot_tree_selected_routine ( self, VALUE pos )
+
+{ 
+*    Selected an Item
+*
+*******************************************************************************}
+
+    DECLARE lot, object, app
+
+    app    = self . parent_prompt . parent_prompt
+    object = self . get_user_info ( pos )
+    lot    = SELECT lot_details . lot_id IN OBJECT object
+
+    IF lot <> app . display_lot THEN
+
+        app . load_lot ( lot )
+
+    ENDIF
+
+ENDROUTINE { lot_tree_selected_routine }
+
+
+{***** ROUTINE lot_tree_action_get_icon.rpf *****}
+
+ROUTINE lot_tree_action_get_icon ( self, icon1, icon2 )
+
+{ 
+*    Get Icons, the Lot should be Selected.
+*
+*******************************************************************************}
+
+    DECLARE status, icon
+
+    icon1 = lot_user_lot_review_icon ( "LOT_DETAILS", FALSE )
+    icon2 = lot_user_lot_review_icon ( "LOT_DETAILS", TRUE  )
+
+    IF ( icon1 = EMPTY ) 
+
+        status = SELECT lot_details . status
+        icon   = "INT_LOT_DETAILS_" : STRIP ( status )
+        icon1  = explorer_utils_get_icon ( icon )
+        icon2  = icon1
+
+    ELSEIF ( icon2 = EMPTY ) THEN
+
+        icon2 = icon1
+
+    ENDIF
+
+ENDROUTINE { lot_tree_action_get_icon }
+
+
+{***** ROUTINE job_tree_class_initialisation.rpf *****}
+
+ROUTINE job_tree_class_initialisation ( self )
+
+{ 
+*    Class Initialisation
+*
+*******************************************************************************}
+
+    self . use_images ( EMPTY, 0 )
+
+    self . right_mouse_routine = "general_right_mouse_routine"    
+    self . selected_routine    = "job_tree_selected_routine"
+    self . vgl_library         = GLOBAL ( "CURRENT_LIBRARY" )
+
+ENDROUTINE { job_tree_class_initialisation }
+
+
+{***** ROUTINE job_tree_action_add_job.rpf *****}
+
+ROUTINE job_tree_action_add_job ( self, VALUE job_id )
+
+{ 
+*    Load a Job into the Tree.
+*
+*******************************************************************************}
+
+    DECLARE sample, pos, info, icon1, icon2, mps_status
+
+    IF ( SELECT job_header . job_name <> job_id ) THEN
+
+        job_id = SELECT job_header . job_name
+                 WHERE job_name = job_id
+
+    ENDIF
+
+    IF job_id <> EMPTY THEN
+    
+        info = build_info ( "JOB_HEADER", FOLDER_JOB )
+
+        self . get_icons ( "JOB_HEADER", JOB_ICON, icon1, icon2 )
+        
+        mps_status = select job_header . mps_status where job_name = job_id
+        
+        {mps_s_desc = select mps_status . description WHERE identity = mps_status}
+
+        pos  = self . insert_item ( job_id :"/ MPS: ":mps_status, 0, TREE_INSERT_LAST,
+                                    icon1, icon2, info )
+                                    
+
+        sample = SELECT sample . id_numeric
+                 WHERE job_name = job_id 
+
+        WHILE sample <> EMPTY DO
+
+            IF NOT lib_formulation_sample_is_child ( sample ) THEN
+
+                self . add_sample ( pos, sample )
+
+            ENDIF
+
+            NEXT sample
+            sample = SELECT sample . id_numeric
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE { job_tree_action_add_job }
+
+
+{***** ROUTINE job_tree_action_add_sample.rpf *****}
+
+ROUTINE job_tree_action_add_sample ( self, VALUE root, VALUE sample )
+
+{ 
+*    Load a Sample into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE pos, id, test, info, icon1, icon2, mps_status
+
+    IF ( SELECT sample . id_numeric =  EMPTY  ) OR
+       ( SELECT sample . id_numeric <> sample ) THEN
+
+        sample = SELECT sample . id_numeric
+                 WHERE id_numeric = sample
+
+    ENDIF
+
+    IF sample <> EMPTY THEN
+
+        id = SELECT sample . id_text
+
+        info = build_info ( "SAMPLE", FOLDER_SAMPLE )
+
+        self . get_icons ( "SAMPLE", SAMPLE_ICON, icon1, icon2 )
+        
+        mps_status = select sample . mps_status where id_numeric = sample
+
+        pos  = self . insert_item ( id:"/ MPS: ":mps_status, root, TREE_INSERT_LAST,
+                                    icon1, icon2, info )
+
+        test = SELECT test . test_number
+               WHERE sample = sample
+
+        WHILE test <> EMPTY DO
+
+            self . add_test ( pos, test )
+
+            NEXT test
+            test = SELECT test . test_number
+
+        ENDWHILE
+
+        self . add_child_samples ( pos, sample )
+
+    ENDIF
+    
+    RETURN ( pos )
+
+ENDROUTINE { job_tree_action_add_sample }
+
+
+{***** ROUTINE job_tree_action_add_child_samples.rpf *****}
+
+ROUTINE job_tree_action_add_child_samples ( self, VALUE root, VALUE sample )
+
+{ 
+*    Load a Sample into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE child_id ,
+            sample_context ,
+            sample_formulation_context
+
+    PUSH_FILE_DESCRIPTOR ( "SAMPLE_FORMULATION"       ,
+                           sample_formulation_context )
+
+    child_id = SELECT sample_formulation . child_sample
+               WHERE  parent_sample = sample
+               ORDER ON child_sample
+
+    WHILE child_id <> EMPTY DO
+
+        PUSH_FILE_DESCRIPTOR ( "SAMPLE"       ,
+                               sample_context )
+
+        self . add_sample ( root, child_id )
+        
+        POP_FILE_DESCRIPTOR ( sample_context )
+
+        NEXT sample_formulation
+        child_id = SELECT sample_formulation . child_sample
+
+    ENDWHILE
+
+    POP_FILE_DESCRIPTOR ( sample_formulation_context )
+
+ENDROUTINE { job_tree_action_add_child_samples }
+
+
+{***** ROUTINE job_tree_action_add_test.rpf *****}
+
+ROUTINE job_tree_action_add_test ( self, VALUE root, VALUE test )
+
+{ 
+*    Load a Sample into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE pos, id, result, info, icon1, icon2
+
+    IF ( SELECT test . test_number = EMPTY ) THEN
+
+        test = SELECT test . test_number
+               WHERE test_number = test
+
+    ENDIF
+
+    IF test <> EMPTY THEN
+
+        id = STRIP ( SELECT test . analysis   ) : "/" :
+             STRIP ( SELECT test . test_count )
+
+        info = build_info ( "TEST", FOLDER_TEST )
+
+        self . get_icons ( "TEST", TREE_TEST, icon1, icon2 )
+
+        pos  = self . insert_item ( id, root, TREE_INSERT_LAST,
+                                    icon1, icon2, info )
+
+        result = SELECT result . name
+                 WHERE test_number = test
+
+        WHILE result <> EMPTY DO
+
+            self . add_result ( pos, test, result )
+
+            NEXT result
+            result = SELECT result . name
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE { job_tree_action_add_test }
+
+
+{***** ROUTINE job_tree_action_add_result.rpf *****}
+
+ROUTINE job_tree_action_add_result ( self, VALUE root,
+                                     VALUE test, VALUE result )
+
+{ 
+*    Load a Result into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE id, info, icon1, icon2
+
+    IF ( SELECT result . name = EMPTY ) THEN
+
+        result = SELECT result . name
+                 WHERE test_number = test
+                 AND   name        = result
+
+    ENDIF
+
+    IF result <> EMPTY THEN
+
+        id = STRIP ( SELECT result . name ) : " = " :
+             STRIP ( SELECT result . text ) : " " :
+             STRIP ( SELECT result . units ) 
+
+        info = build_info ( "RESULT", FOLDER_RESULT )
+
+        self . get_icons ( "RESULT", TREE_RESULT, icon1, icon2 )
+
+        self . insert_item ( id, root, TREE_INSERT_LAST,
+                             icon1, icon2, info )
+
+    ENDIF
+
+ENDROUTINE { job_tree_action_add_result }
+
+
+{***** ROUTINE job_tree_action_get_icon.rpf *****}
+
+ROUTINE job_tree_action_get_icon ( self, VALUE table, VALUE selected )
+
+{ 
+*    Determine the correct icon to use.
+*
+*******************************************************************************}
+
+    DECLARE icon_no, icon
+
+    icon_no = lot_user_lot_review_icon ( table, selected )
+
+    IF ( icon_no = EMPTY ) 
+
+        icon    = "INT_" : STRIP ( table ) : "_" : 
+                  STRIP ( SELECT 'table' . status )
+        icon_no = explorer_utils_get_icon ( icon )
+
+        IF icon_no = ICON_BLANK THEN
+            icon_no = EMPTY
+        ENDIF
+
+    ENDIF
+
+    RETURN ( icon_no )
+
+ENDROUTINE { job_tree_action_get_icon }
+
+
+{***** ROUTINE job_tree_action_get_icons.rpf *****}
+
+ROUTINE job_tree_action_get_icons (       self   ,
+                                    VALUE table  ,  
+                                    VALUE default,
+                                          icon1  , 
+                                          icon2  )
+
+{ 
+*    Determine the correct icons to use.
+*
+*******************************************************************************}
+
+    icon1 = self . get_icon ( table, FALSE )
+    icon2 = self . get_icon ( table, TRUE  )
+
+    IF icon1 = EMPTY THEN
+
+        icon1 = default
+        icon2 = default
+
+    ELSEIF icon2 = EMPTY THEN
+
+        icon2 = icon1
+
+    ENDIF
+
+ENDROUTINE { job_tree_action_get_icons }
+
+
+{***** ROUTINE job_tree_action_selected_job_header(.rpf *****}
+
+ROUTINE job_tree_action_selected_job_header( self, selected )
+
+{ 
+*    Job selected
+*
+*******************************************************************************}
+
+    DECLARE text, status_text
+    
+    status_text = SELECT phrase . phrase_text
+                    WHERE phrase_type = "JOB_STAT"
+                    AND   phrase_id = ( SELECT job_header . job_status
+                                            IN OBJECT selected         )
+    
+    text = "Job: " :
+           STRIP( SELECT job_header . job_name IN OBJECT selected ) :
+           " - " : STRIP( status_text )
+                  
+    
+    window_set_status( text )
+ENDROUTINE
+
+
+{***** ROUTINE job_tree_action_selected_sample(.rpf *****}
+
+ROUTINE job_tree_action_selected_sample( self, selected )
+
+{ 
+*    Sample Selected
+*
+*******************************************************************************}
+    
+    DECLARE text, status_text
+    
+    status_text = SELECT phrase . phrase_text
+                    WHERE phrase_type = "SAMP_STAT"
+                    AND   phrase_id = ( SELECT sample . status
+                                            IN OBJECT selected )
+    
+    text = "Sample: " :
+           STRIP( SELECT sample . id_text    IN OBJECT selected ) :
+           " (" :
+           STRIP( SELECT sample . id_numeric IN OBJECT selected ) :
+           ")" :
+           " - " : STRIP( status_text )
+                  
+    
+    window_set_status( text )
+
+ENDROUTINE
+
+
+{***** ROUTINE job_tree_action_selected_test(.rpf *****}
+
+ROUTINE job_tree_action_selected_test( self, selected )
+
+{ 
+*    Test Selected
+*
+*******************************************************************************}
+
+    DECLARE text, status_text
+    
+    status_text = SELECT phrase . phrase_text
+                    WHERE phrase_type = "TEST_STAT"
+                    AND   phrase_id = ( SELECT test . status
+                                            IN OBJECT selected )
+    
+    text = "Test: " :
+           STRIP( SELECT test . analysis   IN OBJECT selected ) :
+           "/" :
+           STRIP( SELECT test . test_count IN OBJECT selected ) :
+           " - " : STRIP( status_text )
+                  
+    
+    window_set_status( text )
+        
+ENDROUTINE
+
+
+{***** ROUTINE job_tree_action_selected_result(.rpf *****}
+
+ROUTINE job_tree_action_selected_result( self, selected )
+
+{ 
+*    Result Selected
+*
+*******************************************************************************}
+
+    DECLARE text, status_text
+    
+    status_text = SELECT phrase . phrase_text
+                    WHERE phrase_type = "RESL_STAT"
+                    AND   phrase_id = ( SELECT result . status
+                                            IN OBJECT selected )
+    
+    text = "Result: " :
+           "[" :
+           STRIP ( SELECT result . name  IN OBJECT selected ) : " = " :
+           STRIP ( SELECT result . text  IN OBJECT selected : " " :
+                   SELECT result . units IN OBJECT selected       ) : "]" :
+           " - " : STRIP( status_text )
+    
+    window_set_status( text )
+    
+ENDROUTINE
+
+
+{***** ROUTINE job_tree_selected_routine(.rpf *****}
+
+ROUTINE job_tree_selected_routine( self, VALUE item )
+
+{ 
+*    Job Tree Selected callback
+*
+*******************************************************************************}
+
+    DECLARE info
+
+    info = self . get_user_info ( item )
+
+    self . ?"selected_" : info . table?( info )
+
+ENDROUTINE
+
+
+{***** ROUTINE general_right_mouse_routine.rpf *****}
+
+ROUTINE general_right_mouse_routine ( self )
+
+{ 
+*    Right Mouse Routine
+*
+*******************************************************************************}
+
+    DECLARE info, popup, collect, custom, message, standard
+
+    IF self . selected <> 0 THEN
+
+        info = self . get_user_info ( self . selected )
+
+        CREATE OBJECT "STD_COLLECTION", collect
+        collect . add ( info )
+
+        CREATE OBJECT POPUP_MENU_CLASS, custom
+
+        {*** Load standard options for this table ***}
+        standard = explorer_rmb_load_for_table ( info . table, collect )
+    
+        IF standard <> EMPTY THEN
+    
+            custom . add_menu( standard )
+
+        ENDIF
+
+        {*** Load custom options defined just for the lot review functionality ***}
+        popup = explorer_rmb_load ( info . cabinet, info . table, 
+                                    info . folder,  collect     )
+        popup . load  ( )
+        popup . build ( )
+
+        custom . user_info       = info
+        custom . process_routine = "general_custom_rmb_routine"
+        custom . process_library = GLOBAL ( "CURRENT_LIBRARY" )
+
+        IF role_lib_has_privilege ( ROLE_LIB_PRIV_LOT_RMB ) THEN
+
+            message = GET_USER_MESSAGE ( "LOT_REVIEW_CUSTOM", 1 ) 
+            custom . add_item ( message )
+
+        ENDIF
+
+        custom . add_menu ( popup )
+        custom . process ( custom . start ( ) )
+
+    ENDIF
+
+ENDROUTINE { general_right_mouse_routine }
+
+
+{***** ROUTINE general_custom_rmb_routine.rpf *****}
+
+ROUTINE general_custom_rmb_routine ( self, result )
+
+{ 
+*    Custom Right Mouse Routine
+*
+*******************************************************************************}
+
+    DECLARE handled, info
+    handled = TRUE
+
+    IF result = GET_USER_MESSAGE ( "LOT_REVIEW_CUSTOM", 1 ) THEN
+
+        info = self . user_info
+        explorer_rmb_setup ( info . cabinet, FALSE         , 
+                             info . table  , info . folder )
+
+    ELSE
+
+        handled = FALSE
+
+    ENDIF
+
+    RETURN ( handled )
+
+ENDROUTINE { job_tree_custom_rmb_routine }
+
+
+{***** ROUTINE build_info.rpf *****}
+
+ROUTINE build_info ( VALUE table, VALUE folder )
+
+{ 
+*    Build the User Info
+*
+*******************************************************************************}
+
+    DECLARE info
+
+    CREATE OBJECT GENERAL_CONTAINER_CLASS, info
+    object_add_table ( info, table )
+
+    info . table   = table
+    info . cabinet = EXPLORER_RMB_INTERNAL
+    info . folder  = folder
+
+    object_set_current_table ( info, table )
+
+    RETURN ( info )
+
+ENDROUTINE { build_info }
+
+
+{***** ROUTINE lot_review_button_authorise.rpf *****}
+
+ROUTINE lot_review_button_authorise ( self )
+
+{ 
+*    Button Click Routine for Authorisation
+*
+*******************************************************************************}
+
+    DECLARE aux_report, odb, select_array, lot_id, status, review
+    review = self . parent_prompt . parent_prompt
+    ARRAY select_array 
+
+    lot_id = SELECT lot_details . lot_id IN OBJECT self . user_info
+    status = SELECT lot_details . status IN OBJECT self . user_info
+
+    IF status <> "A" THEN
+
+        CREATE OBJECT EXPLORER_AUX_CLASS, aux_report
+        aux_report . load_details ( "LOT_DETAILS", "AUTHORISE" )
+
+        CREATE OBJECT "STD_OBJECT_DATABASE", odb
+        odb . initialise ( "LOT_DETAILS" )
+
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, 
+                           "LOT_ID", lot_id             )
+        odb . select_for_read ( select_array )
+
+        aux_report . data = odb
+
+        IF aux_report . go ( ) THEN
+
+            review . load_lot ( lot_id )
+            review . load_relations ( )
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( "LOT_REVIEW_DONE", TRUE )
+
+    ENDIF
+
+ENDROUTINE { lot_review_button_authorise }
+
+
+{***** ROUTINE lot_review_button_display.rpf *****}
+
+ROUTINE lot_review_button_display ( self )
+
+{ 
+*    Button Click Routine for Display
+*
+*******************************************************************************}
+
+    DECLARE lot
+
+    CREATE OBJECT LOT_LOGIN_CLASS, lot
+
+    lot . lot_id = SELECT lot_details . lot_id
+                   IN OBJECT self . user_info
+
+    lot . mode = LOT_DISPLAY_MODE
+    lot . load ( )
+
+ENDROUTINE { lot_review_button_display }
+
+
+{***** ROUTINE lot_review_button_modify.rpf *****}
+
+ROUTINE lot_review_button_modify ( self )
+
+{ 
+*    Button Click Routine for Modify
+*
+*******************************************************************************}
+
+    DECLARE lot, review
+    review = self . parent_prompt . parent_prompt
+
+    CREATE OBJECT LOT_LOGIN_CLASS, lot
+
+    lot . lot_id = SELECT lot_details . lot_id
+                   IN OBJECT self . user_info
+
+    lot . mode = LOT_MODIFY_MODE
+
+    IF lot . load ( ) THEN
+
+        lot = SELECT lot_details . lot_id
+              IN OBJECT self . user_info
+
+        review . load_lot ( lot )
+        review . load_relations ( )
+
+    ENDIF
+
+ENDROUTINE { lot_review_button_modify }
+

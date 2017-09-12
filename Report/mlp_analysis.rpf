@@ -1,0 +1,1033 @@
+{  CHG      DATE     PGMR  DESCRIPTION                                         }
+{ ---------------------------------------------------------------------------- }
+{  A1002    25/9/96  JDy   Report to print MLP referencing a user entered      }
+{                          Analysis and optional a Component                   }
+{  A1083     3/3/98  JDy   Major changes introduced to handle updating of      }
+{                          MLP Components properly.                            }
+{                          NOTE: These changes are NOT explicitly documented   }
+{                                It would be most confusing. Diff to previous  }
+{                                program version is recommended.               }
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN  STANDARD_LIBRARY  STD_PROMPT
+JOIN  STANDARD_LIBRARY  STD_UTILS
+JOIN  STANDARD_LIBRARY  STD_BLOCK
+JOIN  LIBRARY           $LIB_UTILS
+
+CONSTANT DEL = "Delete"
+CONSTANT SUB = "Substitute"
+
+DECLARE  the_user, current_date, pc
+
+mlp_ts_analysis_reference_print( "MLP", FALSE )
+
+{ ------------------- Main Program Logic ------------------- }
+
+ROUTINE  mlp_ts_analysis_reference_print( VALUE report_type, VALUE do_update )
+
+CREATE   OBJECT PROMPT_CLASS_FORM, get_input
+
+wh = 10
+ww = 60
+wr = 5
+wc = 10
+
+IF    do_update
+THEN  SET NOTPROTECTED
+ENDIF
+
+IF    report_type = "MLP"
+THEN  IF   do_update
+      THEN ht = "Print AND UPDATE MLP's Referencing Analysis"
+           ft = "Press DO to create report / Exit to quit"
+      ELSE ht = "Print MLP's Referencing Analysis/Component"
+           ft = "Press DO to enter component name / Exit to quit"
+      ENDIF
+ELSE  IF   do_update
+      THEN ht = "Print AND UPDATE TS's Referencing Analysis"
+      ELSE ht = "Print TS's Referencing Analysis"
+      ENDIF
+      ft = "Press DO to create report / Exit to Leave"
+ENDIF
+
+get_input . height   =  wh
+get_input . width    =  ww
+get_input . row      =  wr
+get_input . column   =  wc
+get_input . border   =  TRUE
+get_input . header   =  ht
+get_input . footer   =  ft
+
+anal_row = 2
+anal_pr  = "Enter Analysis  ID: "
+anal_pr_sub = "Enter Substituting Analysis ID: "
+anal_off = 5
+comp_pr  = "Enter Component Name: "
+
+PROMPT   OBJECT anal_id
+         BROWSE ON analysis
+         ON    LINE anal_row FROM LENGTH(anal_pr)+anal_off+1
+         IN    WINDOW get_input . window
+
+get_input . add_prompt ( anal_id )
+
+get_input . add_display ( anal_pr,
+                          anal_off,
+                          anal_row,
+                          PROMPT_RENDITION_BOLD)
+
+IF do_update THEN
+
+   PROMPT   OBJECT anal_id_sub
+            BROWSE ON analysis
+            ON    LINE anal_row+2 FROM LENGTH(anal_pr_sub)+anal_off+1
+            IN    WINDOW get_input . window
+
+   get_input . add_display ( anal_pr_sub,
+                             anal_off,
+                             anal_row+2,
+                             PROMPT_RENDITION_BOLD)
+
+   get_input . add_prompt ( anal_id_sub )
+
+   IF report_type = "MLP" THEN
+
+      mlp_ver_pr = "MLP Versions Comment:"
+
+      PROMPT   OBJECT mlp_ver_com
+               FORMAT mlp_versions . version_comment
+               ON    LINE anal_row+4 FROM LENGTH(mlp_ver_pr)+anal_off+1
+               IN    WINDOW get_input . window
+
+      get_input . add_display ( mlp_ver_pr,
+                                anal_off,
+                                anal_row+4,
+                                PROMPT_RENDITION_BOLD)
+
+      get_input . add_prompt ( mlp_ver_com )
+
+      mlp_ver_date_pr = "Date Limit for Creating New MLP Versions:"
+
+      PROMPT   OBJECT mlp_ver_date_limit
+               FORMAT DATE
+               ON    LINE anal_row+5 FROM LENGTH(mlp_ver_date_pr)+anal_off+1
+               IN    WINDOW get_input . window
+
+      get_input . add_display ( mlp_ver_date_pr,
+                                anal_off,
+                                anal_row+5,
+                                PROMPT_RENDITION_BOLD)
+
+      get_input . add_prompt ( mlp_ver_date_limit )
+      mlp_ver_date_limit . value = NOW
+
+   ENDIF
+
+ENDIF
+
+
+get_input . start_prompt ()
+
+REPEAT
+
+   get_input . wait_prompt()
+
+   IF (get_input . get_lastkey () <> "EXIT")    AND
+      (NOT BLANK( anal_id . text ))             THEN
+
+      IF report_type = "MLP"
+      THEN
+       IF NOT do_update THEN
+
+         CREATE   OBJECT PROMPT_CLASS_FORM, get_comp
+
+         ch = 5
+
+         get_comp . height   =  ch
+         get_comp . width    =  ww
+         get_comp . row      =  wr+ch
+         get_comp . column   =  wc
+         get_comp . border   =  TRUE
+         get_comp . header   =  "Component for Analysis:" : anal_id . text
+         get_comp . footer   =  "Press DO to create report / Exit to quit"
+
+         PROMPT   OBJECT get_comp . prompt_objects [ 1 ]
+                  ON    LINE anal_row FROM LENGTH(comp_pr)+anal_off+1
+                  IN    WINDOW get_comp . window
+                  FORMAT   component . name
+                  WITH  (  browse_routine          = "analysis_components",
+                           validation_routine      = "comp_val",
+                           always_validate         = TRUE  )
+
+         get_comp . add_display (  comp_pr,
+                                   anal_off,
+                                   anal_row,
+                                   PROMPT_RENDITION_BOLD)
+
+         get_comp . start_prompt()
+
+         get_comp . wait_prompt()
+
+         IF get_comp . get_lastkey () <> "EXIT" THEN
+            mlp_analysis_print ( anal_id.text, get_comp.prompt_objects[1].text,
+                                 EMPTY, FALSE, EMPTY, EMPTY )
+         ENDIF
+
+         get_comp . end_prompt()
+       ELSE
+         mlp_analysis_print ( anal_id.text, "", anal_id_sub.text, TRUE,
+                              mlp_ver_com.text, mlp_ver_date_limit.text )
+       ENDIF
+      ELSE
+         IF   do_update
+         THEN ts_analysis_print( anal_id.text, anal_id_sub.text, do_update )
+         ELSE ts_analysis_print( anal_id.text, EMPTY           , do_update )
+         ENDIF
+      ENDIF
+
+   ENDIF
+
+
+UNTIL    get_input . get_lastkey () = "EXIT"
+
+get_input . end_prompt ()
+
+ENDROUTINE
+
+
+ROUTINE  analysis_components ( self )
+   get_anal_components ( self, anal_id . text )
+ENDROUTINE
+
+GLOBAL
+ROUTINE  get_anal_components ( self, VALUE analysis_id )
+
+ARRAY comp_array ARRAYSIZE(0,2)
+
+count = 0
+
+comp_id =   SELECT   component . name
+            WHERE    analysis = analysis_id
+            ORDER    ON name
+
+WHILE ( comp_id <> EMPTY ) DO
+
+   count = count + 1
+   comp_array [count, 1] = comp_id
+   comp_array [count, 2] = ""
+   NEXT component
+   comp_id = SELECT component . name
+
+ENDWHILE
+
+browse_on_array(80, self . text, comp_array)
+self . repaste ()
+
+ENDROUTINE
+
+
+ROUTINE  comp_val ( self )
+   return ( component_in_analysis ( self, anal_id . text ) )
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE  component_in_analysis ( self, VALUE analysis_id )
+
+IF    BLANK( self.text )
+THEN  RETURN( TRUE )
+ELSE  check_ok =  SELECT   component . name
+                  WHERE    analysis = analysis_id
+                  AND      name     = self . text
+      IF    check_ok = EMPTY
+      THEN  flash_message (
+            "This Component does not exist within this Analysis", FALSE )
+            self . repaste ()
+            RETURN( FALSE )
+      ELSE  RETURN( TRUE )
+      ENDIF
+ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  print_init
+
+   do_debug = FALSE
+
+   SET FORMAT "99"
+   SET DATE FORMAT   "DD/MM/YYYY"
+   SET LENGTH 60
+   current_date   =  TODAY
+   the_user       =  OPERATOR
+
+   pc = 0
+   m  = " "
+
+   ON NEW PAGE
+      print_header()
+   ENDON
+
+ENDROUTINE
+
+
+ROUTINE  mlp_analysis_print ( VALUE anal_id , VALUE comp_id,
+                              VALUE anal_sub, VALUE upd,
+                              VALUE ver_com , VALUE ver_date_limit )
+   ARRAY sel_arr
+   ARRAY key_arr
+   ARRAY sub_keys
+   ARRAY field_names
+
+   tab_name = "mlp_components"
+
+   sub_keys[1,1] = "ANALYSIS_ID"
+   sub_keys[1,2] = anal_sub
+   sub_count = 1
+
+   IF upd THEN
+
+      IF anal_id = anal_sub THEN
+         flash_message("The substituting analysis can not be the same as the " :
+                       "original one",TRUE)
+         return
+      ELSEIF (BLANK(ver_com) OR (ver_com = EMPTY))
+      THEN  flash_message("MLP Comment on new MLP Versions must be entered",
+                          TRUE)
+            return
+      ELSEIF (BLANK(ver_date_limit) OR (ver_date_limit = EMPTY) OR
+             (ver_date_limit > NOW))
+      THEN  flash_message("Date Limit must be entered and not in future",TRUE)
+            return
+      ENDIF
+
+      IF   BLANK(anal_sub)
+      THEN header_sub_title = "Removed from MLP Components"
+           sub_count = 0
+           mode = DEL
+      ELSE header_sub_title = "Substitutet by Analysis ID : " : anal_sub
+           mode = SUB
+      ENDIF
+
+      block_target = "New Records"
+      block_row_initialise ( block_target, tab_name )
+      block_ver = "New Versions"
+      block_row_initialise ( block_ver, "MLP_VERSIONS" )
+      block_val = "New Values"
+      block_row_initialise ( block_val, "MLP_VALUES" )
+      block_std = "New Standards"
+      block_row_initialise ( block_std, "STANDARD_VERSIONS" )
+
+      get_table_details 'tab_name', "KEY0_FIELD", key_arr
+      keys = size_of_array ( key_arr )
+
+      get_field_names ( tab_name, field_names )
+      fields = size_of_array ( field_names )
+
+      f = 0
+      WHILE f < fields DO
+         f = f+1
+         IF   field_names[f,2]
+         THEN
+              field_names[f,1] = EMPTY
+         ELSE k = 0
+              cont = TRUE
+              WHILE (k < keys) AND (cont) DO
+              k = k+1
+              IF field_names[f,1] = key_arr[k] THEN
+                 cont = FALSE
+                 field_names[f,1] = EMPTY
+              ENDIF
+              ENDWHILE
+         ENDIF
+      ENDWHILE
+
+   ELSE    header_sub_title = "                 Component : " : comp_id
+   ENDIF
+
+   print_init()
+
+   block_name = "MLP Block"
+
+   rc = block_row_initialise( block_name, "mlp_components" )
+
+   sel_arr[ 1, 1 ] = ARRAY_SELECT_EQ
+   sel_arr[ 1, 2 ] = "analysis_id"
+   sel_arr[ 1, 3 ] = anal_id
+
+   IF NOT BLANK( comp_id )
+   THEN sel_arr[ 2, 1 ] = ARRAY_SELECT_EQ
+        sel_arr[ 2, 2 ] = "component_name"
+        sel_arr[ 2, 3 ] = comp_id
+        order_row = 3
+   ELSE order_row = 2
+   ENDIF
+
+   sel_arr[ order_row  , 1 ] = ARRAY_SELECT_ORDER
+   sel_arr[ order_row  , 2 ] = "product_id"
+   sel_arr[ order_row  , 3 ] = ARRAY_SELECT_ASCENDING
+   sel_arr[ order_row+1, 1 ] = ARRAY_SELECT_ORDER
+   sel_arr[ order_row+1, 2 ] = "product_version"
+   sel_arr[ order_row+1, 3 ] = ARRAY_SELECT_DESCENDING
+
+   rc = block_row_select ( block_name, sel_arr, do_update )
+   rc = block_row_first  ( block_name )
+
+   rows = block_row_size ( block_name )
+
+   last_mlp = ""
+   last_mlp_cre = ""
+   some_err = FALSE
+   err_mess = EMPTY
+
+   rows_handled = 0
+   row = 0
+   WHILE row < rows DO
+      row = row + 1
+
+      rc = block_row_find_number ( block_name, row )
+      mlp_id = block_row_field_select ( block_name, "product_id" )
+
+      IF last_mlp <> mlp_id THEN
+         rem   =  SELECT mlp_header . removeflag
+                  WHERE  identity = mlp_id
+         descr =  SELECT mlp_header . description
+         last_version = SELECT MAX mlp_versions . product_version
+                        WHERE  identity = mlp_id
+      ENDIF
+
+      the_version = block_row_field_select ( block_name, "product_version" )
+
+      do_print = FALSE
+
+      IF (the_version = last_version) AND (NOT rem) THEN
+
+         IF NOT upd
+         THEN
+            IF last_mlp <> mlp_id THEN
+               do_print = TRUE
+            ENDIF
+         ELSEIF last_mlp_cre <> mlp_id
+         THEN
+            ok = TRUE
+            comp = block_row_field_select ( block_name, "component_name" )
+            IF (comp <> EMPTY) AND (NOT BLANK(comp)) AND (sub_count>0) THEN
+               ord_num = EMPTY
+               ord_num = select component . order_number
+                         where  analysis = anal_sub
+                         and    name     = comp
+               IF ord_num = EMPTY THEN
+                  ok = FALSE
+               ENDIF
+            ENDIF
+
+            IF (ok) THEN
+
+               cre_date = EMPTY
+               cre_date = select mlp_versions . created_date
+                          where  identity = mlp_id
+                          and    product_version = last_version
+                          and    created_date <= ver_date_limit
+               IF   cre_date = EMPTY
+               THEN new_version = FALSE
+                    m = " "
+               ELSE new_version = TRUE
+                    m = "*"
+               ENDIF
+
+               IF new_version
+               THEN
+                  SET FORMAT "9999999999"
+                  IF   create_new_version( block_ver, mlp_id, the_version,
+                                           ver_com, block_target, block_val,
+                                           anal_id, anal_sub, block_std )
+                  THEN do_print = TRUE
+                       last_mlp_cre = mlp_id
+                  ELSE some_err = TRUE
+                  ENDIF
+                  SET FORMAT "99"
+               ELSE
+                  IF   create_and_delete ( block_name, block_target,
+                                           key_arr, keys, sub_keys, sub_count,
+                                           field_names, fields )
+                  THEN do_print = TRUE
+                       rows = rows-1
+                       row  = row -1
+                  ELSE some_err = TRUE
+                  ENDIF
+               ENDIF
+
+            ENDIF
+         ENDIF
+      ENDIF
+
+      IF (do_print) AND (last_mlp<>mlp_id) THEN
+         rows_handled = rows_handled + 1
+         IF    rows_handled = 1
+         THEN  print_header()
+         ENDIF
+
+LITERAL
+   $m $mlp_id___ $descr______________________________________________________
+$ENDLITERAL
+
+      ENDIF
+
+      last_mlp = mlp_id
+
+   ENDWHILE
+
+   IF    rows_handled = 0
+   THEN  user_warning("MLP")
+   ELSE  FLUSH_LITERAL
+         IF upd THEN
+            IF user_confirm ( mode, rows_handled ) THEN
+               START WRITE TRANSACTION "Create Rows"
+               st = block_row_update  ( block_name   )
+               st = block_row_update  ( block_target )
+               st = block_row_update  ( block_ver    )
+               st = block_row_update  ( block_val    )
+               st = block_row_update  ( block_std    )
+            ENDIF
+            rc = block_row_release ( block_target )
+            rc = block_row_release ( block_ver    )
+            rc = block_row_release ( block_val    )
+            rc = block_row_release ( block_std    )
+         ENDIF
+   ENDIF
+
+   rc = block_row_release ( block_name )
+
+   IF   some_err
+   THEN IF err_mess <> EMPTY
+        THEN flash_message( err_mess, TRUE )
+        ELSE flash_message("Sorry - No transactions done due to unknown error",
+                            TRUE)
+        ENDIF
+        rollback
+   ELSE commit
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  debug_print ( VALUE the_text )
+
+   IF do_debug THEN
+LITERAL
+      DEBUG $the_text_______________________________________________________
+$ENDLITERAL
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  create_new_version( block_ver, VALUE mlp_id, VALUE ver_no,
+                             VALUE ver_com, block_target, block_val,
+                             VALUE anal_id, VALUE anal_sub, block_std )
+   ARRAY std_field_names
+
+   debug_print ("MLP:":mlp_id:"Ver:":strip(ver_no):" Create New Version")
+
+   get_field_details MLP_VERSIONS.IDENTITY, "FIELD_SIZE", mlp_size
+   get_field_details MLP_VERSIONS.PRODUCT_VERSION, "FIELD_SIZE", ver_size
+   key_string = pad(strip(mlp_id)," ",mlp_size)
+   new_ver_no = strip(ver_no + 1)
+   key_string = key_string : pad(""," ",ver_size-length(new_ver_no)) :
+                             new_ver_no
+   st = block_row_create_last ( block_ver, key_string )
+
+   debug_print ("Create MLP Version Keys:":key_string)
+
+   IF NOT(st) THEN
+      err_mess = "Could not Create New MLP Version record. MLP Id:":mlp_id:
+                 " New Version No:":strip(new_ver_no)
+      return ( FALSE )
+   ELSE
+      st = block_row_last ( block_ver )
+      rc = block_row_field_assign ( block_ver, "VERSION_COMMENT", ver_com )
+      rc = block_row_field_assign ( block_ver, "CREATED_DATE", NOW )
+   ENDIF
+
+{  If standard also a new Standard Version must be entered              }
+   std_id = EMPTY
+   std_id = select standard . identity
+            where  identity = mlp_id
+            and    removeflag = FALSE
+   IF std_id <> EMPTY THEN
+      st = block_row_create_last ( block_std, key_string )
+
+      debug_print ("Create Standard Version Keys:":key_string)
+
+      IF NOT(st) THEN
+         err_mess = "Could not Create New Standard Version record. MLP Id:":
+                     mlp_id : " New Version No:" : strip(new_ver_no)
+         return ( FALSE )
+      ELSE
+
+         st = block_row_last ( block_std )
+         rc = block_row_field_assign ( block_std, "VERSION_COMMENT", ver_com )
+         rc = block_row_field_assign ( block_std, "CREATION_DATE"  , NOW     )
+
+         get_field_names ( "STANDARD_VERSIONS", std_field_names )
+         std_fields = size_of_array ( std_field_names )
+
+         std_id = select standard_versions . identity
+                  where  identity = mlp_id
+                  order  on version descending
+
+         f = 0
+         WHILE f < std_fields DO
+            f = f+1
+            IF NOT std_field_names[f,2] THEN
+               the_field = std_field_names[f,1]
+               IF (the_field <> "IDENTITY") AND
+                  (the_field <> "VERSION" ) AND
+                  (the_field <> "CREATION_DATE") AND
+                  (the_field <> "VERSION_COMMENT" ) THEN
+                  val = select standard_versions.'the_field'
+                  rc = block_row_field_assign ( block_std, the_field, val )
+               ENDIF
+            ENDIF
+         ENDWHILE
+
+      ENDIF
+   ENDIF
+
+   get_field_details MLP_COMPONENTS.ANALYSIS_ID   , "FIELD_SIZE", anal_size
+   get_field_details MLP_COMPONENTS.COMPONENT_NAME, "FIELD_SIZE", comp_size
+   get_field_details MLP_VALUES.ENTRY_CODE        , "FIELD_SIZE", ent_size
+   get_field_details MLP_VALUES.LEVEL_ID          , "FIELD_SIZE", lev_size
+
+   ent_code = select mlp_components . entry_code
+              where  product_id = mlp_id
+              and    product_version = ver_no
+
+   WHILE ent_code <> EMPTY DO
+      mlp_anal_id   = select mlp_components . analysis_id
+      do_this = TRUE
+      IF mlp_anal_id = anal_id THEN
+         IF   mode = DEL
+         THEN do_this = FALSE
+         ELSE mlp_anal_id = anal_sub
+         ENDIF
+      ENDIF
+      IF do_this THEN
+         mlp_comp_name = select mlp_components . component_name
+         comp_key = key_string : pad(strip(mlp_anal_id)  ," ",anal_size)
+         comp_key = comp_key   : pad(strip(mlp_comp_name)," ",comp_size)
+
+         debug_print ("Create MLP Component Keys:":comp_key)
+
+         st = block_row_create_last ( block_target, comp_key )
+         IF NOT(st) THEN
+            err_mess = "Could not Create New Version record. ":
+                       "MLP Components. MLP Id:":
+                       mlp_id : " New Version No:" : strip(new_ver_no) :
+                       " Analysis:": mlp_anal_id :
+                       " Component:": mlp_comp_name
+            return ( FALSE )
+         ENDIF
+
+         st = block_row_last ( block_target )
+         next_cod = STRIP(INCREMENT( "MLP_COMPS", "ENTRY_CODE" ))
+         next_cod = pad(""," ",ent_size-length(next_cod)) : next_cod
+         prod_num = select mlp_components . product_number
+         comp_typ = select mlp_components . component_type
+         units    = select mlp_components . units
+         places   = select mlp_components . places
+         typ_txt  = select mlp_components . typical_text
+         ord_num  = select mlp_components . order_num
+         {sap_char = select mlp_components . sap_charac }
+
+
+         rc = block_row_field_assign ( block_target, "ENTRY_CODE"    , next_cod)
+         rc = block_row_field_assign ( block_target, "PRODUCT_NUMBER", prod_num)
+         rc = block_row_field_assign ( block_target, "COMPONENT_TYPE", comp_typ)
+         rc = block_row_field_assign ( block_target, "UNITS"         , units   )
+         rc = block_row_field_assign ( block_target, "PLACES"        , places  )
+         rc = block_row_field_assign ( block_target, "TYPICAL_TEXT"  , typ_txt )
+         rc = block_row_field_assign ( block_target, "ORDER_NUM"     , ord_num )
+         {rc = block_row_field_assign ( block_target, "SAP_CHARAC"    , sap_char) }
+
+         lev_id = select mlp_values . level_id
+                  where  entry_code = ent_code
+         WHILE lev_id <> EMPTY DO
+            lev_id = strip(lev_id)
+            val_key = next_cod : pad(lev_id," ",lev_size)
+
+            debug_print ("Create MLP Value Keys:":val_key)
+
+            st = block_row_create_last ( block_val, val_key )
+            IF NOT(st) THEN
+               err_mess = "Could not Create New Version record. ":
+                          "MLP Values. MLP Id:":
+                          mlp_id : " New Version No:" : strip(new_ver_no) :
+                          " Code:": next_cod :
+                          " Level:": lev_id
+               return ( FALSE )
+            ENDIF
+
+            min_lim = select mlp_values . min_limit
+            max_lim = select mlp_values . max_limit
+            txt_spe = select mlp_values . text_spec
+            calc    = select mlp_values . calculation
+            txt_phr = select mlp_values . text_phrase
+            bol_pas = select mlp_values . boolean_pass
+
+            st = block_row_last ( block_val )
+            rc = block_row_field_assign ( block_val, "MIN_LIMIT"   , min_lim)
+            rc = block_row_field_assign ( block_val, "MAX_LIMIT"   , max_lim)
+            rc = block_row_field_assign ( block_val, "TEXT_SPEC"   , txt_spe)
+            rc = block_row_field_assign ( block_val, "CALCULATION" , calc   )
+            rc = block_row_field_assign ( block_val, "TEXT_PHRASE" , txt_phr)
+            rc = block_row_field_assign ( block_val, "BOOLEAN_PASS", bol_pas)
+
+            NEXT mlp_values
+            lev_id = select mlp_values . level_id
+         ENDWHILE
+
+      ENDIF
+      NEXT mlp_components
+      ent_code = select mlp_components . entry_code
+   ENDWHILE
+
+   return ( TRUE )
+
+ENDROUTINE
+
+ROUTINE  create_and_delete ( the_block  , block_target,
+                             key_arr    , VALUE keys,
+                             sub_arr    , VALUE sub_keys,
+                             field_names, VALUE fields )
+   IF sub_keys > 0 THEN
+      key = 0
+      key_string = ""
+      WHILE key < keys DO
+         key = key + 1
+         f = key_arr[key]
+         s = 0
+         val = EMPTY
+         WHILE (s<sub_keys) AND (val = EMPTY) DO
+            s = s+1
+            IF sub_arr[s,1] = f THEN
+               val = sub_arr[s,2]
+            ENDIF
+         ENDWHILE
+         IF val = EMPTY THEN
+            val = block_row_field_select(the_block,f)
+         ENDIF
+         get_field_details 'tab_name'.'f', "FIELD_SIZE", size
+         key_string = key_string : pad(val," ",size)
+      ENDWHILE
+
+      debug_print ("Create/Delete MLP Component Keys:":key_string)
+
+      st = block_row_create_last ( block_target, key_string )
+      IF NOT(st) THEN
+         err_mess = "Could not Create/Delete record. ":
+                    "MLP Components. Key fields" : key_string
+         return ( FALSE )
+      ELSE
+         st = block_row_last ( block_target )
+
+         f = 0
+         WHILE f < fields DO
+            f = f + 1
+            IF field_names[f,1] <> EMPTY THEN
+               f_name = field_names[f,1]
+               val = block_row_field_select ( the_block, f_name )
+               rc =  block_row_field_assign ( block_target, f_name, val )
+            ENDIF
+         ENDWHILE
+      ENDIF
+   ENDIF
+
+   rc = block_row_delete ( the_block )
+   IF rc <> EMPTY THEN
+      flash_message("ERROR in deleting record - " : rc, TRUE)
+      return ( FALSE )
+   ENDIF
+
+   return ( TRUE )
+
+ENDROUTINE
+
+
+ROUTINE  print_header
+
+   pc = pc + 1
+   IF report_type = "MLP" THEN
+
+LITERAL
+Date: $current_date   MLP's Referencing Analysis : $anal_id__       Page: $pc
+User: $the_user       $header_sub_title______________________________________
+
+      MLP ID     Description
+      ---------- ------------------------------------------------------------
+$ENDLITERAL
+
+   ELSE
+LITERAL
+Date: $current_date    TS's Referencing Analysis : $anal_id__       Page: $pc
+User: $the_user        $header_sub_title_____________________
+
+      TS ID      Description
+      ---------- ------------------------------------------------------------
+$ENDLITERAL
+
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  ts_analysis_print ( VALUE anal_id, VALUE anal_sub, VALUE upd )
+
+   ARRAY sel_arr
+
+   IF anal_id = anal_sub THEN
+      flash_message("The substituting analysis can not be the same as the " :
+                    "original one",TRUE)
+      return
+   ENDIF
+
+   header_sub_title = ""
+   IF upd THEN
+      IF   BLANK(anal_sub)
+      THEN header_sub_title = "Removed from Test Schedules"
+           mode = DEL
+      ELSE header_sub_title = "Substitutet by Analysis ID: " : anal_sub
+           mode = SUB
+      ENDIF
+   ENDIF
+
+   print_init()
+
+   block_name = "TS Block"
+
+   rc = block_row_initialise( block_name, "test_sched_entry" )
+
+   sel_arr[ 1, 1 ] = ARRAY_SELECT_EQ
+   sel_arr[ 1, 2 ] = "analysis_id"
+   sel_arr[ 1, 3 ] = anal_id
+   sel_arr[ 2, 1 ] = ARRAY_SELECT_ORDER
+   sel_arr[ 2, 2 ] = "identity"
+
+   rc = block_row_select ( block_name, sel_arr, do_update )
+   rc = block_row_first  ( block_name )
+
+   rows = block_row_size ( block_name )
+
+   last_ts = ""
+
+   row = 0
+   WHILE row < rows DO
+      row = row + 1
+
+      IF    row = 1
+      THEN  print_header()
+      ENDIF
+
+      ts_id = block_row_field_select ( block_name, "identity" )
+
+      IF    last_ts <> ts_id
+      THEN  descr =  SELECT test_sched_header . description
+                     WHERE  identity = ts_id
+{**AS1286 HBe 18-1-01}
+            rem   =  SELECT test_sched_header . removeflag
+
+          IF (NOT rem) THEN
+
+{**AE1286}
+LITERAL
+      $ts_id____ $descr______________________________________________________
+$ENDLITERAL
+
+{**AS1286 HBe 18-1-01}
+
+           ENDIF
+
+{**AE1286}
+
+      ENDIF
+
+      last_ts = ts_id
+      rc_move = block_row_next ( block_name )
+
+   ENDWHILE
+
+   IF    rows = 0
+   THEN  user_warning("TS")
+   ELSE  FLUSH_LITERAL
+         IF do_update THEN
+            manipulate_ts ( block_name, anal_sub, rows, "test_sched_entry" )
+         ENDIF
+   ENDIF
+
+   rc = block_row_release ( block_name )
+
+ENDROUTINE
+
+
+ROUTINE  user_confirm ( VALUE mode, VALUE rows )
+
+   CREATE   OBJECT PROMPT_CLASS_FORM, get_reg
+
+   ch = 3
+
+   get_reg . height   =  ch
+   get_reg . width    =  ww
+   get_reg . row      =  wr+ch+4
+   get_reg . column   =  wc
+   get_reg . border   =  TRUE
+   get_reg . header   =  "Last Chance to Regret !"
+   get_reg . footer   =  "Press DO to " : mode : " / Exit to quit"
+
+   disp_text = "Confirm to ":mode:" ":strip(rows):" records"
+
+   get_reg . add_display (  disp_text,
+                            trunc((ww-length(disp_text))/2),
+                            2,
+                            PROMPT_RENDITION_BOLD)
+
+   get_reg . start_prompt()
+
+   get_reg . wait_prompt()
+
+   the_key = get_reg . get_lastkey()
+
+   get_reg . end_prompt()
+
+   IF   get_reg . get_lastkey () = "DO"
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  manipulate_ts ( block_name, VALUE anal_sub, VALUE rows,
+                                     VALUE tab_name )
+   IF user_confirm ( mode, rows ) THEN
+      IF    (mode = DEL) OR
+           ((mode = SUB) AND
+           create_new_records ( block_name, anal_sub, rows, tab_name ) )
+      THEN delete_old_records ( block_name, rows, mode )
+      ENDIF
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  create_new_records ( block_source, VALUE anal_sub, VALUE rows,
+                              VALUE tab_name )
+
+   ARRAY field_names
+   ARRAY key_arr
+
+   block_target = "New Records"
+
+   block_row_initialise ( block_target, tab_name )
+
+   get_table_details 'tab_name', "KEY0_FIELD", key_arr
+   keys = size_of_array ( key_arr )
+
+   get_field_names ( tab_name, field_names )
+   fields = size_of_array ( field_names )
+
+   ok = TRUE
+
+   row = 0
+   WHILE row < rows DO
+
+      row = row + 1
+      rc = block_row_find_number ( block_source, row )
+
+      key = 0
+      key_string = ""
+      WHILE key < keys DO
+         key = key + 1
+         f = key_arr[key]
+         IF   f = "ANALYSIS_ID"
+         THEN val = anal_sub
+         ELSE val = block_row_field_select(block_source,f)
+         ENDIF
+         get_field_details 'tab_name'.'f', "FIELD_SIZE", size
+         key_string = key_string : pad(val," ",size)
+      ENDWHILE
+
+      st = block_row_create_last ( block_target, key_string )
+      IF NOT(st) THEN
+         flash_message("ERROR: Could not insert key:":key_string,TRUE)
+         ok = FALSE
+      ELSE
+         st = block_row_last ( block_target )
+
+         f = 0
+         WHILE f < fields DO
+            f = f + 1
+            IF NOT(field_names[f,2]) THEN
+               f_name = field_names[f,1]
+               is_not_key = TRUE
+               k = 0
+               WHILE (k<keys) AND (is_not_key) DO
+                  k=k+1
+                  IF key_arr[k]=f_name THEN
+                     is_not_key = FALSE
+                  ENDIF
+               ENDWHILE
+               IF is_not_key THEN
+                  val = block_row_field_select ( block_source, f_name )
+                  rc =  block_row_field_assign ( block_target, f_name, val )
+               ENDIF
+            ENDIF
+         ENDWHILE
+      ENDIF
+
+   ENDWHILE
+
+   IF ok THEN
+      START WRITE TRANSACTION "Create Rows"
+      st = block_row_update ( block_target )
+   ENDIF
+
+   rc = block_row_release ( block_target )
+
+   return ( ok )
+
+ENDROUTINE
+
+
+ROUTINE  delete_old_records ( block_delete, rows, mode )
+
+   ok = TRUE
+
+   row = 0
+   WHILE (row < rows) AND (ok) DO
+
+      row = row + 1
+      rc = block_row_find_number ( block_delete, row )
+      rc = block_row_delete ( block_delete )
+      IF rc <> EMPTY THEN
+         flash_message("ERROR in deleting record - " : rc, TRUE)
+         ok = FALSE
+      ENDIF
+
+   ENDWHILE
+
+   IF ok THEN
+      IF mode = DEL THEN
+         START WRITE TRANSACTION "Delete Rows"
+      ENDIF
+      rc = block_row_update ( block_delete )
+      COMMIT
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  user_warning ( VALUE rep_type )
+   flash_message( "The ID you specified is not attached to a " : rep_type,
+                  TRUE)
+ENDROUTINE

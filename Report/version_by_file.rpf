@@ -1,0 +1,596 @@
+{*******************************************************************************
+*
+* Module Name   : VERSION_BY_FILE
+*
+* Purpose       : Create new versions of MLP and VERSIONED_ANALYSIS based on a test file on client.
+*
+* Document Ref  : N/a
+*
+*
+* A 1727 HBE 22-SEP-2006: New functionality.
+* M 1739 HBE 19-OCT-2006: Assign EXTERNAL_VERSION to MLP_HEADER and COMMENT to VERSIONED_ANALYSIS - if not blank
+*
+*******************************************************************************
+* Example of Input file format - first line will not be entered:
+*
+
+TABLE (1)   IDENTITY (10)   EXIT_STATUS (1) EXTERNAL_VERSION - mlp only (1) CONTEXT (10)    COMMENT (994)
+A   DUMMY   A   N   CC25092006  Comment for analysis
+M   DUMMY   A   Y   CC25092006  Version Comment for MLP
+*******************************************************************************}
+
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_UTILS 
+
+SET COMPILE_OPTION DECLARE
+
+SET NAME "DISPLAY/"
+
+DECLARE logfile, show_messages, last_key_used, client_file_name, server_file_name
+DECLARE empty_array, check_ok
+ARRAY empty_array
+client_file_name = get_file_name("File to load")
+last_key_used = EMPTY
+
+log_file = "SMP$USERFILES/change_tools/":STRIP(GLOBAL("current_library")):".log"
+show_messages = FALSE {Change to TRUE to track problems}
+
+WriteToLog("Starting version creation")
+
+{IF log_file_init (log_file) THEN
+   WriteToLog("Starting version creation")
+ELSE
+   FLASH_MESSAGE("Unable to create logfile, exiting", TRUE)
+   EXIT
+ENDIF}
+
+IF client_file_name = EMPTY
+   WriteToLog("Error defining file")
+   EXIT
+ENDIF
+
+client_file_name = STRIP(client_file_name)
+
+server_file_name = "smp$userfiles/change_tools/":STRIP(operator):"_":SUBSTITUTE ( client_file_name, ":\/ ", "____" )
+
+transfer_to_server (client_file_name, server_file_name)
+IF NOT FILE EXISTS(server_file_name) THEN
+   FLASH_MESSAGE("The file ":client_file_name:" could not be transferred", TRUE)
+   WriteToLog("The file ":client_file_name:" could not be transferred")
+   RETURN (FALSE)
+ENDIF
+
+DECLARE the_id, ver_comment, leave_status, table_id, rc, i_line, new_version, is_external, context, lines_read
+the_id       = EMPTY
+ver_comment  = EMPTY
+leave_status = EMPTY
+table_id     = EMPTY
+rc           = EMPTY
+i_line       = EMPTY
+new_version  = EMPTY
+is_external  = EMPTY
+context      = EMPTY
+lines_read   = 0
+
+
+FILE OPEN server_file_name, rc
+
+FILE READ server_file_name, i_line, rc
+
+WHILE (rc = EMPTY) AND (SUBSTRING(the_id,1,1) <> "*") DO
+   lines_read = lines_read + 1
+   IF   line_ok( i_line, the_id, ver_comment, leave_status, table_id, is_external, context)
+   THEN
+      IF create_version (table_id, the_id, ver_comment, leave_status, is_external, new_version) THEN
+         IF show_messages THEN flash_message("Created in Table " : table_id : " Identity " : PAD(the_id, " ", 10) : ". Version " : new_version : ". Created with Status " : leave_status : ". External_version: ": is_external : ". MLP Version comment: " : ver_comment :".", TRUE) ENDIF
+         WriteToLog(table_id:": " : PAD(STRIP(the_id):"/":STRIP(new_version), " ", 10) : ", Status: " : leave_status : ", Ext: ": is_external : ", Comment: " : ver_comment :", Context: " : context)
+         create_log_record(table_id, the_id, new_version, leave_status, ver_comment, is_external, context)
+      ELSE
+         IF show_messages THEN flash_message("Could not create new version in table " : table_id : " for Identity " : the_id : "." , TRUE) ENDIF
+         {WriteToLog("Could not create new version in table " : table_id : " for Identity " : the_id : "." )}
+      ENDIF
+   ELSE
+      IF show_messages THEN flash_message("The line ": i_line : " was not OK", TRUE) ENDIF
+      WriteToLog("The line ": i_line : " was not OK")
+   ENDIF
+FILE READ server_file_name, i_line, rc
+ENDWHILE
+
+WriteToLog("Completed version creation, handled ":lines_read : " lines.")
+FILE CLOSE log_file, rc
+{transfer_from_server (log_file, "O:\version_by_file_":STRIP(operator):"_":SUBSTRING(now,1,11):".log" )}
+
+FILE COPY "smp$logfiles:":STRIP(GLOBAL("current_library")):".log", log_file, check_ok
+
+fm("Completed version creation, handled ":lines_read : " lines.":ASCII(10):ASCII(10):
+   " Logfile: ":log_file)
+
+IF FILE EXISTS ( log_file ) THEN
+    FILE SEND log_file, "DISPLAY/"
+ENDIF
+
+{******************************************************************************}
+
+ROUTINE line_ok( VALUE i_line, the_id, ver_comment, leave_status, table_id, is_external, context)
+
+DECLARE comment_length
+DECLARE line_string, tab1_pos, tab2_pos, tab3_pos, tab4_pos, tab5_pos, the_length
+comment_length = EMPTY
+
+   the_id        = EMPTY
+   ver_comment   = EMPTY
+   leave_status  = EMPTY
+   table_id      = EMPTY
+   line_string   = i_line
+
+   tab1_pos      = INDEX(line_string, ASCII("9"))
+   table_id      = TOUPPER (STRIP (SUBSTRING(line_string,1,tab1_pos - 1) ) )
+   the_length    = LENGTH(line_string)
+   line_string   = SUBSTRING(line_string,tab1_pos+1,the_length - tab1_pos)
+
+   tab2_pos      = INDEX(line_string, ASCII("9"))
+   the_id        = TOUPPER (SUBSTRING(line_string,1,tab2_pos - 1) )
+   the_length    = STRIP( LENGTH(line_string) )
+   line_string   = SUBSTRING(line_string, tab2_pos+1, the_length - tab2_pos)
+
+   tab3_pos      = INDEX(line_string, ASCII("9"))
+   leave_status  = TOUPPER (SUBSTRING(line_string, 1, tab3_pos - 1) )
+   the_length    = LENGTH(line_string)
+   line_string   = SUBSTRING(line_string, tab3_pos+1, the_length - tab3_pos)
+
+   tab4_pos      = INDEX(line_string, ASCII("9"))
+   is_external   = TOUPPER (SUBSTRING(line_string, 1, tab4_pos - 1) )
+                   IF (LENGTH(context) > 1) THEN context = SUBSTRING(context, 1, 1) ENDIF
+   the_length    = LENGTH(line_string)
+   line_string   = SUBSTRING(line_string, tab4_pos+1, the_length - tab4_pos)
+
+   tab5_pos      = INDEX(line_string, ASCII("9"))
+   IF tab5_pos > 0 THEN
+      context       = SUBSTITUTE(TOUPPER (SUBSTRING(line_string, 1, tab5_pos - 1) ), " ", "")
+                      IF (LENGTH(context) > 10) THEN context = SUBSTRING(context, 1, 10) ENDIF
+      the_length    = LENGTH(line_string)
+      line_string   = SUBSTRING(line_string, tab5_pos+1, the_length - tab5_pos)
+
+      ver_comment   = STRIP(line_string) : " (VBF)"
+   ELSE
+      context       = STRIP(line_string)
+      ver_comment   = ""
+   ENDIF
+
+   {Maximal length of comment varies from table to table}
+   IF table_id = "M" THEN
+      GET_FIELD_DETAILS mlp_header.version_comment, "FIELD_SIZE", comment_length
+   ELSEIF table_id = "A" THEN
+      GET_FIELD_DETAILS versioned_analysis.qap_comment, "FIELD_SIZE", comment_length
+   ELSE
+      comment_length = 0
+      RETURN(FALSE)
+   ENDIF
+
+   IF LENGTH(ver_comment) > comment_length-6 THEN ver_comment = SUBSTRING(ver_comment, 1, comment_length-6) : " (VBF)" ENDIF
+
+   IF (LENGTH(the_id) > 0) AND (LENGTH(leave_status) > 0) AND (LENGTH(table_id) > 0) AND (LENGTH(is_external) > 0)  THEN
+      RETURN(TRUE)
+   ELSE
+      RETURN(FALSE)
+   ENDIF
+
+ENDROUTINE {line_ok}
+
+
+{******************************************************************************}
+
+ROUTINE create_version (VALUE table_id, VALUE the_id, VALUE ver_comment, VALUE leave_status, is_external_org, new_version)
+
+DECLARE the_table, version_field, max_version, app_status, removeflag, secur_level, submit_level, new_plan, old_plan
+DECLARE is_external
+
+new_version = "0"
+is_external = EMPTY
+
+IF table_id      = "M" THEN
+   the_table     = "MLP_HEADER"
+   version_field = "PRODUCT_VERSION"
+ELSEIF table_id  = "A" THEN
+   the_table     = "VERSIONED_ANALYSIS"
+   version_field = "ANALYSIS_VERSION"
+ELSE
+   IF show_messages THEN flash_message("Table ID " : STRIP(table_id) : " has not been defined", TRUE) ENDIF
+   WriteToLog("Table ID " : STRIP(table_id) : " has not been defined")
+   RETURN (FALSE)
+ENDIF
+
+IF (leave_status <> "V") AND (leave_status <> "I") AND (leave_status <> "A")
+THEN
+   IF show_messages THEN flash_message("Leave Status " : STRIP(leave_status) : " is not allowed", TRUE) ENDIF
+   WriteToLog("Leave Status " : STRIP(leave_status) : " is not allowed")
+   RETURN (FALSE)
+ENDIF
+
+
+
+{Need to convert is_external_org to TRUE/FALSE for MLP table}
+IF (is_external_org = "T") OR (is_external_org = "Y") THEN
+   is_external = TRUE
+ELSEIF (is_external_org = "F") OR (is_external_org = "N") THEN
+   is_external = FALSE
+ELSE
+   IF table_id = "M" THEN
+      IF show_messages THEN 
+          flash_message("External version " : STRIP(is_external_org) : " is not allowed for MLP table - Must be Y or N.", TRUE) ENDIF
+          WriteToLog("External version " : STRIP(is_external_org) : " is not allowed for MLP table - Must be Y or N.")
+      RETURN(FALSE)
+   ENDIF
+ENDIF
+
+
+max_version = SELECT MAX 'the_table'.'version_field'
+              WHERE identity = the_id
+
+
+IF (max_version = EMPTY) OR BLANK(max_version) THEN
+   IF show_messages THEN 
+       flash_message("The Identity " : STRIP(the_id) : " was not found in table " : STRIP(the_table), TRUE) ENDIF
+       WriteToLog("The Identity " : STRIP(the_id) : " was not found in table " : STRIP(the_table))
+   RETURN (FALSE)
+ENDIF
+
+app_status    = SELECT 'the_table'.approval_status
+                WHERE identity = the_id
+                AND   'version_field' = max_version
+
+removeflag    = SELECT 'the_table'.removeflag
+
+old_plan = SELECT 'the_table'.inspection_plan
+
+IF (app_status = "A") AND (removeflag = FALSE) AND (old_plan <> EMPTY) AND NOT BLANK(old_plan) THEN
+
+
+   SET FORMAT "9999"
+   new_version = JUSTIFY(PAD(STRIP(max_version) + 1, " ", 10), "RIGHT")
+
+   secur_level  = GLOBAL("APPROVAL_INSPECT_SECURITY")
+   submit_level = GLOBAL("APPROVAL_SUBMIT_ON_ADD")
+   SET GLOBAL "APPROVAL_INSPECT_SECURITY" TO "LOW"
+   SET GLOBAL "APPROVAL_SUBMIT_ON_ADD" TO "FALSE"
+
+   IF table_id = "M" THEN
+       {Create new MLP Version, Ctrl-E, NVM}
+       MENUPROC 555 USING the_id, new_version, "$DO", "$EXIT"
+   ELSEIF table_id = "A" THEN
+       {Create new Analysis Version, Ctrl-E, VAL}
+       MENUPROC 15035 USING the_id, new_version, "$DO", "$EXIT"
+   ENDIF
+
+   SET GLOBAL "APPROVAL_INSPECT_SECURITY" TO secur_level
+   SET GLOBAL "APPROVAL_SUBMIT_ON_ADD" TO submit_level
+
+   START READ TRANSACTION "Find New Job"
+
+   new_plan   = SELECT 'the_table'.inspection_plan FOR UPDATE
+                WHERE identity = the_id
+                AND   'version_field' = new_version
+
+   START WRITE TRANSACTION "assign details to new mlp version"
+
+{The new version is always created in status A.
+In order to submit to Inspection and include the
+record in the INSPECTOR table, it must be changed to V}
+   IF leave_status <> "I" THEN
+      ASSIGN 'the_table'.approval_status = leave_status
+   ENDIF
+
+   IF leave_status = "I" THEN
+      ASSIGN 'the_table'.approval_status = "V"
+   ENDIF
+
+   IF leave_status = "A" THEN
+      ASSIGN mlp_header.appr_date = NOW
+   ENDIF
+
+   IF table_id = "M" THEN
+      ASSIGN 'the_table'.version_comment = ver_comment
+      ASSIGN 'the_table'.external_version = is_external
+      
+      { *** If Material Master Data is available in SAP_MATMAS and SAP_CLASS, update corresponding field in MLP_HEADER *** }
+      DECLARE UID, fam_name
+      UID = SELECT max_matmas.uniqueid WHERE identity = the_id
+      IF UID <> EMPTY THEN
+        fam_name = ""
+        fam_name = SELECT sap_class.textvalue WHERE uniqueid = UID AND type = "Material class" AND id = "PRODUCT_FAMILY_CULTURE"
+        IF (fam_name = EMPTY) OR 
+           (fam_name = "No information") OR 
+           (fam_name = "Not applicable") THEN
+            fam_name = ""
+        ELSE
+            fam_name = STRIP(fam_name):" "
+        ENDIF
+        ASSIGN 'the_table'.sap_uniqueid               = SELECT sap_matmas.uniqueid WHERE uniqueid = UID
+        ASSIGN 'the_table'.description                = SELECT sap_matmas.description
+        ASSIGN 'the_table'.sap_masterstatus           = SELECT sap_matmas.masterstatus
+        ASSIGN 'the_table'.product_code               = fam_name:(SELECT sap_matmas.nameculture)
+        ASSIGN 'the_table'.material_type              = SELECT sap_matmas.classid
+        ASSIGN 'the_table'.gmp_status                 = GetSAPClass(UID, "Material Class", "GROUPING")
+        ASSIGN 'the_table'.productarea                = SELECT sap_matmas.productarea
+        ASSIGN 'the_table'.productsegment             = SELECT sap_matmas.productsegment
+        ASSIGN 'the_table'.productcluster             = SELECT sap_matmas.productcluster
+        ASSIGN 'the_table'.productsubcluster          = SELECT sap_matmas.productsubcluster
+        ASSIGN 'the_table'.strains                    = GetSAPClass(UID, "Material Class", "STRAINS")
+        ASSIGN 'the_table'.product_group              = GetSAPClass(UID, "Material Class", "PRODUCT_GROUP")
+        ASSIGN 'the_table'.product_form               = GetSAPClass(UID, "Material Class", "PRODUCT_FORM")
+        ASSIGN 'the_table'.sample_type                = GetSAPClass(UID, "Material Class", "PRODUCT_FORMAT")
+        ASSIGN 'the_table'.product_identification     = GetSAPClass(UID, "Material Class", "PRODUCT_IDENTIFICATION")
+        is_external_org = CheckExternalVersion() 
+        ASSIGN 'the_table'.external_version           = is_external_org
+        is_external_org = LEFTSTRING(is_external_org, 1)
+
+        IF (EMPTY = SELECT external_mlp_versions.mlp_version 
+                    WHERE identity = (SELECT 'the_table'.identity) 
+                      AND external_number = (SELECT 'the_table'.product_version)) OR
+            (((SELECT 'the_table'.product_code) <> fam_name:(SELECT sap_matmas.nameculture)) AND 
+             NOT(BLANK(SELECT sap_matmas.nameculture)) AND 
+            ("NONE" <> SELECT 'the_table'.sap_cert) ) THEN
+            ASSIGN 'the_table'.external_version = FALSE
+        ELSE
+            ASSIGN 'the_table'.external_version = TRUE
+        ENDIF
+      ENDIF    
+   
+   ELSEIF table_id = "A" THEN
+      IF ver_comment <> "" THEN
+         ASSIGN 'the_table'.qap_comment = ver_comment
+      ENDIF
+   ENDIF
+
+   UPDATE 'the_table'
+   COMMIT
+
+{In order to put the new version record in status I and include the
+record in the INSPECTOR table, the menuproc is used}
+   IF leave_status = "I" THEN
+      IF table_id = "M" THEN
+         {Submit MLP Version, Ctrl-E, SMP}
+         MENUPROC 15422 USING the_id, new_version, "$DO", "$EXIT"
+      ELSEIF table_id = "A" THEN
+         {Submit Analysis Version, Ctrl-E, SAL}
+         MENUPROC 15102 USING the_id, new_version, "$DO", "$EXIT"
+      ENDIF
+
+   ENDIF
+
+
+   RETURN (TRUE)
+ELSE
+   IF show_messages THEN 
+       flash_message("Unable to create New Version for table ": the_table : ". ID: " : the_id : ". Max Version " : max_version : " is status " : app_status : ". Removeflag is: " : removeflag : " Inspection Plan is '" : old_plan : "'.", TRUE) ENDIF
+       WriteToLog("Unable to create New Version for table ": the_table : "ID: " : PAD(the_id, " ", 10) : ". Max Version " : max_version : " is status " : app_status : ". Removeflag is: " : removeflag : " Inspection Plan is '" : old_plan : "'.")
+   RETURN (FALSE)
+ENDIF
+
+ENDROUTINE {create_version}
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+
+{ROUTINE log_file_init ( VALUE the_log_file )
+
+   DECLARE rc
+   rc = EMPTY
+
+   IF FILE EXISTS (the_log_file)
+   THEN
+      write_log( the_log_file, " " )
+      RETURN (TRUE)
+   ELSE
+      FILE CREATE the_log_file, rc
+      IF   rc = EMPTY
+      THEN
+         FILE WRITE the_log_file, "Log File Created " : NOW
+         FILE CLOSE the_log_file
+         RETURN ( TRUE  )
+      ELSE RETURN ( FALSE )
+      ENDIF
+   ENDIF
+ENDROUTINE}
+
+{******************************************************************************}
+
+ROUTINE create_log_record ( VALUE table_id, VALUE the_id, VALUE new_version, VALUE leave_status, VALUE ver_comment, VALUE is_external, VALUE context)
+
+DECLARE response
+
+the_id = PAD(the_id, " ", 10)
+response     = EMPTY
+
+SET NOTPROTECTED
+
+START READ TRANSACTION "Add a log record"
+
+RESERVE ENTRY version_by_file_log, table_id : the_id : new_version, response
+
+IF response <> EMPTY
+THEN
+   flash_message("SERIOUS Error writing ":table_id : the_id : new_version:" to database log, contact LIMS developer NOW " : response, TRUE)
+   WriteToLog("Error writing ":table_id : the_id : new_version:" to database log: " : response)
+ENDIF
+
+
+ASSIGN version_by_file_log.approval_status = leave_status
+ASSIGN version_by_file_log.version_comment = ver_comment
+ASSIGN version_by_file_log.context         = context
+ASSIGN version_by_file_log.created_by      = operator
+ASSIGN version_by_file_log.created_on      = now
+ASSIGN version_by_file_log.is_external     = is_external
+
+
+START WRITE TRANSACTION "Add a log record"
+
+UPDATE version_by_file_log
+
+COMMIT
+
+
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE template_to_client (not_used)
+
+DECLARE empty_array, client_file_name
+ARRAY empty_array
+client_file_name = set_file_name("Save template as", "new_versions.txt")
+server_file_name = "smp$userfiles/change_tools/template_file.txt"
+
+IF (client_file_name <> "new_versions.txt") THEN
+    client_file_name = STRIP(client_file_name)
+    transfer_from_server(server_file_name, client_file_name)
+    fm("The template file has been saved to: ":client_file_name:". Use Excel to modify it.")
+ELSE
+fm("No template file has been saved.")
+ENDIF
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE GetSAPClass(VALUE UID, VALUE ClassType, VALUE ClassID)
+
+DECLARE val, MultiText, i, arr
+ARRAY arr
+
+    IF ClassID = "STRAINS" THEN
+        ClassID = "STRAINS_INGREDIENTS"
+        IF (0 = SELECT COUNT sap_class WHERE UniqueId = UID AND TYPE = ClassType AND ID = ClassID) THEN
+            ClassID = "STRAINS"
+        ENDIF
+    ENDIF
+    
+    MultiText = " ":STRIP(TOLOWER(SUBSTITUTE(ClassID,"_"," ")))
+    IF (RIGHTSTRING(MultiText, 1) = "s") THEN
+        MultiText = MultiText:". Check [Master Data]"
+    ELSE    
+        MultiText = MultiText:"s. Check [Master Data]"
+    ENDIF
+    
+    i = SELECT COUNT sap_class WHERE UniqueId = UID AND TYPE = ClassType AND ID = ClassID
+    
+    IF i = 1 THEN
+        val = SELECT sap_class.textvalue WHERE UniqueId = UID AND TYPE = ClassType AND ID = ClassID ORDER ON ordernumber
+    ELSEIF i > 1 THEN
+        val = STRIP(i):MultiText
+    ELSE
+        val = ""
+    ENDIF
+
+    RETURN(val)
+
+ENDROUTINE
+
+ROUTINE CheckExternalVersion
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+    DECLARE context
+    DECLARE ext, mlp, ver, code, cert, type, c_ext
+    ext   = FALSE
+    mlp   = SELECT mlp_header.identity
+    code  = SELECT mlp_header.product_code
+    cert  = SELECT mlp_header.sap_cert
+    type  = SELECT mlp_header.cert_type
+    ver   = SELECT mlp_header.product_version
+    c_ext = SELECT COUNT MLP_CHANGE_VIEW
+            WHERE product_id = mlp 
+              AND product_version = ver
+              AND level_id = "EXTERNAL"
+
+    IF (INDEX(cert, "NONE") = 0) OR (INDEX(type, "NONE") = 0) THEN
+        push_file_descriptor ("MLP_HEADER", context)
+            DECLARE  conf_text, p
+            conf_text = ""
+            IF code <> (SELECT mlp_header.product_code WHERE identity = mlp AND product_version = ver - 1) THEN
+                conf_text = conf_text:"Product Code, "
+            ENDIF
+
+            IF cert <> (SELECT mlp_header.sap_cert) THEN
+                conf_text = conf_text:"Certificate Type, "
+            ENDIF
+
+            IF type <> (SELECT mlp_header.cert_type) THEN
+                conf_text = conf_text:"Certificate Template, "
+            ENDIF
+
+            IF c_ext > 0 THEN
+                conf_text = conf_text:"External Specifications, "
+            ENDIF
+
+            conf_text = LEFTSTRING(conf_text, LENGTH(conf_text) - 2)
+
+            p = LENGTH(conf_text)
+            WHILE p > 0
+                IF SUBSTRING(conf_text, p, 1) = "," THEN
+                    conf_text = STRIP(LEFTSTRING(conf_text, p - 1):" and":SUBSTRING(conf_text, p + 1, LENGTH(conf_text)))
+                    p = 0
+                ENDIF
+                p = p - 1
+            ENDWHILE
+
+            IF (INDEX(cert, "NONE") = 0) AND 
+               (INDEX(type, "NONE") = 0) AND
+               ((code <> SELECT mlp_header.product_code WHERE identity = mlp AND product_version = ver - 1) OR
+                (cert <> SELECT mlp_header.sap_cert) OR
+                (type <> SELECT mlp_header.cert_type)) THEN
+                ext = TRUE
+            ENDIF 
+
+            IF (0 < c_ext) THEN
+                ext = TRUE
+            ENDIF
+        pop_file_descriptor(context)
+        IF (ext <> SELECT mlp_header.external_version) THEN
+            IF ext THEN
+{**************************************************************************************************************
+                ext = confirm_with_text(conf_text:ASCII(10):
+                                        "has been changed from previous version.":ASCII(10):ASCII(10):
+                                        "Set external version to 'Yes'?")
+***************************************************************************************************************}
+                ext = TRUE
+            ELSE
+{**************************************************************************************************************
+                ext = NOT(confirm_with_text("Product Code, Certificate Type/Template or External Specification":ASCII(10):
+                                            "has NOT been changed from previous version.":ASCII(10):ASCII(10):
+                                            "Set external version to 'No'?"))
+                ext = FALSE
+***************************************************************************************************************}
+            ENDIF
+        ENDIF
+    ELSEIF (ext <> SELECT mlp_header.external_version) THEN
+{**************************************************************************************************************
+        ext = NOT(confirm_with_text("No valid Certificate Type/Template has been defined":ASCII(10):ASCII(10):
+                                    "Set external version to 'No'?"))    
+        ext = FALSE
+***************************************************************************************************************}
+    ENDIF
+
+    {ASSIGN  mlp_header.external_version = ext }
+    RETURN (ext)
+
+ENDROUTINE
+
+{****************************************************************************}
+

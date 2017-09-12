@@ -1,0 +1,182 @@
+{******************************************************************************
+* Module Name   : EXPLORER_RMB
+* Purpose       : Custom RMB functions for Explorer folders
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET NAME"DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+
+DECLARE tn, t_array, t, status
+ARRAY t_array
+
+        tn = SELECT test.test_number {FOR UPDATE } 
+             WHERE sample = "   1462665"
+               AND (status = "H" 
+                 OR status = "U")
+        WHILE (tn <> EMPTY)
+            t_array[size_of_array(t_array) + 1, 1] = tn
+        NEXT test
+            tn = SELECT test.test_number
+        ENDWHILE
+
+        t = 1
+        WHILE t <= size_of_array(t_array)
+            status = (SELECT test.test_number FOR UPDATE WHERE test_number = t_array[t, 1])
+            IF status = t_array[t, 1] THEN
+                    START WRITE TRANSACTION "Recieve tests"
+                    CHANGE TEST STATUS TO "V", status
+                    IF status = EMPTY THEN
+                        UPDATE test
+                        COMMIT
+                    ELSE
+                        ROLLBACK
+                    ENDIF
+            ENDIF
+            t = t + 1
+        ENDWHILE
+
+EXIT
+
+    DECLARE test_array, browse_table, select_field, key_fields, col, c, sel_arr,
+            browse_field, order_field, link_table, i, ana, ver, comp
+    ARRAY key_fields
+    ARRAY test_array
+    ARRAY sel_arr
+
+    test_array[1, 1] = "PROD_CONST"
+    test_array[1, 2] = "REMCAT_WS"
+    test_array[1, 3] = "Sample (mL)"
+
+    browse_table = "VERSIONED_COMPONENT"
+    select_field = "NAME"
+    col = 3
+
+    browse_table = "VERSIONED_C_L_HEADER"
+    select_field = "COMP_LIST"
+    col = 4
+
+    GET_TABLE_DETAILS 'browse_table', "KEY0_FIELD", key_fields
+    GET_TABLE_DETAILS 'browse_table', "BROWSE_FIELD", browse_field
+    GET_TABLE_DETAILS 'browse_table', "ORDER_FIELD", order_field
+
+    link_table = EMPTY
+    i = 1
+    WHILE (i <= size_of_array(key_fields)) AND (link_table = EMPTY)
+        GET_FIELD_DETAILS 'browse_table'.'key_fields[i]', "LINK_TABLE", link_table
+        i = i + 1
+    ENDWHILE
+
+    c = 2
+    ver = EMPTY
+    WHILE (c < col) AND (ver = EMPTY)
+        IF link_table = "VERSIONED_ANALYSIS" THEN
+            ana = test_array[1, c]
+            ver = SELECT max_active_anal_ver.max_version WHERE identity = ana
+            IF ver <> EMPTY THEN
+                array_select_add(sel_arr, ARRAY_SELECT_EQ, "ANALYSIS", ana)
+                array_select_add(sel_arr, ARRAY_SELECT_AND, EMPTY, EMPTY)
+                array_select_add(sel_arr, ARRAY_SELECT_EQ, "ANALYSIS_VERSION", ver)
+            ENDIF
+        ELSEIF link_table = "MLP_HEADER" THEN
+            ana = test_array[1, c]
+            ver = SELECT max_active_mlp_ver.max_version WHERE identity = ana
+            IF ver <> EMPTY THEN
+                array_select_add(sel_arr, ARRAY_SELECT_EQ, "IDENTITY", ana)
+                array_select_add(sel_arr, ARRAY_SELECT_AND, EMPTY, EMPTY)
+                array_select_add(sel_arr, ARRAY_SELECT_EQ, "PRODUCT_VERSION", ver)
+            ENDIF
+        ENDIF
+        c = c + 1
+    ENDWHILE
+
+    IF select_field = "COMP_LIST" THEN
+        c = 2
+        comp = EMPTY
+        WHILE (c < col) AND (comp = EMPTY) 
+            comp = SELECT versioned_component.name
+                   WHERE analysis = ana
+                     AND analysis_version = ver
+                     AND name = test_array[1, c]
+            IF (test_array[1, c] = comp) THEN
+                c = col
+            ENDIF
+            c = c + 1
+        ENDWHILE
+        IF comp <> EMPTY THEN
+            IF size_of_array(sel_arr) > 0 THEN
+                array_select_add(sel_arr, ARRAY_SELECT_AND, EMPTY, EMPTY)
+            ENDIF
+            array_select_add(sel_arr, ARRAY_SELECT_EQ, "NAME", comp)
+        ENDIF    
+    ENDIF
+
+    IF order_field <> EMPTY THEN
+        array_select_add(sel_arr, ARRAY_SELECT_ORDER, order_field, ARRAY_SELECT_ASCENDING)
+    ENDIF
+    
+    fm(GetArray(sel_arr))
+    
+    EXIT
+
+ROUTINE example_of_usage
+{*****************************************************************************
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: None
+******************************************************************************}
+
+    JOIN LIBRARY LIT_EMAIL
+
+    DECLARE email
+    
+    define_smtp_mail_class()
+
+    CREATE OBJECT "SMTP_MAIL_CLASS" , email
+
+    email.recipient = "dktbg@chr-hansen.com"
+    email.subject   = "Sent from report '":GLOBAL("current_library"):"', Instance: '":GLOBAL("INSTANCE"):"'"
+    email.subject   = GLOBAL("current_library"):", ":GLOBAL("INSTANCE"):"@":get_client_machine_name()
+    email.body_text = "This email is automatically generated and can not receive replies."
+
+   {email.email_object    The path of the blat utility         }
+   {email.recipient       Person to send the e-mail to         }
+   {email.sender          Person sending e-mail                
+                          Default servername@chr-hansen.com    }
+   {email.subject         Subject of the e-mail                }
+   {email.attatcht        Text File to be attatched            }
+   {email.attatchb        Binary file to be attatched          }
+   {email.cc_recipient    Address of Carbon Copy recipient     }
+   {email.bcc_recipient   Blind Carbon Copy recipient          }
+   {email.server          Name or IP address of mail server    } 
+   {email.body_text       Name of a file for body text         }
+   {email.port            SMTP usually uses 25 which is default}
+   {email.send_file       File to send string to               }
+
+   {email.send_to_file ()}
+    email.send()
+
+ENDROUTINE { example_of_usage }
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************
+ *************************************************************************}

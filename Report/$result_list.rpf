@@ -1,0 +1,622 @@
+{******************************************************************************
+*
+* Module Name   : $RESULT_LIST
+*
+* Purpose       : Main routines for result list screens
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+JOIN LIBRARY $LIB_UTILS
+
+JOIN LIBRARY $LIB_TSR_FORM
+JOIN LIBRARY $LIB_TSR_GRID
+JOIN LIBRARY $LIB_TSR_USER
+JOIN LIBRARY $LIB_RE_GLOBALS
+JOIN LIBRARY $LIB_RE_RESULT
+JOIN LIBRARY $LIB_RE_SAMPLE
+JOIN LIBRARY $LIB_RE_TEST
+JOIN LIBRARY $LIB_RE_WORKSHEET
+JOIN LIBRARY $BROWSE_FIELD
+
+{*****************************************************************************}
+
+result_list_job ( "DEFAULT   .        2", RE_MODIFY )
+
+{*****************************************************************************}
+
+ROUTINE initialise_libraries
+
+        lib_tsr_form_initialise ( )
+        lib_tsr_grid_initialise ( )
+        lib_re_sample_initialise ( )
+        lib_re_test_initialise ( )
+        lib_re_result_initialise ( )
+        browse_field_initialise ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE result_list_change_header (       tsr_form_object   ,
+                                    VALUE sample_id_numeric ,
+                                    VALUE re_mode           )
+
+    DECLARE sample_id , title_message
+
+    IF re_mode = RE_DISPLAY
+
+        title_message = "RESULT_ENTRY_DISPLAY_TITLE"
+
+    ELSEIF re_mode = RE_AUTHORISE
+
+        title_message = "RESULT_ENTRY_AUTHORISE_TITLE"
+
+    ELSE
+        title_message = "RESULT_ENTRY_ENTRY_TITLE"
+        ENDIF
+
+    IF GLOBAL ( "SAMP_BROWSE" ) = "N" THEN
+
+            sample_id = (SELECT sample . id_numeric WHERE id_numeric = sample_id_numeric):"  -  ":
+                         SELECT sample . id_text WHERE id_numeric = sample_id_numeric
+
+    ELSE
+
+            sample_id = SELECT sample . id_text
+                    WHERE id_numeric = sample_id_numeric
+
+    ENDIF
+
+    tsr_form_object . header = get_user_message ( title_message , 1 ) :
+                            " - " : STRIP ( sample_id )
+
+    return ( tsr_form_object . header )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE result_list_change_header_job (       tsr_form_object   ,
+                                    VALUE jobnam ,
+                                    VALUE re_mode           )
+
+    DECLARE title_message
+
+    IF re_mode = RE_DISPLAY
+
+        title_message = "RESULT_ENTRY_DISPLAY_BY_JOB"
+
+    ELSEIF re_mode = RE_AUTHORISE
+
+        title_message = "RESULT_ENTRY_AUTH_BY_JOB"
+
+    ELSE
+        title_message = "RESULT_ENTRY_BY_JOB"
+        ENDIF
+
+    tsr_form_object . header = get_user_message ( title_message , 1 ) :
+                            " - " : SUBSTITUTE ( jobnam, " ", "" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE result_list_add_sample (       tsr_form_object   ,
+                 VALUE sample_id_numeric ,
+                 VALUE re_mode           )
+
+        DECLARE count , titles , field_names ,
+        widths , title_text , sample_text
+
+    ARRAY titles
+    ARRAY field_names
+    ARRAY widths
+
+    result_list_change_header ( tsr_form_object   ,
+                                sample_id_numeric ,
+                                re_mode           )
+
+    IF ( sample_id_numeric = SELECT sample . id_numeric ) THEN
+
+        browse_field_details ( "SAMPLE"                ,
+                       ""                      ,
+                       tsr_form_object . width ,
+                       field_names             ,
+                               titles                  ,
+                               widths                  )
+
+    ENDIF
+
+    count = 1
+    title_text = ""
+    sample_text = ""
+
+    WHILE ( field_names [ count ] <> EMPTY ) DO
+
+                title_text = title_text : PAD ( titles [ count , 1 ] ,
+                                " "                  ,
+                                widths [ count ]     ) : " "
+
+                sample_text = sample_text
+                  : PAD ( SELECT sample . 'field_names [ count ]' ,
+                          " "                                     ,
+                      widths [ count ]                        )
+                  : " "
+
+                count = count + 1
+
+    ENDWHILE
+
+    tsr_form_object . add_display ( title_text            ,
+                    1                     ,
+                    1             ,
+                    PROMPT_RENDITION_BOLD )
+
+    tsr_form_object . add_display ( sample_text           ,
+                    1                     ,
+                    2             ,
+                    PROMPT_RENDITION_BOLD )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE result_list_add_gui ( tsr_form_object   ,
+                              tsr_grid_object   ,
+                              re_mode           )
+
+    tsr_grid_object . browse_row = tsr_form_object . height
+
+    IF NOT GLOBAL ( "RES_SPLITTER" ) THEN
+
+        tsr_form_object . add_prompt ( tsr_grid_object . mlp_form )
+        tsr_form_object . add_prompt ( tsr_grid_object . audit_form )
+            tsr_form_object . add_prompt ( tsr_grid_object . incidents_form )
+
+    ENDIF
+
+    tsr_grid_object . toolbox . setup ( tsr_form_object . header ,
+                                        tsr_grid_object          ,
+                                        tsr_form_object          ,
+                                        re_mode                  )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE result_list_sample ( VALUE sample_id_numeric ,
+                 VALUE re_mode           )
+
+        DECLARE tsr_grid_object, tsr_form_object, status, test_parameter
+
+        { Initialise libraries }
+
+        initialise_libraries ( )
+
+    IF lib_tsr_user_pre_results_entry ( sample_id_numeric ,
+                                        re_mode           ) THEN
+
+        { Setup the TSR form }
+
+        lib_tsr_subs_grid_create ( RE_TSR_GRID       ,
+                                   tsr_grid_object   ,
+                                   re_mode           ,
+                                   sample_id_numeric )
+
+        lib_tsr_form_create_form ( tsr_form_object            ,
+                                   tsr_grid_object            ,
+                                   "RESULT_ENTRY_LIST_SAMPLE" )
+
+        result_list_change_header ( tsr_form_object   ,
+                                        sample_id_numeric ,
+                                        re_mode           )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+            result_list_add_gui ( tsr_form_object   ,
+                                  tsr_grid_object   ,
+                                  re_mode           )
+        ELSE
+            result_list_add_sample ( tsr_form_object   ,
+                                     sample_id_numeric ,
+                                     re_mode           )
+        ENDIF
+
+        tsr_form_object . help_context = "$TSR_" : re_mode
+
+            { build results list and prompt }
+
+        test_parameter = EMPTY
+            status = tsr_grid_object . select_samples ( sample_id_numeric ,
+                                                    test_parameter    )
+
+        IF tsr_grid_object . cell_rows > 0 THEN
+
+                    tsr_grid_object . create_blank_results ( )
+
+            screen_begin_update ( )
+ 
+                    tsr_form_object . start_prompt ( )
+
+                    tsr_form_object . wait_prompt ( )
+
+                    tsr_form_object . end_prompt ( )
+
+            screen_end_update ( )
+
+            ELSEIF status <> EMPTY THEN
+
+            flash_message ( status, FALSE )
+            
+        ENDIF
+
+            tsr_grid_object . release_results ( )
+
+        ROLLBACK
+
+        lib_tsr_user_post_results_entry ( sample_id_numeric ,
+                          re_mode           )
+
+    ENDIF                        
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE result_list_test_and_sample ( VALUE test_name         ,
+                      VALUE sample_id_numeric ,
+                      VALUE re_mode           )
+
+        DECLARE ttr_grid_object, ttr_form_object, status
+
+        { Initialise libraries }
+
+        initialise_libraries ( )
+                                          
+    IF lib_ttr_user_pre_results_entry ( test_name         ,
+                                        sample_id_numeric ,
+                                        re_mode           ) THEN
+
+            { Setup the TTR form }
+
+        lib_tsr_grid_create ( RE_TTR_GRID     ,
+                              ttr_grid_object ,
+                              re_mode         )
+
+        lib_tsr_form_create_form ( ttr_form_object                     ,
+                                   ttr_grid_object                     ,
+                                   "RESULT_ENTRY_LIST_TEST_AND_SAMPLE" )
+
+        result_list_change_header ( ttr_form_object   ,
+                                        sample_id_numeric ,
+                                        re_mode           )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+            result_list_add_gui ( ttr_form_object   ,
+                                  ttr_grid_object   ,
+                                  re_mode           )
+        ELSE
+            result_list_add_sample ( ttr_form_object   ,
+                                     sample_id_numeric ,
+                                     re_mode           )
+        ENDIF
+
+        ttr_form_object . help_context = "$TTR_" : re_mode
+
+            { build results list and prompt }
+
+            status = ttr_grid_object . select_samples ( sample_id_numeric ,
+                                                    test_name         )
+
+        IF ttr_grid_object . cell_rows > 0 THEN
+
+                    ttr_grid_object . create_blank_results ( )
+
+            screen_begin_update ( )
+
+                    ttr_form_object . start_prompt ( )
+
+                    ttr_form_object . wait_prompt ( )
+                                          
+                    ttr_form_object . end_prompt ( )
+
+            screen_end_update ( )
+
+            ELSEIF status <> EMPTY THEN
+
+            flash_message ( status, FALSE )
+
+        ENDIF
+
+            ttr_grid_object . release_results ( )
+  
+        ROLLBACK
+
+        lib_ttr_user_post_results_entry ( test_name         ,
+                          sample_id_numeric ,                    
+                          re_mode           )
+                                
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE result_list_sample_worksheet ( VALUE worksheet_id ,
+                           VALUE re_mode      )
+
+DECLARE rsw_grid_object, rsw_form_object, status, sample_id, test_array
+
+    ARRAY test_array ARRAYSIZE (0)
+
+        { Initialise libraries }
+
+    status = lib_re_worksheet_read_sample ( worksheet_id ,
+                        re_mode      ,
+                        sample_id    ,
+                        test_array   )
+                                          
+    IF status = EMPTY THEN
+
+        initialise_libraries ( )
+
+        { Setup the RSW grid }
+
+        lib_tsr_grid_create ( RE_RSW_GRID     ,
+                              rsw_grid_object ,
+                              re_mode         )
+
+        { Setup the RSW form }
+
+        lib_tsr_form_create_form ( rsw_form_object                      ,
+                                   rsw_grid_object                      ,
+                                   "RESULT_ENTRY_LIST_WORKSHEET_SAMPLE" )
+
+        result_list_change_header ( rsw_form_object ,
+                                        sample_id       ,
+                                        re_mode         )
+
+            { Associate the grid with the form }
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+            result_list_add_gui ( rsw_form_object   ,
+                                  rsw_grid_object   ,
+                                  re_mode           )
+        ELSE
+            result_list_add_sample ( rsw_form_object ,
+                                         sample_id       ,
+                                         re_mode         )
+        ENDIF
+
+        { Add help to the form - context string dependent
+         on result entry mode }
+
+            rsw_form_object . help_context = "$RSW_" : re_mode
+                                          
+            { build results list and prompt }
+
+            status =  rsw_grid_object . select_samples ( sample_id  ,
+                                 test_array )
+
+        IF rsw_grid_object . cell_rows > 0 THEN
+
+                    rsw_grid_object . create_blank_results ( )
+
+            screen_begin_update ( )
+
+                    rsw_form_object . start_prompt ( )
+
+                    rsw_form_object . wait_prompt ( )
+                                          
+                    rsw_form_object . end_prompt ( )
+
+            screen_end_update ( )
+
+            ELSEIF status <> EMPTY THEN
+
+            flash_message ( status, FALSE )
+
+        ENDIF
+
+            rsw_grid_object . release_results ( )
+
+        ROLLBACK
+
+    ELSE
+
+        flash_message ( status, TRUE )
+
+    ENDIF
+
+ENDROUTINE
+                                          
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE result_list_test ( VALUE test_number       ,
+               VALUE sample_id_numeric ,
+                   VALUE re_mode           )
+
+        DECLARE ttr_grid_object, ttr_form_object, status , test_array
+
+    ARRAY test_array ARRAYSIZE (0)
+
+    test_array [ 1 ] = test_number
+
+        { Initialise libraries }
+                                          
+        initialise_libraries ( )
+
+    IF lib_stt_user_pre_results_entry ( test_number       ,
+                                        sample_id_numeric ,
+                                        re_mode           ) THEN
+
+        { Setup the TTR grid }
+
+        lib_tsr_grid_create ( RE_RSW_GRID     ,
+                              ttr_grid_object ,
+                              re_mode         )
+
+        { Setup the TTR form }
+
+        lib_tsr_form_create_form ( ttr_form_object                     ,
+                                   ttr_grid_object                     ,
+                                   "RESULT_ENTRY_LIST_TEST_AND_SAMPLE" )
+
+        result_list_change_header ( ttr_form_object   ,
+                                        sample_id_numeric ,
+                                        re_mode           )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+            result_list_add_gui ( ttr_form_object   ,
+                                  ttr_grid_object   ,
+                                  re_mode           )
+        ELSE
+            result_list_add_sample ( ttr_form_object   ,
+                                     sample_id_numeric ,
+                                     re_mode           )
+        ENDIF
+
+        ttr_form_object . help_context = "$TTR_" : re_mode
+
+        { build results list and prompt }
+
+            status =  ttr_grid_object . select_samples ( sample_id_numeric ,
+                                 test_array        )
+
+        IF ttr_grid_object . cell_rows > 0 THEN
+
+                    ttr_grid_object . create_blank_results ( )
+
+            screen_begin_update ( )   
+
+                    ttr_form_object . start_prompt ( )
+
+                    ttr_form_object . wait_prompt ( )
+                    
+                    ttr_form_object . end_prompt ( )
+
+            screen_end_update ( )
+
+            ELSEIF status <> EMPTY THEN
+
+            flash_message ( status, FALSE )
+
+        ENDIF
+
+            ttr_grid_object . release_results ( )
+
+        ROLLBACK
+
+        lib_stt_user_post_results_entry ( test_number       ,
+                          sample_id_numeric ,                    
+                          re_mode           )
+
+    ENDIF                                
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+ROUTINE result_list_job ( VALUE jobnam  ,
+                          VALUE re_mode )
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DECLARE job_list_grid_object,
+            job_list_form_object,
+            status,
+            test_array
+
+    test_array = EMPTY { All test for all samples }
+
+        { Initialise libraries }
+
+    initialise_libraries ( )
+
+    { Setup the Job List grid }
+
+    lib_tsr_grid_create ( RE_JOB_LIST_GRID     ,
+                          job_list_grid_object ,
+                          re_mode              )
+
+    { Setup the job_list form }
+
+    lib_tsr_form_create_form ( job_list_form_object  ,
+                               job_list_grid_object  ,
+                               "RESULT_ENTRY_BY_JOB" )
+                               
+    result_list_change_header_job ( job_list_form_object ,
+                                    jobnam               ,
+                                    re_mode              )
+
+        { Associate the grid with the form }
+
+    result_list_add_gui ( job_list_form_object ,
+                          job_list_grid_object ,
+                          re_mode              )
+
+    { Add help to the form - context string dependent
+     on result entry mode }
+
+    job_list_form_object . help_context = "$job_list_" : re_mode
+                                          
+        { build results list and prompt }
+
+        status =  job_list_grid_object . select_samples ( jobnam, test_array )
+
+    IF job_list_grid_object . cell_rows > 0 THEN
+
+                job_list_grid_object . create_blank_results ( )
+
+        screen_begin_update ( )
+
+                job_list_form_object . start_prompt ( )
+
+                job_list_form_object . wait_prompt ( )
+                                          
+                job_list_form_object . end_prompt ( )
+
+        screen_end_update ( )
+
+        ELSEIF status <> EMPTY THEN
+
+        flash_message ( status, FALSE )
+
+    ENDIF
+
+        job_list_grid_object . release_results ( )
+
+    ROLLBACK
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}

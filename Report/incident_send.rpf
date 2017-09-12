@@ -1,0 +1,1623 @@
+    {***********************************************************************
+*
+* Module Name   : INCIDENTS_SEND
+*
+* Purpose       : Sends incidents to webpage.
+*
+* Document Ref  : LIMS Design Specifications related to MES, version .2
+*
+* Specification : N/a
+*
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-04-23      Fredrik Lindstein   Created
+************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $LIMSML_HELPER
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_DDE
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+{The first n fields are shown in Send Incident dialog (n = 9}
+CONSTANT C_SEND                 = 1
+CONSTANT C_TEMPLATE_ID          = 2
+CONSTANT C_DESCRIPTION          = 3
+CONSTANT C_ANALYSIS             = 4
+CONSTANT C_COMPONENT            = 5
+CONSTANT C_SHOW_RESULT          = 6
+CONSTANT C_INCIDENT_DATE        = 7
+CONSTANT C_REPORTED_BY          = 8
+CONSTANT C_SAMPLING_POINT       = 9
+CONSTANT C_INCIDENT_ID          = 10
+CONSTANT C_NC_STATUS            = 11
+CONSTANT C_NC_VIEW              = 12
+CONSTANT C_NC_EDIT              = 13
+CONSTANT C_SENT                 = 14
+CONSTANT C_REMARK               = 15
+CONSTANT C_CHECKLIST_ID         = 16
+CONSTANT C_REVIEW_INSPECTORS    = 17
+CONSTANT C_AUTHORISE_INSPECTORS = 18
+CONSTANT C_REVIEW_VERSION       = 19
+CONSTANT C_AUTHORISE_VERSION    = 20
+CONSTANT C_SUBJECT_TABLE        = 21
+CONSTANT C_SUBJECT_FIELD        = 22
+CONSTANT C_LOCATION_ID          = 23
+CONSTANT C_TEST_NUMBER          = 24
+CONSTANT C_JOB_NAME             = 25
+CONSTANT C_BATCH_NAME           = 26
+CONSTANT C_PRODUCT              = 27
+CONSTANT C_STATUS               = 28
+CONSTANT C_SAMPLE               = 29
+CONSTANT C_RESULT_UNIT          = 30
+CONSTANT C_RESULT_ID            = 31
+CONSTANT C_RESULT               = 32
+CONSTANT C_TRANSFER_ID          = 33
+CONSTANT C_ID_TEXT              = 34
+CONSTANT C_INCIDENT_TYPE        = 35
+
+
+{TESTAREA}
+DECLARE j, s, FilePath, check_ok, out_val, tw
+
+J = "501435/3219865"
+s = "   1340685"
+tw= TRUE
+ShowIncidentsForJob(j, s tw)
+
+{Open org file and read content}
+{
+FILE OPEN FilePath, check_ok
+FILE READ FilePath, out_val, check_ok
+FILE CLOSE FilePath, check_ok
+
+j = GetValueOutOfXMLFile(out_val, "sdfasdfasd")
+
+IF j = EMPTY THEN
+    j = "No answer!"
+ENDIF
+}
+{/TESTAREA}
+
+{***********************************************
+Routine:    PrepareIncident
+Purpuse:    Handles inc
+Parameters: self    object  the calendar grid
+            job     String  Job identity
+***********************************************}
+ROUTINE PrepareIncident( explorer_rmb, record_object, collection )
+DECLARE job_id, sample
+
+    collection.set_first()
+    sample = " " {SELECT all_incidents.sample   IN OBJECT collection.current}
+    job_id = SELECT all_incidents.job_name IN OBJECT collection.current
+    ShowIncidentsForJob(job_id, sample, TRUE)
+
+ENDROUTINE
+
+{***********************************************
+Routine:    RMBShowIncident
+Purpuse:    Handles inc
+Parameters: self    object  the calendar grid
+            job     String  Job identity
+***********************************************}
+ROUTINE RMBShowIncident( explorer_rmb, record_object, collection )
+DECLARE sample, job_id, CountInc
+
+    collection.set_first()
+    view_name   = collection.table
+    IF view_name = "QC_TEST_VIEW" THEN
+        sample = SELECT 'view_name'.sample   IN OBJECT collection.current
+        job_id = SELECT 'view_name'.job_name IN OBJECT collection.current
+    ELSE
+        sample = SELECT 'view_name'.sample   IN OBJECT collection.current
+        job_id = SELECT 'view_name'.job      IN OBJECT collection.current
+    ENDIF
+   
+   CountInc = SELECT COUNT incidents WHERE job_name = job_id
+
+    {fm("$incident_send.rpf":ASCII(10):CountInc:" = SELECT COUNT incidents WHERE job_name = ":job_id)}
+
+    IF CountInc = 0 THEN
+        fm ("No incidents on job: ": job_id)
+    ELSE
+        ShowIncidentsForJob(job_id, sample, TRUE)
+    ENDIF
+ENDROUTINE
+
+{***********************************************
+Routine:    ShowIncidentsForJob
+Purpuse:    Handles inc
+Parameters: self    object  the calendar grid
+            job     String  Job identity
+***********************************************}
+GLOBAL ROUTINE ShowIncidentsForJob( VALUE JobId, VALUE sample, VALUE ShowSend)
+DECLARE grid, form
+
+    form = create_form(JobId, ShowSend)
+    grid = create_grid (form)
+
+    form.start_prompt ()
+    pop_grid (grid, STRIP(JobId), sample, ShowSend)
+    form.wait_prompt ()
+    form.end_prompt ()
+
+ENDROUTINE
+
+{***********************************************
+Routine:    PrepareJob
+Purpuse:    Used to populate the grid
+Parameters: self    object  the calendar grid
+            job     String  Job identity
+***********************************************}
+ROUTINE PrepareJob( explorer_rmb, record_object, collection )
+DECLARE sample, job_id
+
+    collection.set_first()
+    sample = " " {SELECT all_incidents.sample   IN OBJECT collection.current}
+    job_id = SELECT job_header.job_name IN OBJECT collection.current
+    ShowIncidentsForJob(job_id, sample, TRUE)
+
+ ENDROUTINE
+
+
+{***********************************************
+Routine: check_header
+Purpuse: Checks if title has been set.
+Parameters: None
+***********************************************}
+ROUTINE check_header (form)
+DECLARE len, Answer
+
+    Answer = FALSE
+    len = LENGTH(form.prompt_objects [1].value)
+
+    IF len > 0 THEN
+        Answer = TRUE
+    ENDIF
+
+    RETURN(Answer)
+
+ENDROUTINE
+
+{***********************************************
+Routine: create_form
+Purpuse: Create incidents form
+Parameters: Job string Value for header
+***********************************************}
+ROUTINE create_form (VALUE job, VALUE ShowSend)
+DECLARE form, button_prompt, header_prompt, close_button, fromi, toi
+DECLARE LinkArray
+
+ARRAY LinkArray ARRAY_SIZE(0,3)
+{
+    LinkArray [i, 1] = RowNum
+    LinkArray [i, 2] = ColNum
+    LinkArray [i, 3] = Link
+}
+
+
+CREATE OBJECT PROMPT_CLASS_FORM, form
+
+form.header         = "Incidents for ": strip(job)
+form.footer         = "Click EXIT to close"
+form.row        = 5
+form.column     = 10
+form.width      = 100
+form.height     = 10 {18}
+form.return_behaviour   = FORM_RETURN_STAY
+form.button_style   = FORM_BUTTON_NONE
+form.prompt_id  = "IncidentsSend"
+form.user_info = LinkArray
+
+
+PROMPT OBJECT header_prompt
+    FORMAT TEXT
+    WITH (  length = 50, leave_prompt_routine = "VALIDATE_HEADER")
+    ON LINE 1 FROM 30
+
+form.add_prompt (header_prompt)
+form.add_display("Descriptive title for N.C (max 50 chars): ", 1, 1, PROMPT_RENDITION_BOLD)
+
+fromi   = 1
+toi     = 10
+
+IF ShowSend THEN
+{
+
+}
+    PROMPT OBJECT button_prompt
+        CLASS   "STD_PROMPT_BUTTON"
+        ON LINE 8
+        FROM    fromi TO toi
+        WITH (  caption = "Send",
+            vgl_library = GLOBAL ("CURRENT_LIBRARY") ,
+            mouse_click_routine = "send_data" )
+
+    form.add_prompt (button_prompt)
+
+    fromi   = 15
+    toi     = 25
+ENDIF
+
+PROMPT OBJECT   close_button
+    CLASS   "STD_PROMPT_BUTTON"
+    ON LINE 8
+    FROM    fromi TO toi
+    WITH (  caption = "Close" ,
+        send_lastkey = "EXIT" )
+
+form.add_prompt (close_button)
+
+RETURN (form)
+
+ENDROUTINE
+
+{*************************************************
+Routine: create_grid
+Purpuse: Create grid
+Parameters: form    object  form to paste grid to
+**************************************************}
+ROUTINE create_grid (form)
+DECLARE grid
+
+CREATE OBJECT PROMPT_CLASS_GRID, grid
+
+ARRAY grid.userinfo ARRAYSIZE (0,40)
+
+grid.row = 3
+grid.column = 1
+grid.width = form.width - 2
+grid.height = form.height - 1
+grid.cell_rows = 0
+grid.cell_columns = 10
+
+grid.column_size[ 1] = 4
+grid.column_size[ 2] = 10
+grid.column_size[ 3] = 40
+grid.column_size[ 4] = 10
+grid.column_size[ 5] = 20
+grid.column_size[ 6] = 10
+grid.column_size[ 7] = 20
+grid.column_size[ 8] = 10
+grid.column_size[ 9] = 15
+grid.column_size[10] = 15
+{grid.column_size[11] = 10
+grid.column_size[12] = 12
+grid.column_size[13] = 12}
+
+grid.title_separator_top = GRID_SEPARATOR_BOTH
+grid.column_separator [ 1] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 2] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 3] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 4] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 5] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 6] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 7] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 8] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 9] = GRID_SEPARATOR_BOTH
+grid.column_separator [10] = GRID_SEPARATOR_BOTH
+{grid.column_separator [10] = GRID_SEPARATOR_BOTH
+grid.column_separator [11] = GRID_SEPARATOR_BOTH
+grid.column_separator [12] = GRID_SEPARATOR_BOTH}
+
+grid.title_size_top = 1
+grid.title_rendition_top = PROMPT_RENDITION_BOLD
+
+grid.title_text_top [ 1, 1] = "Send"
+grid.title_text_top [ 2, 1] = "Template"
+grid.title_text_top [ 3, 1] = "Incident text"
+grid.title_text_top [ 4, 1] = "Analysis"
+grid.title_text_top [ 5, 1] = "Component"
+grid.title_text_top [ 6, 1] = "Result"
+grid.title_text_top [ 7, 1] = "Date"
+grid.title_text_top [ 8, 1] = "Reported by"
+grid.title_text_top [ 9, 1] = "Smp. Point"
+grid.title_text_top [10, 1] = "Incidient"
+{grid.title_text_top [10, 1] = "NC Status"
+grid.title_text_top [11, 1] = "View"
+grid.title_text_top [12, 1] = "Edit"}
+
+grid.display_cell_routine = "DISPLAY_GRID_CELL"
+grid.prompt_cell_routine = "PROMPT_GRID_CELL"
+grid.mouse_click_routine = "GRID_MOUSE_CLICKED"
+
+grid.fixed_columns_left = 2
+form.add_prompt (grid)
+
+RETURN (grid)
+
+ENDROUTINE
+
+{***********************************************
+Routine: prompt_grid_cell
+Purpuse: Standard routine to prompt grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE prompt_grid_cell (  self ,
+                VALUE cell_column ,
+                VALUE cell_row ,
+                window ,
+                VALUE column ,
+                VALUE row ,
+                VALUE cell_width ,
+                VALUE cell_height )
+
+PROMPT FOR self.user_info [cell_row, cell_column]
+        BOLD UNDERLINE
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+        WITH (display_only = TRUE)
+
+ENDROUTINE
+
+{***********************************************
+Routine: display_grid_cell
+Purpuse: Standard routine to display grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE display_grid_cell (     self ,
+                VALUE cell_column ,
+                VALUE cell_row ,
+                window ,
+                VALUE column ,
+                VALUE row ,
+                VALUE cell_width ,
+                VALUE cell_height )
+
+DISPLAY self.user_info [cell_row, cell_column]
+    AT column, row
+    IN WINDOW window
+    TO column + cell_width -1
+
+ENDROUTINE
+
+{***********************************************
+Routine:    pop_grid
+Purpuse:    Used to populate the grid
+Parameters: self    object  the calendar grid
+            job     String  Job identity
+***********************************************}
+ROUTINE pop_grid (self, VALUE job, sample, VALUE ShowSend)
+DECLARE i, inc, IsSend, grid, SMP, SmpI, SmpArr, Linki, standard, id_text, sampling_point, dynamic_sample_sql, dynamic_inc_sql,
+        incident_id, status, checklist_id, template_id, review_inspectors, authorise_inspectors, review_version, authorise_version,
+        description, incident_date, reported_by, date_exp, subject_table, subject_field, location_id, remark,
+        job_id, batch_name, product, test_number, analysis, test_count, resultid,  result_name, result_text, units, sent,
+        nc_status, nc_identity, nc_link_edit, nc_link_read
+
+grid = self
+SmpI = 1
+ARRAY SmpArr ARRAY_SIZE(0, 1)
+
+standard = SELECT all_sample.standard WHERE id_numeric = sample
+
+CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sample_sql
+
+IF standard THEN
+    dynamic_sample_sql.add_to_sql_statement  ( "SELECT DISTINCT sample " )
+    dynamic_sample_sql.add_to_sql_statement  ( "FROM all_incidents " )
+    dynamic_sample_sql.add_to_sql_statement  ( "WHERE sample  = '":sample:"'" )
+    dynamic_sample_sql.add_select_field      ( "incidents", "sample")
+    dynamic_sample_sql.add_to_sql_statement  ( "ORDER BY sample " )
+ELSE
+    dynamic_sample_sql.add_to_sql_statement  ( "SELECT DISTINCT sample " )
+    dynamic_sample_sql.add_to_sql_statement  ( "FROM all_incidents " )
+    dynamic_sample_sql.add_to_sql_statement  ( "WHERE job_name  = '":job:"'" )
+    dynamic_sample_sql.add_select_field      ( "incidents", "sample")
+    dynamic_sample_sql.add_to_sql_statement  ( "ORDER BY sample " )
+ENDIF
+
+dynamic_sample_sql.execute ( )
+SMP  = dynamic_sample_sql.select ( 1 )
+
+WHILE SMP <> EMPTY
+    IF NUMTEXT(SMP) THEN
+        {IF NUMERIC(SMP) <> 0 THEN}
+            SmpArr[size_of_array(SmpArr) + 1, 1] = SMP
+        {ENDIF}
+    ENDIF
+    dynamic_sample_sql.next ()
+    SMP = dynamic_sample_sql.select ( 1 )
+ENDWHILE
+
+i = 1
+WHILE SmpArr[SmpI, 1] <> EMPTY
+
+CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_inc_sql
+
+{                                                 1            2       3             4            5                  6                     7               8                      }
+dynamic_inc_sql.add_to_sql_statement  ( "SELECT incident_id, status, checklist_id, template_id, review_inspectors, authorise_inspectors, review_version, authorise_version, " )
+{                                                 9            10             11           12        13             14             15           16      17        18              }
+dynamic_inc_sql.add_to_sql_statement  (        "description, incident_date, reported_by, date_exp, subject_table, subject_field, location_id, remark, job_name, batch_name,  " )
+{                                                 19       20      21           22        23          24        25           26           27     28}
+dynamic_inc_sql.add_to_sql_statement  (        "product, sample, test_number, analysis, test_count, resultid, result_name, result_text, units, sent,  " )
+{                                                 29         30           31            32            33}
+dynamic_inc_sql.add_to_sql_statement  (        "nc_status, nc_identity, nc_link_edit, nc_link_read ") {, rownum} 
+dynamic_inc_sql.add_to_sql_statement  ( "FROM all_incidents " )
+{dynamic_inc_sql.add_to_sql_statement  ( "WHERE sample  = '":SmpArr[SmpI, 1]:"'" )}
+dynamic_inc_sql.add_to_sql_statement  ( "WHERE sample  = '":SmpArr[SmpI, 1]:"' AND job_name = '":job:"'" )
+dynamic_inc_sql.add_select_field      ( "all_incidents", "incident_id")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "status")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "checklist_id")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "template_id")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "review_inspectors")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "authorise_inspectors")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "review_version")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "authorise_version")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "description")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "incident_date")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "reported_by")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "date_exp")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "subject_table")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "subject_field")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "location_id")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "remark")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "job_name")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "batch_name")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "product")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "sample")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "test_number")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "analysis")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "test_count")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "resultid")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "result_name")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "result_text")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "units")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "sent")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "nc_status")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "nc_identity")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "nc_link_edit")
+dynamic_inc_sql.add_select_field      ( "all_incidents", "nc_link_read")
+{dynamic_inc_sql.add_to_sql_statement  ( "ORDER by '":SmpArr[SmpI, 1]:"'" )}
+dynamic_inc_sql.add_to_sql_statement  ( "ORDER by sample" )
+
+dynamic_inc_sql.execute ( )
+inc  = dynamic_inc_sql.select ( 1 )
+
+    IsSend = FALSE
+    WHILE inc <> EMPTY
+        incident_id             = STRIP(dynamic_inc_sql.select ( 1))
+        status                  = STRIP(dynamic_inc_sql.select ( 2))
+        checklist_id            = STRIP(dynamic_inc_sql.select ( 3))
+        template_id             = STRIP(dynamic_inc_sql.select ( 4))
+        review_inspectors       = STRIP(dynamic_inc_sql.select ( 5))
+        authorise_inspectors    = STRIP(dynamic_inc_sql.select ( 6))
+        review_version          = STRIP(dynamic_inc_sql.select ( 7))
+        authorise_version       = STRIP(dynamic_inc_sql.select ( 8))
+        description             = STRIP(dynamic_inc_sql.select ( 9))
+        incident_date           = STRIP(dynamic_inc_sql.select (10))
+        reported_by             = STRIP(dynamic_inc_sql.select (11))
+        date_exp                = STRIP(dynamic_inc_sql.select (12))
+        subject_table           = STRIP(dynamic_inc_sql.select (13))
+        subject_field           = STRIP(dynamic_inc_sql.select (14))
+        location_id             = STRIP(dynamic_inc_sql.select (15))
+        remark                  = STRIP(dynamic_inc_sql.select (16))
+        job_id                  = STRIP(dynamic_inc_sql.select (17))
+        batch_name              = STRIP(dynamic_inc_sql.select (18))
+        product                 = STRIP(dynamic_inc_sql.select (19))
+        sample                  = STRIP(dynamic_inc_sql.select (20))
+        test_number             = STRIP(dynamic_inc_sql.select (21))
+        analysis                = STRIP(dynamic_inc_sql.select (22))
+        test_count              = STRIP(dynamic_inc_sql.select (23))
+        resultid                = STRIP(dynamic_inc_sql.select (24))
+        result_name             = STRIP(dynamic_inc_sql.select (25))
+        result_text             = STRIP(dynamic_inc_sql.select (26))
+        units                   = STRIP(dynamic_inc_sql.select (27))
+        sent                    = STRIP(dynamic_inc_sql.select (28))
+        nc_status               = STRIP(dynamic_inc_sql.select (29))
+        nc_identity             = STRIP(dynamic_inc_sql.select (30))
+        nc_link_edit            = STRIP(dynamic_inc_sql.select (31))
+        nc_link_read            = STRIP(dynamic_inc_sql.select (32))
+        inc                     = STRIP(dynamic_inc_sql.select (33))
+
+        IF i >= 1 THEN
+            grid.insert_row(i, 1 , GRID_SEPARATOR_NONE)
+        ENDIF
+
+        IF sent = EMPTY THEN
+            sent = FALSE
+        ENDIF
+
+        IF sent THEN
+            grid.user_info [i,C_SEND]       = "Sent"
+        ELSE
+            IF ShowSend THEN
+                grid.user_info [i,C_SEND]   = "Yes"
+            ELSE
+                grid.user_info [i,C_SEND]   = " "
+            ENDIF
+        ENDIF
+
+        grid.user_info [i, C_INCIDENT_ID          ] = incident_id
+        grid.user_info [i, C_TEMPLATE_ID          ] = template_id
+        grid.user_info [i, C_DESCRIPTION          ] = description
+        grid.user_info [i, C_COMPONENT            ] = result_name
+        IF test_count = 0 THEN
+            grid.user_info [i, C_ANALYSIS             ] = " "
+        ELSE
+            grid.user_info [i, C_ANALYSIS             ] = analysis:"/":test_count
+        ENDIF
+        grid.user_info [i, C_INCIDENT_DATE        ] = incident_date
+        grid.user_info [i, C_REPORTED_BY          ] = reported_by
+        grid.user_info [i, C_NC_STATUS            ] = nc_status
+
+        IF BLANK(incident_id) THEN
+            grid.user_info [i, C_NC_VIEW              ] = ""
+            grid.user_info [i, C_NC_EDIT              ] = ""
+        ELSE
+            grid.user_info [i, C_NC_VIEW              ] = "View NC " : nc_identity
+            Linki = size_of_array(form.user_info) + 1
+            form.user_info[Linki, 1] = i
+            form.user_info[Linki, 2] = C_NC_VIEW
+            form.user_info[Linki, 3] = nc_link_read
+
+            grid.user_info [i, C_NC_EDIT              ] = "Edit NC" : nc_identity
+            Linki = size_of_array(form.user_info) + 1
+            form.user_info[Linki, 1] = i
+            form.user_info[Linki, 2] = C_NC_EDIT
+            form.user_info[Linki, 3] = nc_link_edit
+        ENDIF
+
+        grid.user_info [i, C_SENT                 ] = sent
+        grid.user_info [i, C_REMARK               ] = remark
+        grid.user_info [i, C_CHECKLIST_ID         ] = checklist_id
+        grid.user_info [i, C_REVIEW_INSPECTORS    ] = review_inspectors
+        grid.user_info [i, C_AUTHORISE_INSPECTORS ] = authorise_inspectors
+        grid.user_info [i, C_REVIEW_VERSION       ] = review_version
+        grid.user_info [i, C_AUTHORISE_VERSION    ] = authorise_version
+        grid.user_info [i, C_SUBJECT_TABLE        ] = subject_table
+        grid.user_info [i, C_SUBJECT_FIELD        ] = subject_field
+        grid.user_info [i, C_LOCATION_ID          ] = location_id
+        grid.user_info [i, C_TEST_NUMBER          ] = test_number
+        grid.user_info [i, C_JOB_NAME             ] = job_id
+        grid.user_info [i, C_BATCH_NAME           ] = batch_name
+        grid.user_info [i, C_PRODUCT              ] = product
+        grid.user_info [i, C_STATUS               ] = status
+        grid.user_info [i, C_SAMPLE               ] = sample
+        grid.user_info [i, C_RESULT_UNIT          ] = units
+        grid.user_info [i, C_RESULT_ID            ] = result_id
+        grid.user_info [i, C_RESULT               ] = result_text
+        grid.user_info [i, C_TRANSFER_ID          ] = nc_identity
+        grid.user_info [i, C_ID_TEXT              ] = sample
+        grid.user_info [i, C_SHOW_RESULT          ] = result_text:" ":units
+
+        IF STRIP(grid.user_info [i, C_SAMPLE]) = "" then
+            grid.user_info [i, C_SAMPLING_POINT       ] = grid.user_info [i, C_SAMPLE]
+        ELSE
+            id_text         = STRIP(SELECT sample.id_text where id_numeric = grid.user_info [i, C_SAMPLE])
+            sampling_point  = STRIP(SELECT sample.sampling_point WHERE id_numeric = grid.user_info [i, C_SAMPLE])
+            grid.user_info [i, C_SAMPLING_POINT       ] = STRIP(grid.user_info [i, C_SAMPLE]):" - ":sampling_point
+        ENDIF
+        i = i + 1
+
+    dynamic_inc_sql.next()
+    inc = dynamic_inc_sql.select(1)
+    ENDWHILE
+
+{
+************************************************************************
+************************************************************************
+    inc = SELECT all_incidents.incident_id
+        WHERE sample = SmpArr[SmpI, 1]
+        ORDER ON SAMPLE, TEST_NUMBER, INCIDENT_DATE
+
+    WHILE inc <> EMPTY DO
+        IF i >= 1 THEN
+            grid.insert_row(i, 1 , GRID_SEPARATOR_NONE)
+        ENDIF
+        IsSend = SELECT all_incidents.SENT
+
+        IF IsSend = EMPTY THEN
+            IsSend = FALSE
+        ENDIF
+
+        IF IsSend THEN
+            grid.user_info [i,C_SEND]       = "Sent"
+        ELSE
+            IF ShowSend THEN
+                grid.user_info [i,C_SEND]   = "Yes"
+            ELSE
+                grid.user_info [i,C_SEND]   = " "
+            ENDIF
+        ENDIF
+
+        grid.user_info [i, C_INCIDENT_ID          ] = STRIP(SELECT all_incidents.INCIDENT_ID)
+        grid.user_info [i, C_TEMPLATE_ID          ] = STRIP(SELECT all_incidents.TEMPLATE_ID)
+        grid.user_info [i, C_DESCRIPTION          ] = STRIP(SELECT all_incidents.DESCRIPTION)
+        grid.user_info [i, C_COMPONENT            ] = STRIP(SELECT all_incidents.RESULT_NAME)
+        IF STRIP(SELECT all_incidents.TEST_COUNT) = 0 THEN
+            grid.user_info [i, C_ANALYSIS             ] = " "
+        ELSE
+            grid.user_info [i, C_ANALYSIS             ] = STRIP(SELECT all_incidents.ANALYSIS):"/":STRIP(SELECT all_incidents.TEST_COUNT)
+        ENDIF
+        grid.user_info [i, C_INCIDENT_DATE        ] = STRIP(SELECT all_incidents.INCIDENT_DATE)
+        grid.user_info [i, C_REPORTED_BY          ] = STRIP(SELECT all_incidents.REPORTED_BY)
+        grid.user_info [i, C_NC_STATUS            ] = STRIP(SELECT all_incidents.NC_STATUS)
+
+        ncid = STRIP(SELECT all_incidents.NC_IDENTITY)
+
+        IF BLANK(ncid) THEN
+            grid.user_info [i, C_NC_VIEW              ] = ""
+            grid.user_info [i, C_NC_EDIT              ] = ""
+        ELSE
+            grid.user_info [i, C_NC_VIEW              ] = "View NC " : ncid
+            Linki = size_of_array(form.user_info) + 1
+            form.user_info[Linki, 1] = i
+            form.user_info[Linki, 2] = C_NC_VIEW
+            form.user_info[Linki, 3] = STRIP(SELECT all_incidents.NC_LINK_READ)
+
+            grid.user_info [i, C_NC_EDIT              ] = "Edit NC" : STRIP(SELECT all_incidents.NC_IDENTITY)
+            Linki = size_of_array(form.user_info) + 1
+            form.user_info[Linki, 1] = i
+            form.user_info[Linki, 2] = C_NC_EDIT
+            form.user_info[Linki, 3] = STRIP(SELECT all_incidents.NC_LINK_EDIT)
+        ENDIF
+
+        grid.user_info [i, C_SENT                 ] = STRIP(SELECT all_incidents.SENT)
+        grid.user_info [i, C_REMARK               ] = STRIP(SELECT all_incidents.REMARK)
+        grid.user_info [i, C_CHECKLIST_ID         ] = STRIP(SELECT all_incidents.CHECKLIST_ID)
+        grid.user_info [i, C_REVIEW_INSPECTORS    ] = STRIP(SELECT all_incidents.REVIEW_INSPECTORS)
+        grid.user_info [i, C_AUTHORISE_INSPECTORS ] = STRIP(SELECT all_incidents.AUTHORISE_INSPECTORS)
+        grid.user_info [i, C_REVIEW_VERSION       ] = STRIP(SELECT all_incidents.REVIEW_VERSION)
+        grid.user_info [i, C_AUTHORISE_VERSION    ] = STRIP(SELECT all_incidents.AUTHORISE_VERSION)
+        grid.user_info [i, C_SUBJECT_TABLE        ] = STRIP(SELECT all_incidents.SUBJECT_TABLE)
+        grid.user_info [i, C_SUBJECT_FIELD        ] = STRIP(SELECT all_incidents.SUBJECT_FIELD)
+        grid.user_info [i, C_LOCATION_ID          ] = STRIP(SELECT all_incidents.LOCATION_ID)
+        grid.user_info [i, C_TEST_NUMBER          ] = STRIP(SELECT all_incidents.TEST_NUMBER)
+        grid.user_info [i, C_JOB_NAME             ] = STRIP(SELECT all_incidents.JOB_NAME)
+        grid.user_info [i, C_BATCH_NAME           ] = STRIP(SELECT all_incidents.BATCH_NAME)
+        grid.user_info [i, C_PRODUCT              ] = STRIP(SELECT all_incidents.PRODUCT)
+        grid.user_info [i, C_STATUS               ] = STRIP(SELECT all_incidents.STATUS)
+        grid.user_info [i, C_SAMPLE               ] = STRIP(SELECT all_incidents.SAMPLE)
+        grid.user_info [i, C_RESULT_UNIT          ] = STRIP(SELECT all_incidents.UNITS)
+        grid.user_info [i, C_RESULT_ID            ] = STRIP(SELECT all_incidents.RESULTID)
+        grid.user_info [i, C_RESULT               ] = STRIP(SELECT all_incidents.RESULT_TEXT)
+        grid.user_info [i, C_TRANSFER_ID          ] = STRIP(SELECT all_incidents.NC_IDENTITY)
+
+        id_text         = STRIP(SELECT sample.id_text where id_numeric = grid.user_info [i, C_SAMPLE])
+        result_text     = STRIP(SELECT all_incidents.RESULT_TEXT)
+        units           = STRIP(SELECT all_incidents.UNITS)
+        sampling_point  = STRIP(SELECT sample.sampling_point WHERE id_numeric = grid.user_info [i, C_SAMPLE])
+
+        grid.user_info [i, C_ID_TEXT              ] = id_text
+        grid.user_info [i, C_SHOW_RESULT          ] = result_text:" ":units
+        grid.user_info [i, C_SAMPLING_POINT       ] = STRIP(grid.user_info [i, C_SAMPLE]):" - ":sampling_point
+
+        i = i + 1
+
+        NEXT incidents
+        inc = SELECT all_incidents.incident_id
+
+    ENDWHILE
+************************************************************************
+************************************************************************
+}
+
+    SmpI = SmpI + 1
+
+ENDWHILE
+
+j = 1
+WHILE grid.user_info [j, C_SEND] <> EMPTY DO
+
+
+        {grid.user_info [j, C_SEND                 ] = inc
+        grid.user_info [j, C_INCIDENT_ID          ] = SELECT all_incidents.INCIDENT_ID
+        grid.user_info [j, C_TEMPLATE_ID          ] = SELECT all_incidents.TEMPLATE_ID
+        grid.user_info [j, C_DESCRIPTION          ] = SELECT all_incidents.DESCRIPTION
+        grid.user_info [j, C_ANALYSIS             ] = SELECT all_incidents.ANALYSIS
+        grid.user_info [j, C_COMPONENT            ] = SELECT all_incidents.RESULT_NAME
+        grid.user_info [j, C_SHOW_RESULT          ] = result_text:" ":units
+        grid.user_info [j, C_INCIDENT_DATE        ] = SELECT all_incidents.INCIDENT_DATE
+        grid.user_info [j, C_REPORTED_BY          ] = SELECT all_incidents.REPORTED_BY
+        grid.user_info [j, C_NC_STATUS            ] = SELECT all_incidents.NC_STATUS
+        grid.user_info [j, C_NC_VIEW              ] = SELECT all_incidents.NC_LINK_READ
+        grid.user_info [j, C_NC_EDIT              ] = SELECT all_incidents.NC_LINK_EDIT
+        grid.user_info [j, C_SENT                 ] = SELECT all_incidents.SENT
+        grid.user_info [j, C_REMARK               ] = SELECT all_incidents.REMARK
+        grid.user_info [j, C_CHECKLIST_ID         ] = SELECT all_incidents.CHECKLIST_ID
+        grid.user_info [j, C_REVIEW_INSPECTORS    ] = SELECT all_incidents.REVIEW_INSPECTORS
+        grid.user_info [j, C_AUTHORISE_INSPECTORS ] = SELECT all_incidents.AUTHORISE_INSPECTORS
+        grid.user_info [j, C_REVIEW_VERSION       ] = SELECT all_incidents.REVIEW_VERSION
+        grid.user_info [j, C_AUTHORISE_VERSION    ] = SELECT all_incidents.AUTHORISE_VERSION
+        grid.user_info [j, C_SUBJECT_TABLE        ] = SELECT all_incidents.SUBJECT_TABLE
+        grid.user_info [j, C_SUBJECT_FIELD        ] = SELECT all_incidents.SUBJECT_FIELD
+        grid.user_info [j, C_LOCATION_ID          ] = SELECT all_incidents.LOCATION_ID
+        grid.user_info [j, C_TEST_NUMBER          ] = SELECT all_incidents.TEST_NUMBER
+        grid.user_info [j, C_JOB_NAME             ] = SELECT all_incidents.JOB_NAME
+        grid.user_info [j, C_BATCH_NAME           ] = SELECT all_incidents.BATCH_NAME
+        grid.user_info [j, C_PRODUCT              ] = SELECT all_incidents.PRODUCT
+        grid.user_info [j, C_STATUS               ] = SELECT all_incidents.STATUS
+        grid.user_info [j, C_SAMPLE               ] = SELECT all_incidents.SAMPLE
+        grid.user_info [j, C_RESULT_UNIT          ] = SELECT all_incidents.UNITS
+        grid.user_info [j, C_RESULT_ID            ] = SELECT all_incidents.RESULTID
+        grid.user_info [j, C_RESULT               ] = SELECT all_incidents.RESULT_TEXT
+        grid.user_info [j, C_TRANSFER_ID          ] = SELECT all_incidents.NC_IDENTITY
+        grid.user_info [j, C_ID_TEXT              ] = id_text
+        grid.user_info [j, C_SAMPLING_POINT       ] = sampling_point}
+
+{        fm("j = ":j:ASCII(10):
+        "grid.user_info [j, ":C_INCIDENT_ID          :"] C_INCIDENT_ID          = ":grid.user_info [j, C_INCIDENT_ID          ]:ASCII(10):
+        "grid.user_info [j, ":C_TEMPLATE_ID          :"] C_TEMPLATE_ID          = ":grid.user_info [j, C_TEMPLATE_ID          ]:ASCII(10):
+        "grid.user_info [j, ":C_DESCRIPTION          :"] C_DESCRIPTION          = ":grid.user_info [j, C_DESCRIPTION          ]:ASCII(10):
+        "grid.user_info [j, ":C_ID_TEXT              :"] C_ID_TEXT              = ":grid.user_info [j, C_ID_TEXT              ]:ASCII(10):
+        "grid.user_info [j, ":C_ANALYSIS             :"] C_ANALYSIS             = ":grid.user_info [j, C_ANALYSIS             ]:ASCII(10):
+        "grid.user_info [j, ":C_COMPONENT            :"] C_COMPONENT            = ":grid.user_info [j, C_COMPONENT            ]:ASCII(10):
+        "grid.user_info [j, ":C_SHOW_RESULT          :"] C_SHOW_RESULT          = ":grid.user_info [j, C_SHOW_RESULT          ]:ASCII(10):
+        "grid.user_info [j, ":C_INCIDENT_DATE        :"] C_INCIDENT_DATE        = ":grid.user_info [j, C_INCIDENT_DATE        ]:ASCII(10):
+        "grid.user_info [j, ":C_REPORTED_BY          :"] C_REPORTED_BY          = ":grid.user_info [j, C_REPORTED_BY          ]:ASCII(10):
+        "grid.user_info [j, ":C_NC_STATUS            :"] C_NC_STATUS            = ":grid.user_info [j, C_NC_STATUS            ]:ASCII(10):
+        "grid.user_info [j, ":C_NC_VIEW              :"] C_NC_VIEW              = ":grid.user_info [j, C_NC_VIEW              ]:ASCII(10):
+        "grid.user_info [j, ":C_NC_EDIT              :"] C_NC_EDIT              = ":grid.user_info [j, C_NC_EDIT              ]:ASCII(10):
+        "grid.user_info [j, ":C_SENT                 :"] C_SENT                 = ":grid.user_info [j, C_SENT                 ]:ASCII(10):
+        "grid.user_info [j, ":C_REMARK               :"] C_REMARK               = ":grid.user_info [j, C_REMARK               ]:ASCII(10):
+        "grid.user_info [j, ":C_CHECKLIST_ID         :"] C_CHECKLIST_ID         = ":grid.user_info [j, C_CHECKLIST_ID         ]:ASCII(10):
+        "grid.user_info [j, ":C_REVIEW_INSPECTORS    :"] C_REVIEW_INSPECTORS    = ":grid.user_info [j, C_REVIEW_INSPECTORS    ]:ASCII(10):
+        "grid.user_info [j, ":C_AUTHORISE_INSPECTORS :"] C_AUTHORISE_INSPECTORS = ":grid.user_info [j, C_AUTHORISE_INSPECTORS ]:ASCII(10):
+        "grid.user_info [j, ":C_REVIEW_VERSION       :"] C_REVIEW_VERSION       = ":grid.user_info [j, C_REVIEW_VERSION       ]:ASCII(10):
+        "grid.user_info [j, ":C_AUTHORISE_VERSION    :"] C_AUTHORISE_VERSION    = ":grid.user_info [j, C_AUTHORISE_VERSION    ]:ASCII(10):
+        "grid.user_info [j, ":C_SUBJECT_TABLE        :"] C_SUBJECT_TABLE        = ":grid.user_info [j, C_SUBJECT_TABLE        ]:ASCII(10):
+        "grid.user_info [j, ":C_SUBJECT_FIELD        :"] C_SUBJECT_FIELD        = ":grid.user_info [j, C_SUBJECT_FIELD        ]:ASCII(10):
+        "grid.user_info [j, ":C_LOCATION_ID          :"] C_LOCATION_ID          = ":grid.user_info [j, C_LOCATION_ID          ]:ASCII(10):
+        "grid.user_info [j, ":C_TEST_NUMBER          :"] C_TEST_NUMBER          = ":grid.user_info [j, C_TEST_NUMBER          ]:ASCII(10):
+        "grid.user_info [j, ":C_JOB_NAME             :"] C_JOB_NAME             = ":grid.user_info [j, C_JOB_NAME             ]:ASCII(10):
+        "grid.user_info [j, ":C_BATCH_NAME           :"] C_BATCH_NAME           = ":grid.user_info [j, C_BATCH_NAME           ]:ASCII(10):
+        "grid.user_info [j, ":C_PRODUCT              :"] C_PRODUCT              = ":grid.user_info [j, C_PRODUCT              ]:ASCII(10):
+        "grid.user_info [j, ":C_STATUS               :"] C_STATUS               = ":grid.user_info [j, C_STATUS               ]:ASCII(10):
+        "grid.user_info [j, ":C_SAMPLE               :"] C_SAMPLE               = ":grid.user_info [j, C_SAMPLE               ]:ASCII(10):
+        "grid.user_info [j, ":C_RESULT_UNIT          :"] C_RESULT_UNIT          = ":grid.user_info [j, C_RESULT_UNIT          ]:ASCII(10):
+        "grid.user_info [j, ":C_RESULT_ID            :"] C_RESULT_ID            = ":grid.user_info [j, C_RESULT_ID            ]:ASCII(10):
+        "grid.user_info [j, ":C_RESULT               :"] C_RESULT               = ":grid.user_info [j, C_RESULT               ]:ASCII(10):
+        "grid.user_info [j, ":C_TRANSFER_ID          :"] C_TRANSFER_ID          = ":grid.user_info [j, C_TRANSFER_ID          ]:ASCII(10):
+        "grid.user_info [j, ":C_SAMPLING_POINT       :"] C_SAMPLING_POINT       = ":grid.user_info [j, C_SAMPLING_POINT       ])
+}
+{    grid.user_info [j, C_ID_TEXT]       = SELECT SAMPLE.ID_TEXT WHERE ID_NUMERIC = grid.user_info [j, C_SAMPLE]
+    grid.user_info [j, C_SAMPLING_POINT]    = SELECT SAMPLE.SAMPLING_POINT
+    Analysis = STRIP(SELECT TEST.ANALYSIS WHERE TEST_NUMBER = grid.user_info [j, C_TEST_NUMBER])
+    Replicate = STRIP(SELECT TEST.TEST_COUNT)
+
+    grid.user_info [j, C_ANALYSIS]      = Analysis : "/" : Replicate
+    tmpResId = grid.user_info [j,C_RESULT_ID]
+
+    IF (NOT BLANK(tmpResId)) AND (LENGTH(STRIP(tmpResId)) <> 0) THEN
+
+        grid.user_info [j, C_COMPONENT]     = SUBSTRING(tmpResId, 11, LENGTH(tmpResId))
+        grid.user_info [j, C_RESULT]        = SELECT RESULT.TEXT
+                                WHERE TEST_NUMBER = grid.user_info [j, C_TEST_NUMBER]
+                                AND NAME = grid.user_info [j, C_COMPONENT]
+        grid.user_info [j, C_RESULT_UNIT]   = SELECT RESULT.UNITS
+
+    ELSE
+        grid.user_info [j, C_COMPONENT]     = " "
+        grid.user_info [j, C_RESULT]        = " "
+        grid.user_info [j, C_RESULT_UNIT]   = " "
+
+    ENDIF
+
+    IF (grid.user_info [j, C_ANALYSIS] = EMPTY) THEN
+        grid.user_info [j, C_ANALYSIS]      = " "
+    ENDIF
+
+    IF BLANK(grid.user_info [j, C_RESULT]) THEN
+        grid.user_info [j, C_RESULT]        = " "
+        grid.user_info [j, C_RESULT_UNIT]   = " "
+    ENDIF
+
+    grid.user_info [j, C_SHOW_RESULT]       = STRIP(grid.user_info [j, C_RESULT]) : " " : STRIP(grid.user_info [j, C_RESULT_UNIT])
+    }
+
+    j = j + 1
+
+ENDWHILE
+
+IF i < 2 THEN
+    i = 2
+
+ENDIF
+
+grid.height = form.row - 1
+grid.cell_rows  = i-1
+
+grid.rebuild()
+form.repaste()
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    grid_mouse_clicked
+Purpuse:    Activated when user clicked in cell
+Parameters: self        object  the grid
+            cell_column integer what column was clicked
+            cell_row    integer what row was clicked
+*************************************************************************}
+ROUTINE grid_mouse_clicked ( self ,
+                VALUE cell_column ,
+                VALUE cell_row )
+
+DECLARE i, LinkArray
+i = 1
+LinkArray = form.user_info
+
+IF (cell_column = "1") AND (cell_row <> "-1") THEN
+
+
+    IF self.user_info [cell_row, C_SENT] = FALSE THEN
+
+        IF self.user_info [cell_row,1] = "Yes" THEN
+            self.user_info [cell_row,1] = "No"
+        ELSEIF self.user_info [cell_row,1] = "No"
+            self.user_info [cell_row,1] = "Yes"
+        ENDIF
+
+        self.rebuild()
+    ENDIF
+
+ELSEIF (cell_column = C_NC_EDIT)  AND (cell_row <> "-1") THEN
+
+    WHILE i <= size_of_array(LinkArray) DO
+
+        IF (cell_row = LinkArray[i, 1]) AND (LinkArray[i, 2] = C_NC_EDIT) THEN
+            GoToWebPage( LinkArray[i, 3])
+            i = size_of_array(LinkArray)
+        ENDIF
+
+        i = i + 1
+
+    ENDWHILE
+
+ELSEIF (cell_column = C_NC_VIEW)  AND (cell_row <> "-1") THEN
+
+    WHILE i <= size_of_array(LinkArray) DO
+
+        IF (cell_row = LinkArray[i, 1]) AND (LinkArray[i, 2] = C_NC_VIEW) THEN
+            GoToWebPage( LinkArray[i, 3])
+            i = size_of_array(LinkArray)
+        ENDIF
+
+        i = i + 1
+
+    ENDWHILE
+
+ENDIF
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    send_data
+Purpuse:    Activated when user clicked send button
+Parameters: self        object  the button
+*************************************************************************}
+ROUTINE send_data (self)
+DECLARE grid, FileName, TransactionId, XMLSchema, i, NumOfInc, gotHeader, do_it
+DECLARE transaction, WebService, WebServiceAction, xmldoc, request_xml, FirstRow
+DECLARE responseXML
+
+do_it = FALSE
+gotHeader = check_header(self.parent_prompt)
+IF NOT gotHeader THEN
+    do_it = confirm_with_text ( "No title has been set. Continue?" )
+ELSE
+    do_it = TRUE
+ENDIF
+
+IF do_it THEN
+
+    TransactionId   = GenerateTransactionId()
+    FileName    = "LIMS_INC_" : TransactionId
+    grid        = self.PARENT_PROMPT.prompt_objects[4]
+    XMLSchema   = "Incidents"
+    i       = 1
+    NumOfInc    = 0
+    FirstRow    = 0
+    WebService  = GLOBAL("BIZTALK_WEBSERVICE")
+    WebServiceAction= "Incidents"
+
+    WHILE grid. user_info [i, 1] <> EMPTY DO
+
+        IF grid.user_info [i, 1] = "Yes" THEN
+
+            NumOfInc = NumOfInc + 1
+            IF FirstRow = 0 THEN
+                FirstRow = i
+            ENDIF
+
+        ENDIF
+
+        i = i + 1
+
+    ENDWHILE
+
+    IF NumOfInc > 0 THEN
+
+        TransactionId   = GenerateTransactionId()
+        FileName    = TransactionId
+
+        {Generate XML-document}
+        xmldoc = CreateXMLForIncidents(grid. user_info, TransactionId, FileName, FirstRow)
+        transaction = xmldoc .gettransaction ( 0 )
+        request_xml = transaction.returnxml ()
+
+        {Write xml to physical file}
+        WriteXMLFile(FileName, request_xml)
+
+        {Change namespace in created xml file}
+        ChangeXMLNameSpace(FileName, XMLSchema)
+
+        {Send the xml file to MES}
+        ResponseXML = SendToWebService(WebService, WebServiceAction, FileName)
+
+        FM(STRIP(NumOfInc) : " incidents sent")
+
+{
+        DECLARE NcId, NcStatus, NcLinkEdit, NcLinkRead
+        NCID        = GetValueOutOfXMLFile(ResponseXML, "LIMSNCID")
+        NcStatus    = GetValueOutOfXMLFile(ResponseXML, "NCSTATUS")
+        NcLinkEdit  = GetValueOutOfXMLFile(ResponseXML, "EDITLINK")
+        NcLinkRead  = GetValueOutOfXMLFile(ResponseXML, "READLINK")
+
+        WriteToLog("ResponseXML below: " : ASCII(10) : ResponseXML )
+
+        i = 1
+        WHILE grid. user_info [i, 1] <> EMPTY DO
+            IF grid.user_info [i, 1] = "Yes" THEN
+
+                UpdateDatabase (grid.user_info [i,C_INCIDENT_ID], NCID, NcStatus, NcLinkEdit, NcLinkRead)
+                WriteToLog("Parameters sent to routine UpdateDatabase = ":grid.user_info [i,C_INCIDENT_ID]:",": NCID:",":NcStatus:",":NcLinkEdit:",":NcLinkRead)
+
+            ENDIF
+            i = i + 1
+        ENDWHILE
+
+        do_it = confirm_with_text ( "Do you wish to edit the Non Conformity entry now?" )
+
+        IF do_it THEN
+
+            GoToWebPage(NcLinkEdit)
+        ENDIF
+}
+
+    ENDIF
+
+
+
+ENDIF
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    GoToWebPage
+Purpuse:    Finds value for specfic field in xml and returns it
+Parameter:  LinkToFollow    string  link that will be open in IE
+
+*************************************************************************}
+ROUTINE GoToWebPage(VALUE LinkToFollow)
+DECLARE ie_path, send_path
+
+        ie_path = client_get_app_path ("iexplore.exe")
+        send_path = ie_path : " " : LinkToFollow
+        dde_winexec_wait (send_path, "SW_SHOW")
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    GetValueOutOfXMLFile
+Purpuse:    Finds value for specfic field in xml and returns it
+Parameters:     XML     string  String of xml
+        FieldName   string  Field to find value for
+*************************************************************************}
+ROUTINE GetValueOutOfXMLFile(VALUE XML, VALUE FieldName)
+DECLARE Answer, StartI, EndI, tmpStr
+
+    StartI  = INDEX(xml, FieldName) + LENGTH(FieldName) + 2
+
+IF StartI <> LENGTH(FieldName) + 2 THEN
+    tmpStr  = SUBSTRING(xml, StartI, LENGTH(xml))
+    EndI    = INDEX(tmpstr, "<") - 1
+
+    Answer  = SUBSTRING(xml, StartI, EndI)
+ELSE
+    Answer = EMPTY
+ENDIF
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    SetNCIdentity
+Purpuse:    Runs after xml is created to update database values
+Parameters: IncidentId  string  Incident to update
+            SentTo      string  Value to insert into database
+*************************************************************************}
+ROUTINE SetNCIdentity (VALUE IncidentId, VALUE NcId)
+DECLARE inc
+
+    START READ TRANSACTION "Update NcId"
+    inc = SELECT INCIDENTS.INCIDENT_ID FOR UPDATE WHERE INCIDENT_ID = IncidentId
+    ASSIGN INCIDENTS.NC_IDENTITY = NcId
+
+    START WRITE TRANSACTION "Update NcId"
+
+    UPDATE INCIDENTS
+
+    COMMIT
+
+
+ENDROUTINE
+
+
+{************************************************************************
+Routine:    UpdateDatabase
+Purpuse:    Runs after xml is created to update database values
+Parameters: IncidentId  string  Incident to update
+            SentTo      string  Value to insert into database
+*************************************************************************}
+ROUTINE UpdateDatabase (VALUE IncidentId, VALUE NcId, VALUE NcStatus, VALUE NCEdit, VALUE NCRead)
+DECLARE inc
+
+    START READ TRANSACTION "Update sent"
+    inc = SELECT INCIDENTS.INCIDENT_ID FOR UPDATE WHERE INCIDENT_ID = IncidentId
+
+    ASSIGN INCIDENTS.SENT = TRUE
+    ASSIGN INCIDENTS.NC_IDENTITY = NcId
+    ASSIGN INCIDENTS.NC_STATUS = NcStatus
+    ASSIGN INCIDENTS.NC_LINK_EDIT = NCEdit
+    ASSIGN INCIDENTS.NC_LINK_READ = NCRead
+
+    START WRITE TRANSACTION "Update sent"
+
+    UPDATE INCIDENTS
+
+    COMMIT
+
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    UpdateNcStatus
+Purpuse:    Updates the NC status
+Parameters:     NCId        string  Incident to update
+        NcStatus    string  Value to update the database
+*************************************************************************}
+GLOBAL ROUTINE UpdateNcStatus (processor, entity, action, response )
+DECLARE NCID, NcStatus, EditLink, ReadLink, inc, ArrIds, i, LimsNCID
+DECLARE Len, Pos, Part1, Part2
+
+ARRAY ArrIds ARRAY_SIZE(0,1)
+
+    {Get the parameters from the procecced xml-file}
+    LIMSNCID    = action.get_param_default ( "LIMSNCID", EMPTY )
+    NCID        = action.get_param_default ( "NCID", EMPTY )
+    NcStatus    = action.get_param_default ( "NCSTATUS", EMPTY )
+    EditLink    = action.get_param_default ( "EDITLINK", EMPTY )
+    ReadLink    = action.get_param_default ( "READLINK", EMPTY )
+
+{WriteToLog("Recived NonConformity links for NCID " : STRIP(NCID) : " with parameters:")    }
+
+EditLink = STRIP(EditLink)
+WHILE INDEX(EditLink, " ") <> 0
+    Len = LENGTH(EditLink)
+    Pos = INDEX(EditLink, " ")
+    Part1=LEFTSTRING(EditLink, Pos - 1 )
+    Part2=SUBSTRING(EditLink, Pos + 1, Len - Pos)
+    EditLink = Part1:"%20":Part2
+{   WriteToLog("Pos: ":Pos:"; EditLink = ":Part1:"%20":Part2)}
+ENDWHILE
+
+ReadLink = STRIP(ReadLink)
+WHILE INDEX(ReadLink, " ") <> 0
+    Len = LENGTH(ReadLink)
+    Pos = INDEX(ReadLink, " ")
+    Part1=LEFTSTRING(ReadLink, Pos - 1 )
+    Part2=SUBSTRING(ReadLink, Pos + 1, Len - Pos)
+    ReadLink = Part1:"%20":Part2
+ENDWHILE
+
+IF LIMSNCID = EMPTY THEN
+    LIMSNCID = "N/A"
+ENDIF
+
+WriteToLog( "Received NonConformity links for NCID " : STRIP(NCID) : " with parameters:":
+            ASCII(10):"                        NCID     = ":NCID:
+            ASCII(10):"                        LIMSNCID = ":LIMSNCID:
+            ASCII(10):"                        STATUS   = ":NCSTATUS:
+            ASCII(10):"                        EDITLINK = ":EDITLINK:
+            ASCII(10):"                        READLINK = ":READLINK:ASCII(10))
+{WriteToLog("Updating Database...")}
+
+    IF NOT transaction_is_write ( ) THEN
+        START READ TRANSACTION "Read NCStatus"
+    ENDIF
+
+    inc = SELECT INCIDENTS.INCIDENT_ID WHERE NC_IDENTITY = NCID OR NC_IDENTITY = LIMSNCID
+
+    WHILE inc <> EMPTY DO
+
+        ArrIds[size_of_array(ArrIds) + 1, 1] = inc
+
+        NEXT INCIDENTS
+        inc = SELECT INCIDENTS.INCIDENT_ID
+    ENDWHILE
+
+    i = 1
+
+    WHILE i < size_of_array(ArrIds) + 1 DO
+
+        inc = SELECT INCIDENTS.INCIDENT_ID FOR UPDATE WHERE INCIDENT_ID = ArrIds[i, 1]
+
+        ASSIGN INCIDENTS.NC_IDENTITY = NCID
+        ASSIGN INCIDENTS.SENT = TRUE
+        ASSIGN INCIDENTS.NC_STATUS = NcStatus
+        ASSIGN INCIDENTS.NC_LINK_EDIT = EditLink
+        ASSIGN INCIDENTS.NC_LINK_READ = ReadLink
+
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION "Update NCStatus"
+        ENDIF
+
+        UPDATE INCIDENTS
+
+        COMMIT
+
+        WriteToLog("Database updated for incident ": STRIP(inc))
+
+        i = i + 1
+    ENDWHILE
+
+
+ENDROUTINE
+
+
+{*************************************************************************}
+ROUTINE CreateXMLForIncidents(IncidentsArray, VALUE TransactionId, VALUE EntityName, VALUE FirstRow)
+{
+*
+* Purpose      : Creates and populates a limsml object
+*
+* Parameters   : JobArray - Array
+*
+* Return Value : limsml - HELPER_RICHDOCUMENT
+*
+**************************************************************************}
+DECLARE limsml, entity, RowId, workcenter, productname, productdesc
+DECLARE sampletype, product, productversion, productgroup, Inc
+
+    RowId = 1
+
+    {Define class and object along with default values}
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    workcenter  = STRIP(SELECT JOB_HEADER.WORK_CENTER WHERE JOB_NAME = IncidentsArray [FirstRow, C_JOB_NAME])
+    productname = STRIP(SELECT JOB_HEADER.PRODUCT_NAME)
+    productdesc = STRIP(SELECT JOB_HEADER.PRODUCT_DESCRIPTION)
+
+    sampletype  = STRIP(SELECT SAMPLE.SAMPLE_TYPE WHERE ID_NUMERIC = IncidentsArray [FirstRow, C_SAMPLE])
+    product     = STRIP(SELECT SAMPLE.PRODUCT)
+    productversion  = STRIP(SELECT SAMPLE.PRODUCT_VERSION)
+    productgroup    = STRIP(SELECT MLP_HEADER.PRODUCT_GROUP WHERE IDENTITY = product AND PRODUCT_VERSION = productversion)
+
+    IF INDEX( TOUPPER(productgroup), "RAW") <> 0 THEN
+        productgroup = "Incoming Material"
+    ELSE
+        productgroup = "Product/Production"
+    ENDIF
+
+
+    {Add header info to xml object.}
+    entity = limsml.addentity ("Header")
+    entity.field_inout ( "TransactionId", TransactionId)
+    entity.field_inout ( "lims_inc_id", TransactionId)
+    entity.field_inout ( "incident_date", IncidentsArray [FirstRow, C_INCIDENT_DATE])
+    entity.field_inout ( "reported_by", GLOBAL("OPERATOR"))
+    entity.field_inout ( "site", workcenter)
+    entity.field_inout ( "batch_name", IncidentsArray [FirstRow, C_BATCH_NAME])
+    entity.field_inout ( "title", form.prompt_objects [1].value)
+    entity.field_inout ( "workflow_related", productgroup)
+    entity.field_inout ( "material_number", productname)
+    entity.field_inout ( "material_desc", productdesc)
+    entity.field_inout ( "sample_type", sampletype)
+
+
+    WHILE IncidentsArray [RowId, 1] <> EMPTY DO
+
+        IF IncidentsArray [RowId, 1] = "Yes" THEN
+
+            SetNCIdentity (IncidentsArray [RowId, C_INCIDENT_ID], TransactionId)
+
+            Inc = entity.addchild ("Incident")
+            Inc.field_inout ( "incident_id", STRIP(IncidentsArray [RowId, C_INCIDENT_ID]))
+            Inc.field_inout ( "sample_number", IncidentsArray [RowId, C_SAMPLE])
+            Inc.field_inout ( "sampling_point", IncidentsArray [RowId, C_SAMPLING_POINT])
+            Inc.field_inout ( "analysis_id", IncidentsArray [RowId, C_ANALYSIS])
+            Inc.field_inout ( "component", IncidentsArray [RowId, C_COMPONENT])
+            Inc.field_inout ( "result", IncidentsArray [RowId, C_RESULT])
+            Inc.field_inout ( "result_unit", IncidentsArray [RowId, C_RESULT_UNIT])
+            {Inc.field_inout ( "sample_comment", IncidentsArray [RowId, C_REMARK])}
+            Inc.field_inout ( "sample_comment", IncidentsArray [RowId, C_DESCRIPTION])
+
+            {fm("IncidentsArray [RowId, C_COMPONENT] ~ IncidentsArray [":RowId:", ":C_COMPONENT:"] = ":IncidentsArray [RowId, C_COMPONENT])}
+
+        ENDIF
+
+        RowId = RowId + 1
+    ENDWHILE
+
+    {Return xml object}
+    RETURN( limsml )
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 3: Misc
+*
+**************************************************************************}
+
+{*************************************************************************}
+GLOBAL ROUTINE WriteXMLFile(VALUE FileName, VALUE XMLText)
+{
+*
+* Purpose      : Creates the physical file and adds xml to it.
+*
+* Parameters   : Filename - where the file should be saved
+*        XMLText  - text to add to created file
+*
+* Return Value : N/A
+*
+**************************************************************************}
+DECLARE check_ok, tmp_name
+
+    {Create temp file}
+    tmp_name = "smp$userfiles:BizTalk\" : STRIP(FileName) : ".xml"
+
+    FILE CREATE tmp_name, check_ok
+    FILE EXTEND tmp_name, check_ok
+    FILE WRITE  tmp_name, XMLText , check_ok
+    FILE CLOSE  tmp_name, check_ok
+
+WriteToLog("xmldoc: \\dklims04-t\Userfiles\BizTalk\":FileName:".xml")
+
+    ChangeXMLEncoding(STRIP(FileName))
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE SendToWebService(VALUE sURL, VALUE Action, VALUE XMLFile)
+{
+*
+* Purpose      : Use MSXML2.ServerXmlHttp object to communicate with a web service.
+*
+* Parameters   : sURL       - Path to webservice
+*        Action     - Function to call on webservice
+         FileName   - Path to file to be sent as parameter
+*
+* Return Value : N/A
+*
+**************************************************************************}
+DECLARE xmlhttp, strXml, tmpstr, check_ok, no_line
+DECLARE tmpXML, soapMessage, file_name
+
+    file_name   = "smp$userfiles:BizTalk\" : STRIP(XMLFile) : ".xml"
+
+    FILE OPEN file_name, check_ok
+
+    IF (check_ok <> EMPTY) THEN
+
+        WriteToLog("SendToWebService - Error open file " : STRIP(XMLFile) : ".xml")
+
+    ELSE
+
+        no_line = 1
+        FILE READ file_name, strXml ,check_ok
+
+        WHILE (check_ok = EMPTY) DO
+
+            no_line = no_line + 1
+
+            FILE READ file_name, tmpstr ,check_ok
+            IF tmpstr <> EMPTY THEN
+                strXml = strXml : tmpstr
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    tmpXML = SUBSTRING( strXML, 44, LENGTH(strXML))
+
+    soapMessage = "<s:Envelope xmlns:s=" : ASCII(34) : "http://schemas.xmlsoap.org/soap/envelope/" : ASCII(34) : ">"
+    soapMessage = soapMessage : "<s:Body>"
+    soapMessage = soapMessage : tmpXML
+    soapMessage = soapMessage : "</s:Body>"
+    soapMessage = soapMessage : "</s:Envelope>"
+
+{RETURN ("Not send to Bistalk")}
+
+    CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+    xmlhttp.create ("Msxml2.ServerXMLHTTP")
+
+    xmlhttp.open("POST", sURL , False)
+    xmlhttp.setRequestHeader( "Man", "POST " : sURL : " HTTP/1.1")
+    xmlhttp.setRequestHeader( "SOAPAction", Action )
+    xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+    xmlhttp.send(soapMessage)
+
+    WriteToLog("SendToWebService - Status = " :xmlhttp.Status : " and Text=" : xmlhttp.statusText)
+{   WriteToLog("Responsetext below: " : ASCII(10) : xmlhttp.responseText )}
+{   WriteToLog("*") }
+
+    RETURN ( xmlhttp.responseText )
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ChangeXMLEncoding(VALUE FileName)
+{
+*
+* Purpose      : Changes encoding from UTF-8 to ISO-8859-1
+*
+* Parameters   : Filename as string
+*
+* Return Value : N/A
+*
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath
+
+        FilePath = "smp$userfiles:BizTalk\" : FileName : ".xml"
+
+        IF FILE EXISTS ( FilePath ) THEN
+
+            {Open and read current file}
+            FILE OPEN FilePath, check_ok
+            FILE READ FilePath, out_val, check_ok
+
+            {Remove middle string from file}
+            start_string = SUBSTRING( out_val, 1, 30)
+            end_string = SUBSTRING( out_val, 36, length(out_val)-35)
+            FILE CLOSE FilePath, check_ok
+
+            {Delete original file}
+            FILE DELETE FilePath
+
+            {Create new file and add encoding as requested}
+            tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.xml"
+
+            FILE CREATE tmp_name, check_ok
+            FILE EXTEND tmp_name, check_ok
+            FILE WRITE tmp_name, start_string : "ISO-8859-1" : end_string , check_ok
+            FILE CLOSE tmp_name, check_ok
+
+            {Rename temp file to old name}
+            FILE COPY tmp_name, FilePath, check_ok
+            {Delte temp file}
+            FILE DELETE tmp_name
+        ELSE
+
+            WriteToLog("ERROR: File " : FilePath : " does not exist. Routine ChangeXMLEncoding.")
+
+        ENDIF
+
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ChangeXMLNameSpace (VALUE FileName, VALUE ChangeTo)
+{
+*
+* Purpose      : Changes namespace in xml doc.
+*
+* Parameters   : Filename - file to change in
+                 ChangeTo - Value to replace existing namespace with
+*
+* Return Value : N/A
+*
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath, idx
+
+    FilePath = "smp$userfiles:BizTalk\" : FileName : ".xml"
+
+    IF FILE EXISTS ( FilePath ) THEN
+
+        {Open org file and read content}
+        FILE OPEN FilePath, check_ok
+        FILE READ FilePath, out_val, check_ok
+
+        {Find strings to keep}
+        start_string = SUBSTRING( out_val, 1, 61) : "=" : ASCII(34)
+        end_string = SUBSTRING( out_val, 154, LENGTH(out_val))
+
+        {Parse new value}
+        outval = start_string : ChangeTo : end_string
+
+        idx = INDEX(out_val, "system response_type=") + 29
+        start_string = SUBSTRING( out_val, 1, idx)
+        end_string = SUBSTRING( out_val, idx + 59, LENGTH(out_val))
+
+        FILE CLOSE FilePath, check_ok
+        FILE DELETE FilePath
+
+        tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.xml"
+
+        FILE CREATE tmp_name, check_ok
+        FILE EXTEND tmp_name, check_ok
+        FILE WRITE tmp_name, start_string : end_string , check_ok
+        FILE CLOSE tmp_name, check_ok
+
+        FILE COPY tmp_name, FilePath, check_ok
+        FILE DELETE tmp_name
+
+    ELSE
+
+        WriteToLog("ERROR: File " : FilePath : " does not exist. Routine ChangeXMLEncoding.")
+
+    ENDIF
+
+
+ENDROUTINE
+
+{ROUTINE GetFileName(VALUE FilePath)}
+{*************************************************************************
+* Purpose      : Gets file name from given path
+* Parameters   : FilePath - full path to file
+* Return Value : N/A
+**************************************************************************}
+{DECLARE Answer, i, j
+
+i = INDEX(FilePath, ":")
+j = LENGTH(FilePath) - (i + 4)
+
+Answer = SUBSTRING(FilePath, i + 1, j)
+
+RETURN (Answer)
+
+ENDROUTINE}
+
+{*************************************************************************
+*
+*   SECTION 4: Transaction handeling
+*
+**************************************************************************}
+
+{*************************************************************************}
+GLOBAL ROUTINE GenerateTransactionId
+{
+*
+* Purpose      : Creates a unique transaction identity
+*
+* Parameters   : None
+*
+* Return Value : A new identity
+*
+**************************************************************************}
+    DECLARE Answer, generated_number, i
+
+    SET FORMAT "999999999"
+    generated_number = INCREMENT ( "INCIDENTS_SEND", "IDENTITY")
+
+    i = LENGTH(STRIP(generated_number))
+
+    WHILE i <= 6 DO
+
+        generated_number = "0" : STRIP(generated_number)
+        i = LENGTH(STRIP(generated_number))
+
+    ENDWHILE
+
+    Answer = "LIMS_INC_" : STRIP(generated_number)
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ConvertDateToXML (VALUE DateToConvert)
+{
+*
+* Purpose      : Converts a date to xml format
+*
+* Parameters   : DateToConvert - well guess...
+*
+* Return Value : Converted date
+*
+**************************************************************************}
+DECLARE Answer, year, month, day, hour, minute, sec
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    Answer = string ( DateToConvert )
+
+    day     = SUBSTRING ( Answer , 1 , 2 )
+    month   = SUBSTRING ( Answer , 4 , 2 )
+    year    = SUBSTRING ( Answer , 7 , 4 )
+    hour    = SUBSTRING ( Answer , 12 , 2 )
+    minute  = SUBSTRING ( Answer , 15 , 2 )
+    sec     = SUBSTRING ( Answer , 18 , 2 )
+
+    Answer = year : "-" : month : "-" : day : "T" : hour : ":" : minute : ":" : sec
+
+    RESTORE DATE FORMAT
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ConvertDateFromXML (VALUE DateToConvert)
+{
+*
+* Purpose      : Converts a date from xml format
+*
+* Parameters   : DateToConvert - well guess...
+*
+* Return Value : Converted date
+*
+**************************************************************************}
+DECLARE Answer, year, month, day, hour, minute, sec, TmpStr
+
+    TmpStr = string ( DateToConvert )
+    year    = SUBSTRING ( TmpStr , 1 , 4 )
+    month   = SUBSTRING ( TmpStr , 6 , 2 )
+    day     = SUBSTRING ( TmpStr , 9 , 2 )
+    hour    = SUBSTRING ( TmpStr , 12 , 2 )
+    minute  = SUBSTRING ( TmpStr , 15 , 2 )
+    sec     = SUBSTRING ( TmpStr , 18 , 2 )
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    Answer = day : "-" : month : "-" : year : " " : hour : ":" : minute : ":" : sec
+
+    RESTORE DATE FORMAT
+
+
+    IF IS_DATE ( Answer ) THEN
+
+        RETURN (Answer)
+
+    ELSE
+
+        Answer = EMPTY
+        RETURN (Answer)
+
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE VALIDATE_HEADER(self)
+DECLARE title_length
+
+    title_length = length(self.parent_prompt.prompt_objects [1].value)
+
+    IF title_length > 50 THEN
+        fm("Descriptive title for N.C. must be less than 50 characters!":ASCII(10):
+           "Please reduce the title before submitting for NonConformity.")
+    ELSE
+        {fm("title_length: ":title_length)}
+    ENDIF
+
+ENDROUTINE

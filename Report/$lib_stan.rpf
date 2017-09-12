@@ -1,0 +1,586 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIB_STAN
+*
+* Purpose       : SMP library containing routines for manipulating standards
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_MLPS
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $STD_VERS
+
+{******************************************************************************}
+
+CONSTANT comp_replicates = "COMP_REPLICATES" {Use 'var'.'var' to fool compiler}
+
+CONSTANT standard_mnem = "STD-"
+CONSTANT blank_mnem    = "BLK-"
+
+{******************************************************************************}
+
+ROUTINE get_default_format ( default_format )
+
+{
+*
+*   Return the current SET FORMAT
+*
+*******************************************************************************}
+
+       default_format = GLOBAL ("FORMAT_TEXT")
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE set_default_format ( default_format )
+
+{
+*
+*   Set the passed format
+*
+*******************************************************************************}
+
+   SET FORMAT (default_format)
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE find_version_to_use ( standard_ident , 
+                              text_name      , 
+                              version_ident  )
+
+{
+*
+*   This routine will select the passed standard and version name 
+*   in order to create a sample ID. The routine also controls the 
+*   expiry conditions. IF however only a standard Id is passed 
+*   without a version, THEN the routine will attempt to find the 
+*   first available version. IF none can be found THEN a new 
+*   version will be created.
+*
+*******************************************************************************}
+
+    DECLARE vers_size, standard_id, check_version, all_expired
+
+    GET_FIELD_DETAILS standard_versions.version
+                      "FIELD_SIZE",
+                      vers_size
+
+    standard_id = LEFTSTRING ( standard_ident, vers_size )
+
+    version_ident = SELECT standard_versions.version
+                    WHERE ( identity = standard_id ) AND
+                          ( status   = "A" )
+
+    all_expired = TRUE
+
+    WHILE ( version_ident <> EMPTY ) AND all_expired DO
+
+        all_expired = std_vers_version_expired ( 
+                       SELECT standard_versions.expiry_type ,
+                       SELECT standard_versions.expiry_date ,
+                       SELECT standard_versions.lifetime    ,
+                       SELECT standard_versions.maximum_usage -
+                         SELECT standard_versions.usage_count )
+
+        IF all_expired THEN
+            { standard had expired so find another one }
+            NEXT standard_versions
+            version_ident = SELECT standard_versions.version
+        ENDIF
+
+    ENDWHILE
+
+    IF all_expired THEN
+
+        version_ident = std_vers_create_new_version ( standard_id )
+
+    ENDIF
+
+    check_version = SELECT standard_versions.version
+                    FOR UPDATE
+                    WHERE ( identity = standard_id ) AND
+                          ( version  = version_ident )
+
+    IF check_version = version_ident THEN
+
+        ASSIGN standard_versions.usage_count =
+                  SELECT standard_versions.usage_count + 1
+
+        IF std_vers_version_expired ( 
+                       SELECT standard_versions.expiry_type ,
+                       SELECT standard_versions.expiry_date ,
+                       SELECT standard_versions.lifetime    ,
+                       SELECT standard_versions.maximum_usage -
+                         SELECT standard_versions.usage_count ) THEN
+
+            ASSIGN standard_versions.status = "B"
+
+        ENDIF
+
+        text_name = get_standard_syntax ( 
+                           standard_id                            ,
+                           version_ident                          ,
+                           SELECT standard_versions.usage_count ,
+                                   SELECT standard.standard_type        )
+
+        SET GLOBAL ( "AUDITPROMPTSUPPRESS" ) TO TRUE
+        START WRITE TRANSACTION "GET_STD_VERSION"
+        UPDATE standard_versions
+        COMMIT
+
+        version_ident = PAD ( standard_ident, " ", vers_size ) : 
+                        version_ident
+
+    ELSE
+
+        version_ident = EMPTY
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ ASSIGN a sample to a pre-defined standard
+{-----------------------------------------------------------------------------}
+
+ROUTINE assign_sample_to_standard ( version_ident,
+                    text_name     )
+
+  DECLARE default_format, find_template, calling_report, sampid, sample
+
+      get_default_format(default_format)
+      find_template = SELECT standard.template_id
+                      WHERE identity = LEFTSTRING(version_ident,10)
+                      ORDER ON identity
+
+      IF find_template <> empty THEN
+             IF STRIP(find_template) = " " THEN
+
+{ login the standard using the NOINPUT function.
+  the default field values are defined in $SAMP_USER }
+
+                START WRITE TRANSACTION "ASSIGN_SAMP_STAN"
+                calling_report = "$LIB_STAN"
+                CALL_ROUTINE "create_sample_for_noinput" USING calling_report
+                RETURNING sampid IN LIBRARY "$LIB_SAMP"
+                IF (sampid <> empty)&(sampid <> error) THEN
+                   ASSIGN sample.id_text      = text_name
+                   ASSIGN sample.job_name     = version_ident
+           ASSIGN sample.product_version =
+                                     RIGHTSTRING ( version_ident , 10 )
+                   UPDATE sample
+                   COMMIT
+                ELSE
+                   ROLLBACK
+                ENDIF
+             ELSE
+
+                sampid = NEWSAMPLE(" ",find_template," ")
+                IF (sampid <> empty)&(sampid <> error) THEN
+                    START READ TRANSACTION "ASSIGN_SAMPLE_STANDARD"
+                    sample = SELECT sample.id_numeric
+                 FOR UPDATE
+                             WHERE id_numeric = sampid
+
+                    IF sample = locked THEN
+                       lock_flag_on()
+                       WHILE sample = locked DO
+                          ROLLBACK
+                          sampid = SELECT sample.id_numeric
+                           FOR UPDATE
+                                   WHERE id_numeric = sampid
+                          SLEEP FOR "0 00:00:02"
+                       ENDWHILE
+                       lock_flag_off()
+                    ENDIF
+
+                    IF ( sample = sampid ) THEN
+                               
+{ fields to be assigned for standards }
+
+{ calculated externally }
+                       ASSIGN sample.id_text      = text_name
+
+{ required internally }
+                       ASSIGN sample.job_name     = version_ident
+                       ASSIGN sample.product_name = SELECT standard.identity
+                       ASSIGN sample.standard     = TRUE
+                       ASSIGN sample.on_wks       = TRUE
+               ASSIGN sample.product_version =
+                                     RIGHTSTRING ( version_ident , 10 )
+
+
+{ These fields should be checked to see IF the template has already assigned
+  them }
+                       IF SELECT sample.sample_type = " " THEN
+                          ASSIGN sample.sample_type  = SELECT standard.standard_type
+                       ENDIF
+                       IF SELECT sample.sample_name = " " THEN
+                          ASSIGN sample.sample_name  = SELECT standard.standard_name
+                       ENDIF
+                       IF SELECT sample.description = " " THEN
+                          ASSIGN sample.description  = SELECT standard.description
+                       ENDIF
+
+
+{ has to be "V" to allow inclusion on worksheet!!! }
+                       START WRITE TRANSACTION "ASSIGN_SAMPLE_STANDARD"
+                       CHANGE SAMPLE STATUS TO "V"
+
+                       SET GLOBAL ("AUDITPROMPTSUPPRESS") TO TRUE
+                       UPDATE sample
+                       COMMIT
+                ENDIF
+                ENDIF
+             ENDIF
+      ELSE
+         flash_message (GET_USER_MESSAGE("LIB_STAN_CONST_7" ,1)
+            :version_ident,true)
+         sampid = empty
+      ENDIF
+      set_default_format(default_format)
+
+      RETURN(sampid)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ Routine to ASSIGN a test to a standard }
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE assign_standard_test ( VALUE sampid, VALUE analysis_id, VALUE rep_count, testid )
+
+    WriteToLog("assign_standard_test")
+    DECLARE default_format,updaterep_array,upcount,reupcount,status
+    DECLARE is_good, anal_record, max_rep, can_use, first_avail, replicate
+
+    get_default_format(default_format)
+    is_good = TRUE
+    anal_record = SELECT analysis.identity
+                  WHERE identity = analysis_id
+
+    WriteToLog("anal_record: ":anal_record)
+    IF anal_record <> empty THEN
+
+        { PT April 1992 - Bug 1092 - 
+        Check for any previous replicates with the same
+        sample and analysis  Ported IPF 27/4/92 }
+
+        max_rep = 0
+        can_use = FALSE
+        first_avail = 0
+        upcount = 0
+        ARRAY updaterep_array
+        REPEAT
+            replicate = SELECT test.test_count FOR UPDATE
+                        WHERE (sample = sampid )
+                        AND (analysis = analysis_id)
+                        ORDER ON test_count
+            IF replicate = LOCKED THEN
+                ROLLBACK
+                SLEEP FOR ("0 00:00:01.00")
+            ENDIF
+        UNTIL replicate <> LOCKED
+
+        testid = SELECT test.test_number
+        WHILE replicate <> EMPTY DO
+            IF SELECT test.worksheet_position = 0 THEN
+                can_use = TRUE
+                { IF requires test replicates, make sure that the first available test is
+                used }
+                IF (first_avail = 0) THEN
+                    first_avail = SELECT test.test_number
+                ENDIF
+            ENDIF
+            IF NOT( SELECT test.replic_flag) THEN
+                upcount = upcount+1
+                updaterep_array[upcount] = SELECT test.test_number
+            ENDIF
+            IF replicate > max_rep THEN
+                max_rep = replicate
+            ENDIF
+        NEXT test
+            replicate = SELECT test.test_count
+        ENDWHILE
+
+        START WRITE TRANSACTION "test replicates"
+        reupcount = 1
+        WHILE reupcount <= upcount DO
+            replicate = SELECT test.test_count FOR UPDATE
+                        WHERE test_number = updaterep_array[reupcount]
+            IF NOT( SELECT test.replic_flag) THEN
+                ASSIGN test.replic_flag = TRUE
+                UPDATE test
+            ENDIF
+            reupcount = reupcount + 1
+        ENDWHILE
+        COMMIT
+
+        START READ TRANSACTION "ASSIGN_STANDARD_TEST"
+
+        samp_id = SELECT sample.id_numeric FOR UPDATE
+                  WHERE id_numeric = sampid
+
+        IF samp_id = LOCKED THEN
+            REPEAT
+                ROLLBACK
+                SLEEP FOR "0 00:00:01"
+                samp_id = SELECT sample.id_numeric FOR UPDATE
+                          WHERE id_numeric = sampid
+            UNTIL samp_id <> locked
+        ENDIF
+
+        { Bug 1473 IF test already assigned to this sample THEN dont }
+        { ASSIGN again }
+        IF can_use THEN
+            testid = SELECT test.test_number FOR UPDATE
+                     WHERE test_number = first_avail
+        ELSE
+            {**M1524 HBe 28-1-04: converting the testid to packed_decimal}  
+            {testid = 1/0 }
+            testid = PACKED_DECIMAL(INCREMENT( "TEST", "TEST_NUMBER"))
+            RESERVE ENTRY TEST, testid, status
+            WriteToLog("RESERVE ENTRY TEST, ":testid:", ":status)
+            {**MS1524 HBe 28-1-04
+            IF (testid <> error) & (testid <> empty) THEN}
+            IF (testid <> error) & (testid <> empty) & (testid <> "Invalid key value for field TEST.TEST_NUMBER") THEN
+                {**ME1524}
+                DECLARE comp_list
+                comp_list = SELECT template_fields.default_value
+                            WHERE table_name = "SAMPLE"
+                              AND field_name = "TEST_SCHEDULE"
+                              AND template_id = (SELECT samp_tmpl_header.identity)
+                IF comp_list <> EMPTY THEN
+                    comp_list = SELECT test_sched_view.component_list
+                                WHERE identity = comp_list
+                                  AND analysis = analysis_id
+                ENDIF
+                
+                ASSIGN test.sample = sampid
+                ASSIGN test.analysis = analysis_id
+                ASSIGN test.preparation_id = " "
+                ASSIGN test.test_priority = 0
+                ASSIGN test.test_priority = 1
+                ASSIGN test.instrument_id = " "
+               {PT April 1992 - Bug 1092 - Check for any previous replicates with the same
+                sample and analysis  Ported IPF 27/4/92 }
+                ASSIGN test.test_count = max_rep + 1
+                ASSIGN test.replic_flag = FALSE
+                ASSIGN test.analysis_version = SELECT analysis.analysis_version
+                { Force the status code to count the new test }
+                ASSIGN test.status = " "
+                IF GLOBAL("COMPONENT_REPLICATES") THEN
+                    ASSIGN test.'comp_replicates' = SELECT analysis.'comp_replicates'
+                ENDIF
+                IF comp_list <> EMPTY THEN
+                    ASSIGN test.component_list = comp_list
+                ENDIF
+            ENDIF
+        ENDIF
+        {**MS1524 HBe 28-1-04
+        IF (testid <> error) & (testid <> empty) THEN}
+        IF (testid <> error) & (testid <> empty) & (testid <> "Invalid key value for field TEST.TEST_NUMBER") THEN
+            {**ME1524}
+            START WRITE TRANSACTION "ASSIGN_STANDARD_TEST"
+            { ASSIGN dummy variable to worksheet position to prevent it being picked
+            up again }
+            ASSIGN test.worksheet_position = 1
+            CHANGE TEST STATUS TO "V" , status
+            CHANGE SAMPLE STATUS TO "V" , status
+            SET GLOBAL ("AUDITPROMPTSUPPRESS") TO TRUE
+            UPDATE test
+            UPDATE SAMPLE
+            COMMIT
+            is_good = TRUE
+        ELSE
+            is_good = FALSE
+        ENDIF
+    ELSE
+        is_good = FALSE
+    ENDIF
+
+    set_default_format(default_format)
+    RETURN(is_good)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ Routine to create a standard using a pre_built textual ID. This
+  routine will be called by $WORKSHEET. The routine will also ASSIGN a test
+  to the sample created. }
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE create_a_standard (VALUE standard_id, VALUE id_text, VALUE analysis_id, sampid, tesnum)
+
+    WriteToLog("create_a_standard")
+    DECLARE default_format, is_good
+
+    get_default_format(default_format)
+    is_good = TRUE
+    sampid = assign_sample_to_standard ( standard_id, id_text )
+    { IPF 22/4/92 bug 844 }
+    IF (sampid <> empty) AND ( sampid <> error ) THEN
+        is_good = assign_standard_test (sampid, analysis_id, 1, tesnum)
+    ELSE
+        tesnum = empty
+        is_good = FALSE
+    ENDIF
+    set_default_format(default_format)
+    RETURN(is_good)
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ Routine to create a standard, building up the textual ID. But do not        }
+{ ASSIGN any tests.                                                           }
+{-----------------------------------------------------------------------------}
+
+ GLOBAL ROUTINE assign_standard ( VALUE standard_ident ,
+                  text_name            )
+
+  DECLARE default_format, version_ident, is_good
+
+             get_default_format(default_format)
+             find_version_to_use ( standard_ident , text_name, version_ident)
+             is_good = assign_sample_to_standard ( version_ident, text_name)
+             set_default_format(default_format)
+             RETURN(is_good )
+
+ENDROUTINE
+
+
+{--------------------------------------------------------------------------------------------------------------------------------}
+{ CALIBRATION_VALUE <standard_id> <standard_version> <component> <typical_value>                                                 }
+{                            Returns TRUE IF finds the component and places value in parameter <typical_value>.                  }
+{                                                                                                                                }
+{!-------------------------------------------------------------------------------------------------------------------------------}
+GLOBAL ROUTINE calibration_value( VALUE standard_id, 
+                                  VALUE version,
+                                  VALUE component,
+                                        mlp_value )
+
+    mlp_value = SELECT mlp_components.typical_text
+                    WHERE  (product_id = standard_id)
+                      AND  (product_version = version)
+{ IPF 27/4/92 set analysis name for storing mlp components to default value}
+                      AND  (analysis_id = std_vers_null_analysis ( ))
+                      AND  (component_name = component)
+
+    IF mlp_value <> EMPTY THEN
+        RETURN( TRUE )
+    ELSE
+        RETURN( FALSE )
+    ENDIF
+
+ENDROUTINE {calibration_value}
+
+
+{--------------------------------------------------------------------------------------------------------------------------------}
+{ CONTROL_LIMITS <standard_id> <standard_version> <component> <lower> <upper> <text>                                             }
+{                            Returns TRUE IF finds the component value record, and places values in <lower> <upper> & <text>     }
+{                                                                                                                                }
+{!-------------------------------------------------------------------------------------------------------------------------------}
+GLOBAL ROUTINE control_limits( VALUE standard_id,
+                               VALUE version,
+                               VALUE component,
+                                     upper_limit,
+                                     lower_limit,
+                                     text_spec )
+
+DECLARE find_mlp, check_value
+{ IPF 28/4/92 Initialise returning values }
+        upper_limit = 0
+    lower_limit = 0
+    text_spec = " "
+
+    find_mlp = SELECT mlp_components.entry_code
+                    WHERE  (product_id = standard_id)
+                      AND  (product_version = version)
+{ IPF 27/4/92 set analysis name for storing mlp components to default value}
+                      AND  (analysis_id = std_vers_null_analysis ( ))
+                      AND  (component_name = component)
+
+    IF find_mlp = EMPTY THEN
+        RETURN( FALSE )
+    ENDIF
+
+    check_value = SELECT mlp_values.entry_code
+                      WHERE entry_code = find_mlp
+
+    IF check_value = EMPTY THEN
+        RETURN( FALSE )
+    ENDIF
+
+    IF SELECT mlp_components.component_type = "N" THEN
+        text_spec = " "
+        upper_limit = SELECT mlp_values.max_limit
+        lower_limit = SELECT mlp_values.min_limit
+    ELSE
+        text_spec = SELECT mlp_values.text_spec
+        lower_limit = 0
+        upper_limit = 0
+    ENDIF
+
+    RETURN( TRUE )
+
+ENDROUTINE {control_limits}
+
+{-----------------------------------------------------------------------------}
+{ This routine contains the syntax used for logging in standards              }
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_standard_syntax ( VALUE current_standard_id,
+                     VALUE current_version    ,
+                     VALUE usage_num          ,
+                     VALUE standard_type      )
+
+  DECLARE syntax_ident,default_format, text_name
+
+  get_default_format(default_format)
+  SET FORMAT ("99999999")
+  syntax_ident = STRIP(current_standard_id):"_":
+         STRIP(current_version)    :".":
+                 STRIP(usage_num)
+
+  IF standard_type <> "BLANK" THEN
+     text_name = standard_mnem:PAD(syntax_ident," ",26)
+  ELSE
+     text_name = blank_mnem:   PAD(syntax_ident," ",26)
+  ENDIF
+
+  set_default_format(default_format)
+  RETURN(text_name)
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

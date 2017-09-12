@@ -1,0 +1,875 @@
+{******************************************************************************
+*
+* Module Name   : ROSCOM_LIB.RPF
+*
+* Purpose       : Implements sample manager options CMS and CRP
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{       $LIB_COMM                                                              }
+{                                                                              }
+{       This report implements the two Sample Manager commit options, CMS      }
+{       and CRP. The report has two global routines, commit_sample and         }
+{       commit job. These both prompt the user for a record ID and then        }
+{       call a routine in $COMMIT to determine the destination table set       }
+{       for the record. Once a table has been specified the report performs    }
+{       a hierarchical commit operation, consigning each sample, result and    }
+{       test to the appropriate table for the given table set.                 }
+{                                                                              }
+{       The report also has four example destination selection routines to be  }
+{       called from the $COMMIT report. The default routines simply return     }
+{       the DEFAULT_TABLE_SET, which corresponds to c_sample, c_result etc,    }
+{       whereas the interactive routines allow the user to examine the record  }
+{       before deciding on the table set.                                      }
+{                                                                              }
+{------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0026        140694  LPE     Routine commit_job commit all sample in job    }
+{                               Routine commit_sample commit sample            }
+{                               A list over committed Jobs and samples is      }
+{                               written in SMP$LOGFILES:ROSCOMMIT.LOG          }
+{**E0026-1      230295  LPE     I Routine commit_sample_in_job er check_id     }
+{                               fjernet, da entry til Sample Id mistes, ved    }
+{                               select igen. Alle Samples i Job blev derfor    }
+{                               ikke committed. Sample Id lægges i ARRAY og    }
+{                               overføres herefter til commit_selected_sample  }
+{------------------------------------------------------------------------------}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY $BSMP_LIB
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DISPLAY\"
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Constants used by the sample commit screen.                                  }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+CONSTANT SAMPLE_HEIGHT      = 4
+CONSTANT SAMPLE_PROMPT      = 3
+CONSTANT SAMPLE_Y           = 8
+CONSTANT SAMPLE_X           = 20
+CONSTANT SAMPLE_WIDTH       = 46
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Constants used by the job commit screen.                                     }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+CONSTANT JOB_HEIGHT = 4
+CONSTANT JOB_WIDTH  = 40
+CONSTANT JOB_X      = 20
+CONSTANT JOB_Y      = 8
+CONSTANT JOB_PROMPT = 3
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Constants used to display information during sample commit.                  }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+CONSTANT INFO_HEIGHT = 8
+CONSTANT INFO_WIDTH  = 30
+CONSTANT INFO_X      = 40
+CONSTANT INFO_Y      = 6
+CONSTANT INFO_SAMPLE = 3
+CONSTANT INFO_TEST   = 4
+CONSTANT INFO_RESULT = 5
+CONSTANT INFO_INFO   = 7
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Constants used to display information during job commit.                     }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+CONSTANT JOB_INFO_HEIGHT = 7
+CONSTANT JOB_INFO_WIDTH  = 35
+CONSTANT JOB_INFO_X      = 40
+CONSTANT JOB_INFO_Y      = 6
+CONSTANT JOB_INFO_JOB    = 3
+CONSTANT JOB_INFO_SAMPLE = 4
+CONSTANT JOB_INFO_INFO   = 6
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ Constants used by the interactive destination selection routines.            }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+CONSTANT INTERACT_HEIGHT = 6
+CONSTANT INTERACT_WIDTH  = 40
+CONSTANT INTERACT_X      = 25
+CONSTANT INTERACT_Y      = 10
+CONSTANT INTERACT_INFO   = 3
+CONSTANT INTERACT_PROMPT = 4
+CONSTANT INTERACT_MENU_X = 30
+CONSTANT INTERACT_MENU_Y = 14
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_sample(sample_id)
+
+   SET NAME "NL:"
+
+	DECLARE destination,done,sample_window,lk,ok,check_id
+
+	START READ TRANSACTION "commit sample"
+
+	done = FALSE
+
+		SET SAMPLE_STATUS "AX"
+
+	   check_id = SELECT sample.id_numeric
+					FOR UPDATE
+				    WHERE id_numeric = sample_id
+
+		IF check_id = sample_id THEN
+ 			destination = " "
+			CALL_ROUTINE "SAMPLE_DESTINATION"
+			   USING destination
+			   RETURNING ok
+			   IN LIBRARY "$COMMIT"
+			IF ok THEN
+				status = EMPTY
+				START WRITE TRANSACTION "commit sample"
+				commit_selected_sample(	sample_id,destination, status)
+			   IF status = EMPTY THEN
+					COMMIT
+				ELSE
+					ROLLBACK
+				ENDIF
+			ENDIF
+		ELSE
+			file_msg = GET_USER_MESSAGE("LIB_COMM_NOLOCSAMP",1):STRIP(sample_id)
+         file_name = GLOBAL("USER_1")
+         FILE EXTEND file_name,status
+         FILE WRITE file_name, file_msg,status
+         FILE CLOSE file_name,status
+		ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_job(job_id)
+
+   SET NAME "NL:"
+
+	DECLARE destination,done,job_window,lk,ok,check_id
+
+	START READ TRANSACTION "commit job"
+
+   SET JOB_STATUS "AX"
+
+	check_id = SELECT job_header.job_name
+					FOR UPDATE
+ 			    WHERE job_name = job_id
+
+	IF check_id = job_id THEN
+		destination = " "
+		CALL_ROUTINE "JOB_DESTINATION"
+		   USING destination
+		   RETURNING ok
+		   IN LIBRARY "$COMMIT"
+
+		IF ok THEN
+			commit_selected_job(	job_id, destination)
+	   ENDIF
+   ELSE
+      file_msg = "Unable to locate Job Id : ":job_id
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+   ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Routines called from commit_sample and commit_job.                          }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_job(	VALUE job_id,
+				VALUE destination)
+
+	DECLARE status,job_info_window
+
+   pr_job_id = STRIP(job_id)
+
+	IF all_samples_authorised(job_id) THEN
+
+		START WRITE TRANSACTION "commit job"
+
+{		add_timer_queue_entries(job_id,destination) }
+
+      commit_samples_in_job (job_id,destination)
+
+		CONSIGN job_header TO destination, status
+
+		IF status = EMPTY THEN
+			COMMIT
+         file_msg = "Job  Id   : ":pr_job_id
+      ELSE
+		   ROLLBACK
+         file_msg = "Consign error : ":status:" for Job Id ":pr_job_id
+		ENDIF
+
+	ELSE
+      file_msg = "Job Id    : ":pr_job_id:" has unauthorised samples"
+	ENDIF
+
+   file_name = GLOBAL("USER_1")
+   FILE EXTEND file_name,status
+   FILE WRITE file_name, file_msg,status
+   FILE CLOSE file_name,status
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+ROUTINE add_timer_queue_entries ( VALUE job_id,
+				  VALUE destination )
+
+
+	DECLARE sample_id
+
+	sample_id = SELECT sample.id_numeric
+		     WHERE job_name = job_id
+
+	WHILE (sample_id <> EMPTY) DO
+
+{		DISPLAY GET_USER_MESSAGE("LIB_COMM_DISPLAY_2" ,1): sample_id ON LINE JOB_INFO_SAMPLE
+			FROM 1 TO JOB_INFO_WIDTH IN WINDOW job_info_window }
+{      flash_message(GET_USER_MESSAGE("LIB_COMM_DISPLAY_2" ,1): sample_id,true)
+}
+
+		add_timer_queue_entry(sample_id,destination)
+		NEXT sample
+		sample_id = SELECT sample.id_numeric
+	ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
+
+ROUTINE add_timer_queue_entry(	VALUE sample_id,
+				VALUE destination)
+
+	get_next_timer_number("COMMIT",sample_id)
+
+	ASSIGN timerqueue.run_time = NOW
+{	ASSIGN timerqueue.report_name = "$LIB_COMM"
+	ASSIGN timerqueue.routine_name = "BACKGROUND" }
+	ASSIGN timerqueue.report_name = "ROSCOM_LIB"
+	ASSIGN timerqueue.routine_name = "BACKGROUND"
+	ASSIGN timerqueue.repeat_interval = INTERVAL("0")
+	ASSIGN timerqueue.param_string = chr(34) : sample_id : chr(34) : "," :
+				       	chr(34) : destination : chr(34)
+        IF global ("timerqueue_user_enabled") THEN
+           ASSIGN timerqueue.user_name = OPERATOR
+        ENDIF
+
+	UPDATE timerqueue
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+
+ROUTINE commit_selected_sample(	VALUE sample_id,
+				                     VALUE destination,
+				                     status)
+
+	DECLARE test_number,info_window
+
+   SET NAME "NL:"
+
+   sample_id_text = SELECT sample.id_text
+
+	test_number = SELECT test.test_number
+			FOR UPDATE
+		   WHERE sample_id = sample_id
+
+	WHILE (test_number <> EMPTY) AND
+		(status = EMPTY) DO
+		IF test_number = LOCKED THEN
+			status = GET_USER_MESSAGE("LIB_COMM_STAT_1" ,1)
+      ELSE
+  			commit_selected_test(test_number,destination,status)
+			NEXT test
+			test_number = SELECT test.test_number
+		ENDIF
+	ENDWHILE
+
+	IF status = EMPTY THEN
+
+		CONSIGN sample TO destination, status
+
+		IF status <> EMPTY THEN
+         file_msg = GET_USER_MESSAGE("LIB_COMM_DISPLAY_7" ,1): status:
+                    " for Sample : ":sample_id
+		ELSE
+         file_msg = "Sample ID : ":sample_id_text:"   ":STRIP(sample_id)
+   	ENDIF
+
+   ELSE
+      file_msg = status
+	ENDIF
+
+{   flash_message("file_msg ":file_msg,true) }
+
+   file_name = GLOBAL("USER_1")
+   FILE EXTEND file_name,status
+   FILE WRITE file_name, file_msg,status
+   FILE CLOSE file_name,status
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_selected_test(	VALUE test_id,
+                  				VALUE destination,
+				                  status)
+
+	DECLARE result_name
+
+	result_name = SELECT result.component_name
+			FOR UPDATE
+		   WHERE test_number = test_id
+
+	WHILE (result_name <> EMPTY) AND
+   		(status = EMPTY) DO
+		IF result_name = LOCKED THEN
+			status = GET_USER_MESSAGE("LIB_COMM_STAT_2" ,1)
+		ELSE
+			commit_selected_result(result_name,destination,status)
+
+			NEXT result
+			result_name = SELECT result.component_name
+		ENDIF
+	ENDWHILE
+
+	IF status = EMPTY THEN
+		CONSIGN test TO destination, status
+		IF status <> EMPTY THEN
+			file_msg = GET_USER_MESSAGE("LIB_COMM_DISPLAY_7" ,1): status:
+                    "for test : ":test_id
+		ENDIF
+   ELSE
+      file_msg = status
+	ENDIF
+
+   IF status <> EMPTY THEN
+      file_msg = "Consign error : ":status
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+   ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_selected_result(	VALUE result_id,
+				                     VALUE destination,
+               				      status)
+
+	CONSIGN result TO destination, status
+
+	IF status <> EMPTY THEN
+		file_msg = GET_USER_MESSAGE("LIB_COMM_DISPLAY_7" ,1): status 
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+	ENDIF
+
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE all_samples_authorised(	VALUE job_id)
+
+	DECLARE sample_id,ok,stat
+
+	ok = TRUE
+
+	sample_id = SELECT sample.id_numeric
+		     WHERE job_name = job_id
+
+	WHILE (sample_id <> EMPTY) AND ok DO
+		stat = SELECT sample.status
+		ok = (stat = "A") OR (stat = "X")
+		NEXT sample
+		sample_id = SELECT sample.id_numeric
+	ENDWHILE
+
+	RETURN(ok)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ROUTINE add_timer_queue_entries ( VALUE job_id,
+				  VALUE destination )
+
+
+	DECLARE sample_id
+
+	sample_id = SELECT sample.id_numeric
+		     WHERE job_name = job_id
+
+	WHILE (sample_id <> EMPTY) DO
+
+		DISPLAY GET_USER_MESSAGE("LIB_COMM_DISPLAY_2" ,1): sample_id ON LINE JOB_INFO_SAMPLE
+			FROM 1 TO JOB_INFO_WIDTH IN WINDOW job_info_window
+
+		add_timer_queue_entry(sample_id,destination)
+		NEXT sample
+		sample_id = SELECT sample.id_numeric
+	ENDWHILE
+
+ENDROUTINE }
+
+{------------------------------------------------------------------------------}
+
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The background routine is called via the timer queue and commits a specified }
+{ sample to a specified destination. It should not be run in the foreground.   }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+{------------------------------------------------------------------------------}
+
+ GLOBAL ROUTINE background(option)
+
+	DECLARE sample_id,destination,check_id,status
+
+	PROMPT FOR sample_id
+	PROMPT FOR destination
+
+	START READ TRANSACTION "background commit sample"
+	check_id = SELECT sample.id_numeric FOR UPDATE
+		    WHERE id_numeric = sample_id
+{#DJL}
+{		    WHERE id_numeric = sample_id  }
+	IF check_id = sample_id THEN
+		status = EMPTY
+		START WRITE TRANSACTION "background commit sample"
+		commit_selected_sample(sample_id,destination,status)
+		IF status = EMPTY THEN
+			COMMIT
+		ELSE
+			ROLLBACK
+		ENDIF
+	ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The background routine commits a specific job to a specified destination.    }
+{ It should not be run in the foreground.                                      }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE background_job (option)
+
+	DECLARE job_id,destination,check_id, status
+
+	PROMPT FOR job_id
+	PROMPT FOR destination
+	START READ TRANSACTION "background commit job"
+	check_id = SELECT job_header.job_name FOR UPDATE
+		WHERE job_name = job_id
+
+	IF check_id = job_id THEN
+		commit_selected_job(job_id,destination)
+	ENDIF
+
+ENDROUTINE
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Four example destination routines to be called from $COMMIT                 }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE default_sample_destination(destination)
+
+	destination = GLOBAL("COMMITTED_TABLE_SET")
+	RETURN(TRUE)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE default_job_destination(destination)
+
+	destination = GLOBAL("COMMITTED_TABLE_SET")
+	RETURN(TRUE)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE interactive_sample_destination(destination)
+
+	DECLARE ok
+
+	ok = interactive_table_destination ( destination,
+                                             "SAMPLE" ,
+                                             GET_USER_MESSAGE("LIB_COMM_OK_2" ,1),
+                                             GET_USER_MESSAGE("LIB_COMM_DISPLAY_2" ,1)
+                                                 : SELECT sample.id_text,
+                                             GET_USER_MESSAGE("LIB_COMM_OK_3" ,1),
+                                             GET_USER_MESSAGE("LIB_COMM_OK_4" ,1),
+                                             "view_sample")
+
+	RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE interactive_job_destination(destination)
+
+	DECLARE ok
+
+	ok = interactive_table_destination(
+		destination,
+		"JOB_HEADER",
+		GET_USER_MESSAGE("LIB_COMM_OK_6" ,1),
+		GET_USER_MESSAGE("LIB_COMM_DISPLAY_1" ,1): SELECT job_header.job_name,
+		GET_USER_MESSAGE("LIB_COMM_OK_7" ,1),
+		GET_USER_MESSAGE("LIB_COMM_OK_8" ,1),
+		"view_job")
+
+	RETURN(ok)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Routines called by the two interactive destination routines above.          }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+{------------------------------------------------------------------------------}
+
+ROUTINE interactive_table_destination(	      destination,
+					VALUE table,
+					VALUE top_line,
+					VALUE info_line,
+					VALUE bottom_line,
+					VALUE destination_prompt,
+					VALUE view_routine)
+
+	DECLARE tablesets,
+		tableset_count,
+		interact_window,
+		done,
+		lk,
+		return_value
+
+	CREATE TEXT WINDOW interact_window
+		HEIGHT INTERACT_HEIGHT
+		WIDTH INTERACT_WIDTH
+		BORDER
+		HEADER = top_line
+		FOOTER = bottom_line
+		HELP CONTEXT = "$LIB_COMM_INTERACT"
+
+	DISPLAY info_line
+		ON LINE INTERACT_INFO FROM 1 TO INTERACT_WIDTH
+		IN WINDOW interact_window
+
+	PASTE TEXT WINDOW interact_window AT INTERACT_X,INTERACT_Y
+
+	find_table_sets(table,tablesets,tableset_count)
+	done = FALSE
+
+	REPEAT
+		PROMPT FOR destination USING destination_prompt
+			ON LINE INTERACT_PROMPT FROM 1 TO INTERACT_WIDTH
+			FORMAT IDENTITY_20 IN WINDOW interact_window
+		lk = LASTKEY
+		IF lk = "EXIT" THEN
+
+			done = TRUE
+			return_value = FALSE
+
+		ELSEIF lk = "FIND" THEN
+
+			IF browse_on_table_sets(destination,
+	      					tablesets,
+						tableset_count) THEN
+				done = TRUE
+				return_value = TRUE
+			ENDIF
+
+		ELSEIF lk = "SELECT" THEN
+
+			CALL_ROUTINE view_routine
+				IN LIBRARY GLOBAL("CURRENT_LIBRARY")
+
+		ELSEIF validtableset(	destination,
+					tablesets,
+					tableset_count) THEN
+
+			done = TRUE
+			return_value = TRUE
+
+		ENDIF
+	UNTIL done
+
+	UNPASTE TEXT WINDOW interact_window
+
+	RETURN(return_value)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_sample
+
+	DECLARE menu_array
+
+	ARRAY menu_array ARRAYSIZE(3,4)
+
+	menu_array[1,1] = "*"
+	menu_array[1,2] = GET_USER_MESSAGE("LIB_COMM_MENU_1" ,1)
+	menu_array[1,3] = "$LIB_COMM_MENU_ARRAY"
+
+	menu_array[2,1] = " "
+	menu_array[2,2] = GET_USER_MESSAGE("LIB_COMM_MENU_2" ,1)
+	menu_array[2,3] = "$LIB_COMM"
+	menu_array[2,4] = "view_full_sample"
+
+	menu_array[3,1] = " "
+	menu_array[3,2] = GET_USER_MESSAGE("LIB_COMM_MENU_3" ,1)
+	menu_array[3,3] = "$LIB_COMM"
+	menu_array[3,4] = "view_sample_results"
+
+	CALLMENU OUTOF menu_array AT INTERACT_MENU_X,INTERACT_MENU_Y
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_full_sample(option)
+
+	DECLARE menu_num,sample_id
+
+	sample_id = SELECT sample.id_numeric
+	menu_num = menunumber("DFS")
+	MENUPROC menunum,sample_id : ", $EXIT"
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_sample_results(option)
+
+	DECLARE menu_num,sample_id
+
+	sample_id = SELECT sample.id_numeric
+	menu_num = menunumber("DSR")
+	MENUPROC menunum,sample_id : ", $EXIT"
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_job
+
+	DECLARE job_id,menu_num
+
+	job_id = SELECT job_header.job_name
+	menu_num = menunumber("DJS")
+	MENUPROC menunum , CHR ( 34) :job_id :CHR ( 34) :", $EXIT"
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE find_table_sets(VALUE table,
+                              tablesetarray,
+                              tablesetcount)
+
+	DECLARE current_table,done,next_table
+
+	ARRAY tablesetarray
+	tablesetcount = 0
+	done = FALSE
+	current_table = table
+
+	REPEAT
+		GET_TABLE_DETAILS
+			'current_table',
+			"CHILD",
+			next_table
+		IF blank(next_table) THEN
+			done = TRUE
+		ELSE
+			current_table = next_table
+			tablesetcount = tablesetcount + 1
+			GET_TABLE_DETAILS
+				'current_table',
+				"TABLESET",
+				tablesetarray[tablesetcount]
+		ENDIF
+	UNTIL done
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE validtableset(	VALUE suspect,
+			      tablesets,
+			VALUE tableset_count)
+
+	DECLARE found,count
+
+	found = FALSE
+	count = 1
+
+	WHILE (count <= tableset_count) AND NOT found DO
+		IF STRIP(suspect) = STRIP(tablesets[count]) THEN
+			found = TRUE
+		ELSE
+			count = count + 1
+		ENDIF
+	ENDWHILE
+
+	RETURN(found)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE browse_on_tablesets(	      tableset,
+				      tablesets,
+				VALUE tableset_count)
+
+	DECLARE return_value,browse_count
+
+	return_value = browse(	"browse_on_first_tableset",
+				"browse_on_next_tableset",
+				GLOBAL("CURRENT_LIBRARY"),
+				20,
+				destination)
+
+	RETURN(return_value)
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE browse_on_first_tableset
+
+	browse_count = 1
+	browse_on_next_tableset()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE browse_on_next_tableset
+
+	IF browse_count <= tableset_count THEN
+		browse_entry(tablesets[browse_count],
+			     tablesets[browse_count],
+			     " ")
+		browse_count = browse_count + 1
+	ELSE
+		browse_entry(EMPTY,
+			     EMPTY,
+			     EMPTY)
+	ENDIF
+
+ENDROUTINE
+
+
+{---------------------------- commit_samples_in_job ---------------------------}
+
+ROUTINE commit_samples_in_job (job_id,destination )
+
+ARRAY current_sample
+
+   DECLARE sample_id,check_id , sample_count , count
+
+   sample_count = 0
+
+   sample_id = SELECT sample.id_numeric
+               WHERE job_name = job_id
+
+   IF sample_id <> EMPTY THEN
+
+      WHILE sample_id <> EMPTY DO
+
+{**E0026-1S}
+
+         sample_count = sample_count + 1
+         current_sample [sample_count] = sample_id
+
+{**E0026-1E}
+
+         NEXT sample
+         sample_id = SELECT sample.id_numeric
+      ENDWHILE
+
+{**E0026-1S}
+
+      count = 1
+
+      WHILE count <= sample_count DO
+
+         cur_sample = SELECT sample.id_numeric
+                      FOR UPDATE
+                      WHERE id_numeric = current_sample [count]
+
+         status = EMPTY
+         commit_selected_sample(cur_sample,destination,status)
+         count = count + 1
+      ENDWHILE
+
+{**E0026-1E}
+
+   ELSE
+
+      file_msg = "Job  Id   : ":pr_job_id:" has no samples"
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+   ENDIF
+ENDROUTINE   {commit_samples_in_job}
+{------------------------------------------------------------------------------}

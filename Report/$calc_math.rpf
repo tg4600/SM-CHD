@@ -1,0 +1,1888 @@
+{Compared 20140122 /DKTBG}
+{*******************************************************************************
+*
+* Module Name  : $CALC_MATH
+*
+* Purpose      : Maths routines needed for enhanced calculation builder
+*
+* Document Ref : CH000770 / SCR102290
+*
+* Portability  : Not Checked
+*
+* Re-entrant   : No
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+ENABLE WINDOWS
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+
+JOIN LIBRARY $LIB_RE_FORMULA
+JOIN LIBRARY $CRITERIA_SAVED
+JOIN LIBRARY $LIB_UTILS
+
+{******************************************************************************}
+
+ROUTINE result_ok ( result_obj )
+
+{
+*
+* Checks the result text to see if the result is valid for inclusion in 
+* calculations. Initially this will just look for the presence of '<' or
+* '>' in the result text.
+*
+*******************************************************************************}
+
+DECLARE ok , result_text
+
+    ok = TRUE
+    
+    result_text = SELECT result . text
+                  IN OBJECT result_obj
+
+    IF BLANK ( result_text ) THEN
+    
+        ok = FALSE
+        
+    ELSEIF ( INDEX( result_text, ">" ) <>  0 ) THEN
+    
+        ok = FALSE
+        
+    ELSEIF INDEX( result_text, "<" ) <> 0 THEN
+    
+        ok = FALSE
+
+    ELSEIF INDEX ( "KN", SELECT result . result_type
+                         IN OBJECT result_obj ) = 0 THEN
+
+        ok = FALSE
+
+    ELSEIF INDEX ( "UXR", SELECT result . status
+                                 IN OBJECT result_obj ) > 0 THEN
+
+        ok = FALSE
+
+    ENDIF
+
+    RETURN( ok )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_data_set ( obj_db )
+
+{
+*
+* This routine prints the values in the data set
+*
+*******************************************************************************}
+
+DECLARE rec_num ,
+        num_recs ,
+        result_obj ,
+        result_text
+        
+    lib_re_formula_write_to_print_file ( "" )
+    lib_re_formula_write_to_print_file ( "Number of Result values : " : STRIP ( obj_db.size ( )))
+    lib_re_formula_write_to_print_file ( "" )
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    lib_re_formula_write_to_print_file ( "Result value           ")
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    
+    num_recs = obj_db.size ( )
+
+    rec_num = 1
+
+    WHILE rec_num <= num_recs DO
+
+        result_obj = obj_db . get_by_number( rec_num )
+        
+        IF ( result_obj <> EMPTY ) THEN
+            result_text = SELECT result . text
+                            IN OBJECT result_obj
+        ELSE
+            result_text = ""
+        ENDIF                           
+
+        lib_re_formula_write_to_print_file ( result_text )
+
+        rec_num = rec_num + 1
+        
+    ENDWHILE
+
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    lib_re_formula_write_to_print_file ( "" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_data_pair ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine checks a pair of data sets and removes any data pair for which
+* either value contains an indeterminate result.
+*
+*******************************************************************************}
+
+DECLARE rec_num ,
+        num_recs ,
+        result_obj_X ,
+        result_obj_Y ,
+        result_text_X ,
+        result_text_Y
+        
+
+    lib_re_formula_write_to_print_file ( "" )
+    lib_re_formula_write_to_print_file ( "Number of X values : " : STRIP ( obj_db_X.size ( )))
+    lib_re_formula_write_to_print_file ( "Number of Y values : " : STRIP ( obj_db_Y.size ( )))
+    lib_re_formula_write_to_print_file ( "" )
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    lib_re_formula_write_to_print_file ( "X value     Y value")
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    
+    num_recs = find_max_number ( obj_db_X.size ( ),
+                                 obj_db_Y.size ( ))
+
+    rec_num = 1
+
+    WHILE rec_num <= num_recs DO
+
+        result_obj_X = obj_db_X . get_by_number( rec_num )
+        
+        IF ( result_obj_X <> EMPTY ) THEN
+            result_text_X = SELECT result . text
+                            IN OBJECT result_obj_X
+        ELSE
+            result_text_X = ""
+        ENDIF                           
+
+        result_obj_Y = obj_db_Y . get_by_number( rec_num )
+        
+        IF ( result_obj_Y <> EMPTY ) THEN
+            result_text_Y = SELECT result . text
+                            IN OBJECT result_obj_Y
+        ELSE
+            result_text_Y = ""
+        ENDIF                           
+
+        lib_re_formula_write_to_print_file ( PAD ( result_text_X, " ", 10 ) : " " :
+                                             PAD ( result_text_Y, " ", 10 ) )
+
+        rec_num = rec_num + 1
+        
+    ENDWHILE
+
+    lib_re_formula_write_to_print_file ( "----------------------" )
+    lib_re_formula_write_to_print_file ( "" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE filter_data_pair ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine checks a pair of data sets and removes any data pair for which
+* either value contains an indeterminate result.
+*
+*******************************************************************************}
+
+DECLARE no_of_recs, rec_num, result_obj_X, result_obj_Y, 
+    bad_point_pair
+
+    no_of_recs = obj_db_X.size()
+    
+    rec_num = 1
+    
+    WHILE ( rec_num <= no_of_recs ) DO
+    
+        result_obj_X = obj_db_X . get_by_number( rec_num )
+        result_obj_Y = obj_db_Y . get_by_number( rec_num )
+        
+        bad_point_pair = ( result_obj_X = EMPTY ) OR
+                         ( result_obj_Y = EMPTY )
+
+        IF NOT bad_point_pair THEN
+
+            bad_point_pair = NOT result_ok ( result_obj_X ) OR
+                             NOT result_ok ( result_obj_Y )
+
+        ENDIF
+
+        IF bad_point_pair THEN
+
+            IF ( result_obj_X <> EMPTY ) THEN
+                obj_db_X . remove_by_number( rec_num )
+            ENDIF
+            
+            IF ( result_obj_Y <> EMPTY ) THEN
+                obj_db_Y . remove_by_number( rec_num )
+            ENDIF
+
+            no_of_recs = obj_db_X . size()
+
+
+        ELSE
+        
+            rec_num = rec_num + 1
+        
+        ENDIF
+
+    ENDWHILE
+            
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE sum ( object_db )
+
+{
+*
+* This routine sums the results in the object database passed to it.
+* Indeterminate results are filtered out using the result_ok routine
+* prior to inclusion in the sum.
+* 
+*******************************************************************************}
+
+DECLARE result_object, result_val, no_of_records, result_count,
+        sum_total, sum_count
+
+    no_of_records = object_db.size()
+    
+    sum_total = 0
+    
+    result_count = 1
+    
+    sum_count = 0
+    
+    WHILE ( result_count <= no_of_records ) DO  
+    
+        result_object = object_db.get_by_number( result_count )
+
+        IF ( result_ok ( result_object )) THEN
+        
+            result_val = SELECT result.value 
+                           IN OBJECT result_object
+                           
+            sum_total = sum_total + result_val
+
+            sum_count = sum_count + 1
+            
+        ENDIF
+        
+        result_count = result_count + 1
+        
+    ENDWHILE
+    
+    IF sum_count = 0 THEN   
+    
+        sum_total = EMPTY
+        
+    ENDIF
+
+    RETURN( sum_total )
+    
+ENDROUTINE{ sum }
+
+{******************************************************************************}
+
+ROUTINE mean ( object_db )
+
+{
+*
+* This routine returns the arithmetic mean of the resuls in the passed 
+* object database. Indeterminate results are filtered out using the
+* result_ok routine.
+*
+*******************************************************************************}
+
+DECLARE result_object, result_val, no_of_records, result_count,
+        sum_total, num_results
+
+    no_of_records = object_db.size()
+    
+    sum_total = 0
+    
+    result_count = 1
+    
+    num_results = 0
+    
+    WHILE ( result_count <= no_of_records ) DO  
+    
+        result_object = object_db.get_by_number( result_count )
+    
+        IF ( result_ok ( result_object )) THEN
+        
+            result_val = SELECT result.value 
+                           IN OBJECT result_object
+                           
+            sum_total = sum_total + result_val
+            
+            num_results = num_results + 1
+            
+        ENDIF
+        
+        result_count = result_count + 1
+        
+    ENDWHILE
+    
+    IF num_results > 0 THEN
+    
+        sum_total = sum_total/ num_results
+        
+    ELSE
+    
+        sum_total = EMPTY 
+        
+    ENDIF
+    
+    RETURN( sum_total )
+    
+ENDROUTINE{ mean }
+
+{******************************************************************************}
+
+ROUTINE max ( object_db )
+
+{
+*
+* This routine returns the maximum result value in the passed object 
+* database. Indeterminate results are filtered out using the 
+* result_ok routine.
+*
+*******************************************************************************}
+
+DECLARE result_object, result_val, no_of_records, result_count,
+        max_val, first_set
+
+    no_of_records = object_db.size()
+    
+    result_count = 1
+    
+    first_set = FALSE
+    
+    max_val = 0 
+    
+    WHILE ( (result_count <= no_of_records ) AND ( NOT first_set ) ) DO
+    
+        result_object = object_db.get_by_number( result_count )
+
+        IF ( result_ok ( result_object )) THEN
+        
+            max_val = SELECT result.value 
+                      IN OBJECT result_object
+                           
+            first_set = TRUE
+            
+        ENDIF
+
+        result_count = result_count + 1
+        
+    ENDWHILE
+        
+    WHILE ( result_count <= no_of_records ) DO  
+    
+        result_object = object_db.get_by_number( result_count )
+
+        IF ( result_ok ( result_object )) THEN
+        
+            result_val = SELECT result.value 
+                           IN OBJECT result_object
+            
+            IF ( result_val > max_val ) THEN
+            
+                max_val = result_val
+                
+            ENDIF
+            
+        ENDIF
+        
+        result_count = result_count + 1
+        
+    ENDWHILE
+    
+    IF NOT first_set THEN
+    
+        max_val = EMPTY
+        
+    ENDIF
+    
+    RETURN( max_val )
+    
+ENDROUTINE{ max }
+
+{******************************************************************************}
+
+ROUTINE min ( object_db )
+
+{
+*
+* This routine returns the minimum result value in the passed object 
+* database. Indeterminate results are filtered out using the 
+* result_ok routine.
+*
+*******************************************************************************}
+
+DECLARE result_object, result_val, no_of_records, result_count,
+        min_val, first_set
+
+    no_of_records = object_db.size()
+    
+    result_count = 1
+    
+    first_set = FALSE
+    
+    min_val = 0 
+    
+    WHILE ( (result_count <= no_of_records ) AND ( NOT first_set ) ) DO
+    
+        result_object = object_db.get_by_number( result_count )
+
+        IF ( result_ok ( result_object )) THEN
+        
+            min_val = SELECT result.value 
+                      IN OBJECT result_object
+                           
+            first_set = TRUE
+            
+        ENDIF
+
+        result_count = result_count + 1
+        
+    ENDWHILE
+        
+    WHILE ( result_count <= no_of_records ) DO  
+    
+        result_object = object_db.get_by_number( result_count )
+
+        IF ( result_ok ( result_object )) THEN
+        
+            result_val = SELECT result.value 
+                           IN OBJECT result_object
+            
+            IF ( result_val < min_val ) THEN
+            
+                min_val = result_val
+                
+            ENDIF
+            
+        ENDIF
+        
+        result_count = result_count + 1
+        
+    ENDWHILE
+    
+    IF NOT first_set THEN
+    
+        min_val = EMPTY
+        
+    ENDIF
+    
+    RETURN( min_val )
+    
+ENDROUTINE{ min }
+
+{******************************************************************************}
+
+ROUTINE slope ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine calculates the gradient (slope) of a least squares fit
+* straight line fit to the data points supplied in the object databases
+* passed in. If the result count is two then then it is the gradient of 
+* the straight line defined by the two points.
+*
+*******************************************************************************}
+
+DECLARE result_count, no_of_records, rec_num, sum_X, sum_Y, sum_XY, 
+    sum_X_sq, grad, result_val_X, 
+    result_val_Y, result_obj_X, result_obj_Y
+        
+    grad = EMPTY 
+
+    IF ( obj_db_X.size() = obj_db_Y.size() ) THEN
+
+        FILTER_DATA_PAIR( obj_db_X , obj_db_Y )
+
+        no_of_records = obj_db_X.size()
+
+        IF ( no_of_records <> obj_db_Y.size() ) OR ( no_of_records < 2 ) THEN
+
+            no_of_records = 0           
+
+        ENDIF
+
+        sum_XY = 0
+        sum_X_sq = 0
+        sum_X = 0
+        sum_Y = 0
+
+        result_count = 0
+
+        rec_num = 1
+
+        WHILE ( rec_num <= no_of_records ) DO
+
+            result_obj_X = obj_db_X.get_by_number( rec_num )
+            result_obj_Y = obj_db_Y.get_by_number( rec_num )
+
+            result_val_X = SELECT result.value
+                           IN OBJECT result_obj_X
+
+            result_val_Y = SELECT result.value
+                           IN OBJECT result_obj_Y
+
+            sum_XY = sum_XY + result_val_X*result_val_Y
+
+            sum_X_sq = sum_X_sq + result_val_X*result_val_X
+
+            sum_X = sum_X + result_val_X
+
+            sum_Y = sum_Y + result_val_Y
+
+            result_count = result_count + 1
+
+            rec_num = rec_num + 1
+
+        ENDWHILE
+
+        IF ( sum_X_sq > 0 ) THEN
+
+            IF (( result_count * sum_X_sq ) - ( sum_X * sum_X )) <> 0.0 THEN
+
+                grad = ( result_count * sum_XY - sum_X*sum_Y) /
+                       ( result_count * sum_X_sq - sum_X*sum_X)
+
+            ENDIF
+
+        ENDIF
+    
+    ENDIF
+
+    RETURN( grad )
+    
+ENDROUTINE{ slope }
+
+{******************************************************************************}
+
+ROUTINE intercept ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine calculates the y intercept of a least squares fit
+* straight line fit to the data points supplied in the object databases
+* passed in.
+*
+*******************************************************************************}
+
+DECLARE X_bar, Y_bar, grad, y_intercept
+
+    
+    y_intercept = EMPTY
+
+    IF( obj_db_X.size() = obj_db_Y.size() ) THEN
+    
+        filter_data_pair( obj_db_X , obj_db_Y )
+
+        grad = slope(obj_db_X, obj_db_Y)
+
+        IF grad <> EMPTY THEN
+
+            X_bar = mean(obj_db_X )
+            Y_bar = mean(obj_db_Y )
+
+            y_intercept = Y_bar - grad*X_bar
+
+        ENDIF
+        
+    ENDIF
+
+    RETURN( y_intercept )
+
+ENDROUTINE{ intercept }
+
+{******************************************************************************}
+
+ROUTINE stdev ( obj_db )
+
+{
+*
+* This routine calculates the standard deviation of the results in the
+* object database passed in. The standard deviation is calculated using
+* the unbiased "n-1" method.
+*
+*******************************************************************************}
+
+DECLARE sum_x, sum_x_sq, no_of_records, rec_num, result_count, result_obj, 
+    result_val, st_dev_x 
+        
+        no_of_records = obj_db.size()
+        
+        IF no_of_records > 1 THEN
+        
+        sum_x = 0
+        sum_x_sq = 0
+        
+            result_count = 0
+            
+            rec_num = 1
+            
+            WHILE ( rec_num <= no_of_records ) DO
+            
+                result_obj = obj_db.get_by_number( rec_num )
+                
+                IF ( result_ok ( result_obj )) THEN
+                
+                    result_val = SELECT result.value
+                                 IN OBJECT result_obj
+                                 
+                    sum_x = sum_x + result_val
+                    
+                    sum_x_sq = sum_x_sq + result_val*result_val
+                    
+                    result_count = result_count + 1
+                
+                ENDIF
+                
+                rec_num = rec_num + 1
+                
+            ENDWHILE
+
+            IF result_count > 1 THEN
+
+            st_dev_x = SQRT( (result_count*sum_x_sq - sum_x*sum_x   )/
+                       (result_count*(result_count - 1) ) )
+                       
+        ELSE
+        
+            st_dev_x = EMPTY 
+            
+        ENDIF
+                            
+    ELSE
+    
+        st_dev_x = EMPTY
+        
+        ENDIF
+    
+    RETURN( st_dev_x )
+    
+ENDROUTINE{ stdev }
+
+{******************************************************************************}
+
+ROUTINE stdevp ( obj_db )
+
+{
+*
+* This routine calculates the standard deviation of the results in the
+* object database passed in. The standard deviation is calculated using
+* the biased "n" method.
+*
+*******************************************************************************}
+
+DECLARE sum_x, sum_x_sq, no_of_records, rec_num, result_count, result_obj, 
+    result_val, st_dev_x 
+        
+        no_of_records = obj_db.size()
+        
+        IF no_of_records > 1 THEN
+        
+        sum_x = 0
+        sum_x_sq = 0
+        
+            result_count = 0
+            
+            rec_num = 1
+            
+            WHILE ( rec_num <= no_of_records ) DO
+            
+                result_obj = obj_db.get_by_number( rec_num )
+                
+                IF ( result_ok ( result_obj )) THEN
+                
+                    result_val = SELECT result.value
+                                 IN OBJECT result_obj
+                                 
+                    sum_x = sum_x + result_val
+                    
+                    sum_x_sq = sum_x_sq + result_val*result_val
+                    
+                    result_count = result_count + 1
+                
+                ENDIF
+                
+                rec_num = rec_num + 1
+                
+            ENDWHILE
+            
+            IF result_count > 0 THEN
+            
+            st_dev_x = SQRT( (result_count*sum_x_sq - sum_x*sum_x   )/
+                       (result_count*result_count )  )
+                           
+        ELSE
+        
+            st_dev_x = EMPTY 
+            
+        ENDIF
+                           
+    ELSE
+    
+        st_dev_x = EMPTY
+        
+        ENDIF
+    
+    RETURN( st_dev_x )
+    
+ENDROUTINE{ stdevp }
+
+{******************************************************************************}
+
+ROUTINE covar ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine calculates the covariance of the two sets of results in the
+* passed object databases.
+*
+*******************************************************************************}
+
+DECLARE covar_val, result_count, no_of_records, rec_num, mu_X, mu_Y, 
+    result_obj_X, result_obj_Y,
+    result_val_X, result_val_Y
+        
+
+        IF ( obj_db_X.size() <> obj_db_Y.size() ) THEN
+        
+            no_of_records = 0
+            
+            covar_val = EMPTY
+            
+        ELSE
+        
+            filter_data_pair( obj_db_X , obj_db_Y )
+            
+            no_of_records = obj_db_X.size()
+        
+            mu_X = mean( obj_db_X )
+            mu_Y = mean( obj_db_Y )
+            
+            covar_val = 0
+            
+        ENDIF
+        
+        result_count = 0
+        
+        rec_num = 1 
+        
+        WHILE ( rec_num <= no_of_records ) DO
+        
+            result_obj_X = obj_db_X.get_by_number( rec_num )
+            
+            IF ( result_ok ( result_obj_X )) THEN
+            
+                result_obj_Y = obj_db_Y.get_by_number( rec_num )
+                
+                IF ( result_ok ( result_obj_Y )) THEN
+                
+                    result_val_X = SELECT result.value
+                                   IN OBJECT result_obj_X
+
+                    result_val_Y = SELECT result.value
+                                   IN OBJECT result_obj_Y
+                                   
+                    covar_val = covar_val + ( result_val_X - mu_X )*
+                                            ( result_val_Y - mu_Y )
+                                            
+                    result_count = result_count + 1
+            
+                ENDIF
+                
+            ENDIF
+            
+            rec_num = rec_num + 1
+            
+        ENDWHILE
+                
+        IF ( covar_val <> EMPTY ) AND
+           ( result_count > 0   ) THEN
+        
+            covar_val = covar_val/result_count
+            
+    ELSE
+    
+        covar_val = EMPTY
+        
+        ENDIF
+
+    RETURN( covar_val )
+    
+ENDROUTINE{ covar }
+
+{******************************************************************************}
+
+ROUTINE correl ( obj_db_X, obj_db_Y )
+
+{
+*
+* This routine calculates the correlation coefficient of the two sets of 
+* results in the passed object databases.
+*
+*******************************************************************************}
+
+DECLARE correl_val, std_dev_X, std_dev_Y, covar_val
+
+    correl_val = EMPTY 
+    
+    IF( obj_db_X.size() = obj_db_Y.size() ) THEN
+    
+        filter_data_pair( obj_db_X , obj_db_Y )
+
+        std_dev_X = stdevp( obj_db_X )
+
+        IF( ( std_dev_X <> EMPTY ) AND ( std_dev_X > 0 ) ) THEN
+
+            std_dev_Y = stdevp( obj_db_Y )
+
+            IF( ( std_dev_Y <> EMPTY ) AND ( std_dev_Y > 0 ) ) THEN
+
+                covar_val = covar( obj_db_X, obj_db_Y )
+
+                IF NOT ( covar_val = EMPTY ) THEN
+
+                    correl_val = ( covar_val )/
+                             ( std_dev_X * std_dev_Y )
+
+                ENDIF
+
+            ENDIF
+
+        ENDIF
+        
+    ENDIF
+        
+    RETURN( correl_val )
+    
+ENDROUTINE{ correl }
+
+{******************************************************************************}
+
+ROUTINE calc_ceil ( expression )
+
+{
+*
+* This routine provides a VGL implementation of the ceil function.
+*
+*******************************************************************************}
+
+DECLARE  input_number, output_number, inequality
+
+    input_number = expression . get_parameter_numeric()
+    
+    inequality = expression . get_parameter_inequality()
+    
+    IF inequality <> FORMULA_EQ THEN
+    
+        expression . flag_function_error_with_message (
+                         "INDETERMINATE_RESULT" )
+        
+    ELSE
+
+        output_number = TRUNC( input_number )
+
+        IF ( ( input_number > 0 ) AND ( output_number < input_number ) ) THEN
+
+            output_number  = output_number + 1
+
+        ENDIF           
+        
+        expression . return_value( output_number )
+    
+    ENDIF
+
+ENDROUTINE{ calc_ceil }
+
+{******************************************************************************}
+
+ROUTINE avg_set ( expression )
+
+{
+*
+* This routine will return the arithmetic mean of a set of data in 
+* an object database. The selection criteria for this object database
+* should be in the parameter text passed into this routine.
+* 
+*******************************************************************************}
+
+DECLARE result_set, mean_val
+
+    result_set = expression . get_parameter_result_set()
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        mean_val = mean( result_set )
+
+        IF mean_val = EMPTY THEN
+
+            expression . flag_function_error_with_message( "EMPTY_DATA_SET" )
+
+        ELSE
+
+            expression . return_value( mean_val )
+
+        ENDIF
+        
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+ENDROUTINE{ avg_set }
+
+{******************************************************************************}
+
+ROUTINE sum_set ( expression )
+
+{
+*
+* This routine will return the sum of a set of data in 
+* an object database. The selection criteria for this object database
+* should be in the parameter text passed into this routine.
+* 
+*******************************************************************************}
+
+DECLARE result_set, sum_val
+
+    result_set = expression . get_parameter_result_set()    
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        sum_val = sum( result_set )
+
+        IF sum_val <> EMPTY THEN
+
+            expression . return_value( sum_val )
+        
+        ELSE
+    
+            expression . flag_function_error_with_message( "EMPTY_DATA_SET" )
+        
+        ENDIF
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+        
+ENDROUTINE{ sum_set }
+
+{******************************************************************************}
+
+ROUTINE call_stdev ( expression )
+
+{
+*
+* This routine calls the stdev routine to calculate the standard deviation
+* of the data in the object database returned by the selection crtieria.
+*
+*******************************************************************************}
+
+DECLARE result_set, stdev_val
+
+    result_set = expression . get_parameter_result_set()
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        stdev_val = stdev( result_set )
+    
+        IF stdev_val = EMPTY THEN
+    
+            expression . flag_function_error()
+        
+        ELSE
+    
+            expression . return_value( stdev_val )
+        
+        ENDIF
+
+    ELSE
+    
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+ENDROUTINE{ call_stdev }
+
+{******************************************************************************}
+
+ROUTINE call_stdevp ( expression )
+
+{
+*
+* This routine calls the stdevp routine to calculate the standard deviation
+* of the data in the object database returned by the selection crtieria.
+*
+*******************************************************************************}
+
+DECLARE result_set, stdev_val
+
+    result_set = expression . get_parameter_result_set()
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        stdev_val = stdevp( result_set )
+    
+        IF stdev_val = EMPTY THEN
+    
+            expression . flag_function_error()
+        
+        ELSE
+    
+            expression . return_value( stdev_val )
+        
+        ENDIF               
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+ENDROUTINE{ call_stdevp }
+
+{******************************************************************************}
+
+ROUTINE call_slope ( expression )
+
+{
+*
+* This routine calls the slope function to return the slope ( or gradient )
+* for the data in the two object databases defined by the selection criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set_1, result_set_2, slope_val
+
+    result_set_1 = expression . get_parameter_result_set()
+
+    result_set_2 = expression . get_parameter_result_set()
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        slope_val = slope( result_set_1, result_set_2 )
+
+        IF slope_val = EMPTY THEN
+
+            expression . flag_function_error()
+
+        ELSE
+
+            expression . return_value( slope_val )
+
+        ENDIF
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+        
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        lib_re_formula_write_to_print_file ( "" )
+        lib_re_formula_write_to_print_file ( "Post filter data sets" )
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+ENDROUTINE{ call_slope }
+
+{******************************************************************************}
+
+ROUTINE call_intercept ( expression )
+
+{
+*
+* This routine calls the intercept function to return the intercept
+* for the data in the two object databases defined by the selectoin criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set_1, result_set_2, intercept_val
+
+    result_set_1 = expression . get_parameter_result_set()
+
+    result_set_2 = expression . get_parameter_result_set()
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        intercept_val = intercept( result_set_1, result_set_2 )
+
+        IF intercept_val = EMPTY THEN
+
+            expression . flag_function_error()
+
+        ELSE
+
+            expression . return_value( intercept_val )
+
+        ENDIF
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        lib_re_formula_write_to_print_file ( "" )
+        lib_re_formula_write_to_print_file ( "Post filter data sets" )
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+ENDROUTINE{ call_intercept }
+
+{******************************************************************************}
+
+ROUTINE call_correl ( expression  )
+
+{
+*
+* This routine calls the correl function to return the correlation coefficient
+* of the data in the two object databases defined by the selectoin criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set_1, result_set_2, correl_val
+
+    result_set_1 = expression . get_parameter_result_set()
+
+    result_set_2 = expression . get_parameter_result_set()
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        correl_val = correl( result_set_1, result_set_2 )
+
+        IF correl_val = EMPTY THEN
+
+            expression . flag_function_error()
+
+        ELSE
+
+            expression . return_value( correl_val )
+
+        ENDIF
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        lib_re_formula_write_to_print_file ( "" )
+        lib_re_formula_write_to_print_file ( "Post filter data sets" )
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+ENDROUTINE{ call_correl }
+
+{******************************************************************************}
+
+ROUTINE call_covar ( expression )
+
+{
+*
+* This routine calls the covar function to return the covariance
+* of the data in the two object databases defined by the selectoin criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set_1, result_set_2, covar_val
+
+    result_set_1 = expression . get_parameter_result_set()
+
+    result_set_2 = expression . get_parameter_result_set()
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        covar_val = covar( result_set_1, result_set_2 )
+
+        IF covar_val = EMPTY THEN
+
+            expression . flag_function_error()
+
+        ELSE
+
+            expression . return_value( covar_val )
+
+        ENDIF
+
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+
+        lib_re_formula_write_to_print_file ( "" )
+        lib_re_formula_write_to_print_file ( "Post filter data sets" )
+        print_data_pair ( result_set_1, result_set_2 )
+
+    ENDIF
+
+ENDROUTINE{ call_covar }
+
+{******************************************************************************}
+
+ROUTINE min_set ( expression )
+
+{
+*
+* This routine calls the min routine (in this library) to get the 
+* minimum value of the results in the object database resulting from
+* the selection criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set, min_val
+
+    result_set = expression . get_parameter_result_set()
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        min_val = min( result_set )
+    
+        IF min_val <> EMPTY THEN
+    
+            expression . return_value( min_val )
+        
+        ELSE
+    
+            expression . flag_function_error_with_message( "EMPTY_DATA_SET" )
+        
+        ENDIF
+    
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+ENDROUTINE{ min_set }
+
+{******************************************************************************}
+
+ROUTINE max_set ( expression )
+
+{
+*
+* This routine calls the max routine (in this library) to get the 
+* maximum value of the results in the object database resulting from
+* the selection criteria.
+*
+*******************************************************************************}
+
+DECLARE result_set, max_val
+
+    result_set = expression . get_parameter_result_set()
+    
+    IF ( expression . context . mode = FORMULA_MODE_PRINT ) THEN
+        print_data_set ( result_set )
+    ENDIF
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+        max_val = max( result_set )
+
+        IF max_val <> EMPTY THEN
+    
+            expression . return_value( max_val )
+        
+        ELSE
+    
+            expression . flag_function_error_with_message( "EMPTY_DATA_SET" )
+        
+        ENDIF
+    
+    ELSE
+
+        expression . return_value ( 1.0 )
+
+    ENDIF
+
+ENDROUTINE{ max_set }
+
+{******************************************************************************}
+
+ROUTINE calc_floor ( expression )
+
+{
+*
+* This routine provides a VGL implementation of the floor function.
+*
+*******************************************************************************}
+
+DECLARE  input_number, output_number, inequality
+
+    input_number = expression . get_parameter_numeric()
+    
+    inequality = expression . get_parameter_inequality()
+    
+    IF inequality <> FORMULA_EQ THEN
+    
+        expression . flag_function_error_with_message (
+                         "INDETERMINATE_RESULT" )
+        
+    ELSE
+
+        output_number = TRUNC( input_number )
+
+        IF ( ( input_number < 0 ) AND ( output_number > input_number ) ) THEN
+
+            output_number  = output_number - 1
+
+        ENDIF
+        
+        expression . return_value( output_number )
+    
+    ENDIF
+
+ENDROUTINE{ calc_floor }
+
+{******************************************************************************}
+
+ROUTINE get_table_field ( expression )
+
+{
+*
+* This routine returns the value in the given table and field.
+*
+*******************************************************************************}
+
+DECLARE  name_of_table, name_of_field, select_val
+
+    name_of_table = expression . get_parameter_text()
+    
+    name_of_field = expression . get_parameter_text()
+        
+    IF expression . context . mode = FORMULA_MODE_VALIDATE THEN
+
+        select_val = ""
+
+        IF NOT valid_table( name_of_table ) THEN
+            { Do nothing }
+        ELSEIF NOT valid_field( name_of_table, name_of_field ) THEN
+            { Do nothing }
+        ELSE
+            GET_FIELD_DETAILS 'name_of_table' . 'name_of_field' ,
+                              "DEFAULT_VALUE"                   ,
+                              select_val
+        ENDIF
+
+    ELSEIF NOT valid_table( name_of_table ) THEN
+    
+        expression . flag_function_error_param ( "INVALID_TABLE" ,
+                                                 name_of_table   )
+        
+    ELSE
+    
+        IF NOT valid_field( name_of_table, name_of_field ) THEN
+        
+            expression . flag_function_error_param (
+                           "INVALID_TABLE_FIELD"            ,
+                               name_of_table :"/":name_of_field )
+            
+        ELSE
+        
+            IF expression . context . mode = FORMULA_MODE_TEST_PHASE1 THEN
+
+                lib_re_formula_prompt_table_field ( ""            ,
+                                                    name_of_table ,
+                                                    name_of_field ,
+                                                    select_val    )
+
+            ELSE
+
+                select_val = SELECT 'name_of_table' . 'name_of_field'
+            
+            ENDIF
+
+            IF select_val <> EMPTY THEN
+                expression . return_value ( select_val )
+            ELSE
+                expression . flag_function_error_param (
+                                       "TABLE_NOT_SELECTED" ,
+                                       name_of_table        )
+            ENDIF
+        
+        ENDIF
+        
+    ENDIF
+        
+ENDROUTINE{ get_table_field }
+
+{******************************************************************************}
+
+ROUTINE get_test_result ( expression )
+
+{
+*
+* This routine finds the result, if it exists, for a chosen analysis and 
+* component.
+*
+*******************************************************************************}
+
+DECLARE analysis, test_number, sample_id, temp_test_table
+
+    IF ( expression . context . mode = FORMULA_MODE_BIND        ) OR
+       ( expression . context . mode = FORMULA_MODE_VALIDATE    ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+        IF expression . get_no_of_params() = 2 THEN
+            expression . set_parameter_count_check_off()
+    
+            lib_re_formula_get_result( expression           ,
+                           expression . context ,
+                           FALSE                )
+        ELSE
+            expression . get_parameter()
+            expression . get_parameter()
+                      
+        ENDIF
+
+    ELSE
+        expression.set_parameter_count_check_off()
+
+        analysis  = expression.get_parameter_text()
+
+            sample_id = SELECT sample.id_numeric
+
+        IF sample_id <> EMPTY THEN
+            push_file_descriptor( "TEST" , temp_test_table )
+                test_number = SELECT test.test_number
+                          WHERE  analysis = analysis
+                          AND    sample   = sample_id
+                          ORDER ON test_count
+                REPEAT
+                    IF test_number <> EMPTY THEN
+                        expression.context.error = FALSE
+                        expression.parameters[ 1 ].text = test_number
+                        lib_re_formula_get_result( expression, expression.context, FALSE)
+                        expression.parameters[ 1 ].text = analysis
+                    ELSE
+                        expression.flag_function_error()
+                    ENDIF
+                    NEXT test
+                    test_number = SELECT test.test_number
+            
+                UNTIL ( test_number = EMPTY ) OR NOT ( expression.context.error )
+            pop_file_descriptor( temp_test_table )               
+        ELSE
+            expression.flag_function_error()
+        ENDIF
+    ENDIF
+                      
+ENDROUTINE{ get_test_result }
+
+{******************************************************************************}
+ROUTINE get_res_from_test ( expression )
+{
+* This routine finds the result, if it exists, for a chosen analysis and 
+* component.
+*******************************************************************************}
+
+DECLARE component, test_number, temp_test_table
+    SET FORMAT "9999999999"
+    IF ( expression . context . mode = FORMULA_MODE_BIND        ) OR
+       ( expression . context . mode = FORMULA_MODE_VALIDATE    ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+        IF expression . get_no_of_params() = 2 THEN
+            expression . set_parameter_count_check_off()
+            lib_re_formula_get_result( expression, expression . context, FALSE)
+        ELSE
+            expression . get_parameter()
+            expression . get_parameter()
+        ENDIF
+    ELSE
+        expression.set_parameter_count_check_off()
+        test_number = expression.get_parameter_text()
+        component  = expression.get_parameter_text()
+            push_file_descriptor( "TEST" , temp_test_table )
+            REPEAT
+                IF test_number <> EMPTY THEN
+                    expression.context.error = FALSE
+                    expression.parameters[ 1 ].text = test_number
+                    expression.parameters[ 2 ].text = component
+                    {lib_re_formula_get_result( expression, expression.context, FALSE) }
+                    expression.value = SELECT result.value WHERE test_number = test_number and name = component
+                ELSE
+                    expression.flag_function_error()
+                ENDIF
+                NEXT test
+                test_number = SELECT test.test_number
+
+            UNTIL ( test_number = EMPTY ) OR NOT ( expression.context.error )
+            pop_file_descriptor( temp_test_table )               
+    ENDIF
+                      
+ENDROUTINE{ get_res_from_test  }
+
+
+ROUTINE get_result_from_test ( expression )
+{
+* This routine finds the result, if it exists, for a chosen analysis and 
+* component.
+*******************************************************************************}
+
+DECLARE component, test_number, temp_test_table
+
+    SET FORMAT "9999999999"
+    IF ( expression . context . mode = FORMULA_MODE_BIND        ) OR
+       ( expression . context . mode = FORMULA_MODE_VALIDATE    ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+        IF expression . get_no_of_params() = 2 THEN
+            expression . set_parameter_count_check_off()
+            lib_re_formula_get_result( expression, expression . context, FALSE)
+        ELSE
+            expression . get_parameter()
+            expression . get_parameter()
+        ENDIF
+    ELSE
+        expression.set_parameter_count_check_off()
+        test_number = expression.get_parameter_text()
+        component  = expression.get_parameter_text()
+         {fm("test_number = ":test_number:ASCII(10):
+             "component   = ":component) }
+            push_file_descriptor( "TEST" , temp_test_table )
+            REPEAT
+                IF test_number <> EMPTY THEN
+                    expression.context.error = FALSE
+                    expression.parameters[ 1 ].text = test_number
+                    expression.parameters[ 2 ].text = component
+                    {lib_re_formula_get_result( expression, expression.context, FALSE) }
+                    expression.value = SELECT result.value WHERE test_number = test_number and name = component
+                ELSE
+                    expression.flag_function_error()
+                ENDIF
+                NEXT test
+                test_number = SELECT test.test_number
+
+            UNTIL ( test_number = EMPTY ) OR NOT ( expression.context.error )
+            pop_file_descriptor( temp_test_table )               
+    ENDIF
+                      
+ENDROUTINE{ get_test_result }
+
+{******************************************************************************}
+
+ROUTINE get_result_set ( expression )
+
+{
+*
+* This routine provides the interface to the criteria selection code.
+*
+*******************************************************************************}
+
+DECLARE param_count, param_array, no_of_req_params, no_of_params, identity, 
+        result_set, req_type, var_type
+
+    ARRAY param_array
+    
+    identity = expression . get_parameter_text()    
+
+    no_of_req_params = criteria_saved_parameter_count( "RESULT" ,
+                                   identity )
+
+    IF no_of_req_params < 0 THEN
+
+        lib_re_formula_runtime_error( expression . context,
+                          "NO_CRITERIA"    ,
+                          identity         ,
+                          "GET_RESULT_SET" )
+
+    ENDIF                                   
+    
+    no_of_params = expression . get_no_of_params()
+
+    IF no_of_req_params <> ( no_of_params - 1 ) THEN
+
+        lib_re_formula_runtime_error( expression . context        ,
+                          "CRITERIA_INCORRECT_PARAMS" ,
+                          identity                    ,
+                          ""                          )
+
+    ENDIF
+
+    param_count = 1
+
+    WHILE ( param_count <= no_of_req_params ) AND 
+          ( NOT expression . context . error ) DO
+
+        param_array[ param_count ] = 
+        expression . get_parameter()
+
+        req_type = criteria_saved_parameter_type( "RESULT"    ,
+                                                  identity    ,
+                                                  param_count )
+                                                  
+
+        IF lib_utils_can_coerce( param_array[ param_count ] , req_type ) THEN
+        
+            param_array[ param_count ] =
+            lib_utils_coerce( param_array[ param_count ] , req_type )
+            
+        ELSE            
+            var_type = variable_get_type( param_array[ param_count ] )
+            
+            lib_re_formula_runtime_error( expression . context        ,
+                              "INCORRECT_PARAM_TYPE"      ,
+                              "GET_RESULT_SET"            ,
+                              req_type: " / " : var_type  )
+
+        ENDIF
+
+        param_count = param_count + 1
+
+    ENDWHILE
+
+    IF ( expression . context . mode = FORMULA_MODE_CALCULATE   ) OR
+       ( expression . context . mode = FORMULA_MODE_PRINT       ) OR
+       ( expression . context . mode = FORMULA_MODE_TEST_PHASE1 ) THEN
+
+
+        IF NOT expression . context . error THEN
+
+            result_set = 
+            criteria_saved_build_obdb( "RESULT"    ,
+                           identity    ,
+                           param_array )
+                       
+            expression . value = result_set            
+
+            IF expression . value = EMPTY THEN
+
+                lib_re_formula_runtime_error( expression . context ,
+                                  "NO_RESULT_SET" ,
+                                  identity        ,
+                                  ""              )
+
+            ENDIF
+
+        ENDIF           
+    
+    ELSEIF NOT expression . context . error THEN
+
+        CREATE OBJECT "STD_OBJECT_DATABASE", expression . value
+        expression . value . initialise ( "RESULT" )
+
+    ENDIF
+
+ENDROUTINE { get_result_set }
+
+{******************************************************************************}
+
+ROUTINE literal_text ( expression )
+
+{
+*
+* This routine will return the parameter passed to it as text.
+* 
+*******************************************************************************}
+
+DECLARE text_value
+
+    text_value = expression . get_parameter_text()
+
+    expression . return_value( text_value )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE date_start_day ( expression )
+
+{
+*
+* Return the date as the start of the day.
+*
+*******************************************************************************}
+
+    DECLARE input_date
+
+    input_date = expression . get_parameter ( )
+    
+    IF ( TOUPPER ( VARIABLE_GET_TYPE ( input_date )) <> "DATE" ) THEN
+
+        expression . flag_function_error ( )
+
+    ELSE
+
+        SET DATE FORMAT "DZ-MON-YYYY H24:MI"
+
+        expression . return_value ( DATE ( SUBSTRING ( input_date, 1, 11 ) :
+                                           " 00:00" ))
+
+        RESTORE DATE FORMAT
+
+    ENDIF
+
+ENDROUTINE { date_start_day }
+
+{******************************************************************************}
+
+ROUTINE date_end_day ( expression )
+
+{
+*
+* Return the date as the start of the day.
+*
+*******************************************************************************}
+
+    DECLARE input_date
+
+    input_date = expression . get_parameter ( )
+    
+    IF ( TOUPPER ( VARIABLE_GET_TYPE ( input_date )) <> "DATE" ) THEN
+
+        expression . flag_function_error ( )
+
+    ELSE
+
+        SET DATE FORMAT "DZ-MON-YYYY H24:MI"
+
+        expression . return_value ( DATE ( SUBSTRING ( input_date, 1, 11 ) :
+                                           " 23:59" ))
+
+        RESTORE DATE FORMAT
+
+    ENDIF
+
+ENDROUTINE { date_start_day }
+
+{******************************************************************************}
+
+ROUTINE phrase_to_number ( expression )
+
+    DECLARE t_value, numer, test_number, phrase_text, analysis, analysis_ver, phrase_id, r_number
+
+    t_value = expression . get_parameter_text()
+    
+    test_number = SELECT result . test_number
+    
+    IF test_number <> EMPTY THEN
+    
+    phrase_text = SELECT result. text WHERE test_number = test_number AND name = t_value
+    
+    analysis = SELECT test . analysis WHERE test_number = test_number
+    analysis_ver = SELECT test . analysis_version WHERE test_number = test_number
+    
+    phrase_id = SELECT versioned_component . calculation WHERE analysis = analysis AND analysis_version = analysis_ver and name = t_value
+     
+    r_number = SELECT phrase . phrase_id WHERE phrase_type = phrase_id AND phrase_text = phrase_text
+    
+    IF ( NUMTEXT ( r_number ) ) THEN
+ 
+        numer = NUMERIC ( r_number )
+        
+        expression . return_value(numer)
+    
+    ELSE
+    
+        expression . flag_function_error ( )
+  
+    ENDIF
+ 
+    ELSE
+    
+        flash_message ("Can't calculate without any result",true)
+    
+    ENDIF
+    
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}

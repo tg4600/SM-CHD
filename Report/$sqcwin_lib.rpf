@@ -1,0 +1,2429 @@
+{******************************************************************************
+*
+* Module Name   : sqcwin_lib
+*
+* Purpose       : General routines used in sqcwin
+* Defect 111143 : SQC 2004R2. Get variable is not a object error when using committed data only.
+*
+*******************************************************************************}
+{
+
+MODIFICATION HISTORY
+====================
+SM      Ref.    Change  Date        Name                Description
+------- ------- ------- ----------- ------------------- -------------------------------------------------------
+2004-R2 1.1     n/a     22-JAN-2007 Ken Jacobs          Correct formatting of point number in add_sqc_criteria
+                                                        Criteria keep disappearing when saving depending upon current value of FORMAT_TEXT
+                                                        Thermo Support # 67035
+
+2004-R2 1.2     n/a     22-JAN-2007 Ken Jacobs          After changing criteria for a chart correctly delete the points that
+                                                        no longer required
+                                                        Thermo support # 66828
+
+11.0					24-AUG-2015 Tommy Gjerding		Above changes implemented
+}
+
+{ ----------------------------------------------------------------------------------------------- }
+
+SET NAME "DISPLAY/"
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $lib_utils
+
+JOIN LIBRARY $SQCWIN_CLASS
+JOIN LIBRARY $SQCWIN_GLBL
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_sqc_chart ( sqc_chart )
+
+{ 
+* Controlling routine for updating of the sqc_chart object from the 
+* database tables.
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : got_the_records
+*
+*******************************************************************************}
+
+DECLARE got_the_records
+
+	got_the_records = TRUE
+
+	IF ( sqc_chart . edit_mode = "ADD" ) THEN
+
+	    add_sqc_chart ( sqc_chart )
+
+	ELSEIF ( sqc_chart . edit_mode = "COPY" ) THEN
+
+	    copy_sqc_chart ( sqc_chart )
+
+	ELSEIF ( sqc_chart . edit_mode = "MODIFY" ) THEN
+
+	    got_the_records = modify_sqc_chart ( sqc_chart )
+
+	ELSEIF ( sqc_chart . edit_mode = "DELETE" ) THEN
+
+	    got_the_records = delete_sqc_chart ( sqc_chart )
+
+	ELSEIF ( sqc_chart . edit_mode = "VIEW" ) THEN
+
+	    got_the_records = view_sqc_chart ( sqc_chart )
+
+	ENDIF
+
+	RETURN ( got_the_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE update_database ( sqc_chart )
+
+{ 
+* Updates the database based on the changes made 
+* to the object databases relating to SQC. Called
+* from sqc_main once the user saves changes.     
+* This routine ( and add_sqc_Criteria() called in
+* this routine ) is the only routine containing  
+*  a COMMIT statement.                            
+* 
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    IF sqc_chart.edit_mode <> "DELETE" THEN
+
+        sqc_chart.sqc_header.set_by_number(1)
+
+        ASSIGN sqcwin_header.search_type
+               IN OBJECT sqc_chart.sqc_header.current = sqc_chart.database_type
+
+    ENDIF
+
+    START WRITE TRANSACTION "Commit All Updates"
+
+    sqc_chart . sqc_header         . invoke_all ( "UPDATE" )
+    sqc_chart . sqc_subgroup       . invoke_all ( "UPDATE" )
+    sqc_chart . sqc_point          . invoke_all ( "UPDATE" )
+
+    sqc_chart . sqc_chart_type     . invoke_all ( "UPDATE" )
+
+    IF ( sqc_chart . edit_mode <> "DELETE" ) THEN
+        add_sqc_criteria ( sqc_chart )
+    ELSE
+        sqc_chart.sqc_crit_db.invoke_all("UPDATE")
+    ENDIF
+
+    COMMIT
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE add_sqc_chart ( sqc_chart )
+
+{ 
+* Adds a new record to sqc_header with the id of sqc_chart. chart_id
+* if the id doesn' already exist.
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE exist_rec, new_rec, row, def_array, update_rec
+
+    exist_rec = SELECT sqcwin_header . identifier
+                WHERE identifier = sqc_chart . chart_id
+
+    IF ( exist_rec = EMPTY ) THEN
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new   = TRUE
+
+        new_rec . table = "SQCWIN_HEADER"
+        object_add_table ( new_rec, "SQCWIN_HEADER" )
+
+        RESERVE ENTRY sqcwin_header IN OBJECT new_rec, sqc_chart . chart_id
+
+        sqc_chart . sqc_header . add ( new_rec )
+
+        update_rec = sqc_chart . sqc_header .
+                        get_by_index ( "KEY0" , sqc_chart . chart_id )
+
+        IF ( update_rec <> EMPTY ) THEN
+
+            default_sqc_header ( update_rec, def_array )
+
+                row = 1
+            WHILE ( def_array[row, 1] <> EMPTY ) DO
+                ASSIGN sqcwin_header . 'def_array[row, 1]'
+                    IN OBJECT update_rec = def_array[row, 2]
+                    row = row + 1
+                ENDWHILE
+
+            add_sqc_chart_types ( sqc_chart )
+        ELSE
+
+            flash_message ( GET_USER_MESSAGE ( "SQCWIN_ERR_ADD_1", 1 ) , TRUE)
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( GET_USER_MESSAGE ( "SQCWIN_ERR_ADD_2", 1 ) , TRUE)
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE modify_sqc_chart ( sqc_chart )
+
+{ 
+* Selects all sqc data for the id sqc_chart . chart_id and populates the 
+* array sqc_chart selection_criteria.
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : got_the_records
+*
+*******************************************************************************}
+
+DECLARE got_the_records
+
+    got_the_records = select_sqc_data_for_update ( sqc_chart,
+                                                   sqc_chart.chart_id )
+
+    IF got_the_records
+
+        get_sqc_criteria_for_update ( sqc_chart )
+
+    ENDIF
+
+    RETURN ( got_the_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE delete_sqc_chart ( sqc_chart )
+
+{ 
+* Selects all sqc data for update and deletes all records associated with 
+* sqc_chart . chart_id. Also deletes records from sqc_criteria.
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : got_the_records
+*
+*******************************************************************************}
+
+DECLARE select_crit, got_the_records
+
+    got_the_records = select_sqc_data_for_update ( sqc_chart,
+                                                   sqc_chart.chart_id )
+
+    IF got_the_records THEN
+
+        delete_all_records ( sqc_chart . sqc_header        )
+        delete_all_records ( sqc_chart . sqc_subgroup      )
+        delete_all_records ( sqc_chart . sqc_point         )
+        delete_all_records ( sqc_chart . sqc_chart_type    )
+        delete_all_records ( sqc_chart . sqc_trend_a       )
+        delete_all_records ( sqc_chart . sqc_trend_point_a )
+        delete_all_records ( sqc_chart . sqc_trend_b       )
+        delete_all_records ( sqc_chart . sqc_trend_point_b )
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit         ,
+                            ARRAY_SELECT_EQ     ,
+                            "CHART_ID"          ,
+                            sqc_chart.chart_id )
+
+        sqc_chart . sqc_crit_db . select_for_update (select_crit)
+
+        delete_all_records ( sqc_chart . sqc_crit_db )
+
+    ENDIF
+
+    RETURN ( got_the_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE view_sqc_chart ( sqc_chart )
+
+{ 
+* Selects all sqc data for the id sqc_chart . chart_id and populates the 
+* array sqc_chart . selection_criteria ( data NOT selected for update ).
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : continue_view
+*
+*******************************************************************************}
+
+DECLARE samp_test_result_data, continue_view
+
+    get_sqc_criteria ( sqc_chart )
+
+    IF select_sqc_data ( sqc_chart, sqc_chart . chart_id ) THEN
+
+        samp_test_result_data = get_samp_test_result_data ( sqc_chart )
+        change_to_sqcpoint_table ( samp_test_result_data, sqc_chart )
+
+    ENDIF
+
+    IF sqc_chart . sqc_point . size () = 0 THEN
+
+        flash_message ( GET_USER_MESSAGE ( "VIEW_VALID_ERROR1", 1 ), TRUE )
+        continue_view = FALSE
+
+    ELSE
+
+        continue_view = TRUE
+
+    ENDIF
+        
+    RETURN ( continue_view ) 
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_sqc_criteria ( sqc_chart )
+
+{ 
+* Reads all fields in the sqc_criteria table with the given chart id and 
+* stores them in the array sqc_chart . selection_criteria
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE row, select_crit
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit                 ,
+                        ARRAY_SELECT_EQ         ,
+                        "CHART_ID"                  ,
+                        sqc_chart . chart_id )
+
+    sqc_chart . sqc_crit_db . select (select_crit)
+    sqc_chart . sqc_crit_db . set_first ()
+
+    IF ( sqc_chart.edit_mode <> "ADD" )               AND
+       ( sqc_chart . sqc_crit_db . current <> EMPTY ) THEN
+
+        {** Re-Initialize the Array **}
+        ARRAY sqc_chart.selection_criteria
+
+    ENDIF
+
+    row = 0
+
+    WHILE ( sqc_chart . sqc_crit_db . current <> EMPTY ) DO
+
+        row = row + 1
+        sqc_chart . selection_criteria[row, 1] = SELECT sqcwin_criteria . value_1
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 2] = SELECT sqcwin_criteria . value_2
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 3] = SELECT sqcwin_criteria . value_3
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+
+        sqc_chart . sqc_crit_db . set_next ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_sqc_criteria_for_update ( sqc_chart )
+
+{ 
+* Reads all fields in the sqc_criteria table with the given chart id and 
+* stores them in the array sqc_chart . selectin_criteria
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE row, select_crit
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit                 ,
+                        ARRAY_SELECT_EQ         ,
+                        "CHART_ID"                  ,
+                        sqc_chart . chart_id )
+
+    sqc_chart . sqc_crit_db . select_for_update (select_crit)
+    sqc_chart . sqc_crit_db . set_first ()
+
+    IF ( sqc_chart.edit_mode <> "ADD" )               AND
+       ( sqc_chart . sqc_crit_db . current <> EMPTY ) THEN
+
+        {** Re-Initialize the Array **}
+        ARRAY sqc_chart.selection_criteria
+
+    ENDIF
+
+    row = 0
+
+    WHILE ( sqc_chart . sqc_crit_db . current <> EMPTY ) DO
+
+        row = row + 1
+        sqc_chart . selection_criteria[row, 1] = SELECT sqcwin_criteria . value_1
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 2] = SELECT sqcwin_criteria . value_2
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 3] = SELECT sqcwin_criteria . value_3
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+
+        sqc_chart . sqc_crit_db . set_next ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_sqc_criteria ( sqc_chart )
+
+{ 
+* Takes the array sqc_chart . selection_criteria and writes it's contents
+* to the table sqc_criteria with the key field being chart_id. Essectially
+* creates a new record in the sqc_criteria table.
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    DECLARE row, select_crit, composite_key, new_rec
+
+    ARRAY select_crit
+                                    {delete all existing sqc_criteria records}
+
+    array_select_add (  select_crit             ,
+                        ARRAY_SELECT_EQ     ,
+                        "CHART_ID"              ,
+                        sqc_chart . chart_id )
+
+    sqc_chart . sqc_crit_db  . select_for_update (select_crit)
+
+    delete_all_records ( sqc_chart . sqc_crit_db )
+
+    sqc_chart . sqc_crit_db . invoke_all ( "UPDATE" )
+
+    row = 1
+    WHILE ( sqc_chart . selection_criteria[row, 1] <> EMPTY ) DO
+
+        composite_key = PAD(sqc_chart . chart_id, " ", 20) : NUMBER_TO_TEXT( row, "9999999999" ) {1.1}
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new   = TRUE
+
+        new_rec . table = "SQCWIN_CRITERIA"
+        object_add_table ( new_rec, "SQCWIN_CRITERIA" )
+
+        RESERVE ENTRY sqcwin_criteria IN OBJECT new_rec, composite_key
+
+        sqc_chart . sqc_crit_db . add ( new_rec )
+
+                                        { add individual fields             }
+
+            ASSIGN sqcwin_criteria . value_1
+                   IN OBJECT new_rec = sqc_chart . selection_criteria[row, 1]
+            ASSIGN sqcwin_criteria . value_2
+                   IN OBJECT new_rec = sqc_chart . selection_criteria[row, 2]
+            ASSIGN sqcwin_criteria . value_3
+                   IN OBJECT new_rec = sqc_chart . selection_criteria[row, 3]
+
+        row = row + 1
+
+    ENDWHILE
+
+    sqc_chart . sqc_crit_db . invoke_all ( "UPDATE" )
+
+    get_sqc_criteria ( sqc_chart )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE select_sqc_data ( sqc_chart, id )
+
+{ 
+* selects all sqc records                       
+* pertaining to a given chart_id                
+* and places them in the relevant               
+* object database. Tables =>                    
+* 			(1) sqc_header                  
+* 			(2) sqc_subgroup                
+* 			(3) sqc_point                   
+* 			(4) sqc_window                  
+* 			(5) sqc_trend                   
+* 			(6) sqc_trend_point             
+*
+* Parameters   : sqc_chart, id
+* Return Value : data_selection_type
+*
+*******************************************************************************}
+
+DECLARE trend_id_a, trend_id_b, select_crit, data_selection_type
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit         ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        id              )
+
+    sqc_chart . sqc_header . select (select_crit)
+    sqc_chart . sqc_header . set_first ()
+
+    trend_id_a = SELECT sqcwin_header   . trend_chart_a
+                 IN OBJECT sqc_chart . sqc_header . current
+
+    trend_id_b = SELECT sqcwin_header   . trend_chart_b
+                 IN OBJECT sqc_chart . sqc_header . current
+
+    data_selection_type = SELECT sqcwin_header . data_selection
+                          IN OBJECT sqc_chart . sqc_header . current
+
+    sqc_chart . database_type = SELECT sqcwin_header . search_type
+                                IN OBJECT sqc_chart . sqc_header . current
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "CHART_ID"              ,
+                        id              )
+
+    sqc_chart . sqc_subgroup . select (select_crit)
+    sqc_chart . sqc_point    . select (select_crit)
+    sqc_chart . sqc_window   . select (select_crit)
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit             ,
+                        ARRAY_SELECT_EQ ,
+                        "CHART_ID"              ,
+                        id              )
+
+    array_select_add (  select_crit                 ,
+                        ARRAY_SELECT_ORDER      ,
+                        "ORDER_NUM"         ,
+                        ""                  )
+
+    sqc_chart . sqc_chart_type. select (select_crit)
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        trend_id_a )
+
+    sqc_chart . sqc_trend_a  . select (select_crit)
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "TREND_ID"      ,
+                        trend_id_a )
+
+    sqc_chart . sqc_trend_point_a . select (select_crit)
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        trend_id_b )
+
+    sqc_chart . sqc_trend_b  . select (select_crit)
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "TREND_ID"      ,
+                        trend_id_b )
+
+    sqc_chart . sqc_trend_point_b . select (select_crit)
+
+    RETURN ( data_selection_type )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE select_sqc_data_for_update ( sqc_chart, id )
+
+{ 
+* 
+* selects all sqc records FOR UPDATE            
+* pertaining to a given chart_id                
+* and places them in the relevant               
+* object database. Tables =>                    
+* 				(1) sqc_header                  
+* 				(2) sqc_subgroup                
+* 				(3) sqc_point                   
+* 				(4) sqc_window                  
+* 				(5) sqc_trend                   
+* 				(6) sqc_trend_point             
+*
+* Parameters   : sqc_chart, id
+* Return Value : got_the_records
+*
+*******************************************************************************}
+
+DECLARE trend_id_a, trend_id_b, select_crit, got_the_records
+
+    got_the_records = TRUE
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit             ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        id              )
+
+    sqc_chart . sqc_header . select_for_update (select_crit)
+
+    IF ( sqc_chart . sqc_header . size ( ) <> 0 ) THEN
+
+        sqc_chart . sqc_header . set_first ()
+
+        trend_id_a = SELECT sqcwin_header   . trend_chart_a
+            IN OBJECT sqc_chart . sqc_header . current
+
+        trend_id_b = SELECT sqcwin_header   . trend_chart_b
+                     IN OBJECT sqc_chart . sqc_header . current
+
+        sqc_chart . database_type = SELECT sqcwin_header . search_type
+                                    IN OBJECT sqc_chart . sqc_header . current
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit             ,
+                            ARRAY_SELECT_EQ     ,
+                            "CHART_ID"          ,
+                            id              )
+
+        sqc_chart . sqc_subgroup . select_for_update (select_crit)
+
+        DECLARE point_value 
+
+        point_value = SELECT sqcwin_point . point_number FOR UPDATE 
+                       WHERE chart_id = sqc_chart . chart_id
+
+        IF point_value = LOCKED THEN
+            flash_message ( GET_USER_MESSAGE ( "LOCKED_RECORD_ERROR1", 1 ), TRUE ) 
+            EXIT
+        ENDIF
+
+        point_value = EMPTY
+
+        sqc_chart . sqc_point    . select_for_update (select_crit)
+        sqc_chart . sqc_window   . select_for_update (select_crit)
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit             ,
+                            ARRAY_SELECT_EQ     ,
+                            "CHART_ID"          ,
+                            id              )
+
+        array_select_add (      select_crit                 ,
+                            ARRAY_SELECT_ORDER  ,
+                            "ORDER_NUM"         ,
+                            ""                  )
+
+        sqc_chart . sqc_chart_type . select_for_update (select_crit)
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit         ,
+                            ARRAY_SELECT_EQ     ,
+                            "IDENTIFIER"        ,
+                            trend_id_a      )
+
+        sqc_chart . sqc_trend_a  . select_for_update (select_crit)
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit         ,
+                            ARRAY_SELECT_EQ     ,
+                            "TREND_ID"          ,
+                            trend_id_a      )
+
+        sqc_chart . sqc_trend_point_a . select_for_update (select_crit)
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit         ,
+                            ARRAY_SELECT_EQ     ,
+                            "IDENTIFIER"        ,
+                            trend_id_b      )
+
+        sqc_chart . sqc_trend_b  . select_for_update (select_crit)
+
+        ARRAY select_crit
+
+        array_select_add (      select_crit         ,
+                            ARRAY_SELECT_EQ     ,
+                            "TREND_ID"          ,
+                            trend_id_b      )
+
+        sqc_chart . sqc_trend_point_b . select_for_update (select_crit)
+
+        got_the_records = TRUE
+    ELSE
+        got_the_records = FALSE
+    ENDIF
+
+    RETURN ( got_the_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_all_records ( database_name )
+
+{ 
+* Deletes all records in the given object database.
+* 
+* 
+*
+* Parameters   : database_name
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE rec_count
+
+    database_name . set_first ()
+
+    rec_count = 0
+
+    WHILE ( database_name . current <> EMPTY ) DO
+
+        database_name . current . delete ()
+        rec_count = rec_count + 1
+        database_name . set_next ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE default_sqc_header ( the_record, default )
+
+{ 
+* Called from within add_sqc_chart() and sets the values of
+* a 2 column array containing field names and subsequent values.
+* 
+*
+* Parameters   : the_record, default
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE modified_on
+
+    ARRAY default
+
+    modified_on = SELECT sqcwin_header . modified_on
+                  IN OBJECT the_record
+
+    default [ 1, 1 ] = "created_on"
+    default [ 1, 2 ] = modified_on
+
+    default [ 2, 1 ] = "created_by"
+    default [ 2, 2 ] = SELECT sqcwin_header . modified_by
+                     IN OBJECT the_record
+
+    default [ 3, 1 ] = "start_date"
+    default [ 3, 2 ] = modified_on
+
+    default [ 4, 1 ] = "end_date"
+    default [ 4, 2 ] = modified_on
+
+    default [ 5, 1 ] = "decimal_places"
+    default [ 5, 2 ] = DEFAULT_DECIMAL_PLACES
+
+    default [ 6, 1 ] = "data_selection"
+    default [ 6, 2 ] = DEFAULT_RESELECT_DATA
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE default_sqc_chart_type ( the_record, default, chart_type )
+
+{ 
+* Sets the default values on the sqc_chart_type table. This sets the values
+* of a 2 column array containing field names and subsequent values.
+* 
+*
+* Parameters   : the_record, default, chart_type
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE row
+
+    ARRAY default
+
+    row = 1
+
+    default [ row, 1 ] = "chart_active"
+    default [ row, 2 ] = FALSE
+
+    row = row + 1
+
+    default [ row, 1 ] = "subgroup_chosen_by"
+    default [ row, 2 ] = DEFAULT_SUBGROUP_CHOSEN_BY
+
+    row = row + 1
+
+    default [ row, 1 ] = "subgroup_size_wanted"
+    default [ row, 2 ] = DEFAULT_SUBGROUP_SIZE_WANTED
+
+    row = row + 1
+
+    default [ row, 1 ] = "limits_calc_type_a"
+    default [ row, 2 ] = DEFAULT_LIMITS_TYPE_A
+
+    row = row + 1
+
+    default [ row, 1 ] = "limits_calc_type_b"
+    default [ row, 2 ] = DEFAULT_LIMITS_TYPE_B
+
+    row = row + 1
+
+    default [ row, 1]  = "spec_type"
+    default [ row, 2]  = DEFAULT_SPEC_TYPE
+
+    row = row + 1
+
+    default [ row, 1 ] = "display_one_sigma"
+    default [ row, 2 ] = DEFAULT_DISPLAY_ONE_SIGMA
+
+    row = row + 1
+
+    default [ row, 1 ] = "display_warning"
+    default [ row, 2 ] = DEFAULT_DISPLAY_WARNING
+
+    row = row + 1
+
+    default [ row, 1 ] = "display_control"
+    default [ row, 2 ] = DEFAULT_DISPLAY_CONTROL
+
+    row = row + 1
+
+    default [ row, 1 ] = "test_length"
+    default [ row, 2 ] = DEFAULT_TEST_LENGTH
+
+    row = row + 1
+
+    default [ row, 1 ] = "trend_chart_a"
+    default [ row, 2 ] = DEFAULT_TREND_CHART_A
+
+    row = row + 1
+
+    default [ row, 1 ] = "trend_chart_b"
+    default [ row, 2 ] = DEFAULT_TREND_CHART_B
+
+    row = row + 1
+
+    default [ row, 1 ] = "number_of_cells"
+    default [ row, 2 ] = DEFAULT_NUMBER_OF_CELLS
+
+    row = row + 1
+
+    default [ row, 1 ] = "display_spec"
+    default [ row, 2 ] = DEFAULT_DISPLAY_SPEC
+
+    IF ( chart_type = CUSUM ) THEN
+
+        row = row + 1
+
+        default [ row, 1 ] = "subgroup_size_wanted"
+        default [ row, 2 ] = DEFAULT_CUSUM_SUBGROUP_DECISION_POINT
+
+        row = row + 1
+
+        default [ row, 1 ] = "y_min_chart_a"
+        default [ row, 2 ] = DEFAULT_CUSUM_DECISION_INTERVAL
+
+        row = row + 1
+
+        default [ row, 1 ] = "y_min_chart_b"
+        default [ row, 2 ] = DEFAULT_CUSUM_DECISION_SLOPE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE copy_sqc_chart ( sqc_chart )
+
+{ 
+* Copies all sqc records associated with the id sqc_chart . copied_chart_id
+* into a new set of records with the header id sqc_chart . chart_id
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE exist_hdr
+
+    exist_hdr = SELECT sqcwin_header . identifier
+                WHERE identifier = sqc_chart . chart_id
+
+    IF ( exist_hdr = EMPTY ) THEN
+
+        copy_sqc_header ( sqc_chart )
+        copy_sqc_subgroup ( sqc_chart )
+        copy_sqc_point ( sqc_chart )
+        copy_sqc_window ( sqc_chart )
+        copy_sqc_chart_type ( sqc_chart )
+
+        copy_sqc_criteria ( sqc_chart )
+
+    ELSE
+
+        flash_message ( GET_USER_MESSAGE ( "SQCWIN_ERR_ADD_2", 1 ) , TRUE)
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_header ( sqc_chart )
+
+{ 
+* Copies the 'copy_chart_id' record in the sqc_header table to a new
+* 'chart_id' record in the same table.
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, status
+
+    CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+    new_rec . new = TRUE
+
+    new_rec . table = "sqcwin_header"
+    object_add_table ( new_rec, "sqcwin_header" )
+    RESERVE ENTRY sqcwin_header IN OBJECT new_rec, sqc_chart . chart_id
+                                COPY_FROM sqc_chart . copy_chart_id, status
+    sqc_chart . sqc_header . add ( new_rec )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_subgroup ( sqc_chart )
+
+{ 
+* Copies a record from teh sqc_subgroup table to a new 'sqc_chart' record.
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, subgroup_number, status, row, chart_type_id
+
+    subgroup_number = SELECT sqcwin_subgroup.subgroup_number
+                      WHERE chart_id = sqc_chart . copy_chart_id
+
+    chart_type_id   = SELECT sqcwin_subgroup.chart_type_id
+
+    row = 0
+
+    WHILE ( subgroup_number <> EMPTY ) DO
+
+        row = row + 1
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new = TRUE
+
+        new_rec . table = "sqcwin_subgroup"
+        object_add_table ( new_rec, "sqcwin_subgroup" )
+        RESERVE ENTRY sqcwin_subgroup IN OBJECT new_rec,
+                                   PAD(sqc_chart . chart_id, " ", 20) :
+                                   PAD ( STRIP ( chart_type_id ) , " " , 10 ) :
+                                   subgroup_number
+                         COPY_FROM PAD(sqc_chart . copy_chart_id, " ", 20) :
+                                   PAD ( STRIP ( chart_type_id ) , " " , 10 ) :
+                                   subgroup_number,
+                                   status
+
+        sqc_chart . sqc_subgroup . add ( new_rec )
+
+        NEXT sqcwin_subgroup
+        subgroup_number = SELECT sqcwin_subgroup.subgroup_number
+        chart_type_id = SELECT sqcwin_subgroup.chart_type_id
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_point ( sqc_chart )
+
+{ 
+* Copies a record from the sqc_point table to a new 'sqc_chart' record
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, point_number, status, row
+
+    point_number = SELECT sqcwin_point.point_number
+                   WHERE chart_id = sqc_chart . copy_chart_id
+
+    row = 0
+
+    WHILE ( point_number <> EMPTY ) DO
+
+        row = row + 1
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new = TRUE
+
+        new_rec . table = "sqcwin_point"
+        object_add_table ( new_rec, "sqcwin_point" )
+        RESERVE ENTRY sqcwin_point    IN OBJECT new_rec,
+                                   PAD(sqc_chart . chart_id, " ", 20) :
+                                   point_number
+                         COPY_FROM PAD(sqc_chart . copy_chart_id, " ", 20) :
+                                   point_number    ,
+                                   status
+
+        sqc_chart . sqc_point . add ( new_rec )
+
+        NEXT sqcwin_point
+        point_number = SELECT sqcwin_point . point_number
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_window( sqc_chart )
+
+{ 
+* Copies a record from the sqc_window table to a new 'sqc_chart' record.
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, chart_number, window_number, status, row, win_array,
+            chart_type_id
+
+    ARRAY win_array
+
+    window_number = SELECT sqcwin_window . window_number
+                    WHERE chart_id = sqc_chart . copy_chart_id
+
+    row = 1
+
+    WHILE ( window_number <> EMPTY ) DO
+
+        win_array[row] = window_number
+        row = row + 1
+        NEXT sqcwin_window
+        window_number = SELECT sqcwin_window . window_number
+
+    ENDWHILE
+
+    row = 1
+
+    WHILE ( win_array[row] <> EMPTY ) DO
+
+        chart_number = SELECT sqcwin_window . chart_number
+                       WHERE chart_id = sqc_chart . copy_chart_id
+                         AND window_number = win_array[row]
+
+        WHILE ( chart_number <> EMPTY ) DO
+
+            chart_type_id = SELECT sqcwin_window . chart_type_id
+
+            CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+            new_rec . new = TRUE
+
+            new_rec . table = "sqcwin_window"
+            object_add_table ( new_rec, "sqcwin_window" )
+            RESERVE ENTRY sqcwin_window IN OBJECT new_rec,
+                                     PAD(sqc_chart . chart_id, " ", 20) :
+                                     PAD(chart_type_id, " ", 10)        :
+                                     chart_number                       :
+                                     win_array[row]
+                           COPY_FROM PAD(sqc_chart . copy_chart_id, " ", 20) :
+                                     PAD(chart_type_id, " ", 10)             :
+                                     chart_number                            :
+                                     win_array[row]                          ,
+                                     status
+
+            sqc_chart . sqc_window . add ( new_rec )
+
+            NEXT sqcwin_window
+            chart_number = SELECT sqcwin_window . chart_number
+        ENDWHILE
+
+        row = row + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE add_sqc_chart_types ( sqc_chart )
+
+{ 
+* Adds a record to the sqc_chart_type object database for each chart type
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE phrase_id, exist_rec, key_field, new_rec, update_rec, def_array,
+        row
+
+	phrase_id = SELECT phrase . phrase_id
+			WHERE ( phrase_type = "SQC_CHART")
+			ORDER ON ORDER_NUM
+
+	WHILE ( phrase_id <> EMPTY ) DO
+
+	    exist_rec = SELECT sqcwin_chart_type . chart_type_id
+			WHERE ( chart_id = sqc_chart . chart_id )
+			AND   ( chart_type_id = phrase_id )
+
+	    IF ( exist_rec = EMPTY ) THEN
+
+		CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+		new_rec . new   = TRUE
+
+		new_rec . table = "SQCWIN_CHART_TYPE"
+		object_add_table ( new_rec, "SQCWIN_CHART_TYPE" )
+
+		key_field = PAD(sqc_chart . chart_id, " ", 20):phrase_id
+
+		RESERVE ENTRY sqcwin_chart_type IN OBJECT new_rec, key_field
+
+		sqc_chart . sqc_chart_type . add ( new_rec )
+
+		update_rec = sqc_chart . sqc_chart_type .
+				get_by_index ( "KEY0" , key_field )
+
+		IF ( update_rec <> EMPTY ) THEN
+
+		    default_sqc_chart_type ( update_rec, def_array , phrase_id )
+
+			row = 1
+		    WHILE ( def_array[row, 1] <> EMPTY ) DO
+			ASSIGN sqcwin_chart_type . 'def_array[row, 1]'
+			    IN OBJECT update_rec = def_array[row, 2]
+			    row = row + 1
+			ENDWHILE
+
+		    ASSIGN sqcwin_chart_type . chart_type IN OBJECT update_rec =
+			select phrase . phrase_text
+		    ASSIGN sqcwin_chart_type . order_num IN OBJECT update_rec =
+			select phrase . order_num
+
+		ELSE
+
+		    flash_message ( GET_USER_MESSAGE ( "SQCWIN_ERR_ADD_1", 1 ) , TRUE)
+
+		ENDIF
+
+	    ELSE
+
+		flash_message ( GET_USER_MESSAGE ( "SQCWIN_ERR_ADD_2", 1 ) , TRUE)
+
+	    ENDIF
+
+
+	    next phrase
+	    phrase_id = SELECT phrase . phrase_id
+
+	ENDWHILE
+
+	sqc_chart . sqc_chart_type . re_index_all()
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_chart_type ( sqc_chart )
+
+{ 
+* Copies a record from the sqc_chart_type table to a new 
+* 'sqc_chart_type' record
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, chart_type_id, status, row
+
+    chart_type_id = SELECT sqcwin_chart_type . chart_type_id
+                        WHERE chart_id = sqc_chart . copy_chart_id
+
+    row = 0
+
+    WHILE ( chart_type_id <> EMPTY ) DO
+
+        row = row + 1
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new = TRUE
+
+        new_rec . table = "SQCWIN_CHART_TYPE"
+        object_add_table ( new_rec, "SQCWIN_CHART_TYPE" )
+        RESERVE ENTRY sqcwin_chart_type IN OBJECT new_rec,
+                                   PAD(sqc_chart . chart_id, " ", 20) :
+                                   chart_type_id
+                         COPY_FROM PAD(sqc_chart . copy_chart_id, " ", 20) :
+                                   chart_type_id,
+                                   status
+
+        sqc_chart . sqc_chart_type . add ( new_rec )
+
+        NEXT sqcwin_chart_type
+        chart_type_id = SELECT sqcwin_chart_type . chart_type_id
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_sqc_criteria ( sqc_chart )
+
+{ 
+* Copies a record from the sqcwin_criteria table to a new 
+* 'sqcwin_criteria' record
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_rec, order_number, status, row
+
+    order_number = SELECT sqcwin_criteria . order_number
+                   WHERE ( chart_id = sqc_chart . copy_chart_id )
+                   ORDER ON order_number
+
+    WHILE ( order_number <> EMPTY ) DO
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_rec
+        new_rec . new = TRUE
+
+        new_rec . table = "SQCWIN_CRITERIA"
+        object_add_table ( new_rec, "SQCWIN_CRITERIA" )
+        RESERVE ENTRY sqcwin_criteria IN OBJECT new_rec,
+                                   PAD(sqc_chart . chart_id, " ", 20) :
+                                   order_number
+                         COPY_FROM PAD(sqc_chart . copy_chart_id, " ", 20) :
+                                   order_number,
+                                   status
+
+        sqc_chart . sqc_crit_db . add ( new_rec )
+
+        NEXT sqcwin_criteria
+        order_number = SELECT sqcwin_criteria . order_number
+
+    ENDWHILE
+
+    sqc_chart . sqc_crit_db . set_first ()
+
+    row = 1
+
+    WHILE ( sqc_chart . sqc_crit_db . current <> EMPTY ) DO
+
+        sqc_chart . selection_criteria[row, 1] = SELECT sqcwin_criteria . value_1
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 2] = SELECT sqcwin_criteria . value_2
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+        sqc_chart . selection_criteria[row, 3] = SELECT sqcwin_criteria . value_3
+                                   IN OBJECT sqc_chart . sqc_crit_db . current
+
+        sqc_chart . sqc_crit_db . set_next ()
+
+        row = row + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE copy_win_obj ( win_obj_to_copy )
+
+{ 
+* Copies a win object
+* 
+* 
+*
+* Parameters   : win_obj_to_copy
+* Return Value : win_obj_to_return
+*
+*******************************************************************************}
+
+DECLARE win_obj_to_return
+
+    define_window_object ()
+
+    CREATE OBJECT "WINDOW_OBJECT", win_obj_to_return
+
+    win_obj_to_return . window_number  = win_obj_to_copy . window_number
+    win_obj_to_return . first_point    = win_obj_to_copy . first_point
+    win_obj_to_return . last_point     = win_obj_to_copy . last_point
+    win_obj_to_return . display_window = win_obj_to_copy . display_window
+
+    array_copy ( win_obj_to_return . x_points, win_obj_to_copy . x_points )
+    array_copy ( win_obj_to_return . y_points, win_obj_to_copy . y_points )
+
+    array_copy ( win_obj_to_return . x_trend , win_obj_to_copy . x_trend )
+    array_copy ( win_obj_to_return . y_trend , win_obj_to_copy . y_trend )
+
+    array_copy ( win_obj_to_return . x_bad   , win_obj_to_copy . x_bad   )
+    array_copy ( win_obj_to_return . y_bad   , win_obj_to_copy . y_bad   )
+
+    win_obj_to_return . us             = win_obj_to_copy . us
+    win_obj_to_return . ucl            = win_obj_to_copy . ucl
+    win_obj_to_return . lcl            = win_obj_to_copy . lcl
+    win_obj_to_return . uwl            = win_obj_to_copy . uwl
+    win_obj_to_return . lwl            = win_obj_to_copy . lwl
+    win_obj_to_return . usd            = win_obj_to_copy . usd
+    win_obj_to_return . lsd            = win_obj_to_copy . lsd
+    win_obj_to_return . ls             = win_obj_to_copy . ls
+    win_obj_to_return . mean           = win_obj_to_copy . mean
+    win_obj_to_return . no_x           = win_obj_to_copy . no_x
+    win_obj_to_return . start_col      = win_obj_to_copy . start_col
+    win_obj_to_return . use_y_axis     = win_obj_to_copy . use_y_axis
+    win_obj_to_return . y_max          = win_obj_to_copy . y_max
+    win_obj_to_return . y_min          = win_obj_to_copy . y_min
+
+    RETURN ( win_obj_to_return )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE reset_format ( dec_places )
+
+{ 
+* Sets the format depending on decimal places.
+* 
+* 
+*
+* Parameters   : dec_places
+* Return Value : n/a
+*
+*******************************************************************************}
+
+	IF ( dec_places = EMPTY ) THEN
+
+	    dec_places = DEFAULT_DECIMAL_PLACES
+
+	ELSEIF ( dec_places < 0) OR ( dec_places > 5 ) THEN
+
+	    dec_places = DEFAULT_DECIMAL_PLACES
+
+	ENDIF
+
+	IF ( dec_places = 0 )
+
+	    SET FORMAT "999999"
+
+	ELSEIF ( dec_places= 1 )
+
+	    SET FORMAT "999999.9"
+
+	ELSEIF ( dec_places = 2 )
+
+	    SET FORMAT "999999.99"
+
+	ELSEIF ( dec_places = 3 )
+
+	    SET FORMAT "999999.999"
+
+	ELSEIF ( dec_places = 4 )
+
+	    SET FORMAT "999999.9999"
+
+	ELSEIF ( dec_places = 5 )
+		
+	    SET FORMAT "999999.99999"
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE default_line_display (       sqc_chart ,
+                                    VALUE value_field )
+
+{ 
+* Default line display
+* 
+* 
+*
+* Parameters   : sqc_chart, value_field
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE return_value, chart_type_ndx
+
+    chart_type_ndx = PAD ( sqc_chart . chart_id      , " ", "20" ) :
+                     PAD ( sqc_chart . tmp_chart_type, " ", "10" )
+
+    sqc_chart . sqc_chart_type . set_by_index ( "KEY0", chart_type_ndx )
+
+    return_value = SELECT sqcwin_chart_type . 'value_field'
+                       IN OBJECT sqc_chart . sqc_chart_type . current
+
+    IF ( value_field = "subgroup_size_wanted" ) AND
+       ( return_value = 0                     ) THEN
+
+        return_value = DEFAULT_SUBGROUP_SIZE_WANTED
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE do_both ( graph_type )
+
+{ 
+* Decision for doing both graph calculations
+* 
+* 
+*
+* Parameters   : graph_type
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE return_value
+
+    return_value = FALSE
+
+    IF ( graph_type = EMPTY             ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = MEAN_RANGE_GR ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = MEAN_STD_GR   ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = IND_MR_GR     ) THEN
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE do_type_a ( graph_type )
+
+{ 
+* Do type a
+* 
+* 
+*
+* Parameters   : graph_type
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE return_value
+
+    return_value = FALSE
+
+    IF     ( graph_type = MEAN_R_GR ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = MEAN_S_GR ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = IND_GR    ) THEN
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE do_type_b ( graph_type )
+
+{ 
+* Do type b
+* 
+* 
+*
+* Parameters   : graph_type
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE return_value
+
+    return_value = FALSE
+
+    IF     ( graph_type = RANGE_GR ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = STD_GR   ) THEN
+
+        return_value = TRUE
+
+    ELSEIF ( graph_type = MR_GR    ) THEN
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_chart_graph ( sqc_chart, VALUE chart_a )
+
+{ 
+* Determines the graph type given the chart type.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_a
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE return_value
+
+	return_value = ""
+
+	IF ( sqc_chart . selected_chart = MEAN_RANGE ) THEN
+
+	    IF chart_a THEN
+
+		return_value = MEAN_R_GR
+
+	    ELSE
+
+		return_value = RANGE_GR
+
+	    ENDIF
+
+	ELSEIF ( sqc_chart . selected_chart = MEAN_STD ) THEN
+
+	    IF chart_a THEN
+
+		return_value = MEAN_S_GR
+
+	    ELSE
+
+		return_value = STD_GR
+
+	    ENDIF
+
+	ELSEIF ( sqc_chart . selected_chart = IND_MR ) THEN
+
+	    IF chart_a THEN
+
+		return_value = IND_GR
+
+	    ELSE
+
+		return_value = MR_GR
+
+	    ENDIF
+
+	ELSEIF ( sqc_chart . selected_chart = CUSUM ) THEN
+
+	    return_value = CUSUM_GR
+
+	ELSEIF ( sqc_chart . selected_chart = PROC_CAP ) THEN
+
+	    return_value = PROC_CAP_GR
+
+	ENDIF
+
+	RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE cal_std_dev ( points_set )
+
+{ 
+* Calculated std. dev. for sqc_calc/calculated_process_capability
+* 
+* 
+*
+* Parameters   : points_set
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE count, sumx, sqrsumx, first_part, second_part, divisor,
+        return_value
+
+    sumx    = 0
+    sqrsumx = 0
+    count   = 0
+
+    WHILE ( count < size_of_array ( points_set ) ) DO
+
+        count = count + 1
+
+        sumx    = sumx    +   points_set [ count ]
+        sqrsumx = sqrsumx + ( points_set [ count ] ^ 2 )
+
+    ENDWHILE
+
+    first_part  = count * sqrsumx
+    second_part = sumx ^ 2
+    divisor     = count * ( count - 1 )
+
+    return_value = ( ( first_part - second_part ) / divisor ) ^ 0.5
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE mean_points ( points_set )
+
+{ 
+* Calculated mean for a points set.
+* 
+* 
+*
+* Parameters   : points_set
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE count, sumx, return_value
+
+    sumx    = 0
+    count   = 0
+
+    WHILE ( count < size_of_array ( points_set ) ) DO
+
+        count = count + 1
+        sumx    = sumx    +   points_set [ count ]
+
+    ENDWHILE
+
+    return_value = sumx / count
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE set_sqc_chart_index_value ( sqc_chart )
+
+{ 
+* Sets the chart index value
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    IF sqc_chart . selected_chart = CUSUM THEN
+
+        sqc_chart . graph_obj_a_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, CUSUM_GR )
+
+        sqc_chart . graph_obj_b_ndx = 0
+
+    ELSEIF sqc_chart . selected_chart = MEAN_RANGE THEN
+
+        sqc_chart . graph_obj_a_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, MEAN_R_GR )
+
+        sqc_chart . graph_obj_b_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, RANGE_GR )
+
+    ELSEIF sqc_chart . selected_chart = MEAN_STD THEN
+
+        sqc_chart . graph_obj_a_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, MEAN_S_GR )
+
+        sqc_chart . graph_obj_b_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, STD_GR )
+
+    ELSEIF sqc_chart . selected_chart = IND_MR THEN
+
+        sqc_chart . graph_obj_a_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, IND_GR )
+
+        sqc_chart . graph_obj_b_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, MR_GR )
+
+    ELSEIF sqc_chart . selected_chart = PROC_CAP THEN
+
+        sqc_chart . graph_obj_a_ndx =
+            get_graph_objects_array_ndx ( sqc_chart, PROC_CAP_GR )
+
+        sqc_chart . graph_obj_b_ndx = 0
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_graph_objects_array_ndx (       sqc_chart    ,
+                                             VALUE graph_object )
+
+{ 
+* Get graph objects array index.
+* 
+* 
+*
+* Parameters   : sqc_chart, graph_object
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE graph_object_ndx, counter, graph_obj_size
+
+    counter = 1
+
+    graph_obj_size = size_of_array( sqc_chart . graph_object_array )
+
+    WHILE ( counter <= graph_obj_size ) DO
+
+        IF ( sqc_chart . graph_object_array [ counter ] . graph_type
+                          = graph_object ) THEN
+
+            graph_object_ndx = counter
+
+        ENDIF
+
+        counter = counter + 1
+
+    ENDWHILE
+
+    RETURN ( graph_object_ndx )
+
+ENDROUTINE
+
+GLOBAL ROUTINE define_graph_objects_array ( graph_obj_array )
+
+    graph_obj_array [  1, 1 ] = CUSUM
+    graph_obj_array [  1, 2 ] = CUSUM_GR
+
+    graph_obj_array [  2, 1 ] = MEAN_RANGE
+    graph_obj_array [  2, 2 ] = MEAN_RANGE_GR
+
+    graph_obj_array [  3, 1 ] = MEAN_RANGE
+    graph_obj_array [  3, 2 ] = MEAN_R_GR
+
+    graph_obj_array [  4, 1 ] = MEAN_RANGE
+    graph_obj_array [  4, 2 ] = RANGE_GR
+
+    graph_obj_array [  5, 1 ] = MEAN_STD
+    graph_obj_array [  5, 2 ] = MEAN_STD_GR
+
+    graph_obj_array [  6, 1 ] = MEAN_STD
+    graph_obj_array [  6, 2 ] = MEAN_S_GR
+
+    graph_obj_array [  7, 1 ] = MEAN_STD
+    graph_obj_array [  7, 2 ] = STD_GR
+
+    graph_obj_array [  8, 1 ] = IND_MR
+    graph_obj_array [  8, 2 ] = IND_MR_GR
+
+    graph_obj_array [  9, 1 ] = IND_MR
+    graph_obj_array [  9, 2 ] = IND_GR
+
+    graph_obj_array [ 10, 1 ] = IND_MR
+    graph_obj_array [ 10, 2 ] = MR_GR
+
+    graph_obj_array [ 11, 1 ] = PROC_CAP
+    graph_obj_array [ 11, 2 ] = PROC_CAP_GR
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_samp_test_result_data  ( sqc_chart )
+
+{ 
+* Applies select_array to samp_test_result database
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : samp_test_result_data
+*
+*******************************************************************************}
+
+DECLARE samp_test_result_data
+
+	IF ( sqc_Chart . database_type = COMMIT_DATABASE ) THEN
+
+	    sqc_chart . view_used = "SQCWIN_C_SAMP_TEST_RESULT"
+
+	ELSEIF ( sqc_Chart . database_type = BOTH_DATABASE ) THEN
+
+	    sqc_chart . view_used = "SQCWIN_ALL_SAMP_TEST_RESULT"
+
+	ELSE
+
+	    sqc_chart . view_used = "SAMP_TEST_RESULT" { Use the active }
+
+	ENDIF
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", samp_test_result_data
+
+	samp_test_result_data . initialise ( sqc_chart . view_used )
+	{WriteToLog(GetArray(sqc_chart . selection_criteria))}
+	samp_test_result_data . select ( sqc_chart . selection_criteria )
+
+	RETURN ( samp_test_result_data )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE change_to_sqcpoint_table (samp_test_result_data,sqc_chart)
+
+{ 
+* Creates an sqc_point object database using the date from 
+* samp_test_result_data
+* 
+*
+* Parameters   : samp_test_result_data, sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE point_number, result, new_record,result_number, chart_id_text,
+        point_number_text, new_key0, chart_id, {no_records,} rec_count, 
+        select_crit, status, is_new, old_value, new_value
+
+    DECLARE max_point_number                                            {1.2}
+    DECLARE current_point_number                                        {1.2}
+    
+    ARRAY select_crit
+
+    { no_records = samp_test_result_data . size ( ) 1.2 Code deleted }
+
+    samp_test_result_data . select ( sqc_chart . selection_criteria )
+
+    chart_id = sqc_chart . chart_id
+
+    point_number=1
+
+    sqc_chart . sqc_point = EMPTY
+    CREATE OBJECT "STD_OBJECT_DATABASE", sqc_chart . sqc_point
+    sqc_chart . sqc_point . initialise ( "sqcwin_point" )
+
+    array_select_add (  select_crit          ,
+                        ARRAY_SELECT_EQ      ,
+                        "CHART_ID"           ,
+                        sqc_chart . chart_id )
+
+    sqc_chart . sqc_point . select_for_update ( select_crit )
+
+    WHILE ( point_number <= samp_test_result_data . size () ) DO
+
+        samp_test_result_data . set_by_number ( point_number )
+
+{**MS1760 HBe 19-12-2006: Use result value instead of result text
+        result = SELECT 'sqc_chart . view_used' . result_text IN OBJECT
+                     samp_test_result_data . current
+}
+        result = NUMBER_TO_TEXT ( SELECT 'sqc_chart . view_used' . result_value 
+                     IN OBJECT samp_test_result_data . current , "9999999999999.999" )
+{**ME1760}
+
+        FORMAT chart_id_text FROM chart_id USING sqcwin_point . chart_id
+        chart_id_text = PAD(chart_id_text," ",20)
+        point_number_text = STRIP(STRING(point_number))
+        point_number_text = PAD(point_number_text," ",6)
+        point_number_text = JUSTIFY(point_number_text,"RIGHT")
+        new_key0 = chart_id_text : point_number_text
+
+        sqc_chart . sqc_point . set_by_index ( "KEY0" , new_key0)
+
+	IF (sqc_chart . sqc_point . current = EMPTY) THEN
+
+		new_record = EMPTY
+		CREATE OBJECT "STD_OBJECT_RECORD",new_record
+		new_record.new=TRUE
+		new_record.table="sqcwin_point"
+		object_add_table(new_record,"sqcwin_point")
+
+		RESERVE ENTRY sqcwin_point IN OBJECT new_record, new_key0, status
+
+		IF status <> EMPTY THEN
+		flash_message ( GET_USER_MESSAGE ( "LOCKED_RECORD_ERROR1", 1 ), TRUE ) 
+		EXIT
+		ENDIF
+
+		ASSIGN sqcwin_point . comments IN OBJECT new_record = ""
+
+		ASSIGN sqcwin_point . point_date IN OBJECT new_record =
+		SELECT 'sqc_chart . view_used' . login_date IN OBJECT
+		    samp_test_result_data . current
+
+		ASSIGN sqcwin_point . point_value IN OBJECT new_record = result
+
+		result_number = SELECT 'sqc_chart . view_used' . id_numeric IN OBJECT
+			    samp_test_result_data . current
+
+		ASSIGN sqcwin_point . point_name IN OBJECT new_record = result_number
+		ASSIGN sqcwin_point . sample_id IN OBJECT new_record = result_number
+		ASSIGN sqcwin_point . replicate_number IN OBJECT new_record =
+		    SELECT 'sqc_chart . view_used' . test_count IN OBJECT
+			samp_test_result_data . current
+
+		ASSIGN sqcwin_point . bad IN OBJECT new_record = FALSE
+
+		ASSIGN sqcwin_point . result_number IN OBJECT new_record =
+		    SELECT 'sqc_chart . view_used' . test_number IN OBJECT
+			samp_test_result_data . current
+
+		ASSIGN sqcwin_point . component_name IN OBJECT new_record =
+		    SELECT 'sqc_chart . view_used' . component_name IN OBJECT
+			samp_test_result_data . current
+
+		sqc_chart . sqc_point . add (new_record)
+
+	ELSE
+
+		ASSIGN sqcwin_point . point_value IN OBJECT
+		       sqc_chart . sqc_point . current = result
+
+		is_new = FALSE
+
+		old_value = SELECT sqcwin_point . point_date IN OBJECT 
+		                   sqc_chart.sqc_point.current
+		
+		new_value = SELECT 'sqc_chart . view_used' . login_date IN OBJECT
+			            samp_test_result_data . current
+
+		IF old_value <> new_value THEN
+
+			is_new = TRUE
+
+			ASSIGN sqcwin_point . point_date IN OBJECT 
+			       sqc_chart.sqc_point.current = new_value
+
+		ENDIF
+
+		new_value = SELECT 'sqc_chart . view_used' . id_numeric IN OBJECT
+			           samp_test_result_data . current
+		
+		IF NOT is_new THEN
+
+			old_value = SELECT sqcwin_point . sample_id IN OBJECT
+		                           sqc_chart . sqc_point . current 
+
+			IF old_value <> new_value THEN
+
+				is_new = TRUE
+
+				ASSIGN sqcwin_point . sample_id IN OBJECT
+		                       sqc_chart . sqc_point . current = new_value
+
+				ASSIGN sqcwin_point . point_name IN OBJECT
+				    sqc_chart . sqc_point . current = new_value
+
+			ENDIF
+
+		ELSE
+
+			ASSIGN sqcwin_point . sample_id IN OBJECT
+			       sqc_chart . sqc_point . current = new_value
+
+			ASSIGN sqcwin_point . point_name IN OBJECT
+			    sqc_chart . sqc_point . current = new_value
+
+		ENDIF
+
+		new_value = SELECT 'sqc_chart . view_used' . component_name IN OBJECT
+			    samp_test_result_data . current
+
+		IF NOT is_new THEN
+
+			old_value = SELECT sqcwin_point . component_name IN OBJECT
+		                           sqc_chart . sqc_point . current 
+
+			IF old_value <> new_value THEN
+
+				is_new = TRUE
+
+				ASSIGN sqcwin_point . component_name IN OBJECT
+		                       sqc_chart . sqc_point . current = new_value
+
+			ENDIF
+
+		ELSE
+
+			ASSIGN sqcwin_point . component_name IN OBJECT
+			       sqc_chart . sqc_point . current = new_value
+
+		ENDIF
+
+
+
+		new_value = SELECT 'sqc_chart . view_used' . test_count IN OBJECT
+			    samp_test_result_data . current
+
+		IF NOT is_new THEN
+
+			old_value = SELECT sqcwin_point . replicate_number IN OBJECT
+		                           sqc_chart . sqc_point . current 
+
+			IF old_value <> new_value THEN
+
+				is_new = TRUE
+
+				ASSIGN sqcwin_point . replicate_number IN OBJECT
+		                       sqc_chart . sqc_point . current = new_value
+
+			ENDIF
+
+		ELSE
+
+			ASSIGN sqcwin_point . replicate_number IN OBJECT
+			       sqc_chart . sqc_point . current = new_value
+
+		ENDIF
+
+
+		new_value = SELECT 'sqc_chart . view_used' . test_number IN OBJECT
+			    samp_test_result_data . current
+
+		IF NOT is_new THEN
+
+			old_value = SELECT sqcwin_point . result_number IN OBJECT
+		                           sqc_chart . sqc_point . current 
+
+			IF old_value <> new_value THEN
+
+				is_new = TRUE
+
+				ASSIGN sqcwin_point . result_number IN OBJECT
+		                       sqc_chart . sqc_point . current = new_value
+
+			ENDIF
+
+		ELSE
+
+			ASSIGN sqcwin_point . result_number IN OBJECT
+			       sqc_chart . sqc_point . current = new_value
+
+		ENDIF
+
+		IF is_new THEN
+
+			ASSIGN sqcwin_point . bad IN OBJECT 
+			sqc_chart . sqc_point . current = FALSE
+
+			ASSIGN sqcwin_point . comments IN OBJECT 
+			sqc_chart . sqc_point . current = ""
+
+		ENDIF
+
+		IF ( sqc_chart . sqc_point . current . deleted = TRUE ) THEN
+
+			sqc_chart . sqc_point . current . undelete ( )
+
+		ENDIF
+
+	ENDIF
+
+        point_number=point_number+1
+
+    ENDWHILE
+
+    {**********************************************************
+    1.2
+    Delete existing point records that are not required any more
+    First find the maximum point number in the database
+    Then delete all points from the current one up to this
+    maximum number
+    ***********************************************************}
+
+    max_point_number = point_number
+    rec_count = 1
+
+    WHILE ( rec_count <= sqc_chart.sqc_point.size() )
+
+        sqc_chart.sqc_point.set_by_number( rec_count )
+        current_point_number = SELECT sqcwin_point.point_number IN OBJECT sqc_chart.sqc_point.current
+        
+        IF ( current_point_number > max_point_number )
+        
+            max_point_number = current_point_number
+            
+        ENDIF
+
+        rec_count = rec_count + 1
+        
+    ENDWHILE        
+    
+    WHILE ( point_number <= max_point_number )
+    
+            chart_id_text = PAD(chart_id_text," ",20)
+        point_number_text = NUMBER_TO_TEXT( point_number, "999999" )
+            new_key0 = chart_id_text : point_number_text
+
+            sqc_chart . sqc_point . set_by_index ( "KEY0", new_key0 )
+
+        IF ( sqc_chart.sqc_point.current <> EMPTY )
+
+            sqc_chart . sqc_point . current . delete ()
+
+        ENDIF
+
+        point_number = point_number + 1
+
+    ENDWHILE        
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE create_sqc_form ( form )
+
+{ 
+* Creates an instance of the sqc_form class
+* 
+* 
+*
+* Parameters   : form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+	define_sqc_form()
+
+	CREATE OBJECT "SQC_FORM", form
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE sqcwin_array_size( input_array )
+
+{ 
+* Returns the size of an array, but discounts empty entires at the end
+* of an array. 
+* 
+*
+* Parameters   : input_array
+* Return Value : true_array_size
+*
+*******************************************************************************}
+
+DECLARE true_array_size
+
+	true_array_size = size_of_array( input_array )
+
+	WHILE ( ( true_array_size > 0                    )   AND
+		( input_array[ true_array_size ] = EMPTY ) ) DO
+		
+		true_array_size = true_array_size - 1
+
+	ENDWHILE
+
+	RETURN( true_array_size )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+{*******************************************************************************}
+
+GLOBAL ROUTINE get_prompt( prompt_array, VALUE sought_info, found_prompt )
+
+{
+* This routine will search the prompt_array for a prompt with the user_info
+* specified in sought_info and return the associated prompt in found_prompt.
+* TRUE or FALSE is returned depending on the success of the find.
+*
+* Parameters   : prompt_array, sought_prompt, found_prompt
+* Return Value : success
+*
+*******************************************************************************}
+
+DECLARE success, prompt_count, prompt_info_type, sought_info_type
+
+	found_prompt = EMPTY
+
+	success = FALSE
+
+	sought_info_type = variable_get_type( sought_info )
+
+	prompt_count = 1
+
+	WHILE ( ( prompt_count <= sqcwin_array_size( prompt_array ) )   AND
+	        NOT success                                       )     DO
+
+		IF ( variable_is_assigned( 
+		     prompt_array[ prompt_count ] . user_info ) ) THEN
+
+			prompt_info_type = 
+			variable_get_type( prompt_array[ prompt_count ] . user_info )
+
+			IF prompt_info_type = sought_info_type THEN
+		
+				IF ( prompt_array[ prompt_count ] . user_info = 
+				     sought_info                                ) THEN
+
+					found_prompt = prompt_array[ prompt_count ]
+
+					success = TRUE
+
+				ENDIF
+			ENDIF
+
+		ENDIF
+
+		prompt_count = prompt_count + 1
+
+	ENDWHILE
+
+	RETURN( success )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+GLOBAL ROUTINE get_mlp_level( sqc_chart, VALUE level_id, VALUE limit )
+
+{ 
+* Routine to read the appropriate limit from the appropriate level.
+* 
+*
+* Parameters   : sqc_chart, level_id, limit
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE prod_name, prod_ver, analysis, component, return_value
+
+
+	return_value = EMPTY
+
+	get_mlp_details ( sqc_chart ,
+	                  prod_name ,
+			  prod_ver  ,
+	                  analysis  , 
+	                  component  )
+
+	IF ( limit = "upper" ) THEN
+
+		return_value   = SELECT mlp_view . max_limit
+		                 WHERE ( product_id = prod_name     )
+		                 AND   ( analysis_id = analysis  )
+		                 AND   ( product_version = prod_ver )
+				 AND   ( component_name = component )
+		                 AND   ( level_id = level_id )
+
+	ELSEIF ( limit = "lower" ) THEN
+
+		  return_value = SELECT mlp_view . min_limit
+		                 WHERE ( product_id = prod_name     )
+		                 AND ( analysis_id = analysis  )
+		                 AND ( product_version = prod_ver )
+				 AND ( component_name = component )
+		                 AND ( level_id = level_id )
+
+	ENDIF
+
+	RETURN( return_value )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+GLOBAL ROUTINE get_mlp_details ( sqc_chart, prod_name, prod_ver, analysis, 
+                                 comp_name                                 )
+
+{ 
+* Routine to get the product name, version, analysis and component name
+* associated with the sqc_chart object.
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+DECLARE counter, selection_crit
+
+	counter   = 1
+	prod_ver =  EMPTY
+	prod_name = EMPTY
+
+	ARRAY selection_crit
+
+	array_copy ( selection_crit                 ,
+		     sqc_chart . selection_criteria )
+
+	WHILE ( counter <= sqcwin_array_size ( selection_crit ) ) DO
+
+		IF ( selection_crit [ counter, 2 ] = "PRODUCT" ) THEN
+
+			prod_name = selection_crit [ counter, 3 ]
+
+			sqc_chart . product_name = prod_name
+
+		ELSEIF ( selection_crit [ counter, 2 ] = "PRODUCT_VERSION" ) THEN
+
+			prod_ver  = selection_crit [ counter, 3 ]
+
+		ELSEIF ( selection_crit [ counter, 2 ] = "COMPONENT_NAME" ) THEN
+
+			comp_name  = selection_crit [ counter, 3 ]
+
+		ELSEIF ( selection_crit [ counter, 2 ] = "ANALYSIS" ) THEN
+
+			analysis  = selection_crit [ counter, 3 ]
+
+		ENDIF
+
+		counter = counter + 1
+
+	ENDWHILE
+
+	IF ( prod_ver = EMPTY ) THEN
+
+		prod_ver = NUMERIC (
+			       STRIP (
+				       SELECT MAX mlp_view . product_version
+					  WHERE ( product_id  = prod_name )
+				     )
+				   )
+
+		IF ( ( prod_ver = ERROR ) OR ( prod_ver = EMPTY ) ) THEN 
+
+		    prod_ver = 1 
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

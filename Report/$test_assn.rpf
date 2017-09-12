@@ -1,0 +1,2185 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $TEST_ASSN
+*
+* Purpose       : SMP report for viewing / altering tests that are assigned
+*                 to samples
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+
+SET NOTPROTECTED
+SET NAME "display/"
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $lib_grid
+JOIN LIBRARY $lib_test
+JOIN LIBRARY $lib_stock
+JOIN LIBRARY $samp_egc
+JOIN LIBRARY $samp_user
+JOIN LIBRARY $lab
+JOIN LIBRARY $prompt_toolbar
+
+JOIN STANDARD_LIBRARY std_client
+JOIN STANDARD_LIBRARY std_prompt
+JOIN STANDARD_LIBRARY std_login
+JOIN STANDARD_LIBRARY std_utils
+JOIN STANDARD_LIBRARY std_array_select
+
+
+GLOBAL CONSTANT TEST_ASSN_EDITOR_CLASS = "STD_TEST_ASSN_EDITOR"
+
+
+DECLARE choice_array              ,
+    internal_test_list        ,
+    assign_internal_test_list ,
+    test_assn_test_editor     ,
+    test_assn_grid            ,
+    analysis_size
+{**AS2003R1}
+{**AS1439 HBe11-12-2002}
+DECLARE sample_for_datechange
+{**AE1439}
+{**AE2003R1}
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE test_assn_initialise
+
+{
+*
+*
+******************************************************************************}
+
+    DEFINE CLASS TEST_ASSN_EDITOR_CLASS
+
+    INHERIT PROMPT_CLASS_FORM
+
+    PROPERTIES "PROMPT_DETAILS"  ,
+           "TEST_LIST"       ,
+           "MODE"        ,
+           "DELETED_TESTS"   ,
+           "INSERT_NEW_TEST"
+
+    INITIALISATION
+
+    END CLASS
+
+    GET_FIELD_DETAILS  test . analysis
+              "FIELD_SIZE"     ,
+               analysis_size
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_test_assn_editor_class_initialisation ( self )
+
+    self . insert_new_test = FALSE
+
+    ARRAY self . deleted_tests ARRAY_SIZE ( 0 )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE setup_stored_test_list
+
+{
+*
+*
+******************************************************************************}
+
+    SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST1"
+
+        test_editor_initialise ( " "                          ,
+                                 TRUE                         ,
+                                 FALSE                        ,
+                                 FALSE                        ,
+                                 global ( "CURRENT_LIBRARY" ) ,
+                                 internal_test_list           )
+
+        assign_internal_test_list = FALSE
+        test_pre_assignment ( internal_test_list      ,
+                  MODE_INTERNAL_TEST_LIST )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE release_stored_test_list
+
+{
+*
+*
+******************************************************************************}
+
+        test_editor_release( internal_test_list )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE test_assn_set_internal_test_list ( test_list )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE no_line_editor
+
+        assign_internal_test_list = TRUE
+
+        test_editor_release( internal_test_list )
+
+        test_editor_initialise ( " "                          ,
+                                 TRUE                         ,
+                                 FALSE                        ,
+                                 FALSE                        ,
+                                 global ( "CURRENT_LIBRARY" ) ,
+                                 internal_test_list           )
+
+        test_editor_copy ( internal_test_list       ,
+                           test_list                ,
+                           FALSE                    ,
+               MODE_INTERNAL_TEST_LIST  ,
+                           no_line_editor           )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_sample ( VALUE sample_id ,
+             VALUE do_lock   )
+{
+*
+*
+******************************************************************************}
+
+    DECLARE record_found
+
+    RETURN ( lock_required_record ( "SAMPLE"      ,
+                    "ID_NUMERIC"  ,
+                     sample_id    ,
+                     do_lock      ,
+                     record_found ))
+
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE assignment_routine (       self        ,
+                   grid        ,
+                 VALUE cell_column ,
+                 VALUE cell_row    ,
+                 VALUE column      ,
+                 VALUE line        ,
+                 VALUE width_1     ,
+                   display_id  ,
+                 VALUE is_display  )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE field_value  ,
+        test_list    ,
+        mode         ,
+        key
+
+    test_list = grid . parent_prompt . user_info . test_list
+        mode      = grid . parent_prompt . user_info . mode
+
+    IF is_display THEN
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+            DISPLAY select test . status ON LINE line FROM column
+                             IN WINDOW display_id
+
+
+        ELSEIF ( global ( "TERMTYPE" ) = "GUI" ) THEN
+
+            DISPLAY test_editor_get_assign ( test_list )
+                ON LINE   line
+                FROM      column
+                IN WINDOW display_id
+                FORMAT    boolean
+                WITH    ( is_check = TRUE )
+
+        ELSEIF  test_editor_get_assign ( test_list ) THEN
+
+
+            DISPLAY "*" ON LINE line FROM column
+                    IN WINDOW display_id
+
+        ENDIF
+
+    ELSE
+
+        IF (       test_editor_get_exists ( test_list )) OR
+           ( NOT ( test_user_can_change_assign ( test_list   ,
+                                 line        ,
+                                 mode        ))) THEN
+
+            REPEAT
+
+                PROMPT FOR_KEY key
+                       ON LINE line FROM column
+                       IN WINDOW display_id
+
+            UNTIL key <> " "
+
+        ELSE
+
+
+            field_value = test_editor_get_assign ( test_list )
+
+            IF ( global ( "TERMTYPE" ) = "GUI" ) THEN
+
+                PROMPT FOR     field_value
+                ON LINE   line
+                FROM      column
+                IN WINDOW display_id
+                FORMAT    boolean
+                WITH    ( is_check = TRUE )
+
+            ELSE
+
+                PROMPT FOR     field_value
+                       ON LINE line
+                       FROM    column
+                       TO      column + width_1 - 1
+                           IN WINDOW display_id
+                           CHOOSE OUTOF choice_array
+
+            ENDIF
+
+            test_editor_set_assign ( field_value , test_list )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE analysis_routine (       self        ,
+                 grid        ,
+               VALUE cell_column ,
+               VALUE cell_row    ,
+               VALUE column      ,
+               VALUE line        ,
+               VALUE width_1     ,
+                 display_id  ,
+               VALUE is_display  )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE analysis_id ,
+        test_list
+
+    test_list = grid . parent_prompt . user_info . test_list
+    analysis_id = select test . analysis
+
+    IF is_display THEN
+
+        DISPLAY analysis_id
+            ON LINE line
+            FROM column
+            TO   column + width_1
+            IN WINDOW display_id
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+			DISPLAY "/" : strip ( number_to_text ( select test . test_count, "999" ))
+                           ON LINE line
+                           FROM column + analysis_size
+                           IN WINDOW display_id
+
+        ENDIF
+
+    ELSE
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+			analysis_id = analysis_id : "/" : 
+			              strip ( number_to_text ( select test . test_count, "999" ))
+
+        ENDIF
+
+        PROMPT FOR       analysis_id
+               AT        column , line
+               IN WINDOW display_id
+                       BROWSE ON DISPLAY
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE component_list_build ( self )
+
+
+    DECLARE test_editor ,
+        analysis
+
+    test_editor = self . user_info
+
+    analysis = SELECT test . analysis : SELECT test . analysis_version
+
+    prompt_labtable ( "VERSIONED_ANALYSIS"                    ,
+               analysis                               ,
+               test_editor . mode = MODE_DISPLAY_TEST )
+
+    self . repaste ()
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE component_list_routine (       self        ,
+                       grid        ,
+                     VALUE cell_column ,
+                     VALUE cell_row    ,
+                     VALUE column      ,
+                     VALUE line        ,
+                     VALUE width_1     ,
+                       display_id  ,
+                     VALUE is_display  )
+
+    DECLARE field_value     ,
+        mandatory_array ,
+        test_list
+
+    test_list = grid . parent_prompt . user_info . test_list
+
+    IF is_display THEN
+
+        DISPLAY select test . component_list ON LINE line
+                                 FROM column
+                             TO column + width_1 - 1
+                                 IN WINDOW display_id
+
+
+
+    ELSEIF ( NOT test_editor_get_exists ( test_list )) THEN
+
+        field_value = SELECT test . component_list
+
+        ARRAY mandatory_array
+
+        array_select_add (  mandatory_array        ,
+                    ARRAY_SELECT_EQ        ,
+                   "ANALYSIS"              ,
+                    SELECT test . analysis )
+
+        array_select_add (  mandatory_array                ,
+                    ARRAY_SELECT_EQ                ,
+                   "ANALYSIS_VERSION"              ,
+                    SELECT test . analysis_version )
+
+        PROMPT FOR field_value
+               ON LINE   line
+               FROM      column
+               TO        column + width_1 - 1
+               IN WINDOW display_id
+               BROWSE ON versioned_c_l_header . comp_list
+               WITH ( mandatory_array = mandatory_array              ,
+                  build_routine   = "component_list_build"       ,
+                  vgl_library     = global ( "current_library" ) ,
+                  user_info       = grid . parent_prompt . user_info )
+
+        IF lastkey <> "EXIT" THEN
+
+            ASSIGN test . component_list = field_value
+
+        ENDIF
+
+    ELSE
+
+        field_value = SELECT test . component_list
+
+        PROMPT FOR field_value
+               AT column , line TO column + 4
+               IN WINDOW display_id
+               BROWSE ON DISPLAY
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE instrument_routine (       self        ,
+                                   grid        ,
+                             VALUE cell_column ,
+                             VALUE cell_row    ,
+                             VALUE column      ,
+                             VALUE line        ,
+                             VALUE width_1     ,
+                                   display_id  ,
+                             VALUE is_display  )
+
+	DECLARE inst_value      ,
+		inst_type_value ,
+		mandatory_array ,
+		test_list
+
+	test_list = grid . parent_prompt . user_info . test_list
+
+	IF test_editor_get_exists ( test_list ) THEN
+		test_editor_make_current ( cell_row , test_list )
+	ENDIF
+
+	inst_value = SELECT test . instrument
+	inst_type_value = SELECT test . instrument_type
+
+	IF is_display THEN
+
+		DISPLAY inst_value ON LINE line
+		                   FROM column
+		                   TO column + width_1 - 1
+		                   IN WINDOW display_id
+
+	ELSE
+
+		ARRAY mandatory_array
+
+		IF ( NOT BLANK ( inst_type_value )) THEN
+
+			array_select_add ( mandatory_array       ,
+			                   ARRAY_SELECT_EQ       ,
+			                   "INSTRUMENT_TEMPLATE" ,
+			                   inst_type_value       )
+
+		ENDIF
+
+		array_select_add ( mandatory_array ,
+		                   ARRAY_SELECT_EQ ,
+		                   "AVAILABLE"     ,
+		                   TRUE            )
+
+		array_select_add ( mandatory_array ,
+		                   ARRAY_SELECT_EQ ,
+		                   "RETIRED  "     ,
+		                   FALSE           )
+
+		PROMPT FOR inst_value
+		       ON LINE   line
+		       FROM      column
+		       TO        column + width_1 - 1
+		       IN WINDOW display_id
+		       BROWSE ON instrument
+		       WITH ( mandatory_array = mandatory_array )
+
+		IF lastkey <> "EXIT" THEN
+
+			ASSIGN test . instrument = inst_value
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE replicate_routine (       self        ,
+                  grid        ,
+                VALUE cell_column ,
+                VALUE cell_row    ,
+                VALUE column      ,
+                VALUE line        ,
+                VALUE width_1     ,
+                  display_id  ,
+                VALUE is_display  )
+
+    DECLARE repeat_count ,
+        field_value  ,
+        test_list
+
+    test_list = grid . parent_prompt . user_info . test_list
+
+    IF is_display THEN
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+            DISPLAY "1" ON LINE line FROM column
+                         IN WINDOW display_id
+
+        ELSE
+
+			repeat_count = strip ( number_to_text ( test_editor_get_repeat ( test_list ), "999" ))
+            DISPLAY repeat_count ON LINE line FROM column
+                             IN WINDOW display_id
+                                             FORMAT INTEGER
+        ENDIF
+
+    ELSE
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+            PROMPT ON LINE line FROM column
+                   IN WINDOW display_id
+
+        ELSE
+
+            set global ( "lower_integer_value" ) TO 1
+            set global ( "upper_integer_value" ) TO 99
+
+			field_value = strip ( number_to_text ( test_editor_get_repeat ( test_list ), "999" ))
+
+            PROMPT FOR field_value
+                   AT column , line TO column + 4
+                       IN WINDOW display_id
+                   BROWSE ON INTEGER
+
+            test_editor_set_repeat ( field_value , test_list )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_test_routine (       object      ,
+                 grid        ,
+               VALUE cell_column ,
+               VALUE cell_row    ,
+               VALUE column      ,
+               VALUE line        ,
+               VALUE width_1     ,
+                 display_id  ,
+               VALUE is_display  )
+
+    DECLARE test_list ,
+        key
+
+    test_list = grid . parent_prompt . user_info . test_list
+
+    IF is_display THEN
+
+        IF test_editor_get_exists ( test_list ) THEN
+
+            DISPLAY GET_USER_MESSAGE("TEST_ASSN_DISPLAY_YES_Y",1)
+                ON LINE line FROM column
+                IN WINDOW display_id
+
+        ELSEIF test_editor_get_assign ( test_list )
+
+            DISPLAY GET_USER_MESSAGE("TEST_ASSN_DISPLAY_YES_Y",1)
+                ON LINE line FROM column
+                IN WINDOW display_id
+
+        ELSE
+
+            DISPLAY GET_USER_MESSAGE("TEST_ASSN_DISPLAY_NO_N",1)
+                ON LINE line FROM column
+                IN WINDOW display_id
+
+        ENDIF
+
+    ELSE
+
+        REPEAT
+
+            PROMPT FOR_KEY key
+                   ON LINE line FROM column
+                   IN WINDOW display_id
+
+        UNTIL key <> " "
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE test_assn_add_test (       self        ,
+                   test_editor ,
+                             VALUE cell_column ,
+                     VALUE cell_row    ,
+                   screen      ,
+                     VALUE column      ,
+                     VALUE row         ,
+                     VALUE cell_width  ,
+                     VALUE cell_height )
+
+    DECLARE replicate_count, can_continue, accept_id, delete_row, analysis_id, create_insert_line, test_list, mode, version_number, autoval
+
+
+    test_list = self . parent_prompt . user_info . test_list
+    mode      = self . parent_prompt . user_info . mode
+
+    test_editor_pre_insert ( cell_row  ,
+                 test_list )
+
+    analysis_id = " "
+
+    REPEAT
+
+        PROMPT FOR analysis_id
+               ON LINE row
+               FROM    column
+               TO      column + cell_width - 1
+                   IN WINDOW screen BROWSE ON analysis_view
+
+        can_continue = lib_grid_add_checks ( self                  ,
+                             blank ( analysis_id ) ,
+                             accept_id             ,
+                             create_insert_line    ,
+                             delete_row            )
+
+
+        IF accept_id THEN
+
+            can_continue = test_user_add_analysis ( test_list    ,
+                                analysis_id  ,
+                                row          ,
+                                mode         )
+
+        ENDIF
+
+
+    UNTIL can_continue
+
+    self . parent_prompt . user_info . insert_new_test = FALSE
+
+    IF create_insert_line THEN
+
+        self . insert_row ( self . cell_rows + 1 ,
+                    1                    ,
+                    GRID_SEPARATOR_NONE  )
+
+    ENDIF
+
+    IF accept_id THEN
+
+            version_number = SELECT analysis_view . analysis_version
+                        WHERE  ( identity = analysis_id )
+
+            autoval = SELECT analysis_view . auto_validate
+
+              ASSIGN test . analysis         = analysis_id
+              ASSIGN test . analysis_version = version_number
+              ASSIGN test . auto_validate    = auto_val
+		ASSIGN test . instrument_type     = SELECT analysis_view . insttype_id
+		ASSIGN test . instrument_required = SELECT analysis_view . instrument_required
+
+        replicate_count = SELECT analysis_view . replicates
+
+        IF replicate_count = 0 THEN
+            replicate_count = 1
+        ENDIF
+
+        test_editor_set_repeat ( replicate_count , test_list )
+
+        test_add_analysis ( test_list    ,
+                    FALSE        ,
+                    row          ,
+                    mode         )
+
+        self . redisplay_row ( cell_row )
+
+        IF global ( "COMPONENT_LIST_ENABLED" ) THEN
+            self . set_position ( 3 , cell_row )
+        ELSE
+            self . set_position ( 1 , cell_row )
+        ENDIF
+
+        SET GLOBAL "LASTKEY" TO "CONTINUE"
+
+    ELSEIF delete_row THEN
+        test_editor_make_current ( self . current_row , test_list )
+        test_editor_delete ( test_list )
+        self . remove_row ( self . current_row )
+
+    ELSE
+        test_editor_make_current ( self . current_row , test_list )
+        test_editor_delete ( test_list )
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE test_assn_display (       grid        ,
+                VALUE cell_column ,
+                VALUE cell_row    ,
+                      screen      ,
+                VALUE column      ,
+                VALUE row         ,
+                VALUE cell_width  ,
+                VALUE cell_height )
+
+    DECLARE NIL        ,
+        test_editor
+
+    test_editor = grid . parent_prompt . user_info
+
+    IF ( test_editor . insert_new_test ) OR
+       ( lib_grid_is_insert_line ( grid                                   ,
+                       cell_row                               ,
+                       test_editor . mode = MODE_DISPLAY_TEST )) THEN
+
+        CLEAR LINE      row
+              FROM      column
+              TO        column + cell_width - 1
+              IN WINDOW screen
+
+    ELSE
+
+        test_editor_make_current ( cell_row                ,
+                       test_editor . test_list )
+
+        lib_grid_display_array ( grid                         ,
+                     cell_column                  ,
+                     cell_row                     ,
+                     screen                       ,
+                     column                       ,
+                     row                          ,
+                     cell_width                   ,
+                     NIL                          ,
+                     test_editor . prompt_details ,
+                     "TEST"                       ,
+                     FALSE                        ,
+                     PROMPT_DETAILS_310           )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE test_assn_prompt (       grid        ,
+               VALUE cell_column ,
+               VALUE cell_row    ,
+                     screen      ,
+               VALUE column      ,
+               VALUE row         ,
+               VALUE cell_width  ,
+               VALUE cell_height )
+
+    DECLARE NIL         ,
+        test_editor
+
+    test_editor = grid . parent_prompt . user_info
+
+    IF ( test_editor . insert_new_test ) OR
+       ( lib_grid_is_insert_line ( grid                                 ,
+                     cell_row                               ,
+                     test_editor . mode = MODE_DISPLAY_TEST )) THEN
+
+        test_assn_add_test ( grid        ,
+                     test_editor ,
+                     cell_column ,
+                     cell_row    ,
+                     screen      ,
+                     column      ,
+                     row         ,
+                     cell_width  ,
+                     cell_height )
+
+    ELSE
+
+        test_editor_make_current ( cell_row                ,
+                       test_editor . test_list )
+
+        lib_grid_prompt_array ( grid                         ,
+                    cell_column                  ,
+                    cell_row                     ,
+                    screen                       ,
+                    column                       ,
+                    row                          ,
+                    cell_width                   ,
+                    NIL                          ,
+                    test_editor . prompt_details ,
+                    "TEST"                       ,
+                    FALSE                        ,
+                    PROMPT_DETAILS_310           )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE test_assn_check_move (       grid           ,
+                               VALUE current_column ,
+                   VALUE current_row    ,
+                     new_column     ,
+                     new_row        )
+
+    DECLARE test_editor
+
+    test_editor = grid . parent_prompt . user_info
+
+    IF lib_grid_is_insert_line ( grid                                   ,
+                     new_row                                ,
+                     test_editor . mode = MODE_DISPLAY_TEST ) THEN
+
+        new_column = 2
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE test_assn_insert ( self )
+
+    DECLARE current_row
+
+    current_row    = self . current_row
+
+    IF current_row = 0 THEN
+
+        current_row = 1
+
+    ENDIF
+
+    self . parent_prompt . user_info . insert_new_test = TRUE
+    self . insert_row ( current_row , 1 , GRID_SEPARATOR_NONE )
+    self . set_position ( 2 , current_row )
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE test_assn_remove ( self )
+
+
+    DECLARE can_delete    ,
+        line_position ,
+        test_list     ,
+        mode          ,
+        deleted_tests ,
+            test_editor
+
+    test_editor = self . parent_prompt . user_info
+
+    IF NOT lib_grid_is_insert_line ( self                                   ,
+                         self . current_row                                ,
+                         test_editor . mode = MODE_DISPLAY_TEST ) THEN
+
+
+        test_list     = test_editor . test_list
+        mode          = test_editor . mode
+        deleted_tests = test_editor . deleted_tests
+
+        line_position = self . current_row
+
+        test_editor_make_current ( line_position , test_list )
+
+        IF test_editor_get_exists ( test_list )
+
+                can_delete = INDEX ( "UWV" , select test . status ) <> 0
+
+
+            IF can_delete THEN
+
+                can_delete = lock_exclusive ( "TEST" )
+
+            ENDIF
+
+        ELSE
+
+            can_delete = TRUE
+
+        ENDIF
+
+        IF can_delete THEN
+
+            can_delete = test_user_delete_analysis ( test_list     ,
+                                         line_position ,
+                                     mode          )
+
+        ENDIF
+
+        IF can_delete THEN
+
+            IF test_editor_get_exists ( test_list ) THEN
+
+                deleted_tests [ size_of_array ( deleted_tests ) + 1 ]
+                    = SELECT test . test_number
+
+            ENDIF
+
+            test_editor_delete ( test_list )
+            self . remove_row  ( line_position )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE create_prompt_details ( prompt_details )
+
+    DECLARE next_field
+
+    ARRAY choice_array ARRAY_SIZE ( 2 ,2 )
+
+    choice_array [ 1 , 1 ] = " "
+    choice_array [ 1 , 2 ] = FALSE
+    choice_array [ 2 , 1 ] = "*"
+    choice_array [ 2 , 2 ] = TRUE
+
+    ARRAY prompt_details ARRAY_SIZE ( 0 , 6 )
+
+    prompt_details [ 1 , 2 ] = "ROUTINE"
+    prompt_details [ 1 , 3 ] = global ( "Current_Library" )
+    prompt_details [ 1 , 4 ] = "Assignment_routine"
+    prompt_details [ 1 , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_14" ,1)
+    prompt_details [ 1 , 6 ] =  8
+
+    prompt_details [ 2 , 2 ] = "ROUTINE"
+    prompt_details [ 2 , 3 ] = global ( "Current_Library" )
+    prompt_details [ 2 , 4 ] = "Analysis_routine"
+    prompt_details [ 2 , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_15" ,1)
+    prompt_details [ 2 , 6 ] =  analysis_size + 5
+
+    next_field = 3
+
+    IF global ( "COMPONENT_LIST_ENABLED" ) THEN
+
+        prompt_details [ next_field , 2 ] = "ROUTINE"
+        prompt_details [ next_field , 3 ] = global ( "Current_Library" )
+        prompt_details [ next_field , 4 ] = "Component_list_routine"
+        prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_21" ,1)
+
+        get_field_details  test . component_list
+                  "FIELD_SIZE"           ,
+                   prompt_details [ next_field , 6 ]
+
+        next_field = next_field + 1
+
+    ENDIF
+
+    prompt_details [ next_field , 2 ] = "FORMAT"
+    prompt_details [ next_field , 3 ] = "TEST"
+    prompt_details [ next_field , 4 ] = "INSTRUMENT_TYPE"
+    prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_FIELD_INST_TYPE" ,1)
+    prompt_details [ next_field , 6 ] =  0
+
+    next_field = next_field + 1
+
+{
+    prompt_details [ next_field , 2 ] = "FORMAT"
+    prompt_details [ next_field , 3 ] = "TEST"
+    prompt_details [ next_field , 4 ] = "INSTRUMENT"
+    prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_16" ,1)
+    prompt_details [ next_field , 6 ] =  0
+}
+	prompt_details [ next_field , 2 ] = "ROUTINE"
+	prompt_details [ next_field , 3 ] = global ( "Current_Library" )
+	prompt_details [ next_field , 4 ] = "instrument_routine"
+	prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_16" ,1)
+	prompt_details [ next_field , 6 ] =  find_max_number ( 10 , LENGTH ( prompt_details [ next_field , 5 ]))
+    
+next_field = next_field + 1
+
+    prompt_details [ next_field , 2 ] = "FORMAT"
+    prompt_details [ next_field , 3 ] = "TEST"
+    prompt_details [ next_field , 4 ] = "STARTER"
+    prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_17" ,1)
+    prompt_details [ next_field , 6 ] =  0
+
+    next_field = next_field + 1
+
+    prompt_details [ next_field , 2 ] = "ROUTINE"
+    prompt_details [ next_field , 3 ] = global ( "Current_Library" )
+    prompt_details [ next_field , 4 ] = "Replicate_routine"
+    prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_18" ,1)
+    prompt_details [ next_field , 6 ] =  6
+
+    next_field = next_field + 1
+
+    prompt_details [ next_field , 2 ] = "FORMAT"
+    prompt_details [ next_field , 3 ] = "TEST"
+    prompt_details [ next_field , 4 ] = "TEST_PRIORITY"
+    prompt_details [ next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_19" ,1)
+    prompt_details [ next_field , 6 ] =  7
+
+    next_field = next_field + 1
+
+    prompt_details [  next_field , 2 ] = "ROUTINE"
+    prompt_details [  next_field , 3 ] = global ( "Current_Library" )
+    prompt_details [  next_field , 4 ] = "Std_Test_routine"
+    prompt_details [  next_field , 5 ] =  GET_USER_MESSAGE("TEST_ASSN_CONST_20" ,1)
+    prompt_details [  next_field , 6 ] =  6
+
+    next_field = next_field + 1
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE test_assn_create_form (       form               ,
+                                      test_editor        ,
+                                VALUE the_header_message ,
+                                VALUE the_bottom_message )
+
+	DECLARE grid_object, 
+	        butt_rhs_col, 
+	        button_exit, 
+	        button_do, 
+	        toolbar, 
+	        toolbutton
+
+    prompt_toolbar_initialise ( )
+
+    lib_grid_initialise ( )
+
+    create_prompt_details ( test_editor . prompt_details )
+
+    test_editor_fields ( test_editor . prompt_details ,
+                         test_editor . mode           )
+
+
+    CREATE OBJECT PROMPT_CLASS_FORM, form
+    form . row          = 14
+    form . column       = 35
+    form . header       = the_header_message
+	form . width        = 80
+    form . height       = 15
+    form . prompt_id    = "$TEST_ASSN_MAIN"
+    form . button_style = FORM_BUTTON_NONE
+
+    CREATE OBJECT "STD_GRID_EDITOR" , grid_object
+
+    grid_object . height   = form . height - 3
+    grid_object . width    = form . width
+    grid_object . column   = 1
+    grid_object . row      = 2
+
+    grid_object . border   = FALSE
+
+
+    grid_object . vgl_library          = global ( "current_library" )
+
+    grid_object . prompt_cell_routine  = "test_assn_prompt"
+    grid_object . display_cell_routine = "test_assn_display"
+    grid_object . check_move_routine   = "test_assn_check_move"
+
+    IF test_editor . mode <> MODE_DISPLAY_TEST THEN
+
+        grid_object . insert_routine       = "test_assn_insert"
+        grid_object . remove_routine       = "test_assn_remove"
+
+    ENDIF
+
+    grid_object . select_routine       = "test_assn_select"
+
+    grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+    grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+    grid_object . title_size_top        = 1
+    grid_object . fixed_columns_left    = 2
+
+    grid_object . cell_columns = size_of_array ( test_editor . prompt_details )
+    grid_object . cell_rows    =
+        lib_grid_number_of_lines ( test_editor . mode = MODE_DISPLAY_TEST ,
+                       test_editor_get_size ( test_editor . test_list ))
+
+
+    lib_grid_setup_columns ( test_editor . prompt_details ,
+                 grid_object                  ,
+                 "TEST"                       )
+
+    form . width = find_min_number( grid_object . width, GLOBAL( "GUI_WIDTH" ) )
+
+    form . prompt_objects [ 1 ] = grid_object
+
+    butt_rhs_col = form . width + 1
+
+    IF test_editor . mode = MODE_DISPLAY_TEST THEN
+
+		CREATE OBJECT "STD_PROMPT_BUTTON", button_exit
+		button_exit . row           = form . height - 0.5
+		button_exit . width         = 10
+		button_exit . column        = butt_rhs_col - button_exit . width
+		button_exit . send_last_key = "EXIT"
+		button_exit . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CLOSE", 1 )
+		button_exit . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CLOSE", 1 ) : " (Esc)"
+
+		form . add_prompt( button_exit )
+
+		butt_rhs_col = butt_rhs_col - button_exit . width - 2
+
+    ELSE
+
+		CREATE OBJECT "STD_PROMPT_BUTTON", button_exit
+		button_exit . row           = form . height - 0.5
+		button_exit . width         = 10
+		button_exit . column        = butt_rhs_col - button_exit . width
+		button_exit . send_last_key = "EXIT"
+		button_exit . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CANCEL", 1 )
+		button_exit . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_CANCEL", 1 ) : " (Esc)"
+			
+		butt_rhs_col = butt_rhs_col - button_exit . width - 2
+
+		CREATE OBJECT "STD_PROMPT_BUTTON", button_do
+		button_do . row           = form . height - 0.5
+		button_do . width         = 10
+		button_do . column        = butt_rhs_col - button_do . width
+		button_do . send_last_key = "DO"
+		button_do . caption       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_OK", 1 )
+		button_do . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_OK", 1 ) : " (Alt+Enter)"
+			
+		butt_rhs_col = butt_rhs_col - button_do . width - 2
+
+		{ Add the buttons in left to right order }
+
+		form . add_prompt( button_do )
+		form . add_prompt( button_exit )
+
+    ENDIF
+
+    form . add_panel( butt_rhs_col + 1                        ,
+                      form . height - 0.5                     ,
+                      1                                       ,
+                      form . width - butt_rhs_col             ,
+                      PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+    {* Create toolbar buttons *}
+    CREATE OBJECT TOOLBAR_CLASS, toolbar
+    toolbar . height = 0.9
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_NEW_ITEM" )
+    toolbutton . identity      = "INSERT"
+    toolbutton . send_last_key = "INSERT HERE"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_INSERT", 1 ) :" (F5)"
+
+    toolbar . add_item ( toolbutton )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_DELETE_ITEM" )
+    toolbutton . identity      = "REMOVE"
+    toolbutton . send_last_key = "REMOVE"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_REMOVE", 1 ) : " (F6)"
+
+    toolbar . add_item ( toolbutton )
+
+    toolbar . add_separator( )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_MENU_SELECT" )
+    toolbutton . identity      = "SELECT"
+    toolbutton . send_last_key = "SELECT"
+	toolbutton . tooltip       = GET_USER_MESSAGE("TEST_ASSN_OPTIONS_TT" ,1)
+
+    toolbar . add_item ( toolbutton )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_SAMPLE_CREATE" )
+    toolbutton . identity            = "ADD_SCHEDULE"
+    toolbutton . mouse_click_routine = "LIB_TEST_ADD_SCHEDULE"
+{    toolbutton . tooltip             = "Add Test Schedule"}
+	toolbutton . tooltip             = GET_USER_MESSAGE("TEST_ASSN_ADD_SCHED_TT" ,1)
+    toolbutton . enabled             = ( test_editor . mode <> MODE_DISPLAY_TEST )
+
+    toolbar . add_item ( toolbutton )
+
+    toolbar . add_separator( )
+
+{**AS 2003R1: Enabling change date results required}
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_CALENDAR" )
+    toolbutton . identity            = "CHANGE_DATE_RES_REQ"
+    toolbutton . mouse_click_routine = "date_change"
+    toolbutton . tooltip             = "View or change the date, analytical results are expected to be available."
+    toolbutton . enabled             = ( test_editor . mode <> MODE_DISPLAY_TEST )
+
+    toolbar . add_item ( toolbutton )
+
+    toolbar . add_separator( )
+
+{**AE 2003R1}
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . set_icon  ( "INT_HELP_BUBBLE" )
+    toolbutton . identity      = "HELP"
+    toolbutton . send_last_key = "HELP"
+    toolbutton . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+    toolbar . add_item ( toolbutton )
+
+    form . add_prompt( toolbar )
+
+
+    form . user_info        = test_editor
+
+    IF test_editor . mode   = MODE_INTERNAL_TEST_LIST THEN
+
+        form . help_context     = "$TEST_ASSN_INTERNAL"
+
+    ELSEIF test_editor . mode = MODE_ASSIGN_TEST THEN
+
+        form . help_context     = "$TEST_ASSN_ASSIGN"
+
+    ELSE
+
+        form . help_context     = "$TEST_ASSN_EDIT"
+
+    ENDIF
+
+    form . confirm_required = ( global ( "TERMTYPE" ) <> "GUI" ) AND
+                  ( test_editor . mode <> MODE_DISPLAY_TEST )
+
+ENDROUTINE
+
+{**AS 2003R1}
+{*****************************************************************************}
+{**AS1439 HBe 11-12-02}
+
+ROUTINE date_change (self)
+
+JOIN LIBRARY ch_date_res_req
+
+change_date_res_req(sample_for_datechange, FALSE)
+
+
+ENDROUTINE
+
+{**AE1439}
+
+{**AE 2003R1}
+{*****************************************************************************}
+
+ROUTINE lib_test_add_schedule ( self )
+
+    DECLARE test_assn_test_editor ,
+        test_assn_grid        ,
+        form                  ,
+        schedule_id
+
+    form                  = self . parent_prompt
+    test_assn_grid        = form . prompt_objects [ 1 ]
+    test_assn_test_editor = form . user_info
+
+    IF prompt_in_window ( "TEST_SCHED_HEADER"   ,
+                   GET_USER_MESSAGE("TEST_ASSN_DISPLAY_2" ,1)  ,
+                   GET_USER_MESSAGE("TEST_ASSN_DISPLAY_3" ,1)  ,
+                       "$TEST_ASSN_PROMPT_1",
+                   schedule_id        ) THEN
+
+
+        get_test_schedule (schedule_id                       ,
+                   TRUE                              ,
+                   test_assn_test_editor . test_list ,
+                   TRUE                              ,
+                   test_assn_test_editor . mode      ,
+                   test_assn_grid                    )
+
+    ENDIF
+
+    test_editor_make_current ( test_assn_grid . current_row      ,
+                   test_assn_test_editor . test_list )
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE add_new_schedule ( option )
+
+    DECLARE schedule_id
+
+    IF prompt_in_window ( "TEST_SCHED_HEADER"   ,
+                   GET_USER_MESSAGE("TEST_ASSN_DISPLAY_2" ,1)  ,
+                   GET_USER_MESSAGE("TEST_ASSN_DISPLAY_3" ,1)  ,
+                       "$TEST_ASSN_PROMPT_1",
+                   schedule_id        ) THEN
+
+
+        get_test_schedule (schedule_id                       ,
+                   TRUE                              ,
+                   test_assn_test_editor . test_list ,
+                   TRUE                              ,
+                   test_assn_test_editor . mode      ,
+                   test_assn_grid                    )
+
+    ENDIF
+
+    test_editor_make_current ( test_assn_grid . current_row      ,
+                   test_assn_test_editor . test_list )
+
+ENDROUTINE
+
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE display_analysis_routine ( value option )
+
+    DECLARE old_global
+
+    IF select test . analysis_id <> EMPTY THEN
+
+        old_global = GLOBAL( "LABTABLE_MODE" )
+        SET GLOBAL "labtable_mode" TO TRUE
+
+        menuproc 36 USING select test . analysis_id,
+                          select test . analysis_version
+
+        SET GLOBAL "labtable_mode" TO old_global
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE display_stock_use_routine ( value option )
+
+	IF select test . analysis_id <> EMPTY THEN
+
+		lib_stock_test_use_screen ( SELECT test . test_number ,
+		                            TRUE                      ) {Display only}
+
+	ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE modify_stock_use_routine ( value option )
+
+	DECLARE test_no ,
+	        not_display_only
+
+	IF select test . analysis_id <> EMPTY THEN
+
+		test_no = SELECT test . test_number
+		not_display_only = FALSE
+
+		CALL_ROUTINE "lib_stock_test_use_screen"
+			NEW TRANSACTION
+			IN LIBRARY "$lib_stock"
+			USING test_no, not_display_only
+			USING TABLE test
+
+	ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE add_internal_list_routine ( value option )
+
+        test_editor_copy ( test_assn_test_editor . test_list ,
+                           internal_test_list                ,
+                           TRUE                              ,
+               test_assn_test_editor . mode      ,
+                           test_assn_grid                    )
+
+        flash_message ( "TEST_ASSN_ADD_STORED" , FALSE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE store_current_list_routine ( value option )
+
+    DECLARE no_line_editor
+
+        test_editor_copy ( internal_test_list                ,
+                           test_assn_test_editor . test_list ,
+                           FALSE                             ,
+               MODE_INTERNAL_TEST_LIST           ,
+                           no_line_editor                    )
+
+        flash_message ( "TEST_ASSN_STORE_CURR" , FALSE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE edit_internal_list_routine ( value option )
+
+    DECLARE internal_test_editor ,
+        no_editor
+
+    CREATE OBJECT TEST_ASSN_EDITOR_CLASS , internal_test_editor
+
+    internal_test_editor . mode      = MODE_INTERNAL_TEST_LIST
+
+    SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST3"
+
+    test_editor_initialise ( " "                              ,
+                         TRUE                             ,
+                         FALSE                            ,
+                                 FALSE                            ,
+                                 global ( "CURRENT_LIBRARY" )     ,
+                     internal_test_editor . test_list )
+
+    test_editor_copy ( internal_test_editor . test_list ,
+                       internal_test_list               ,
+                       FALSE                            ,
+                           MODE_INTERNAL_TEST_LIST          ,
+                           no_editor                        )
+
+        IF test_assn_editor ( FALSE                  ,
+                              internal_test_editor   ,
+                              FALSE                  ,
+                              GET_USER_MESSAGE("TEST_ASSN_CONST_13" ,1),
+                              GET_USER_MESSAGE("TEST_ASSN_CONST_8" ,1 )) THEN
+
+
+            test_editor_release ( internal_test_list )
+
+                test_editor_initialise ( " "                          ,
+                                         TRUE                         ,
+                                         FALSE                        ,
+                                         FALSE                        ,
+                                         global ( "CURRENT_LIBRARY" ) ,
+                                         internal_test_list           )
+
+            test_editor_copy ( internal_test_list               ,
+                                       internal_test_editor . test_list ,
+                                       FALSE                            ,
+                       MODE_INTERNAL_TEST_LIST          ,
+                                       no_editor                        )
+
+    ENDIF
+
+    test_editor_release ( internal_test_editor . test_list )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE read_internal_list_routine ( value option )
+
+    DECLARE sample_id       ,
+        local_test_list ,
+        no_editor       ,
+        sample_file
+
+    push_file_descriptor ( "SAMPLE" , sample_file )
+
+    IF get_identity ( sample_id ,
+              GET_USER_MESSAGE("TEST_ASSN_DISPLAY_4" ,1)  ,
+              GET_USER_MESSAGE("TEST_ASSN_DISPLAY_5" ,1) ,
+                         "SAMPLE" ,
+                         "$TEST_ASSN_GET_ID" ) THEN
+
+        SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST2"
+
+        test_editor_initialise ( sample_id                    ,
+                                         TRUE                         ,
+                                         FALSE                        ,
+                                         FALSE                        ,
+                                         global ( "CURRENT_LIBRARY" ) ,
+                                         local_test_list              )
+
+        test_editor_copy ( internal_test_list      ,
+                               local_test_list         ,
+                               FALSE                   ,
+                   MODE_INTERNAL_TEST_LIST ,
+                                   no_editor               )
+
+        test_editor_release ( local_test_list )
+
+            flash_message ( "TEST_ASSN_SAMPLE_READ" , FALSE )
+
+        ENDIF
+
+    pop_file_descriptor ( sample_file )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE clear_internal_list_routine ( value option )
+
+        test_editor_release ( internal_test_list )
+        setup_stored_test_list ( )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE assign_internal_list_routine ( value option )
+
+        assign_internal_test_list = TRUE
+        flash_message ( "TEST_ASSN_ADD_INTER" , FALSE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+
+ROUTINE test_assn_select ( test_assn_grid )
+
+    DECLARE test_menu             ,
+        test_assn_test_editor ,
+        temp                  ,
+		count                 ,
+		popup_menu_array      ,
+		option_name
+
+	ARRAY test_menu
+
+    test_assn_test_editor = test_assn_grid . parent_prompt . user_info
+
+    IF test_assn_test_editor . mode = MODE_DISPLAY_TEST THEN
+
+		test_menu [ 1 , 1 ] = "*"
+		test_menu [ 1 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_1" ,1)
+
+		test_menu [ 2 , 1 ] = "1"
+		test_menu [ 2 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_2" ,1)
+		test_menu [ 2 , 3 ] = global ( "current_library" )
+		test_menu [ 2 , 4 ] = "add_new_schedule"
+
+		test_menu [ 3 , 1 ] = "2"
+		test_menu [ 3 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_3" ,1)
+		test_menu [ 3 , 3 ] = global ( "current_library" )
+		test_menu [ 3 , 4 ] = "display_analysis_routine"
+
+		test_menu [ 4 , 1 ] = "3"
+		test_menu [ 4 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_11" ,1)
+		test_menu [ 4 , 3 ] = global ( "current_library" )
+		test_menu [ 4 , 4 ] = "display_stock_use_routine"
+
+	ELSEIF test_assn_test_editor . mode = MODE_ASSIGN_TEST THEN
+
+            test_menu [ 1,1 ] = "*"
+            test_menu [ 1,2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_1" ,1)
+
+            test_menu [ 2 , 1 ] = "1"
+            test_menu [ 2 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_2" ,1)
+            test_menu [ 2 , 3 ] = global ( "current_library" )
+            test_menu [ 2 , 4 ] = "add_new_schedule"
+
+            test_menu [ 3 , 1 ] = "2"
+                test_menu [ 3 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_3" ,1)
+            test_menu [ 3 , 3 ] = global ( "current_library" )
+                test_menu [ 3 , 4 ] = "display_analysis_routine"
+
+                test_menu [ 4 , 1 ] = "3"
+		test_menu [  4 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_12" ,1)
+                test_menu [ 4 , 3 ] = global ( "current_library" )
+		test_menu [  4 , 4 ] = "modify_stock_use_routine"
+
+                test_menu [ 5 , 1 ] = "4"
+		test_menu [  5 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_4" ,1)
+                test_menu [ 5 , 3 ] = global ( "current_library" )
+		test_menu [  5 , 4 ] = "add_internal_list_routine"
+
+                test_menu [ 6 , 1 ] = "5"
+		test_menu [  6 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_5" ,1)
+                test_menu [ 6 , 3 ] = global ( "current_library" )
+		test_menu [  6 , 4 ] = "store_current_list_routine"
+
+            test_menu [ 7 , 1 ] = "6"
+		test_menu [  7 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_6" ,1)
+                test_menu [ 7 , 3 ] = global ( "current_library" )
+		test_menu [  7 , 4 ] = "edit_internal_list_routine"
+
+                test_menu [ 8 , 1 ] = "7"
+		test_menu [  8 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_7" ,1)
+                test_menu [ 8 , 3 ] = global ( "current_library" )
+		test_menu [  8 , 4 ] = "read_internal_list_routine"
+
+                    test_menu [ 9 , 1 ] = "8"
+		test_menu [  9 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_8" ,1)
+                test_menu [ 9 , 3 ] = global ( "current_library" )
+		test_menu [  9 , 4 ] = "clear_internal_list_routine"
+
+		test_menu [ 10 , 1 ] = "9"
+		test_menu [ 10 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_9" ,1)
+		test_menu [ 10 , 3 ] = global ( "current_library" )
+		test_menu [ 10 , 4 ] = "assign_internal_list_routine"
+
+        ELSE { editing internal list }
+
+            test_menu [ 1,1 ] = "*"
+            test_menu [ 1,2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_1" ,1)
+            test_menu [ 1,3 ] = "$TEST_ASSN_MENU"
+
+            test_menu [ 2 , 1 ] = "1"
+            test_menu [ 2 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_2" ,1)
+            test_menu [ 2 , 3 ] = global ( "current_library" )
+            test_menu [ 2 , 4 ] = "add_new_schedule"
+
+            test_menu [ 3 , 1 ] = "2"
+		test_menu [ 3 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_3" ,1)
+            test_menu [ 3 , 3 ] = global ( "current_library" )
+            test_menu [ 3 , 4 ] = "display_analysis_routine"
+
+		test_menu [ 4 , 1 ] = "3"
+		test_menu [ 4 , 2 ] = GET_USER_MESSAGE("TEST_ASSN_MENU_12" ,1)
+		test_menu [ 4 , 3 ] = global ( "current_library" )
+		test_menu [ 4 , 4 ] = "modify_stock_use_routine"
+
+        ENDIF
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+            count = 2
+
+            WHILE count <= size_of_array ( test_menu ) DO
+
+                temp = substring ( test_menu [ count , 2 ] ,
+                            1 , 2 )
+
+                test_menu [ count , 2 ] = test_menu [ count , 2] # temp
+
+                count = count + 1
+
+            ENDWHILE
+
+        ENDIF
+        test_editor_make_current ( test_assn_grid . current_row      ,
+                       test_assn_test_editor . test_list )
+
+
+	{ callmenu outof test_menu at 25,10 }
+	
+	{ Build a popup menu }
+	
+	ARRAY popup_menu_array
+	
+	count = 2
+
+	WHILE count <= size_of_array ( test_menu ) DO
+	
+		popup_menu_array [ size_of_array ( popup_menu_array ) + 1 ] =
+		        test_menu [ count, 2 ]
+
+		count = count + 1
+
+	ENDWHILE
+
+	option_name = client_do_popup_menu ( popup_menu_array ,
+					     0                ,
+					     0                ,
+					     0                )
+
+	IF option_name <> EMPTY THEN
+
+		count = 2
+
+		WHILE ( count <= size_of_array ( test_menu )) DO
+
+			IF test_menu [ count, 2 ] = option_name THEN
+				CALL_ROUTINE test_menu [ count, 4 ]
+				             USING count
+				             IN LIBRARY test_menu [ count, 3 ]
+			ENDIF
+
+			count = count + 1
+
+		ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE test_assn_editor  ( VALUE editing_actual_tests ,
+                         test_editor          ,
+                           VALUE in_display           ,
+                           VALUE the_header_message   ,
+                       VALUE the_bottom_message   )
+
+    DECLARE answer      ,
+        form        ,
+        can_leave   ,
+        grid        ,
+        cell_column ,
+        cell_row
+
+    cell_column = 2
+    cell_row    = 1
+
+
+    test_assn_create_form ( form               ,
+                    test_editor        ,
+                the_header_message ,
+                    the_bottom_message )
+
+    grid = form . prompt_objects [ 1 ]
+
+    IF ( form . prompt_objects [ 1 ] . cell_rows = 0 ) AND
+       ( test_editor . mode = MODE_DISPLAY_TEST      ) THEN
+
+        flash_message ( get_user_message ( "TEST_ASSN_NO_TESTS",1) , TRUE )
+        answer = FALSE
+
+    ELSE
+
+        form . start_prompt ()
+
+        REPEAT
+
+            grid . set_position ( cell_column ,
+                              cell_row    )
+
+            form . wait_prompt  ()
+
+            answer = form . get_lastkey () = "DO"
+
+            IF answer THEN
+
+                cell_column = grid . current_column
+                cell_row    = grid . current_row
+
+                can_leave = test_validation ( test_editor . test_list ,
+                                      test_editor . mode      ,
+                                      cell_column             ,
+                                      cell_row                )
+
+            ELSE
+
+                can_leave = TRUE
+
+            ENDIF
+
+        UNTIL can_leave
+
+            form . end_prompt ()
+
+    ENDIF
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE test_assn_assignment (       sample_id               ,
+                     test_editor             ,
+                   VALUE call_test_editor        ,
+                   VALUE use_background          ,
+                      tests_added            ,
+                      assigned_on_background )
+
+    DECLARE save_tests             ,
+        schedule_id            ,
+        temp                   ,
+        header_mess
+
+    IF ( call_test_editor ) AND
+       global ( "EDIT_TESTS" ) THEN
+
+        header_mess = GET_USER_MESSAGE("TEST_ASSN_CONST_1" ,1)
+
+        IF global ( "SAMP_BROWSE" ) = "T" THEN
+
+            header_mess = header_mess :
+                      strip ( SELECT sample . id_text )
+
+        ELSE
+
+            header_mess = header_mess :
+                      strip ( SELECT sample . id_numeric )
+
+        ENDIF
+
+        save_tests = test_assn_editor ( TRUE        ,
+                                test_editor ,
+                        FALSE       ,
+                        header_mess ,
+                                GET_USER_MESSAGE("TEST_ASSN_CONST_3" ,1))
+
+    ELSE
+
+        save_tests = TRUE
+
+    ENDIF
+
+    IF NOT save_tests THEN
+
+        test_editor_release ( test_editor . test_list )
+
+        SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST5"
+
+        test_editor_initialise ( sample_id ,
+                     FALSE     ,
+                     FALSE     ,
+                     TRUE      ,
+                     global ( "CURRENT_LIBRARY" ) ,
+                     test_editor . test_list  )
+
+        schedule_id = select sample . test_schedule
+        get_test_schedule ( schedule_id             ,
+                    TRUE                    ,
+                    test_editor . test_list ,
+                    FALSE                   ,
+                    test_editor . mode      ,
+                    temp                    )
+
+            test_pre_assignment ( test_editor . test_list ,
+                      MODE_ASSIGN_TEST        )
+
+    ENDIF
+
+    assign_test_list ( sample_id               ,
+               use_background          ,
+               test_editor . test_list ,
+               tests_added             ,
+                   assigned_on_background  )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE test_assn_assign_tests ( VALUE use_given_test_list ,
+                          user_test_list      ,
+                          tests_added         )
+
+{
+*   Perform test assignment in current transaction.
+*   Don't do any prompting.
+*
+*******************************************************************************}
+
+    DECLARE test_editor ,
+        temp        ,
+        total
+
+    test_assn_initialise ()
+
+    CREATE OBJECT TEST_ASSN_EDITOR_CLASS , test_editor
+    test_editor . mode = MODE_ASSIGN_TEST
+
+    IF NOT use_given_test_list THEN
+
+        test_editor_initialise ( SELECT sample . id_numeric   ,
+                         FALSE                        ,
+                         TRUE                         ,
+                         TRUE                         ,
+                     global ( "CURRENT_LIBRARY" ) ,
+                         test_editor . test_list      )
+
+    ELSE
+
+        test_editor  . test_list = user_test_list
+
+    ENDIF
+
+    get_test_schedule ( SELECT sample . test_schedule  ,
+                            TRUE                           ,
+                test_editor . test_list        ,
+                FALSE                          ,
+                    test_editor . mode             ,
+                    temp                           )
+
+    test_pre_assignment (  test_editor . test_list ,
+                   MODE_ASSIGN_TEST        )
+
+    total = test_editor_assign ( GET_USER_MESSAGE("LIB_TEST_TEST_1" ,1) ,
+                         test_editor . test_list                )
+
+    test_post_assignment ( test_editor . test_list )
+
+    tests_added = total <> 0
+
+    IF NOT use_given_test_list THEN
+
+        test_editor_release ( test_editor . test_list )
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE assign_and_edit_tests ( VALUE sample_id  ,
+                       VALUE call_test_editor ,
+                       VALUE use_background ,
+                       VALUE assign_tests_to_sample ,
+                         tests_added ,
+                         assigned_on_background )
+
+    DECLARE schedule_id ,
+        no_editor   ,
+        temp        ,
+        test_editor
+
+    test_assn_initialise ()
+
+    CREATE OBJECT TEST_ASSN_EDITOR_CLASS , test_editor
+
+    tests_added            = FALSE
+    assigned_on_background = FALSE
+
+    test_editor . mode = MODE_ASSIGN_TEST
+
+    IF need_to_assign_tests ( assign_tests_to_sample ) THEN
+
+        IF get_sample ( sample_id , TRUE ) THEN
+
+            SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST6"
+
+            test_editor_initialise ( sample_id ,
+                         FALSE     ,
+                         TRUE {FALSE}  ,
+                         TRUE      ,
+                         global ( "CURRENT_LIBRARY" ) ,
+                         test_editor . test_list  )
+
+                IF assign_internal_test_list THEN
+
+                test_editor_copy ( test_editor . test_list ,
+                                               internal_test_list      ,
+                                               FALSE                   ,
+                           test_editor . mode      ,
+                                               no_editor               )
+
+                ENDIF
+
+
+            schedule_id = select sample . test_schedule
+
+            IF ( get_test_schedule ( schedule_id             ,
+                         TRUE                    ,
+                             test_editor . test_list ,
+                             FALSE                   ,
+                             test_editor . mode      ,
+                                 temp                    )) OR
+                           ( blank ( schedule_id )) THEN
+
+
+                            test_pre_assignment (  test_editor . test_list ,
+                                       MODE_ASSIGN_TEST        )
+
+                    test_assn_assignment ( sample_id              ,
+                                   test_editor            ,
+                                   call_test_editor       ,
+                                   use_background         ,
+                                   tests_added            ,
+                                   assigned_on_background )
+
+                ENDIF
+
+            test_editor_release ( test_editor . test_list )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE edit_tests ( option )
+
+    DECLARE old_param_active ,
+        save_the_tests   ,
+        sample_id        ,
+        test_editor      ,
+        header_mess
+
+    test_assn_initialise ()
+
+    CREATE OBJECT TEST_ASSN_EDITOR_CLASS , test_editor
+
+    set sample_status "HUVWC"
+
+    test_editor . mode = MODE_EDIT_TEST
+
+        setup_stored_test_list ( )
+
+    IF prompt_in_window ("SAMPLE" ,
+                 GET_USER_MESSAGE("TEST_ASSN_DISPLAY_8" ,1),
+                 GET_USER_MESSAGE("TEST_ASSN_DISPLAY_7" ,1),
+                      "$TEST_ASSN_PROMPT_2",
+                  sample_id           )
+
+{**AS 2003R1}
+{**AS1439 HBe 11-12-2002}
+
+                sample_for_datechange = sample_id
+{**AE1439}
+{**AE2003R1}
+
+        old_param_active = global ( "param_active" )
+
+        set global "Param_active" TO FALSE
+
+        IF get_sample ( sample_id , TRUE  ) THEN
+
+            SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST7"
+
+            IF test_editor_initialise (
+                            sample_id                    ,
+                            FALSE                        ,
+                            FALSE                        ,
+                            TRUE                         ,
+                            global ( "CURRENT_LIBRARY" ) ,
+                            test_editor . test_list      ) THEN
+
+                header_mess = GET_USER_MESSAGE("TEST_ASSN_CONST_1" ,1)
+
+                IF global ( "SAMP_BROWSE" ) = "T" THEN
+
+                    header_mess = header_mess :
+                          strip ( SELECT sample . id_text )
+
+                    ELSE
+
+                    header_mess = header_mess :
+                          strip ( SELECT sample . id_numeric )
+
+                ENDIF
+
+                test_pre_edit ( test_editor . test_list )
+                    save_the_tests = test_assn_editor (
+                                            TRUE ,
+                                        test_editor ,
+                                FALSE,
+                                header_mess ,
+                                                            GET_USER_MESSAGE("TEST_ASSN_CONST_9" ,1))
+
+                IF save_the_tests THEN
+
+                    START WRITE TRANSACTION "Test Editing"
+                    test_editor_delete_unwanted_results ( test_editor . deleted_tests )
+                    test_post_edit ( test_editor . test_list )
+                    test_editor_assign ( GET_USER_MESSAGE("TEST_ASSN_DISPLAY_10" ,1) ,
+                                 test_editor . test_list )
+                    UPDATE SAMPLE
+                    COMMIT
+
+                ENDIF
+
+            ENDIF
+
+                test_editor_release ( test_editor . test_list )
+
+        ENDIF
+
+        set global "Param_active" TO old_param_active
+
+    ENDIF
+
+        release_stored_test_list ( )
+
+ENDROUTINE
+
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE display_tests ( option )
+
+    DECLARE old_param_active ,
+        sample_id        ,
+        test_editor      ,
+        header_mess
+
+    test_assn_initialise ()
+
+    CREATE OBJECT TEST_ASSN_EDITOR_CLASS , test_editor
+
+	set sample_status "ARXHUVWCSI"
+
+    test_editor . mode = MODE_DISPLAY_TEST
+
+    IF prompt_in_window ("SAMPLE",
+                 GET_USER_MESSAGE("TEST_ASSN_DISPLAY_8" ,1),
+                 GET_USER_MESSAGE("TEST_ASSN_DISPLAY_11" ,1),
+                      "$TEST_ASSN_PROMPT_3",
+                  sample_id           )
+
+
+        old_param_active = global ( "param_active" )
+
+        set global "Param_active" TO FALSE
+
+        IF get_sample ( sample_id , FALSE ) THEN
+
+            SET GLOBAL "STD_EDITOR_HELP" TO "$TEST_ASSN_EDIT_TST8"
+
+            test_editor_initialise ( sample_id ,
+                         TRUE      ,
+                         FALSE     ,
+                         FALSE     ,
+                         global ( "CURRENT_LIBRARY" ) ,
+                         test_editor .  test_list  )
+
+            SET DISPLAY TRUE
+
+            header_mess = GET_USER_MESSAGE("TEST_ASSN_CONST_12" ,1)
+
+            IF global ( "SAMP_BROWSE" ) = "T" THEN
+
+                header_mess = header_mess :
+                          strip ( SELECT sample . id_text )
+
+                ELSE
+
+                header_mess = header_mess :
+                          strip ( SELECT sample . id_numeric )
+
+                ENDIF
+
+            test_assn_editor ( TRUE               ,
+                       test_editor        ,
+                       TRUE               ,
+                       header_mess        ,
+                               GET_USER_MESSAGE("TEST_ASSN_CONST_10" ,1))
+
+            test_editor_release ( test_editor . test_list )
+            SET DISPLAY FALSE
+
+        ENDIF
+
+        set global "Param_active" TO old_param_active
+
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

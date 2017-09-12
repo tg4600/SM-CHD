@@ -1,0 +1,103 @@
+JOIN LIBRARY AIPL
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+{ This definition is required at the top of all calculations }
+
+GLOBAL ROUTINE calculation (current_sample, current_test_number, current_component_name)
+
+    DECLARE res_text, analysis, samplepoint, product, batch, used_bulks, bulk_prod, bulk_batch, finished, i
+    ARRAY finished
+
+    res_text = SELECT result.text WHERE test_number = current_test_number AND name = current_component_name
+
+    IF res_text <> EMPTY THEN
+        RETURN (res_text)
+    ENDIF
+
+    analysis    = SELECT test.analysis WHERE test_number = current_test_number 
+    samplepoint = SELECT sample.sampling_point WHERE id_numeric = current_sample 
+    product     = SELECT sample.product_name
+    batch       = SELECT sample.batch_name
+    used_bulks  = SELECT COUNT batch_trace_view 
+                  WHERE product_name_master = product 
+                    AND batch_name_master = batch 
+                    AND material_type = "HALB"
+    {finished[1, 2] = STRIP(product):"/":STRIP(batch)}
+    IF (used_bulks = 0) THEN
+        fm("No BULK material reported for ":STRIP(product):"/":STRIP(batch))
+        RETURN (EMPTY)
+    ELSEIF (used_bulks > 1)
+        fm(STRIP(used_bulks):" bulks in ":STRIP(product):"/":STRIP(batch):ASCII(10):
+           "Transfer only allowed for single bulks.")
+        RETURN (STRIP(used_bulks):" bulks used")   
+    ENDIF
+
+    bulk_prod   = SELECT batch_trace_view.product_name_child
+                  WHERE product_name_master = product 
+                    AND batch_name_master = batch 
+                    AND material_type = "HALB"
+    bulk_batch  = SELECT batch_trace_view.batch_name_child
+    batch       = SELECT batch_trace_view.batch_name_master
+                  WHERE product_name_child = bulk_prod 
+                    AND batch_name_child = bulk_batch 
+                   {AND batch_name_master <> batch
+                    AND product_name_master <> product}
+                    AND material_type = "HALB"
+
+    WHILE batch <> EMPTY
+        finished[size_of_array(finished) + 1, 2] = batch
+    NEXT batch_trace_view
+        batch   = SELECT batch_trace_view.batch_name_master
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= size_of_array(finished)
+        finished[i, 1] = SELECT batch_trace_view.product_name_master
+                         WHERE product_name_child = bulk_prod 
+                           AND batch_name_child = bulk_batch 
+                           AND material_type = "HALB"
+                           {Leave out next to lines in final version}
+                           AND batch_name_master = finished[i, 2]
+                           AND product_name_master = product
+        IF finished[i, 1] = EMPTY THEN
+            finished[i, 1] = " --> "
+        ENDIF
+        used_bulks  = SELECT COUNT batch_trace_view 
+                      WHERE product_name_master = finished[i, 1] 
+                        AND batch_name_master = finished[i, 2] 
+                        AND material_type = "HALB"
+        finished[i, 3] = SELECT sample.id_numeric
+                         {WHERE job_name = STRIP(product):"/":STRIP(batch) }
+                         WHERE product_name = product AND batch_name = finished[i, 2]
+                           and sampling_point = samplepoint
+        finished[i, 4] = SELECT test.test_number 
+                         WHERE sample = finished[i, 3]
+                           AND analysis = analysis
+                           AND (status = "C" OR status = "A")
+        finished[i, 5]= SELECT test.date_completed                           
+        IF (used_bulks <> 1) OR
+           (finished[i, 3] = EMPTY) OR 
+           (finished[i, 4] = EMPTY) OR 
+           (finished[i, 3] = EMPTY) THEN
+           array_remove_slice(finished, 1, i)
+           i = i - 1
+        ENDIF   
+        i = i + 1
+    ENDWHILE
+
+    IF size_of_array(finished) = 0 THEN
+        RETURN ("Manual entry")
+    ENDIF
+
+    IF size_of_array(finished) > 1 THEN
+        DECLARE sort
+        sort [1] = 5 
+        array_complex_sort ( finished, sort, ARRAY_SORT_ASCENDING )
+    ENDIF
+    
+    TransferResults(finished[1,4], current_test_number, current_component_name)    
+    
+    RETURN (SELECT sample.job_name WHERE id_numeric = finished[1,3])
+
+ENDROUTINE

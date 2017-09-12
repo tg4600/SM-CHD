@@ -1,0 +1,258 @@
+SET NAME "/DEFER"
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+
+GLOBAL
+ROUTINE  calc_mean ( VALUE test_no, VALUE comp_name, VALUE std_or_samp )
+
+   ARRAY test_res
+   ARRAY mean_inc
+   ARRAY std_var_arr
+   ARRAY mlp_arr
+
+   test_is_standard = is_standard ( test_no )
+
+   IF     std_or_samp = "Standard"
+   THEN   IF NOT(test_is_standard) THEN
+             return ( 0 )
+          ENDIF
+   ELSEIF std_or_samp = "Sample"
+   THEN   IF test_is_standard THEN
+             return ( 0 )
+          ENDIF
+   ELSEIF std_or_samp <> "All"
+   THEN   flash_message("ERROR: Dont know if standard wanted or not from ":
+                        std_or_samp,TRUE)
+          return ( EMPTY )
+   ENDIF
+
+   IF   NOT get_mean_components ( test_no, comp_name,
+                                  mean_inc, n, test_res, res_count )
+   THEN return ( EMPTY )
+   ENDIF
+
+   var_is_there = get_endstring_parameters( comp_name, 1, FALSE,
+{**AS1046 JDy 4/6/97 }
+                                            TRUE,
+{**AE1046 JDy 4/6/97 }
+                                            std_var_arr )
+   IF   NUMTEXT( std_var_arr[1,1] )
+   THEN var_is_there = TRUE
+   ELSE var_is_there = FALSE
+   ENDIF
+
+
+   dif_is_there = FALSE
+
+   smp_id = SELECT test.sample
+            WHERE  test_number = test_no
+   mlp_id = select sample.product
+            where  id_numeric = smp_id
+   mlp_ver= select sample.product_version
+
+   IF mlp_analysis_parameters( "M", "MEAN", 2, mlp_id, mlp_ver,
+                                     mlp_arr, n_sets, err_mess )
+   THEN
+        get_calc_num ( comp_row, test_res, parm_no )
+        IF parm_no <= n_sets THEN
+           var_parm = strip(mlp_arr[ parm_no, 1 ])
+           dif_parm = strip(mlp_arr[ parm_no, 2 ])
+           IF   (var_parm<>EMPTY) AND (NUMTEXT(var_parm))
+           THEN num_var_parm = NUMERIC(var_parm)
+                IF num_var_parm > 0 THEN
+                   std_var_arr[1,1] = num_var_parm
+                   var_is_there = TRUE
+                ENDIF
+           ENDIF
+           IF   (dif_parm<>EMPTY) AND (NUMTEXT(dif_parm))
+           THEN num_dif_parm = NUMERIC(dif_parm)
+                IF num_dif_parm > 0 THEN
+                   dif_is_there = TRUE
+                ENDIF
+           ENDIF
+        ENDIF
+   ENDIF
+
+
+   IF   var_is_there
+   THEN IF   NOT ( calc_std ( mean_inc, n, std_var_arr[1,1], std, calcresult ) )
+        THEN IF   do_newtest ( test_no, comp_name, "NEWTEST", "VARIANS" )
+             THEN calcresult = "NEWTEST"
+             ELSE calcresult = EMPTY
+             ENDIF
+             return ( calcresult )
+        ENDIF
+   ELSE calcresult = calc_mean_value ( mean_inc, n )
+   ENDIF
+
+   IF dif_is_there THEN
+      IF     parm_no < 2
+      THEN   flash_message("Warning: Difference parameter not used",TRUE)
+      ELSEIF get_calc_program_row(comp_row, test_res[comp_row,result_calc_pos],
+                                  test_res, calc_row )
+      THEN   dif_val = test_res[calc_row,result_text_pos]
+             IF     dif_val = EMPTY
+             THEN   flash_message("Error: Missing result in component " :
+                                   test_res[calc_row,result_name_pos],TRUE)
+             ELSEIF (NOT NUMTEXT(dif_val))
+             THEN   flash_message("Error: Result in component " :
+                                   test_res[calc_row,result_name_pos] :
+                                  " must be numeric",TRUE)
+             ELSEIF ABS( NUMERIC(dif_val) - calcresult ) > num_dif_parm
+             THEN flash_message("Difference to last calculated mean value " :
+                                 strip(dif_val) : " is greater than " :
+                                 strip(num_dif_parm), TRUE )
+                  IF   do_newtest ( test_no, comp_name, "NEWTEST", "MEAN_DIF" )
+                  THEN calcresult = "NEWTEST"
+                  ELSE calcresult = EMPTY
+                  ENDIF
+                  return ( calcresult )
+             ENDIF
+      ENDIF
+   ENDIF
+
+{AS 1217 HBe 16-6-99}
+
+   IF nondetect = true
+   THEN
+      IF identical = false
+      THEN
+         FLASH_MESSAGE("Warning: Different detection levels was found, the":
+" highest detection level found has been used!",TRUE)
+      ENDIF
+      return ( text_value )
+   ELSE
+      return ( calcresult )
+   ENDIF
+{AE 1217 HBe 16-6-99}
+
+{**DS 1217 HBe 16-6-99
+   return ( calcresult )
+ **DE 1217 HBe 16-6-99}
+
+ENDROUTINE
+
+GLOBAL
+ROUTINE  get_mean_components ( VALUE test_no, VALUE comp_name,
+                                     mean_inc,      n, test_res, res_count )
+
+   IF   NOT ( find_results ( test_no, test_res, res_count ) )
+   THEN flash_message("No results are entered",TRUE)
+        return ( FALSE )
+   ENDIF
+
+   IF   NOT ( get_component_row ( comp_name, test_res, res_count, comp_row ) )
+   THEN flash_message("ERROR: Could not find component:":comp_name,TRUE)
+        return ( FALSE )
+   ENDIF
+
+   comp_flags = STRIP ( test_res [ comp_row, result_cont_pos ] )
+   IF (BLANK(comp_flags)) OR (comp_flags = EMPTY) THEN
+      flash_message("Error in analysis setup. Nothing specified in flags",TRUE)
+      return ( FALSE )
+   ENDIF
+
+   r = 0
+   n = 0
+
+{**AS 1217 HBe 16-6-99}
+   nondetect = TRUE
+   identical = TRUE
+{**AE 1217 HBe 16-6-99}
+
+   WHILE r < res_count DO
+      r = r + 1
+      IF r <> comp_row THEN
+         IF index( test_res[r,result_cont_pos], comp_flags ) <> 0 THEN
+
+            IF   (BLANK( test_res[r,result_text_pos] )) OR
+                 ( test_res[r,result_text_pos] = EMPTY )
+            THEN flash_message("Missing result for component " :
+                              test_res[r,result_name_pos],TRUE)
+                 return ( FALSE )
+            ENDIF
+
+            IF   NOT ( NUMTEXT ( test_res[r,result_text_pos] ) )
+            THEN flash_message("ERROR: Result for component " :
+                 STRIP(test_res[r,result_name_pos]):" is not numeric",TRUE)
+                 return ( FALSE )
+            ENDIF
+
+{**AS1061 JDy 26/11/97 Added Missing Point feature }
+            IF test_res[r,result_text_pos] <> "+0" THEN
+               n = n + 1
+               mean_inc [ n ] = test_res[r,result_text_pos]
+{**AS 1217 HBe 16-6-99}
+               text_value = mean_inc [n]
+               IF n>1 THEN
+                  IF mean_inc [n] <> mean_inc [n-1]
+                  THEN
+                     identical = FALSE
+                     IF (NUMTEXT(mean_inc [n]) AND NUMTEXT (mean_inc [n-1]))
+                     THEN
+                        IF NUMERIC (mean_inc [n]) > NUMERIC (mean_inc [n-1])
+                        THEN
+                           text_value = mean_inc [n]
+                        ENDIF
+                     ENDIF
+                  ENDIF
+               ENDIF
+               IF (mean_inc [n]) = (mean_inc [n] # "<")
+               THEN
+                  nondetect = FALSE
+               ENDIF
+{**AE 1217 HBe 16-6-99}
+            ENDIF
+
+         ENDIF
+      ENDIF
+   ENDWHILE
+
+   IF n = 0 THEN
+      flash_message("Error in analysis setup. No components included",TRUE)
+      return ( FALSE )
+   ENDIF
+
+   return ( TRUE )
+
+ENDROUTINE
+
+
+{**AS1591 HBE 18-11-2004}
+
+{------------------------------------------- CALC_STDEV ------------------------------------------------}
+
+GLOBAL
+ROUTINE  calc_stdev ( VALUE test_no, VALUE comp_name )
+
+   DECLARE n, res_count, std_abs, mean_val
+   DECLARE test_res, mean_inc, std_var_arr
+   ARRAY test_res
+   ARRAY mean_inc
+   ARRAY std_var_arr
+
+   n = EMPTY
+   res_count = EMPTY
+   std_abs = EMPTY
+   mean_val = EMPTY
+
+
+   IF   NOT get_mean_components ( test_no, comp_name,
+                                  mean_inc, n, test_res, res_count )
+   THEN 
+      flash_message("Error getting mean components", TRUE)
+      return ( "Error" )
+   ENDIF
+
+   
+   IF   ( calc_abs_std ( mean_inc, n, std_abs, mean_val ) )
+   THEN 
+      RETURN ( std_abs )
+   ELSE RETURN ( "ERROR" )
+   ENDIF
+  
+
+ENDROUTINE
+{**AE1591}

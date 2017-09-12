@@ -1,0 +1,1374 @@
+{******************************************************************************
+*
+* Module Name   : $STB_MATRIX_SETUP
+*
+* Purpose       : 
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $CRITERIA_EDIT
+JOIN LIBRARY $LABTABLIB
+JOIN LIBRARY $LIB_INVENTORY
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_QTY_UNIT
+JOIN LIBRARY $PROMPT_TAB
+JOIN LIBRARY $STB_GLBL
+JOIN LIBRARY $STB_LIB
+JOIN LIBRARY $STB_MATRIX
+
+DECLARE main_setup_form, do_once
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_main_setup_form ( form )
+
+    form = main_setup_form
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE init_stb_grid_prompt
+
+    DEFINE CLASS "STB_GRID_PROMPT"
+
+        INHERIT PROMPT_CLASS_GRID
+
+        PROPERTIES
+            "table_name",
+            "message_no"
+
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE init_stb_setup_form
+
+    prompt_qty_unit_initialisation( )
+
+    DEFINE CLASS "STB_SETUP_FORM"
+
+        INHERIT PROMPT_CLASS_FORM
+
+        PROPERTIES
+            "table_name"      ,
+            "selected_column_axis",
+            "header_type",
+            "axis_table",
+            "pull_table",
+            "pull_table_name",
+            "identity",
+            "version_number",
+            "created_from",
+            "proto_ver",
+            "do_save"  ,
+            "data_prompt_tags"
+
+        ACTIONS
+            "is_study"    ,
+            "is_protocol" ,
+            "validation"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_setup_form_class_initialisation ( self )
+{
+* initialisation routine for setup class
+*
+* Parameters : self , Stb Setup Form Object
+*
+*******************************************************************************}
+
+    self . table_name           = ""
+    self . selected_column_axis = 1
+
+    self . identity = ""
+    self . version_number = 0
+
+    self . do_save = FALSE
+
+    object_create ( self . axis_table, "STD_OBJECT_DATABASE" )
+    self . axis_table . initialise ( "PDS_AXIS_POINT" )
+
+    ARRAY self . data_prompt_tags
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_setup_form_action_is_study( self )
+{
+* Return True if the setup form is for a study
+*
+* Parameters : self , Stb Setup Form Object
+*
+*******************************************************************************}
+
+    RETURN( self . header_type = "S" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_setup_form_action_is_protocol( self )
+{
+* Return True if the setup form is for a protocol
+*
+* Parameters : self , Stb Setup Form Object
+*
+*******************************************************************************}
+
+    RETURN( self . header_type = "P" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE setup_main_form (       main_form,
+                          VALUE pds_header_table,
+                          VALUE header_type,
+                          VALUE pull_table_name )
+
+{
+* Creates the main form which will contain the factor columns, no cells and
+* sample info
+*
+* Parameters : main_form        , main setup form, module level   
+*              pds_header_table , header ( protocol/study ) table 
+*              header_type      , P or S                          
+*              pull_table_name  , pds_proto_pull or pds_study_pull
+*
+*******************************************************************************}
+
+    DECLARE col_width, no_c_rows, no_t_rows, no_l_rows,
+            layer_factor, time_factor, c_factor, ok_button, cancel_button,
+            layer_info, time_info, c_info, insert_button, delete_button, help_button,
+            message_pull_count, prompt_pull_count, prompt_description, message_description,
+            prompt_samp_tmpl, message_samp_tmpl, prompt_test_sched, message_test_sched,
+            prompt_pull_name, message_pull_name, prompt_label_count, message_label_count,
+            display_pull_qty_unit, prompt_pull_qty_unit, inventory_id, base_unit, data_prompt_count
+
+    data_prompt_count = 1
+
+    ARRAY col_width = 0
+
+    ARRAY layer_info = ""
+    ARRAY time_info  = ""
+    ARRAY c_info     = ""
+
+    PROMPT OBJECT main_form
+        CLASS "STB_SETUP_FORM"
+        WITH (  height               = 15                                                ,
+                width                = 80                                                ,
+                row                  = 5                                                 ,
+                column               = 7                                                 ,
+                table_name           = pds_header_table                                  ,
+                header               = GET_USER_MESSAGE ( "MATRIX_SETUP_FORM_TITLE", 1 ) ,
+                button_style         = FORM_BUTTON_NONE                                  ,
+                selected_column_axis = 1                                                 ,
+                use_top_line         = TRUE                                              ,
+                help_context         = "STB_MATRIX_SETUP"                                ,
+                header_type          = header_type                                       ,
+                pull_table_name      = pull_table_name                                   ,
+                return_behaviour     = FORM_RETURN_WRAP                                  )
+
+    main_form . identity = JUSTIFY ( PAD ( SELECT 'pds_header_table' . identity, " ", "20" ), "LEFT" )
+
+    IF main_form . is_protocol( ) THEN
+
+        main_form . version_number = SELECT 'pds_header_table' . protocol_version
+
+        no_c_rows = 1
+        no_l_rows = 1
+        no_t_rows = 1
+
+    ELSE
+
+        main_form . version_number = "         1"
+
+        main_form . created_from = SELECT pds_study . created_from
+        main_form . proto_ver    = SELECT pds_study . protocol_version
+
+        no_l_rows = load_factors ( main_form, "Z", layer_info ) + 1
+        no_t_rows = load_factors ( main_form, "T", time_info ) + 1
+        no_c_rows = load_factors ( main_form, "C", c_info ) + 1
+
+    ENDIF
+
+    object_create ( main_form . pull_table, "STD_OBJECT_DATABASE" )
+    main_form . pull_table . initialise ( pull_table_name )
+
+
+    main_form . add_frame ( "", 1, 1, main_form . height - 4, 48 )
+
+    main_form . add_display ( GET_USER_MESSAGE ( "MATRIX_SETUP_COL_TITLE", 1 ),
+                              5,
+                              1,
+                              PROMPT_RENDITION_BOLD )
+
+    col_width [ 1 ] = 14
+
+    PROMPT OBJECT layer_factor
+        CLASS "STB_GRID_PROMPT"
+        WITH ( width               = 14,
+               height              = 8 ,
+               row                 = 2 ,
+               column              = 2 ,
+               cell_rows           = no_l_rows,
+               cell_columns        = 1,
+               border              = TRUE,
+               user_info           = layer_info,
+               column_size         = col_width,
+               table_name          = "LAYER_FACTOR",
+               display_cell_routine= "display_factor_in_cell",
+               prompt_cell_routine = "prompt_for_factor_in_cell",
+               leave_cell_routine  = "leave_axis_column",
+               check_move_routine  = "check_cell_contents" )
+
+    main_form . add_display ( GET_USER_MESSAGE ( "MATRIX_SETUP_COL_TITLE", 2 ),
+                              21,
+                              1,
+                              PROMPT_RENDITION_BOLD )
+
+    PROMPT OBJECT time_factor
+        CLASS "STB_GRID_PROMPT"
+        WITH ( width               = 14,
+               height              = 8,
+               row                 = 2,
+               column              = 18,
+               cell_rows           =no_t_rows,
+               cell_columns        =1,
+               border              =TRUE,
+               user_info           =time_info,
+               column_size         = col_width,
+               table_name          = "TIME_FACTOR",
+               display_cell_routine="display_factor_in_cell",
+               prompt_cell_routine ="prompt_for_factor_in_cell",
+               leave_cell_routine  ="leave_axis_column",
+               check_move_routine  = "check_cell_contents" )
+
+    main_form . add_display ( GET_USER_MESSAGE ( "MATRIX_SETUP_COL_TITLE", 3 ),
+                              35,
+                              1,
+                              PROMPT_RENDITION_BOLD )
+
+    PROMPT OBJECT c_factor
+        CLASS "STB_GRID_PROMPT"
+        WITH ( width               = 14,
+               height              = 8,
+               row                 = 2,
+               column              = 34,
+               cell_rows           =no_c_rows,
+               cell_columns        =1,
+               border              =TRUE,
+               user_info           =c_info,
+               column_size         = col_width,
+               table_name          = "C_FACTOR",
+               display_cell_routine="display_factor_in_cell",
+               prompt_cell_routine ="prompt_for_factor_in_cell",
+               leave_cell_routine  ="leave_axis_column",
+               check_move_routine  = "check_cell_contents" )
+
+    PROMPT OBJECT insert_button
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width = 10,
+               height = 1,
+               column = 21,
+               row = 11,
+               caption = GET_USER_MESSAGE ( "STD_INSERT", 1 ),
+               mouse_click_routine = "insert_factor" )
+
+    PROMPT OBJECT delete_button
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width = 10,
+               height = 1,
+               column = 36,
+               row = 11,
+               caption = GET_USER_MESSAGE ( "STD_DELETE", 1 ),
+               mouse_click_routine = "delete_factor" )
+
+    main_form . add_prompt ( layer_factor  )
+    main_form . add_prompt ( time_factor   )
+    main_form . add_prompt ( c_factor      )
+    main_form . add_prompt ( insert_button )
+    main_form . add_prompt ( delete_button )
+
+    IF main_form . is_protocol( ) THEN
+
+        main_form . add_frame ( "", 50, 1, 1, 31 )
+
+        PROMPT OBJECT message_pull_count
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_PULL_NO", 1 ),
+                   column = 51           ,
+                   row    = 1            ,
+                   width  = 18           ,
+                   raised = FALSE        )
+
+        PROMPT OBJECT prompt_pull_count
+            CLASS "STD_PROMPT_TEXT_INTEGER"
+            WITH ( width   = 5 ,
+                   height  = 1 ,
+                   column  = 70,
+                   row     = 1 ,
+                   minimum = 0 ,
+                   maximum = MAX_PULLS_IN_CELL ,
+                   value   = 1                 )
+
+        main_form . add_display ( message_pull_count )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt  ( prompt_pull_count )
+        data_prompt_count = data_prompt_count + 1
+
+        main_form . add_frame ( "", 50, 3, 9, 31 )
+
+        PROMPT OBJECT message_description
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_DESCRIPTION", 1 ),
+                   column = 51           ,
+                   row    = 3            ,
+                   width  = 14           ,
+                   raised = FALSE        )
+
+        PROMPT OBJECT prompt_description
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( width   = 10,
+                   height  = 1 ,
+                   column  = 66,
+                   row     = 3 ,
+                   user_info = "description" )
+                   
+        main_form . add_display ( message_description )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_description )
+        data_prompt_count = data_prompt_count + 1
+
+        PROMPT OBJECT message_samp_tmpl
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_SAMPLE_TEMPLATE", 1 ),
+                   column = 51               ,
+                   row    = 4                ,
+                   width  = 14               ,
+                   raised = FALSE            )
+
+        PROMPT OBJECT prompt_samp_tmpl
+            BROWSE ON samp_tmpl_header
+            WITH ( width   = 10,
+                   height  = 1 ,
+                   column  = 66,
+                   row     = 4 ,
+                   userinfo = "sample_template",
+                   text   = SELECT 'pds_header_table' . sample_template ,
+                   value  = SELECT 'pds_header_table' . sample_template )
+
+        main_form . add_display ( message_samp_tmpl )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_samp_tmpl )
+        data_prompt_count = data_prompt_count + 1
+
+        PROMPT OBJECT message_test_sched
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_TEST_SCHED", 1 ),
+                   column = 51               ,
+                   row    = 5                ,
+                   width  = 14               ,
+                   raised = FALSE            )
+
+        PROMPT OBJECT prompt_test_sched
+            BROWSE ON test_sched_header
+            WITH ( width   = 10,
+                   height  = 1 ,
+                   column  = 66,
+                   row     = 5 ,
+                   userinfo = "test_schedule" )
+
+        main_form . add_display ( message_test_sched )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_test_sched )
+        data_prompt_count = data_prompt_count + 1
+        
+        PROMPT OBJECT message_pull_name
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_PULL_NAME", 1 ),
+                   column = 51           ,
+                   row    = 6            ,
+                   width  = 14           ,
+                   raised = FALSE        )
+
+        PROMPT OBJECT prompt_pull_name
+            CLASS "STD_PROMPT_TEXT_PHRASE"
+            WITH ( width   = 10,
+                   height  = 1 ,
+                   column  = 66,
+                   row     = 6 ,
+                   phrase = "PULL_NAME",
+                   identities = TRUE   ,
+                   valid_only = TRUE   ,
+                   user_info  = "pull_name" )
+
+        main_form . add_display ( message_pull_name )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_pull_name )
+        data_prompt_count = data_prompt_count + 1
+
+        inventory_id = SELECT 'pds_header_table' . product_id
+        base_unit = inventory_get_unit( inventory_id )
+
+        PROMPT OBJECT display_pull_qty_unit
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "STB_INVENTORY_PULL_AMOUNT", 1 ),
+                   column = 51           ,
+                   row    = 7            ,
+                   width  = 14           ,
+                   raised = FALSE        )
+
+        PROMPT OBJECT prompt_pull_qty_unit
+            CLASS "PROMPT_QTY_UNIT"
+            WITH ( width      = 10              ,
+                   height     = 1               ,
+                   column     = 66              ,
+                   row        = 7               ,
+                   user_info  = "pull_qty_unit" ,
+                   base_unit  = base_unit       )
+                   
+        main_form . add_display ( display_pull_qty_unit )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_pull_qty_unit )
+        data_prompt_count = data_prompt_count + 1
+
+        PROMPT OBJECT message_label_count
+            CLASS "STD_PROMPT_TEXT"
+            WITH ( value  = GET_USER_MESSAGE ( "MATRIX_SETUP_LABEL_NO", 1 ),
+                   column = 51           ,
+                   row    = 9            ,
+                   width  = 14           ,
+                   raised = FALSE        )
+
+        PROMPT OBJECT prompt_label_count
+            CLASS "STD_PROMPT_TEXT_INTEGER"
+            WITH ( width   = 10,
+                   height  = 1 ,
+                   column  = 66,
+                   row     = 9 ,
+                   minimum = 0 ,
+                   maximum = LABEL_MAXIMUM_COPIES,
+                   user_info = "label_number" )
+
+        main_form . add_display ( message_label_count )
+        
+        main_form . data_prompt_tags[ data_prompt_count ] = main_form . add_prompt ( prompt_label_count )
+        data_prompt_count = data_prompt_count + 1
+
+   ENDIF
+
+   PROMPT OBJECT ok_button
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width = 10,
+               height = 1,
+               column = main_form . width - 34,
+               row = main_form . height - 1,
+               caption = GET_USER_MESSAGE ( "STD_OK", 1 ),
+               send_lastkey = "DO" )
+
+    PROMPT OBJECT help_button
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width = 10,
+               height = 1,
+               column = main_form . width - 22,
+               row = main_form . height - 1,
+               caption = GET_USER_MESSAGE ( "STD_HELP", 1 ),
+               send_lastkey = "HELP" )
+
+    PROMPT OBJECT cancel_button
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( width = 10,
+               height = 1,
+               column = main_form . width - 10,
+               row = main_form . height - 1,
+               caption = GET_USER_MESSAGE ( "STD_CANCEL", 1 ),
+               send_lastkey = "EXIT" )
+
+    main_form . add_prompt ( ok_button )
+    main_form . add_prompt ( help_button )
+    main_form . add_prompt ( cancel_button )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE enter_batch_id ( self )
+
+{
+*
+* Setup a Select criteria for the batch id prompt.
+*
+*******************************************************************************}
+
+    DECLARE the_product_prompt
+
+    ARRAY self . select_array
+
+    the_product_prompt = self . parent_prompt . prompt_objects [ 14 ] 
+
+    ARRAY_SELECT_ADD ( self . select_array  ,
+                       ARRAY_SELECT_EQ      ,
+                     "INVENTORY_ID"     ,
+                       STRIP ( the_product_prompt . value ) )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE setup_protocol_matrix ( VALUE proto_ndx, VALUE param2, VALUE action )
+{
+* called from the LTE header in the special action routines
+* 
+*
+*******************************************************************************}
+
+    IF action = "ADD" THEN
+
+        init_stb_grid_prompt()
+        init_stb_setup_form ()
+
+        do_once = TRUE
+
+    ELSEIF action = "MODIFY" THEN
+
+        IF do_once THEN
+
+            setup_main_form ( main_setup_form, "PDS_PROTO", "P", "PDS_PROTO_PULL" )
+
+            main_setup_form . do_save = TRUE
+
+            main_setup_form . start_prompt ()
+            main_setup_form . wait_prompt ()
+            main_setup_form . end_prompt ()
+
+        ENDIF
+
+        IF ( ( main_setup_form . get_lastkey () = "DO" ) AND ( main_setup_form . do_save ) ) THEN
+
+            IF do_once THEN
+                
+                modify_protocol_matrix ( EMPTY, EMPTY, "ADD"    )
+
+            ENDIF
+
+            modify_protocol_matrix ( EMPTY, EMPTY, "MODIFY" )
+
+            do_once = FALSE
+
+        ELSEIF main_setup_form . get_lastkey () = "EXIT" THEN
+
+            do_once = TRUE
+
+        ENDIF
+
+    ELSEIF action = "SAVE" THEN
+
+        DECLARE matrix_object
+        
+        matrix_object = EMPTY
+
+        CALL_ROUTINE "get_matrix_object"    USING matrix_object IN LIBRARY "$STB_MATRIX"
+
+        IF ( matrix_object <> EMPTY ) THEN
+        
+            modify_protocol_matrix ( EMPTY, EMPTY, "SAVE" )
+            
+        ENDIF
+
+        CALL_ROUTINE "after_protocol_creation" USING matrix_object IN LIBRARY "$STB_USER"
+
+        do_once = TRUE
+
+    ELSEIF action = "QUIT" THEN
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE setup_study_matrix ( study_ndx, param2, action )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    IF action = "ADD" THEN
+
+        init_stb_grid_prompt()
+        init_stb_setup_form ()
+
+        do_once = TRUE
+
+    ELSEIF action = "MODIFY" THEN
+
+        IF do_once THEN
+
+            setup_main_form ( main_setup_form, "PDS_STUDY", "S", "PDS_STUDY_PULL" )
+
+            main_setup_form . do_save = TRUE
+
+            main_setup_form . start_prompt ()
+            main_setup_form . wait_prompt ()
+            main_setup_form . end_prompt ()
+
+        ENDIF
+
+        IF ( ( main_setup_form . get_lastkey () = "DO" ) AND ( main_setup_form . do_save ) ) THEN
+
+            IF do_once THEN
+                modify_study_matrix ( EMPTY, EMPTY, "ADD"    )
+            ENDIF
+
+            modify_study_matrix ( EMPTY, EMPTY, "MODIFY" )
+
+            do_once = FALSE
+
+        ELSEIF main_setup_form . get_lastkey () = "EXIT" THEN
+
+            do_once = TRUE
+
+        ENDIF
+
+    ELSEIF action = "SAVE" THEN
+
+        do_once = TRUE
+
+        DECLARE matrix_object
+        
+        matrix_object = EMPTY
+
+        CALL_ROUTINE "get_matrix_object"    USING matrix_object IN LIBRARY "$STB_MATRIX"
+
+        IF ( matrix_object <> EMPTY ) THEN
+            modify_study_matrix ( EMPTY, EMPTY, "SAVE" )
+        ENDIF
+
+        CALL_ROUTINE "after_study_creation" USING matrix_object IN LIBRARY "$STB_USER"
+
+    ELSEIF action = "QUIT" THEN
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE display_factor_in_cell (       self        ,
+                                 VALUE cell_column ,
+                                 VALUE cell_row    ,
+                                       window      ,
+                                 VALUE column      ,
+                                 VALUE row         ,
+                                 VALUE cell_width  ,
+                                 VALUE cell_height )
+{
+* Creates the display in the factor grids
+*
+* Parameters : self         , matrix setup object
+*              cell_column  , col prompt is in   
+*              cell_row     , row prompt is in   
+*              window       , display window name
+*              column       , column of grid     
+*              row          , row of grid        
+*              cell_width   , width of cell      
+*              cell_height  , height of cell     
+* 
+*******************************************************************************}
+
+    DISPLAY self . user_info [ cell_row ]
+        AT column, row
+        IN WINDOW window
+        WITH ( width = cell_width )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_for_factor_in_cell (        self    ,
+                                 VALUE cell_column ,
+                                 VALUE cell_row    ,
+                                       window      ,
+                                 VALUE column      ,
+                                 VALUE row         ,
+                                 VALUE cell_width  ,
+                                 VALUE cell_height )
+{
+*
+* Creates the prompts in the factor grids
+*
+* Parameters : self         , matrix setup object
+*              cell_column  , col prompt is in   
+*              cell_row     , row prompt is in   
+*              window       , display window name
+*              column       , column of grid     
+*              row          , row of grid        
+*              cell_width   , width of cell      
+*              cell_height  , height of cell     
+* 
+
+*
+*******************************************************************************}
+
+    PROMPT FOR self . user_info [ cell_row ]
+        BROWSE ON 'self . table_name'
+        AT column, row
+        IN WINDOW window
+        WITH ( width = cell_width )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE leave_axis_column ( self, VALUE cell_col, VALUE cell_row )
+{
+*
+* 
+*
+*******************************************************************************}
+
+                                       { set chosen column }
+
+        self . parent_prompt . selected_column_axis = self . parent_prompt . active_prompt
+
+                                       { insert new row }
+
+        IF cell_row = self . cell_rows THEN
+
+            IF ( self . userinfo [ cellrow ] <> "" ) THEN
+
+                array_insert_slice ( self . user_info, 1, cell_row + 1 )
+                self . insert_row ( cell_row + 1, 1, GRID_SEPARATOR_NONE )
+                self . set_position ( 1, cell_row + 1 )
+
+            ENDIF
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE insert_factor ( self )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE factor_grid, lastaxis_sel, current_row, setup_form
+
+    setup_form = self . parent_prompt
+
+    IF ( ( setup_form . active_prompt > 0 ) AND ( setup_form . active_prompt < 4 ) ) THEN
+
+        lastaxis_sel = self . parent_prompt . selected_column_axis
+        factor_grid = self . parent_prompt . prompt_objects [ lastaxis_sel ]
+        current_row = factor_grid . current_row
+
+        IF factor_grid . userinfo [ current_row ] <> "" THEN
+
+            array_insert_slice ( factor_grid . user_info, 1, current_row )
+
+            IF current_row = 1 THEN
+                factor_grid . insert_row ( current_row, 1, GRID_SEPARATOR_NONE )
+            ELSE
+                factor_grid . insert_row ( current_row - 1, 1, GRID_SEPARATOR_NONE )
+            ENDIF
+
+            factor_grid . set_position ( 1, current_row )
+
+        ENDIF
+
+        factor_grid . repaste ()
+
+    ENDIF
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE check_cell_contents ( self, VALUE old_col, VALUE old_row, new_col, new_row )
+{
+*
+* 
+*
+*******************************************************************************}
+
+DECLARE already_sel , oc , cell_val
+
+    already_sel = self . user_info
+    oc          = 0
+    cell_val    = self . user_info [ self . current_row ]
+
+    IF ( self . userinfo [ old_row ] = "" ) THEN
+
+        IF old_row <> self . cell_rows THEN
+
+            new_row = old_row
+            new_col = old_col
+
+        ENDIF
+    ELSE
+
+        WHILE ( oc < size_of_array ( already_sel ) ) DO
+
+            oc = oc + 1
+
+            IF ( already_sel [ oc ] = cell_val ) AND 
+               ( oc <> self . current_row         ) AND
+               ( self . current_row <> 0          ) THEN
+
+                new_row = old_row
+                new_col = old_col
+                already_sel [ new_row ] = ""
+
+                flash_gui ( GET_USER_MESSAGE( "MATRIX_SETUP_VAL_TITLE", 1 ),
+                            GET_USER_MESSAGE( "MATRIX_SETUP_FACTOR_ALREADY_CHOSEN", 1 ),
+                            1,
+                            "$STB_MAT_SETUP_AXIS_ERR" )
+
+                array_remove_slice ( already_sel, 1, new_row + 1 )
+                self . remove_row ( new_row + 1 )
+            ENDIF
+
+        ENDWHILE
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_factor ( self )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE factor_grid, lastaxis_sel, current_row, setup_form
+
+    setup_form = self . parent_prompt
+
+    IF ( ( setup_form . active_prompt > 0 ) AND ( setup_form . active_prompt < 4 ) ) THEN
+
+        lastaxis_sel = self . parent_prompt . selected_column_axis
+
+        factor_grid = self . parent_prompt . prompt_objects [ lastaxis_sel ]
+
+        IF ( ( factor_grid . cellrows > 0 ) AND ( NOT ( factor_grid . cellrows = factor_grid . current_row  ) ) ) THEN
+
+            IF factor_grid . current_row > 0 THEN
+
+                                           { currrent row must be stored as it updates }
+                                           { to the new row when a remove_row action is}
+                                           { preformed                                 }
+
+                current_row = factor_grid . current_row
+
+                factor_grid . remove_row ( current_row )
+                array_remove_slice ( factor_grid . user_info, 1, current_row )
+
+            ELSE
+
+                factor_grid . userinfo [ 1 ] = ""
+
+            ENDIF
+
+        ENDIF
+
+        factor_grid . repaste ()
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_setup_form_action_validation ( self )
+{
+*
+* Form validation routine
+*
+* Paramters : self , main_setup_form
+*
+*******************************************************************************}
+
+    add_new_factors ( self , 3, "C" )
+    add_new_factors ( self , 2, "T" )
+    add_new_factors ( self , 1, "Z" )
+
+    IF self . is_study( ) THEN
+
+        write_proto_pulls_to_study ( self               ,
+                                     self . created_from,
+                                     self . proto_ver   ,
+                                     self . pull_table  )
+
+    ELSE
+
+        add_new_cells ( self )
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_new_factors ( setup_form, VALUE factor_prompt, VALUE factor_type )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE factor_array, factor_counter, key_field, status, new_record,
+            header_ndx, header_id, factor_aka_name
+
+    key_field = ""
+
+    header_id = setup_form . identity
+
+    header_ndx = setup_form . header_type :  PAD ( header_id, " ", "20" )
+
+    header_ndx = header_ndx : PAD ( setup_form . version_number, " ", "10" )
+
+    factor_array = setup_form . prompt_objects [ factor_prompt ] . user_info
+
+    factor_counter = 0
+    WHILE ( factor_counter < size_of_array ( factor_array ) ) DO
+
+        factor_counter = factor_counter + 1
+
+        IF factor_array [ factor_counter ] <> "" THEN
+
+            key_field = header_ndx :
+                        PAD ( factor_array [ factor_counter ], " ", "10" ) :
+                        PAD ( factor_type                    , " ", "1"  )
+
+            new_record = EMPTY
+
+            object_create ( new_record, "STD_OBJECT_RECORD" )
+
+            new_record . new = TRUE
+            new_record . table = "PDS_AXIS_POINT"
+
+            object_add_table ( new_record, "PDS_AXIS_POINT" )
+
+            RESERVE ENTRY pds_axis_point IN OBJECT new_record, key_field, status
+
+            IF status = EMPTY THEN
+
+                object_assign_field ( new_record       ,
+                                      "pds_axis_point" ,
+                                      "axis_pos"       ,
+                                      factor_counter   )
+
+                IF factor_type = "T" THEN
+                
+                    factor_aka_name = SELECT time_factor . aka_name 
+                                          WHERE identity = factor_array [ factor_counter ]
+                                          
+                ELSEIF factor_type = "Z" THEN
+                
+                    factor_aka_name = SELECT layer_factor . aka_name
+                                          WHERE identity = factor_array [ factor_counter ]
+                                          
+                ELSEIF factor_type = "C" THEN
+                
+                    factor_aka_name = SELECT c_factor . aka_name
+                                          WHERE identity = factor_array [ factor_counter]
+                                          
+                ENDIF
+
+                object_assign_field ( new_record       ,
+                                      "pds_axis_point" ,
+                                      "aka_name"       ,
+                                      factor_aka_name  )
+
+            ELSE
+
+                database_kill_transaction ()
+                EXIT
+
+            ENDIF
+
+            setup_form . axis_table . add ( new_record )
+
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_new_cells ( main_setup )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE time_count, c_count, layer_count, cell_ndx, header_ndx,
+            pull_no, layer_array, time_array, condition_array
+
+    layer_array     = main_setup . prompt_objects [ 1 ] . user_info
+    time_array      = main_setup . prompt_objects [ 2 ] . user_info
+    condition_array = main_setup . prompt_objects [ 3 ] . user_info
+   
+    header_ndx = main_setup . identity
+
+    IF main_setup . is_protocol( ) THEN
+        header_ndx = header_ndx : JUSTIFY( PAD ( main_setup . version_number, " ", "10" ), "RIGHT" )
+    ENDIF
+
+    pull_no = main_setup . prompt_objects [ 6 ] . value
+
+
+    layer_count = 1
+    WHILE ( layer_count <= size_of_array ( layer_array ) ) DO
+
+        IF NOT BLANK( layer_array [ layer_count ] ) THEN
+
+            time_count = 1
+            WHILE ( time_count <= size_of_array ( time_array ) ) DO
+
+                IF NOT BLANK( time_array [ time_count ] ) THEN
+
+                    c_count = 1
+                    WHILE ( c_count <= size_of_array ( condition_array ) ) DO
+
+                        IF NOT BLANK( condition_array [ c_count ] ) THEN
+
+                            cell_ndx = header_ndx :
+                                       layer_array     [ layer_count ] :
+                                       time_array      [ time_count  ] :
+                                       condition_array [ c_count     ]
+
+                            add_new_pulls ( main_setup, cell_ndx, pull_no )
+                        
+                        ENDIF
+                        
+                        c_count = c_count + 1
+
+                    ENDWHILE
+
+                ENDIF
+
+                time_count = time_count + 1
+
+            ENDWHILE
+
+        ENDIF
+
+        layer_count = layer_count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_new_pulls ( pullinfo_form, cell_index, pullno )
+{
+*
+* add pulls to database object
+*
+* Parameters : pullinfo_form , setup object               
+*              cell_index    , index of the cell          
+*              pullno        , number of pulls in the cell
+*
+*
+*******************************************************************************}
+
+    DECLARE pullinfo_data, pull_counter, new_record, prompt_obj, prompt_tag,
+            pds_tablename, keyfield, status, prompt_counter, field_name
+
+    pullinfo_data = pullinfo_form . prompt_objects
+    pds_tablename = pullinfo_form . pull_table_name
+
+    pull_counter = 0
+    WHILE ( pull_counter < pull_no ) DO
+
+        pull_counter = pull_counter + 1
+        key_field = cell_index : PAD ( pull_counter, " ", "10"  )
+
+        new_record = EMPTY
+
+        object_create ( new_record, "STD_OBJECT_RECORD" )
+
+        new_record . new = TRUE
+        new_record . table = pds_tablename
+
+        object_add_table ( new_record, pds_tablename )
+
+        RESERVE ENTRY 'pds_tablename' IN OBJECT new_record, key_field, status
+
+        IF status = EMPTY THEN
+
+            prompt_counter = 1
+
+            WHILE ( prompt_counter <= size_of_array( pullinfo_form . data_prompt_tags ) ) DO
+
+                prompt_tag = pullinfo_form . data_prompt_tags[prompt_counter]
+                prompt_obj = pullinfo_data[prompt_tag]
+
+                field_name = prompt_obj . userinfo
+
+                IF valid_field( pds_tablename, field_name ) THEN
+
+                    ASSIGN 'pds_tablename' . 'field_name'
+                        IN OBJECT new_record = prompt_obj . value
+
+                ELSEIF field_name = "pull_qty_unit" THEN
+                
+                    ASSIGN 'pds_tablename' . pull_amount
+                        IN OBJECT new_record = prompt_obj . value
+                        
+                    ASSIGN 'pds_tablename' . pull_unit
+                        IN OBJECT new_record = prompt_obj . display_unit
+                        
+                ENDIF
+
+                prompt_counter = prompt_counter + 1
+                
+            ENDWHILE
+
+        ELSE
+
+            flash_message ( status, TRUE )
+
+            database_kill_transaction ()
+            EXIT
+
+        ENDIF
+
+        pullinfo_form . pull_table . add ( new_record )
+
+    ENDWHILE
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE load_factors (       setup_object,
+                       VALUE factor_type ,
+                             factor_array)
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE factor_id, counter
+
+    counter = 0
+    factor_id = SELECT pds_axis_point . axis_point_name
+                 WHERE header           = setup_object . created_from
+                   AND protocol_version = setup_object . proto_ver
+                   AND axis_type        = factor_type
+                   and matrix_type      = "P"
+              ORDER ON axis_pos
+
+    WHILE ( factor_id <> EMPTY ) DO
+
+        counter = counter + 1
+        factor_array [ counter ] = SELECT pds_axis_point . axis_point_name
+
+        NEXT pds_axis_point
+        factor_id = SELECT pds_axis_point . axis_point_name
+
+    ENDWHILE
+
+    RETURN ( counter )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_factor_select_clause (       select_array ,
+                                         factor_array ,
+                                   VALUE factor_field ,
+                                   VALUE add_zero     )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE count, done_push, need_or
+
+    done_push = FALSE
+    need_or   = FALSE
+
+    IF add_zero THEN
+
+        IF NOT done_push THEN
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY )
+            done_push = TRUE
+
+        ENDIF
+
+        IF need_or THEN
+        
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_OR, EMPTY, EMPTY )
+            
+        ENDIF
+        
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, factor_field, "__TIMEZERO" )
+        need_or = TRUE
+
+    ENDIF
+    
+
+    count = 1
+    WHILE NOT BLANK( factor_array [ count ] ) DO
+
+        IF NOT done_push THEN
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY )
+            done_push = TRUE
+
+        ENDIF
+
+        IF need_or THEN
+        
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_OR, EMPTY, EMPTY )
+            
+        ENDIF
+        
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, factor_field, factor_array [ count ] )
+        need_or = TRUE
+        
+        count = count + 1
+    ENDWHILE
+
+
+    IF done_push THEN
+
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_POP, EMPTY, EMPTY )
+        
+    ENDIF
+
+    RETURN( done_push )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE write_proto_pulls_to_study (       setup_form   ,
+                                     VALUE proto_id     ,
+                                     VALUE proto_ver    ,
+                                           pull_objects )
+{
+*
+* 
+*
+*******************************************************************************}
+
+    DECLARE proto_pulls, select_array, count, new_index, new_record, status,
+            layer_list, time_list, c_list
+
+    ARRAY select_array
+
+    layer_list = setup_form . prompt_objects [ 1 ] . userinfo
+    time_list  = setup_form . prompt_objects [ 2 ] . userinfo
+    c_list     = setup_form . prompt_objects [ 3 ] . userinfo
+
+    
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , proto_id  )
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , proto_ver )
+
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_AND , EMPTY, EMPTY )
+
+    IF add_factor_select_clause ( select_array, layer_list, "LAYER_FACTOR", FALSE ) THEN
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_AND , EMPTY, EMPTY )
+    ENDIF
+
+    IF add_factor_select_clause ( select_array, time_list, "TIME_FACTOR", TRUE ) THEN
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_AND , EMPTY, EMPTY )
+    ENDIF
+    
+    add_factor_select_clause ( select_array, c_list, "C_FACTOR", TRUE )
+
+    object_create ( proto_pulls, "STD_OBJECT_DATABASE" )
+    proto_pulls . initialise ( "PDS_PROTO_PULL" )
+    proto_pulls . select_for_update ( select_array )
+
+    count = 0
+    WHILE ( count < proto_pulls . size () ) DO
+
+        count = count + 1
+        
+        proto_pulls . set_by_index_number ( "KEY0", count )
+
+        new_index = PAD ( SELECT pds_study . identity, " ", "20" ) :
+                    object_select_field ( proto_pulls . current, "PDS_PROTO_PULL", "LAYER_FACTOR" ) :
+                    object_select_field ( proto_pulls . current, "PDS_PROTO_PULL", "TIME_FACTOR"  ) :
+                    object_select_field ( proto_pulls . current, "PDS_PROTO_PULL", "C_FACTOR"     ) :
+                    object_select_field ( proto_pulls . current, "PDS_PROTO_PULL", "PULL_NUM"     )
+
+        new_record = EMPTY
+
+        object_create ( new_record, "STD_OBJECT_RECORD" )
+
+        new_record . new = TRUE
+        new_record . table = "PDS_STUDY_PULL"
+
+        object_add_table ( new_record, "PDS_STUDY_PULL" )
+
+        RESERVE ENTRY PDS_STUDY_PULL IN OBJECT new_record, new_index, status
+
+        IF status = EMPTY THEN
+        
+             copy_non_key0_fields ( new_record, proto_pulls . current )
+
+        ELSE
+
+            flash_message ( status, TRUE )
+
+            database_kill_transaction ()
+            EXIT
+
+        ENDIF
+
+        pull_objects . add ( new_record )
+
+    ENDWHILE
+
+ENDROUTINE

@@ -1,0 +1,1273 @@
+SET NOTPROTECTED
+SET NAME"DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $LIB_UTILS
+
+CONSTANT C_COA_GROUP    = 1
+CONSTANT C_ANALYSIS     = 2
+CONSTANT C_NAME         = 3
+CONSTANT C_TEXT         = 4
+CONSTANT C_UNITS        = 5
+CONSTANT C_INTERNAL     = 6
+CONSTANT C_EXTERNAL     = 7
+CONSTANT C_YELLOW       = 8
+CONSTANT C_RED          = 9
+CONSTANT C_REGISTER     = 10
+CONSTANT C_SAP_CHARAC   = 11
+CONSTANT C_CALCULATION  = 12
+CONSTANT C_ENTERED_ON   = 13
+CONSTANT C_ID_NUMERIC   = 14
+CONSTANT C_INSP_TYPE    = 15
+CONSTANT C_PRODUCT      = 16
+CONSTANT C_PROD_VERSION = 17
+CONSTANT C_JOB_NAME     = 18
+
+CONSTANT L_LEVEL        = 1
+CONSTANT L_ANALYSIS     = 2
+CONSTANT L_NAME         = 3
+CONSTANT L_LIMITS       = 4
+CONSTANT L_MIN_LIM      = 5
+CONSTANT L_MAX_LIM      = 6
+CONSTANT L_PHRASE_LIM   = 7
+
+DECLARE the_job, context, int_oos, ext_oos, app_sta, w_internal, w_external, w_yellow, w_red, w_register, w_sap_charac
+
+w_internal   = 12
+w_external   = 12
+w_yellow     = 12
+w_red        = 12
+w_register   = 12
+w_sap_charac = 12
+
+int_oos = FALSE
+ext_oos = FALSE
+app_sta = "INT"
+
+WriteToLog("")
+
+{*************************************************************************
+*For testing
+*************************************************************************}
+IF GLOBAL("MODE") = "INTERACTIVE" THEN
+    FindJob()
+ELSE
+    the_job = SELECT job_header.job_name WHERE job_status = "A" ORDER ON date_authorised DESCENDING
+    WHILE the_job <> EMPTY
+        push_file_descriptor("JOB_HEADER", context)
+        VerifyJob(the_job)
+        pop_file_descriptor(context)
+    NEXT job_header
+        the_job = SELECT job_header.job_name 
+    ENDWHILE
+ENDIF
+
+EXIT
+{*************************************************************************
+END For testing
+*************************************************************************}
+
+GLOBAL ROUTINE FindJob
+{*************************************************************************
+* Purpose       : Main routine. Request a form and handles result.
+* Parameters    : None
+* Return Value  : None
+*************************************************************************}
+DECLARE form, the_job
+
+form = CreateJobForm ()
+
+REPEAT
+    form . start_prompt()
+    form . wait_prompt()
+    form . end_prompt()
+
+        IF form.get_last_key ( ) = "DO" THEN
+            the_job = form.prompt_objects[1].value
+            VerifyJob(the_job)
+        ENDIF
+UNTIL form.get_last_key ( ) = "EXIT"
+
+ENDROUTINE
+
+ROUTINE CreateJobForm
+{*************************************************************************
+* Purpose       : Creates a from and returns it.
+* Parameters    : None
+* Return Value  : Form as object
+*************************************************************************}
+DECLARE criteria_array, job_prompt, form
+
+ARRAY criteria_array
+
+    array_select_add(criteria_array, ARRAY_SELECT_PUSH, EMPTY,    EMPTY)
+    array_select_add(criteria_array, ARRAY_SELECT_EQ,   "JOB_STATUS", "C"  )
+    array_select_add(criteria_array, ARRAY_SELECT_OR,   EMPTY,    EMPTY)
+    array_select_add(criteria_array, ARRAY_SELECT_EQ,   "JOB_STATUS", "A"  )
+    array_select_add(criteria_array, ARRAY_SELECT_POP,  EMPTY,    EMPTY)
+
+    CREATE OBJECT PROMPT_CLASS_FORM,form
+
+    form . height = 3
+    form . width = 25
+    form . row = 2
+    form . column = 5
+    form . border = TRUE
+    form . header = "Find Job"
+    form . footer = "Press <Exit> to quit"
+
+    PROMPT OBJECT job_prompt
+        BROWSE ON JOB_HEADER . JOB_NAME
+        ON LINE 1 FROM 8
+        WITH (select_array = criteria_array)
+
+    form . add_prompt(job_prompt)
+    form . add_display("Job: ", 1, 1, PROMPT_RENDITION_BOLD)
+
+    RETURN (form)
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE VerifyJob(the_job)
+
+    WriteToLog(the_job:STRIP(SELECT job_header.description WHERE job_name = the_job))
+    window_set_status(the_job:(SELECT job_header.description WHERE job_name = the_job))
+
+    DECLARE product, prod_ver,batch, insp_lot, sql_lim, sql_res, res_array, i, j, coa_group, analysis, 
+            name, id_numeric, job_id, text, units, sap_charac, row_above, log_sap, log_ext, spec, 
+            spec_array, specs, c, form, sap_cert, cert_type, ret_val, phrase,
+            calculation, insp_type, entered_on, level, limits, min_lim, max_lim, phrase_lim,
+            res, option, oos, ana, comp, oos_array, l, found, limit, col, cur_col, last_col
+
+    ARRAY   res_array
+    ARRAY   spec_array
+    ARRAY   oos_array
+    
+        ret_val   = TRUE
+        product   = SELECT job_header.product_name WHERE job_name = the_job
+        prod_ver  = SELECT MIN sample.product_version WHERE job_name = the_job
+        batch     = SELECT job_header.batch_name
+        insp_lot  = SELECT job_header.inspection_lot
+        sap_cert  = SELECT mlp_header.sap_cert WHERE identity = product AND product_version = prod_ver
+        cert_type = SELECT mlp_header.cert_type
+        log_ext   = ""
+        log_sap   = ""
+        specs     = ""
+
+        window_set_status(the_job:" Collecting MLP Limits")
+        CREATE OBJECT"STD_DYNAMIC_SQL" , sql_lim
+        
+        sql_lim.add_to_sql_statement("SELECT l.LEVEL_ID, l.ANALYSIS_ID, l.COMPONENT_NAME, l.LIMITS,")
+        sql_lim.add_to_sql_statement("       l.MIN_LIMIT, l.MAX_LIMIT, l.TEXT_PHRASE               ")
+        sql_lim.add_to_sql_statement("FROM MLP_LIMITS_VIEW l                                       ")
+        sql_lim.add_to_sql_statement("WHERE (l.PRODUCT_ID = '":product:"'                          ")
+        sql_lim.add_to_sql_statement("   AND l.PRODUCT_VERSION = '":prod_ver:"')                   ")
+        sql_lim.add_to_sql_statement("ORDER BY l.LEVEL_ID DESC, l.ANALYSIS_ID, l.COMPONENT_NAME    ")
+
+        level       = sql_lim.add_select_field("MLP_LIMITS_VIEW","LEVEL_ID"         )
+        analysis    = sql_lim.add_select_field("MLP_LIMITS_VIEW","ANALYSIS_ID"      )
+        name        = sql_lim.add_select_field("MLP_LIMITS_VIEW","COMPONENT_NAME"   )
+        limits      = sql_lim.add_select_field("MLP_LIMITS_VIEW","LIMITS"           )
+        min_lim     = sql_lim.add_select_field("MLP_LIMITS_VIEW","MIN_LIMIT"        )
+        max_lim     = sql_lim.add_select_field("MLP_LIMITS_VIEW","MAX_LIMIT"        )
+        phrase_lim  = sql_lim.add_select_field("MLP_LIMITS_VIEW","TEXT_PHRASE"      )
+                                                
+        sql_lim.execute ()
+        
+        WHILE sql_lim.select(1) <> EMPTY
+            i = size_of_array(spec_array) + 1
+            spec_array[i, L_LEVEL     ] = sql_lim.select(level     ) 
+            spec_array[i, L_ANALYSIS  ] = sql_lim.select(analysis  ) 
+            spec_array[i, L_NAME      ] = sql_lim.select(name      ) 
+            spec_array[i, L_LIMITS    ] = sql_lim.select(limits    ) 
+            spec_array[i, L_MIN_LIM   ] = sql_lim.select(min_lim   ) 
+            spec_array[i, L_MAX_LIM   ] = sql_lim.select(max_lim   ) 
+            spec_array[i, L_PHRASE_LIM] = sql_lim.select(phrase_lim) 
+            sql_lim.next()
+        ENDWHILE
+        
+        {fm(GetARray(spec_array))}
+        
+        window_set_status(the_job:" Collecting results")
+        CREATE OBJECT"STD_DYNAMIC_SQL" , sql_res
+
+        sql_res.add_to_sql_statement("SELECT a.COA_GROUP, t.ANALYSIS, r.NAME, r.TEXT,               ")
+        sql_res.add_to_sql_statement("  r.UNITS, r.ENTERED_ON, c.SAP_CHARAC, c.CALCULATION,         ")
+        sql_res.add_to_sql_statement("  s.ID_NUMERIC, s.INSPECTION_TYPE, s.PRODUCT,                 ")
+        sql_res.add_to_sql_statement("  s.PRODUCT_VERSION, s.JOB_NAME                               ")
+        sql_res.add_to_sql_statement("FROM ALL_JOB_HEADER j                                         ")
+        sql_res.add_to_sql_statement("INNER JOIN ALL_SAMPLE s                                       ")
+        sql_res.add_to_sql_statement("    ON j.PRODUCT_NAME = s.PRODUCT                             ")
+        sql_res.add_to_sql_statement("    AND j.BATCH_NAME = s.BATCH_NAME                           ")
+        sql_res.add_to_sql_statement("INNER JOIN ALL_TEST t                                         ")
+        sql_res.add_to_sql_statement("    ON s.ID_NUMERIC = t.SAMPLE                                ")
+        sql_res.add_to_sql_statement("INNER JOIN ALL_RESULT r                                       ")
+        sql_res.add_to_sql_statement("    ON t.TEST_NUMBER = r.TEST_NUMBER                          ")
+        sql_res.add_to_sql_statement("INNER JOIN VERSIONED_ANALYSIS a                               ")
+        sql_res.add_to_sql_statement("    ON t.ANALYSIS = a.[IDENTITY]                              ")
+        sql_res.add_to_sql_statement("    AND t.ANALYSIS_VERSION = a.ANALYSIS_VERSION               ")
+        sql_res.add_to_sql_statement("INNER JOIN VERSIONED_COMPONENT c                              ")
+        sql_res.add_to_sql_statement("    ON a.[IDENTITY] = c.ANALYSIS                              ")
+        sql_res.add_to_sql_statement("    AND a.ANALYSIS_VERSION = c.ANALYSIS_VERSION               ")
+        sql_res.add_to_sql_statement("    AND r.NAME = c.NAME                                       ")
+        sql_res.add_to_sql_statement("WHERE j.JOB_NAME = '":the_job:"'                              ")
+        sql_res.add_to_sql_statement("  AND t.STATUS IN ('C','A')                                   ")
+        sql_res.add_to_sql_statement("ORDER BY a.COA_GROUP, t.ANALYSIS, r.ORDER_NUMBER, r.ENTERED_ON")
+                                  
+        coa_group   = sql_res.add_select_field("VERSIONED_ANALYSIS","COA_GROUP"     )
+        analysis    = sql_res.add_select_field("TEST","ANALYSIS"                    )
+        name        = sql_res.add_select_field("RESULT","NAME"                      )
+        text        = sql_res.add_select_field("RESULT","TEXT"                      )
+        units       = sql_res.add_select_field("RESULT","UNITS"                     )
+        entered_on  = sql_res.add_select_field("RESULT" ,"ENTERED_ON"               )
+        sap_charac  = sql_res.add_select_field("VERSIONED_COMPONENT"  ,"SAP_CHARAC" )
+        calculation = sql_res.add_select_field("VERSIONED_COMPONENT","CALCULATION"  )
+        id_numeric  = sql_res.add_select_field("SAMPLE"  ,"ID_NUMERIC"              )
+        insp_type   = sql_res.add_select_field("SAMPLE"  ,"INSPECTION_TYPE"         )
+        product     = sql_res.add_select_field("SAMPLE"  ,"PRODUCT"                 )
+        prod_ver    = sql_res.add_select_field("SAMPLE"  ,"PRODUCT_VERSION"         )
+        job_id      = sql_res.add_select_field("SAMPLE"  ,"JOB_NAME"                )
+
+        sql_res.execute ()
+
+        i = 0
+
+        WHILE sql_res.select(1) <> EMPTY
+            IF (res_array[i, C_COA_GROUP  ] <> sql_res.select(coa_group )) OR
+               (res_array[i, C_ANALYSIS   ] <> sql_res.select(analysis  )) OR
+               (res_array[i, C_NAME       ] <> sql_res.select(name      )) OR
+               (res_array[i, C_TEXT       ] <> sql_res.select(text      )) OR
+               (res_array[i, C_UNITS      ] <> sql_res.select(units     )) THEN
+                i = size_of_array(res_array) + 1
+            ENDIF
+            res_array[i, C_COA_GROUP   ] = sql_res.select(coa_group      ) {COA_GROUP   }
+            res_array[i, C_ANALYSIS    ] = sql_res.select(analysis       ) {ANALYSIS    }
+            res_array[i, C_NAME        ] = sql_res.select(name           ) {NAME        }
+            res_array[i, C_TEXT        ] = sql_res.select(text           ) {TEXT        }
+            res_array[i, C_UNITS       ] = sql_res.select(units          ) {UNITS       }
+            res_array[i, C_ENTERED_ON  ] = sql_res.select(entered_on     ) {ENTERED_ON  }
+            res_array[i, C_SAP_CHARAC  ] = sql_res.select(sap_charac     ) {SAP_CHARAC  }
+            res_array[i, C_CALCULATION ] = sql_res.select(calculation    ) {CALCULATION }
+            res_array[i, C_ID_NUMERIC  ] = sql_res.select(id_numeric     ) {ID_NUMERIC  }
+            res_array[i, C_INSP_TYPE   ] = sql_res.select(insp_type      ) {INSP_TYPE   }
+            res_array[i, C_PRODUCT     ] = sql_res.select(product        ) {PRODUCT     }
+            res_array[i, C_PROD_VERSION] = sql_res.select(prod_ver       ) {PROD_VERSION}
+            res_array[i, C_JOB_NAME    ] = sql_res.select(job_id         ) {JOB_NAME    }
+            sql_res.next ()                   
+        ENDWHILE
+        
+        SET DATE FORMAT "DZ-MON-YYYY"
+
+        product  = SELECT job_header.product_name WHERE job_name = the_job
+        prod_ver = SELECT MIN sample.product_version WHERE job_name = the_job
+        spec     = SELECT DISTINCT mlp_limits_view.level_id
+                   WHERE product_id = product
+                     AND product_version = prod_ver
+                     AND level_id <> "NEWANALYSE"
+        WHILE spec <> EMPTY         
+            oos_array[size_of_array(oos_array) + 1, 1] = spec
+            IF specs = "" THEN
+                specs = STRIP(spec)
+            ELSE    
+                specs = specs:", ":STRIP(spec)
+            ENDIF
+            window_set_status(the_job:STRIP(SELECT job_header.description WHERE job_name = the_job):" ":specs)
+        NEXT mlp_limits_view
+            spec = SELECT mlp_limits_view.level_id
+        ENDWHILE
+
+        i = 1
+        WHILE i <= size_of_array(res_array)
+            analysis = STRIP(res_array[i, C_ANALYSIS   ])
+            name     = STRIP(res_array[i, C_NAME       ])
+            res      = STRIP(res_array[i, C_TEXT       ])
+            option   = STRIP(res_array[i, C_CALCULATION])
+            found    = FALSE
+            
+            j = 1
+            WHILE j <= size_of_array(spec_array)
+                oos    = FALSE
+                ana    = STRIP(spec_array[j, L_ANALYSIS  ]) 
+                comp   = STRIP(spec_array[j, L_NAME      ])
+                spec   = STRIP(spec_array[j, L_LIMITS    ])
+                level  = STRIP(spec_array[j, L_LEVEL     ])
+                phrase = STRIP(spec_array[j, L_PHRASE_LIM])
+                IF ((ana = analysis) OR (ana = "$NULL")) AND
+                   (name = comp) THEN
+                    found = TRUE
+                    window_set_status("Evaluating: ":analysis:", ":name:", ":res:", ":STRIP(res_array[i, C_CALCULATION]):", ":spec:", ":level)
+                    oos = CheckSpec(res, spec, option, phrase)
+                    l = 0 
+                    IF oos THEN
+                        WHILE l <= size_of_array(oos_array)
+                            IF level = oos_array[l, 1] THEN
+                                IF (oos_array[l, 2] = EMPTY) THEN
+                                    oos_array[l, 2] = analysis:"(":comp:")"
+                                ELSE
+                                    oos_array[l, 2] = STRIP(oos_array[l, 2]):", ":analysis:"(":comp:")"
+                                ENDIF
+                            ENDIF
+                            l = l + 1
+                        ENDWHILE
+                    ENDIF
+                ENDIF   
+                j = j + 1
+            ENDWHILE
+            IF found THEN
+                i = i + 1
+            ELSE
+                array_remove_slice(res_array, 1, i)
+            ENDIF
+        ENDWHILE
+
+        i = 1
+        WHILE i <= size_of_array(res_array)
+            limit = SELECT mlp_limits_view.text_phrase
+                    WHERE product_id      = res_array[i, C_PRODUCT     ]
+                      AND product_version = res_array[i, C_PROD_VERSION]
+                      AND component_name  = res_array[i, C_NAME        ]
+                      AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                        OR analysis_id    = "$NULL" )
+                      AND level_id        = "INTERNAL"
+            IF BLANK(limit) THEN
+                limit = SELECT mlp_limits_view.limits
+                        WHERE product_id      = res_array[i, C_PRODUCT     ]
+                          AND product_version = res_array[i, C_PROD_VERSION]
+                          AND component_name  = res_array[i, C_NAME        ]
+                          AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                            OR analysis_id    = "$NULL" )
+                          AND level_id        = "INTERNAL"
+            ENDIF
+            res_array[i, C_INTERNAL   ]   = limit
+            limit = SELECT mlp_limits_view.text_phrase
+                    WHERE product_id      = res_array[i, C_PRODUCT     ]
+                      AND product_version = res_array[i, C_PROD_VERSION]
+                      AND component_name  = res_array[i, C_NAME        ]
+                      AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                        OR analysis_id    = "$NULL" )
+                      AND level_id        = "EXTERNAL"
+            IF BLANK(limit) THEN
+                limit = SELECT mlp_limits_view.limits
+                        WHERE product_id      = res_array[i, C_PRODUCT     ]
+                          AND product_version = res_array[i, C_PROD_VERSION]
+                          AND component_name  = res_array[i, C_NAME        ]
+                          AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                            OR analysis_id    = "$NULL" )
+                          AND level_id        = "EXTERNAL"
+            ENDIF
+            res_array[i, C_EXTERNAL   ]   = limit
+            limit = SELECT mlp_limits_view.text_phrase
+                    WHERE product_id      = res_array[i, C_PRODUCT     ]
+                      AND product_version = res_array[i, C_PROD_VERSION]
+                      AND component_name  = res_array[i, C_NAME        ]
+                      AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                        OR analysis_id    = "$NULL" )
+                      AND level_id        = "YELLOW"
+            IF BLANK(limit) THEN
+                limit = SELECT mlp_limits_view.limits
+                        WHERE product_id      = res_array[i, C_PRODUCT     ]
+                          AND product_version = res_array[i, C_PROD_VERSION]
+                          AND component_name  = res_array[i, C_NAME        ]
+                          AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                            OR analysis_id    = "$NULL" )
+                          AND level_id        = "YELLOW"
+            ENDIF
+            res_array[i, C_YELLOW     ]   = limit
+            limit = SELECT mlp_limits_view.text_phrase
+                    WHERE product_id      = res_array[i, C_PRODUCT     ]
+                      AND product_version = res_array[i, C_PROD_VERSION]
+                      AND component_name  = res_array[i, C_NAME        ]
+                      AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                        OR analysis_id    = "$NULL" )
+                      AND level_id        = "RED"
+            IF BLANK(limit) THEN
+                limit = SELECT mlp_limits_view.limits
+                        WHERE product_id      = res_array[i, C_PRODUCT     ]
+                          AND product_version = res_array[i, C_PROD_VERSION]
+                          AND component_name  = res_array[i, C_NAME        ]
+                          AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                            OR analysis_id    = "$NULL" )
+                          AND level_id        = "RED"
+            ENDIF
+            res_array[i, C_RED        ]   = limit
+            limit = SELECT mlp_limits_view.text_phrase
+                    WHERE product_id      = res_array[i, C_PRODUCT     ]
+                      AND product_version = res_array[i, C_PROD_VERSION]
+                      AND component_name  = res_array[i, C_NAME        ]
+                      AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                        OR analysis_id    = "$NULL" )
+                      AND level_id        = "REGISTER"
+            IF BLANK(limit) THEN
+                limit = SELECT mlp_limits_view.limits
+                        WHERE product_id      = res_array[i, C_PRODUCT     ]
+                          AND product_version = res_array[i, C_PROD_VERSION]
+                          AND component_name  = res_array[i, C_NAME        ]
+                          AND (analysis_id    = res_array[i, C_ANALYSIS    ]
+                            OR analysis_id    = "$NULL" )
+                          AND level_id        = "REGISTER"
+            ENDIF
+            res_array[i, C_REGISTER   ]   = limit
+            WriteToLog(STRIP(res_array[i, C_PRODUCT     ]):"/":STRIP(res_array[i, C_PROD_VERSION]):": REGISTER, ":STRIP(res_array[i, C_ANALYSIS    ]):" ":STRIP(res_array[i, C_NAME        ]):" - ":STRIP(limit))
+
+            IF (BLANK(res_array[i, C_SAP_CHARAC  ])) AND
+               (BLANK(res_array[i, C_INTERNAL    ])) AND
+               (BLANK(res_array[i, C_EXTERNAL    ])) AND
+               (BLANK(res_array[i, C_YELLOW      ])) AND
+               (BLANK(res_array[i, C_RED         ])) AND
+               (BLANK(res_array[i, C_REGISTER    ])) THEN
+                array_remove_slice(res_array, 1, i)
+            ELSE
+                IF res_array[i, C_INSP_TYPE   ] = "09" THEN
+                    entered_on = STRING(DATE(res_array[i, C_ENTERED_ON  ]))
+                    res_array[i, C_NAME] = STRIP(res_array[i, C_NAME]):" (":entered_on:")"
+                ENDIF
+                i = i + 1
+            ENDIF
+        ENDWHILE
+
+        WriteToLog(GetArray(res_array))
+ 
+        RESTORE DATE FORMAT
+
+        i = 1
+        WHILE i <= size_of_array(res_array)
+            IF LEFTSTRING(res_array[i, C_INTERNAL], 5) = "-----" THEN
+                res_array[i, C_INTERNAL] = ""
+            ENDIF
+            IF LEFTSTRING(res_array[i, C_EXTERNAL], 5) = "-----" THEN
+                res_array[i, C_EXTERNAL] = ""
+            ENDIF
+            IF LEFTSTRING(res_array[i, C_YELLOW  ], 5) = "-----" THEN
+                res_array[i, C_YELLOW]   = ""
+            ENDIF
+            IF LEFTSTRING(res_array[i, C_RED     ], 5) = "-----" THEN
+                res_array[i, C_RED]      = ""
+            ENDIF
+            IF LEFTSTRING(res_array[i, C_REGISTER], 5) = "-----" THEN
+                res_array[i, C_REGISTER] = ""
+            ENDIF
+            i = i + 1
+        ENDWHILE
+
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_INTERNAL] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_internal = 0
+        ENDIF
+        
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_EXTERNAL] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_external = 0
+        ENDIF
+        
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_YELLOW] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_yellow = 0
+        ENDIF
+        
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_RED] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_red = 0
+        ENDIF
+        
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_REGISTER] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_register = 0
+        ENDIF
+        
+        {Check if spec exist}
+        i = 1
+        found = FALSE
+        WHILE (i <= size_of_array(res_array)) AND NOT(found)
+            IF res_array[i, C_SAP_CHARAC] <> "" THEN
+                found = TRUE
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        
+        {If no spec, then hide column}
+        IF NOT(found) THEN
+            w_sap_charac = 0
+        ENDIF
+        
+        IF (INDEX(cert_type, "NONE") = 0) AND
+           (INDEX(sap_cert , "NONE") = 0) THEN
+            window_set_status(the_job:"Checking duplicate results")
+
+            { *** Mark duplicate CoA components *** }
+            i = 1
+            WHILE i <= size_of_array(res_array)
+                j = size_of_array(res_array)
+                WHILE j > i
+                    IF (res_array[i, C_NAME] = res_array[j, C_NAME]) AND
+                       NOT(BLANK(res_array[i, C_EXTERNAL])) THEN
+                        IF j = i + 1 THEN
+                            IF INDEX(log_ext, STRIP(res_array[i, C_NAME])) = 0 THEN
+                                log_ext = log_ext:STRIP(res_array[i, C_NAME]):", "
+                            ENDIF
+                        ENDIF
+                    ENDIF
+                    j = j - 1
+                ENDWHILE
+                i = i + 1
+            ENDWHILE
+
+            IF log_ext <> "" THEN
+                log_ext = LEFTSTRING(log_ext, LENGTH(log_ext) - 1)
+                log_ext = "OBS! - Multiple results for CoA: ":log_ext
+                ret_val = FALSE
+            ENDIF
+        ENDIF
+
+        IF NOT(BLANK(insp_lot)) THEN
+            window_set_status(the_job:"Verifying SAP Export")
+            i = 1
+            WHILE i <= size_of_array(res_array)
+                IF  NOT(BLANK(res_array[i, C_SAP_CHARAC])) THEN
+                    c = SELECT COUNT EXP_RES_SAP_VIEW
+                        WHERE product = product
+                          AND batch_name = batch
+                          AND inspection_lot = insp_lot 
+                          AND sap_charac = res_array[i, C_SAP_CHARAC]
+                    IF (c > 1) AND (INDEX(log_sap, STRIP(res_array[i, C_SAP_CHARAC])) = 0) THEN
+                        log_sap = log_sap:STRIP(res_array[i, C_SAP_CHARAC]){:" (x":STRIP(c) }:", "
+                    ENDIF
+                ENDIF
+                i = i + 1
+            ENDWHILE
+
+            IF log_sap <> "" THEN
+                log_sap = LEFTSTRING(log_sap, LENGTH(log_sap) - 1)
+                log_sap = "OBS! - Multiple results for SAP: ":log_sap
+                ret_val = FALSE
+            ENDIF
+        ENDIF
+
+        IF ret_val THEN
+            window_set_status(app_sta:" ":the_job:" OK")
+        ELSE
+            window_set_status(app_sta:" ":the_job:" Failed")
+        ENDIF
+
+        { *** Move columns left, to eliminate columns without spec. limits *** }
+
+        {WriteToLog(GetArray(res_array)) }
+
+        col      = C_INTERNAL
+        cur_col  = C_INTERNAL
+        last_col = C_SAP_CHARAC
+        WHILE col <= last_col
+            IF w_internal = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                    cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_internal":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            IF w_external = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_external":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            IF w_yellow = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_yellow":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            IF w_red = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_red":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            IF w_register = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_register":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            IF w_sap_charac = 0
+                cur_col = col
+                WHILE cur_col <= last_col
+                    i = 1
+                    WHILE i <= size_of_array(res_array)
+                        res_array[i, cur_col] = res_array[i, cur_col + 1]
+                        res_array[i, cur_col + 1] = ""
+                        i = i + 1
+                    ENDWHILE
+                cur_col = cur_col + 1
+                ENDWHILE
+                last_col = last_col - 1
+                {WriteToLog("w_sap_charac":GetArray(res_array)) }
+            ELSE
+                col = col + 1
+            ENDIF
+            
+            col = col + 1
+
+        ENDWHILE
+
+
+        { *** Clear text in cell if equal to cell above *** }
+
+        IF size_of_array(res_array) > 0 THEN
+            c = 3
+            WHILE c > 0
+                i = 2
+                row_above = res_array[1, c]
+                WHILE i <= size_of_array(res_array)
+                    IF (res_array[i, c] = res_array[i - 1, c]) OR
+                       (res_array[i, c] = row_above) THEN
+                        IF c = 3 THEN
+                            IF (res_array[i, C_ANALYSIS   ] = res_array[i - 1, C_ANALYSIS   ]) THEN
+                                res_array[i, c] = ""
+                            ENDIF
+                        ELSE
+                            res_array[i, c] = ""
+                        ENDIF
+                    ELSE
+                        row_above = res_array[i, c]
+                    ENDIF
+                    i = i + 1
+                ENDWHILE
+                c = c - 1
+            ENDWHILE
+            create_form(form, the_job, log_sap, log_ext, res_array, oos_array)
+            IF (form.last_key = "DO") OR
+               (form.last_key = 6) THEN 
+                ret_val = TRUE
+                window_set_status("")
+            ELSEIF (form.last_key = "EXIT") OR
+                   (form.last_key = 5)
+                ret_val = FALSE
+                window_set_status("")
+                EXIT
+            ELSE
+                fm(form.last_key)
+            ENDIF
+        ELSE
+            log_sap = log_ext:ASCII(10):log_sap
+            IF NOT(BLANK(log_sap)) THEN
+                fm(log_sap)
+            ENDIF
+            ret_val = FALSE
+        ENDIF
+
+        IF int_oos THEN
+            app_sta = "EXT"
+        ELSEIF ext_oos THEN
+            app_sta = "OOS"
+        ELSE
+        ENDIF
+
+        RETURN(ret_val)
+
+ENDROUTINE
+
+{***********************************************
+Routine: create_form
+Purpose: Create incidents form
+Parameters: Job string Value for header
+***********************************************}
+ROUTINE create_form(form, the_job, log_sap, log_ext, res_array, oos_array)
+DECLARE levels, mps, grid, i, row, title
+    
+
+    {fm("OOS_ARRAY":GetArray(oos_array))}
+    
+    levels = ""
+    i = 1
+    WHILE i <= size_of_array(oos_array)
+        levels = levels:STRIP(oos_array[i, 1]):", "
+        i = i + 1
+    ENDWHILE
+    
+    i = 1
+    IF     INDEX("INTERNAL, EXTERNAL", STRIP(oos_array[i, 1])) > 0 THEN
+        mps = "INTERNAL"
+        i = 1
+        WHILE i <= size_of_array(oos_array)
+            IF      (oos_array[i, 1] = "INTERNAL") AND (oos_array[i, 2] <> EMPTY) THEN
+                mps = "EXTERNAL"
+                i = size_of_array(oos_array)
+            ELSEIF  (oos_array[i, 1] = "EXTERNAL") AND (oos_array[i, 2] <> EMPTY) THEN
+                mps = ""
+                i = size_of_array(oos_array)
+            ENDIF
+            i = i + 1
+        ENDWHILE
+        IF INDEX(levels, mps) = 0 THEN
+            mps = ""
+        ENDIF
+    ELSEIF INDEX("YELLOW, RED", STRIP(oos_array[i, 1])) > 0 THEN
+        i = size_of_array(oos_array)
+        WHILE i >= 1
+            IF      (oos_array[i, 1] = "RED") AND (oos_array[i, 2] <> EMPTY) THEN
+                mps = "RED"
+                i = 0
+            ELSEIF  (oos_array[i, 1] = "YELLOW") AND (oos_array[i, 2] <> EMPTY) THEN
+                mps = "YELLOW" 
+                i = 0
+            ELSE
+                mps = "GREEN"
+            ENDIF
+            i = i - 1
+        ENDWHILE
+    ELSE
+        mps = ""
+    ENDIF
+
+CREATE OBJECT PROMPT_CLASS_FORM, form
+
+    form.header    = "Results with specifications or export to SAP"
+    form.column    = 5
+    form.row       = 10
+    form.height    = 10
+    form.width     = 100
+    form.return_behaviour = FORM_RETURN_LEAVE
+
+    row = 1
+    
+    title = the_job:STRIP(SELECT job_header.description WHERE job_name = the_job)
+    form.add_display(title, 2, row, PROMPT_RENDITION_BOLD)
+    row = row + 1
+
+    i = 1
+    WHILE i <= size_of_array(oos_array)
+        IF oos_array[i, 2] = EMPTY THEN
+            array_remove_slice(oos_array, 1, i)
+        ELSE
+            form.add_display("Out of Spec, ":STRIP(oos_array[i, 1]):": ":STRIP(oos_array[i, 2]), 2, row, PROMPT_RENDITION_BLINKING)
+            row = row + 1
+            form.add_display(STRIP(oos_array[i, 1]):": ",  2, row, PROMPT_RENDITION_BLINKING)
+            form.add_display(STRIP(oos_array[i, 2]):": ", 20, row, PROMPT_RENDITION_BLINKING)
+            row = row + 1
+            i = i + 1
+        ENDIF
+    ENDWHILE
+    
+    IF log_sap <> "" THEN
+        form.add_display(log_sap, 2, row, PROMPT_RENDITION_BLINKING)
+        row = row + 1
+    ENDIF
+    
+    IF log_ext <> "" THEN
+        form.add_display(log_ext, 2, row, PROMPT_RENDITION_BLINKING)
+        row = row + 1
+    ENDIF
+    
+    IF  mps <> ""
+        IF mps = "INTERNAL" THEN
+            mps = "INT"
+        ELSEIF mps = "EXTERNAL" THEN
+            mps = "EXT"
+        ENDIF
+        mps = "Suggested MPS Status: ":mps
+        form.add_display(mps, 2, row, PROMPT_RENDITION_BOLD)
+        row = row + 1
+    ELSE
+        mps = "Set MPS Status manually"
+        form.add_display(mps, 2, row, PROMPT_RENDITION_BLINKING)
+        row = row + 1
+    ENDIF
+    
+    grid = create_grid(form, res_array, row)
+
+    form.start_prompt()
+
+    i = 1
+    WHILE i <= size_of_array(res_array)
+        grid.insert_row (i ,1 ,GRID_SEPARATOR_NONE )
+        i = i + 1
+    ENDWHILE    
+ 
+    form.wait_prompt()
+    form.end_prompt()
+
+ENDROUTINE
+
+{*************************************************
+Routine: create_grid
+Purpose: Create grid
+Parameters: form    object  form to paste grid to
+**************************************************}
+ROUTINE create_grid (form, res_array, row)
+DECLARE grid, {grid_tag, } col
+
+    CREATE OBJECT PROMPT_CLASS_GRID, grid
+
+    ARRAY grid.userinfo ARRAYSIZE (0,10)
+    grid.userinfo = res_array
+    
+    grid.row                    = row + 1
+    grid.column                 = 2
+    grid.width                  = form.width  - 2
+    grid.height                 = form.height - row
+    grid.cell_rows              = 0
+    grid.cell_columns           = 11
+    grid.title_size_top = 1
+    grid.title_rendition_top = PROMPT_RENDITION_BOLD
+    grid.title_separator_top     = GRID_SEPARATOR_BOTH
+
+    grid.title_text_top   [ C_COA_GROUP   , 1] = "COA_GROUP     "
+    grid.column_size      [ C_COA_GROUP   ]    = 12
+    grid.column_separator [ C_COA_GROUP   ]    = GRID_SEPARATOR_BOTH
+
+    grid.title_text_top   [ C_ANALYSIS    , 1] = "ANALYSIS      "
+    grid.column_size      [ C_ANALYSIS    ]    = 12  
+    grid.column_separator [ C_ANALYSIS    ]    = GRID_SEPARATOR_BOTH
+
+    grid.title_text_top   [ C_NAME         , 1] = "COMPONENT_NAME"
+    grid.column_size      [ C_NAME         ]    = 30
+    grid.column_separator [ C_NAME         ]    = GRID_SEPARATOR_BOTH
+
+    grid.title_text_top   [ C_TEXT         , 1] = "TEXT          "
+    grid.column_size      [ C_TEXT         ]    = 15
+    grid.column_separator [ C_TEXT         ]    = GRID_SEPARATOR_BOTH
+
+    grid.title_text_top   [ C_UNITS        , 1] = "UNITS         "
+    grid.column_size      [ C_UNITS        ]    =  8
+    grid.column_separator [ C_UNITS        ]    = GRID_SEPARATOR_BOTH
+
+    col = C_INTERNAL    
+    IF w_internal = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "INTERNAL      "
+        grid.column_size      [ col   ] = w_internal
+        grid.column_separator [ col   ] = GRID_SEPARATOR_BOTH
+        col = col + 1
+    ENDIF
+    
+    IF w_external = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "EXTERNAL      "
+        grid.column_size      [ col   ] = w_external
+        grid.column_separator [ col   ] = GRID_SEPARATOR_BOTH
+        col = col + 1
+    ENDIF
+    
+    IF w_yellow = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "YELLOW        "
+        grid.column_size      [ col   ] = w_yellow
+        grid.column_separator [ col   ] = GRID_SEPARATOR_BOTH
+        col = col + 1
+    ENDIF
+    
+    IF w_red = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "RED           "
+        grid.column_size      [ col   ] = w_red
+        grid.column_separator [ col   ] = GRID_SEPARATOR_BOTH
+        col = col + 1
+    ENDIF
+    
+    IF w_register = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "REGISTER      "
+        grid.column_size      [ col   ] = w_register
+        grid.column_separator [ col   ] = GRID_SEPARATOR_BOTH
+        col = col + 1
+    ENDIF
+    
+    IF w_sap_charac = 0 THEN
+        grid.cell_columns = grid.cell_columns - 1
+    ELSE
+        grid.title_text_top   [ col, 1] = "SAP Export    "
+        grid.column_size      [ col   ]    = w_sap_charac
+        grid.column_separator [ col   ]    = GRID_SEPARATOR_BOTH
+    ENDIF
+
+    grid.display_cell_routine   = "DISPLAY_GRID_CELL"
+    grid.prompt_cell_routine    = "PROMPT_GRID_CELL"
+    grid.mouse_click_routine    = "GRID_MOUSE_CLICKED"
+{**************************************************************************************************************
+    grid.enter_cell_routine     = "ENTER_CELL_ROUTINE"
+***************************************************************************************************************}
+    grid.fixed_columns_left     = 1
+    grid.return_behaviour       = GRID_RETURN_FOLLOW
+    {grid_tag                    = } form.add_prompt(grid)
+    
+    RETURN (grid)
+
+ENDROUTINE
+
+{***********************************************
+Routine: grid_mouse_clicked
+Purpose: Standard routine to display grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE grid_mouse_clicked ( self, 
+                VALUE  cell_column, 
+                VALUE  cell_row )
+
+DECLARE res, spec, option, oos, a_row, analysis, name, phrase, valid , x
+
+IF (NOT(BLANK(self.user_info[cell_row, cell_column]))) THEN
+    IF (INDEX("INTERNAL, EXTERNAL, YELLOW, RED, REGISTER", STRIP(self.title_text_top[cell_column, 1])) > 0) THEN
+
+        res      = self.user_info[cell_row, C_TEXT       ]
+        spec     = self.user_info[cell_row, cell_column]
+        option   = self.user_info[cell_row, C_CALCULATION]
+        a_row    = cell_row
+        WHILE BLANK(self.user_info[a_row, C_ANALYSIS]) AND (a_row > 1)
+            a_row = a_row - 1
+        ENDWHILE
+        analysis = self.user_info[a_row, C_ANALYSIS]
+        a_row    = cell_row
+        WHILE BLANK(self.user_info[a_row, C_NAME]) AND (a_row > 1)
+            a_row = a_row - 1
+        ENDWHILE
+        name     = self.user_info[a_row, C_NAME]
+        phrase   = SELECT mlp_limits_view.text_phrase 
+                   WHERE product_id      = self.user_info[cell_row, C_PRODUCT      ]
+                     AND product_version = self.user_info[cell_row, C_PROD_VERSION ]
+                     AND component_name  = name
+                     AND (analysis_id    = analysis
+                       OR analysis_id    = "$NULL")
+        
+        valid = ""
+        x = SELECT limit_phrase_entry.result_value
+            WHERE limit_phrase = self.user_info[cell_row, cell_column]
+              AND comparison = "P"
+        WHILE x <> EMPTY
+            valid = valid:x:ASCII(10)
+        NEXT limit_phrase_entry
+            x = SELECT limit_phrase_entry.result_value
+        ENDWHILE
+        
+        IF valid <> "" THEN
+            fm("Passing values for limit phrase '":STRIP(self.user_info[cell_row, cell_column]):"'":ASCII(10):ASCII(10):
+                valid)
+        ENDIF
+        
+        window_set_status("Display: ":analysis:", ":name:", ":res:", ":option:", ":spec:", ":STRIP(self.title_text_top[cell_column, 1]))
+        oos = CheckSpec(res, spec, option, phrase)
+
+        IF oos THEN
+            IF cell_column = C_INTERNAL THEN
+                int_oos = TRUE
+            ELSEIF cell_column = C_EXTERNAL THEN
+                ext_oos = TRUE
+            ENDIF
+        ENDIF
+
+        DISPLAY self.user_info [cell_row, cell_column]
+            AT cell_column, cell_row
+            BLINKING = oos
+            BOLD = TRUE
+    ELSE
+        DISPLAY self.user_info [cell_row, cell_column]
+            AT cell_column, cell_row
+    ENDIF
+ENDIF
+
+ENDROUTINE
+
+{***********************************************
+Routine: display_grid_cell
+Purpose: Standard routine to display grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE display_grid_cell(self ,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                          window ,
+                    VALUE column ,
+                    VALUE row ,
+                    VALUE cell_width ,
+                    VALUE cell_height )
+
+DECLARE res, spec, option, oos, a_row, analysis, name, phrase
+
+{IF ((cell_column = 6) OR (cell_column = 7)) AND  }
+
+IF (INDEX("INTERNAL, EXTERNAL, YELLOW, RED, REGISTER", STRIP(self.title_text_top[cell_column, 1])) > 0) AND 
+    (NOT(BLANK(self.user_info[cell_row, cell_column]))) THEN
+    
+    res      = self.user_info[cell_row, C_TEXT       ]
+    spec     = self.user_info[cell_row, cell_column]
+    option   = self.user_info[cell_row, C_CALCULATION]
+        a_row    = cell_row
+        WHILE BLANK(self.user_info[a_row, C_ANALYSIS]) AND (a_row > 1)
+            a_row = a_row - 1
+        ENDWHILE
+        analysis = self.user_info[a_row, C_ANALYSIS]
+        a_row    = cell_row
+        WHILE BLANK(self.user_info[a_row, C_NAME]) AND (a_row > 1)
+            a_row = a_row - 1
+        ENDWHILE
+        name     = self.user_info[a_row, C_NAME]
+        phrase   = SELECT mlp_limits_view.text_phrase 
+                   WHERE product_id      = self.user_info[cell_row, C_PRODUCT      ]
+                     AND product_version = self.user_info[cell_row, C_PROD_VERSION ]
+                     AND component_name  = name
+                     AND (analysis_id    = analysis
+                       OR analysis_id    = "$NULL")
+
+    window_set_status("Display: ":analysis:", ":name:", ":res:", ":option:", ":spec:", ":STRIP(self.title_text_top[cell_column, 1]))
+    oos = CheckSpec(res, spec, option, phrase)
+     
+    IF oos THEN
+        IF cell_column = C_INTERNAL THEN
+            int_oos = TRUE
+        ELSEIF cell_column = C_EXTERNAL THEN
+            ext_oos = TRUE
+        ENDIF
+    ENDIF
+    
+    DISPLAY self.user_info [cell_row, cell_column]
+        AT column, row
+        IN WINDOW window
+        BLINKING = oos
+        BOLD = TRUE
+        TO column + cell_width -1
+ELSE
+    DISPLAY self.user_info [cell_row, cell_column]
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+ENDIF
+
+ENDROUTINE
+
+{***********************************************
+Routine: prompt_grid_cell
+Purpose: Standard routine to prompt grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE prompt_grid_cell(self ,
+                         VALUE cell_column ,
+                         VALUE cell_row ,
+                               window ,
+                         VALUE column ,
+                         VALUE row ,
+                         VALUE cell_width ,
+                         VALUE cell_height )
+
+DECLARE res, spec, option, oos, analysis, name, phrase
+
+    res      = self.user_info[cell_row, C_TEXT       ]
+    spec     = self.user_info[cell_row, cell_column]
+    option   = self.user_info[cell_row, C_CALCULATION]
+    analysis = self.user_info[cell_row, C_ANALYSIS]
+    name     = self.user_info[cell_row, C_NAME]
+    phrase   = SELECT mlp_limits_view.text_phrase 
+               WHERE product_id      = self.user_info[cell_row, C_PRODUCT      ]
+                 AND product_version = self.user_info[cell_row, C_PROD_VERSION ]
+                 AND component_name  = self.user_info[cell_row, C_NAME          ]
+                 AND (analysis_id    = self.user_info[cell_row, C_ANALYSIS     ]
+                   OR analysis_id    = "$NULL")
+
+    window_set_status("Prompt: ":analysis:", ":name:", ":res:", ":option:", ":spec:", ":STRIP(self.title_text_top[cell_column, 1]))
+    oos = CheckSpec(res, spec, option, phrase)
+     
+    PROMPT FOR self.user_info [cell_row, cell_column]
+        BOLD UNDERLINE
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+        BLINKING = oos
+        BOLD = TRUE
+        WITH (display_only = TRUE)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Check if res conforms to spec
+* Parameters   : result, specification as in mlp_limits_view.limits
+* Return Value : oos = TRUE/FALSE
+**************************************************************************}
+ROUTINE CheckSpec(res, spec, option, phrase)
+
+    DECLARE pre, oos, i
+    
+    pre = ""
+    oos = FALSE
+    
+    IF NUMTEXT(spec) AND NUMTEXT(res) THEN
+        
+        i = 1
+        WHILE INDEX("<=>", SUBSTRING(spec, i, 1)) > 0
+            i = i + 1
+        ENDWHILE
+        pre = LEFTSTRING(spec, i - 1)
+
+        IF INDEX(res, "=") > 0 THEN
+            res = NUMERIC(res)
+        ELSEIF LEFTSTRING(res, 1) = "<" THEN
+            res = NUMERIC(res)*0.98    
+        ELSEIF LEFTSTRING(res, 1) = ">" THEN
+            res = NUMERIC(res)*1.02    
+        ELSE
+            res = NUMERIC(res)    
+        ENDIF
+        
+        IF INDEX(spec, "=") > 0 THEN
+            spec = NUMERIC(spec)
+        ELSEIF LEFTSTRING(spec, 1) = "<" THEN
+            spec = NUMERIC(spec)*1.01    
+        ELSEIF LEFTSTRING(spec, 1) = ">" THEN
+            spec = NUMERIC(spec)*0.99    
+        ELSE
+            spec = NUMERIC(spec)    
+        ENDIF
+        
+        IF pre = "<" THEN
+            oos = NOT(res < spec)
+        ELSEIF pre = "<=" THEN
+            oos = NOT(res <= spec)
+        ELSEIF pre = ">" THEN
+            oos = NOT(res > spec)
+        ELSEIF pre = ">=" THEN
+            oos = NOT(res >= spec)
+        ELSE
+            oos = NOT(res = spec)
+        ENDIF
+    ELSEIF INDEX(spec, " - ") > 0 THEN
+        IF (NUMERIC(LEFTSTRING(spec, INDEX(spec, " - "))) <= res) AND
+           (res <= NUMERIC(SUBSTRING(spec, INDEX(spec, " - ") + 2, LENGTH(spec)))) THEN
+            oos = FALSE
+        ELSE
+            oos = TRUE
+        ENDIF   
+    ELSEIF (spec <> "") THEN
+        oos = NOT("P" = SELECT limit_phrase_entry.comparison 
+                        WHERE limit_phrase = phrase
+                          AND result_value = res)
+    ENDIF
+    
+    RETURN(oos)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+

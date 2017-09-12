@@ -1,0 +1,2035 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_TEMPLATE_LIST.RPF
+*
+* Purpose       : Maintain the class for modifying the batch_template_list 
+*		  class.
+*
+* Document Ref. : 
+*
+* Specification : SE/T/VGSM320-WORK-BATCH
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : 
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LINE_EDITOR
+
+JOIN LIBRARY $BATCH_USER
+JOIN LIBRARY $BATCH_UTILS
+JOIN LIBRARY $BATCH_HEADER
+JOIN LIBRARY $BATCH_TEMPLATE_ENT
+
+EXIT
+{* CONSTANTS ******************************************************************}
+
+
+CONSTANT STD_BATCH_TEMPLATE_GRID = "STD_BATCH_TEMPLATE_GRID"
+
+{* VARIABLES ******************************************************************}
+
+DECLARE batch_template_list_header ,
+	batch_template_list_form 	
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_list_initialise   
+
+{
+*	Initialise all the batch utility modules
+*
+*******************************************************************************}
+
+	IF NOT global ( "LIBRARY_INITIALISED" ) THEN
+
+		lib_grid_initialise ()
+		batch_template_list_define_class ()
+
+		batch_template_entry_initialise ()
+		batch_header_initialise ()
+
+		SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_define_class 
+
+{
+*	Define the template header classes
+*
+*******************************************************************************}
+
+	DEFINE CLASS STD_BATCH_TEMPLATE_LIST
+
+		PROPERTIES "ENTRIES"          ,
+			   "DATA_SETUP"       ,
+			   "ANALYSIS"	
+
+		ACTIONS    "IS_SETUP"           ,
+			   "CREATE"             ,
+			   "COPY"               ,
+			   "READ_FOR_MODIFY"    ,
+			   "READ_FOR_DISPLAY"   ,
+                           "GET_NEXT_UPDATE"    ,
+			   "SAVE"               ,
+			   "QUIT"               ,
+			   "READ"               ,
+			   "SIZE"               , 
+			   "INSERT_EDIT"        ,
+			   "FIND_LAST_OF"       ,	
+			   "FIND_START_OF"      ,	
+
+			   "SET_ANALYSIS"       ,
+			   "GET_ANALYSIS"       ,
+
+			   "IS_RUNTIME"         ,					
+
+			   "HAS_SECTION"        ,
+			   "HAS_START_SECTION"  ,
+			   "HAS_REPEAT_SECTION" ,
+			   "HAS_TRAIL_SECTION"  ,		
+
+			   "ALTER_CHILDREN"     ,
+			   "HAS_CHILD"          ,	
+
+			   "INSERT"             , 
+			   "REMOVE"             ,
+			   "IS_END_SECTION"  	,
+			   "GET_ENTRY"  
+                            
+	INITIALISATION
+
+	END CLASS
+
+	DEFINE CLASS STD_BATCH_TEMPLATE_GRID
+
+                INHERIT PROMPT_CLASS_GRID
+
+		ACTIONS    "GET_ENTRY"         ,
+			   "GET_ANALYSIS"      ,	
+			   "INSERT_ENTRY"      ,
+			   "DELETE_ENTRY"      ,	
+			   "IS_END_SECTION"    ,
+			   "SET_TITLES"	       ,
+			   "BUILD_PARENT_LIST"	
+				
+
+		PROPERTIES "BATCH"           ,
+			   "PROMPT_DETAILS"	
+		
+	END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_class_initialisation ( self )
+
+{
+*	Initialise a batch template class.
+*
+*******************************************************************************}
+
+	self . data_setup = FALSE
+	self . analysis   = ""
+
+	ARRAY self . entries ARRAY_SIZE ( 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_is_setup ( self )
+
+{
+*	Has the object data been setup
+*
+*******************************************************************************}
+	
+	RETURN ( self . data_setup )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_insert_edit (        self     ,
+						      VALUE type     ,
+						      VALUE section  ,
+							    position )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE new_element 
+
+	CREATE OBJECT STD_BATCH_TEMPLATE_ENTRY , new_element
+
+	new_element . initialise ( type    , 
+				   section )	
+
+	array_insert_slice ( self . entries ,
+			     1              ,
+			     position       )
+	
+	self . entries [ position ] = new_element
+	position = position + 1
+
+ENDROUTINE 
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_find_last_of (       self     ,
+						      VALUE section  ,
+							    position )
+
+{
+*
+*
+*******************************************************************************}
+	
+	DECLARE keep_going ,
+		entry
+
+	keep_going = TRUE
+
+	WHILE keep_going DO
+
+		IF position <= size_of_array ( self . entries ) THEN
+	
+			entry = self . entries [ position ]
+
+			IF entry . get_section () <> section THEN
+
+				keep_going = FALSE
+
+			ELSE
+
+				position = position + 1
+
+			ENDIF
+	
+		ELSE
+
+			keep_going = FALSE
+
+		ENDIF
+
+	ENDWHILE
+
+	position = position - 1		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_has_section (       self     ,
+                                                     VALUE section  ,
+						           position )
+{
+*	Find out if the batch template has a given section.
+*	Return its start position in the position parameter.
+*
+*******************************************************************************}
+
+	DECLARE count        ,
+		keep_looking ,
+		found_one    ,
+		entry
+
+	found_one    = FALSE
+	keep_looking = TRUE
+	count        = 1
+	position     = 0
+
+	WHILE ( keep_looking ) DO
+
+		IF count <= size_of_array ( self . entries ) THEN
+	
+			entry = self . entries [ count ]
+
+			IF entry . get_section ( ) = section THEN
+
+				IF ( entry . is_newslot ()) THEN
+
+					keep_looking = FALSE
+
+				ELSE
+
+					keep_looking = FALSE
+					found_one    = TRUE
+                                        position     = count
+					
+				ENDIF
+
+			ELSE
+
+				count = count + 1
+
+			ENDIF
+
+		ELSE
+
+			keep_looking = FALSE
+
+		ENDIF
+
+	ENDWHILE
+
+	RETURN ( found_one )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_has_start_section ( self )
+
+{
+*	Find out if the batch template has a start section
+*
+*******************************************************************************}
+
+	DECLARE position 
+	
+	RETURN ( self . has_section ( BATCH_TEMPLATE_START_SECTION ,
+		                      position                     ))
+		
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_has_repeat_section ( self         ,
+							    repeat_count )	
+
+{
+*	Find out if the batch template has a repeat section
+*
+*******************************************************************************}
+	
+	DECLARE position   ,
+		entry      ,
+		has_repeat
+	
+	has_repeat = self . has_section ( BATCH_TEMPLATE_REPEAT_SECTION ,
+		                          position                      )
+
+	IF has_repeat THEN
+
+		entry        = self . get_entry ( position )
+		repeat_count = entry . get_repeat ()
+
+	ENDIF
+
+	RETURN ( has_repeat )		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_has_trail_section ( self )
+
+{
+*	Find out if the batch template has a trail section
+*
+*******************************************************************************}
+
+	DECLARE position 
+	
+	RETURN ( self . has_section ( BATCH_TEMPLATE_TRAIL_SECTION ,
+		                      position                     ))
+		
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_create (  self  )
+
+{
+*	Create a new template object.
+*
+*******************************************************************************}
+
+	DECLARE next_pos     ,
+		repeat_count
+
+	next_pos = 1
+
+	self . insert_edit ( BATCH_ENTRY_SECTION_START     , 
+			     BATCH_TEMPLATE_START_SECTION  ,	
+		             next_pos                      )		
+
+	self . find_last_of ( BATCH_TEMPLATE_START_SECTION  ,
+			      next_pos                      )	
+
+	next_pos = next_pos + 1
+
+  	self . insert_edit ( BATCH_ENTRY_NEW_SLOT          , 
+			     BATCH_TEMPLATE_START_SECTION  ,
+		             next_pos                      )		
+
+	IF NOT self . has_repeat_section ( repeat_count ) THEN
+	
+		self . insert_edit ( BATCH_ENTRY_SECTION_REPEAT     , 
+				     BATCH_TEMPLATE_REPEAT_SECTION  ,	
+			             next_pos                       )		
+
+	ENDIF
+
+
+	self . find_last_of ( BATCH_TEMPLATE_REPEAT_SECTION  ,
+			      next_pos                       )	
+
+	next_pos = next_pos + 1
+
+  	self . insert_edit ( BATCH_ENTRY_NEW_SLOT           , 
+			     BATCH_TEMPLATE_REPEAT_SECTION  ,
+		             next_pos                       )		
+
+
+	self . insert_edit ( BATCH_ENTRY_SECTION_TRAIL     , 
+
+			     BATCH_TEMPLATE_TRAIL_SECTION  ,	
+		             next_pos                      )		
+
+
+
+	self . find_last_of ( BATCH_TEMPLATE_TRAIL_SECTION  ,
+			      next_pos                      )	
+
+	next_pos = next_pos + 1
+
+  	self . insert_edit ( BATCH_ENTRY_NEW_SLOT          , 
+			     BATCH_TEMPLATE_TRAIL_SECTION  ,
+		             next_pos                      )		
+
+	self . set_analysis ( SELECT batch_tmpl_header . analysis )	
+
+	self . data_setup = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_read ( self )
+
+{
+*	Read all the entries into the batch
+*
+*******************************************************************************}
+	
+	DECLARE entry   ,
+		count   ,
+		element
+
+	count = 1
+	entry = SELECT batch_tmpl_entry . identity
+
+	WHILE entry <> EMPTY DO
+
+		CREATE OBJECT STD_BATCH_TEMPLATE_ENTRY, element
+
+		element . read ()
+
+		self . entries [ count ] = element
+
+		NEXT batch_tmpl_entry
+		entry = SELECT batch_tmpl_entry . identity
+		count = count + 1		
+
+	ENDWHILE
+	
+	self . create ()
+
+	self . data_setup = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_copy (       self          ,
+					      VALUE identity      ,
+					      VALUE copy_identity )
+
+{
+*	Copy an existing batch
+*
+*******************************************************************************}
+
+	DECLARE entry
+
+	entry = SELECT batch_tmpl_entry . identity
+		WHERE identity = copy_identity
+		ORDER ON order_number
+
+	IF entry <> EMPTY THEN
+
+		self . read ()		
+
+	ELSE
+
+		self . create ()
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_read_for_modify (       self     ,
+						         VALUE identity )
+
+{
+*	Read in a batch template for modification.
+*
+*******************************************************************************}
+
+	DECLARE entry
+
+	entry = SELECT batch_tmpl_entry . identity
+		FOR UPDATE
+		WHERE identity = identity
+		ORDER ON order_number
+
+
+	IF entry <> EMPTY THEN
+
+		self . read ()		
+
+	ELSE
+
+		self . create ()
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_read_for_display (       self     ,
+						          VALUE identity )
+
+{
+*	Read in a batch template for display purposes
+*
+*******************************************************************************}
+	
+	DECLARE entry
+
+	entry = SELECT batch_tmpl_entry . identity
+		WHERE identity = identity
+		ORDER ON order_number
+
+	IF entry <> EMPTY THEN
+
+		self . read ()		
+
+	ELSE
+
+		self . create ()
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_get_next_update ( self     ,
+					                 position )
+
+{
+*	Get the next element that needs to be updated
+*
+******************************************************************************}	
+
+	DECLARE found_one    ,
+		element      ,
+		keep_looking 
+                                       	
+	position     = position + 1
+	keep_looking = TRUE
+
+	WHILE keep_looking DO
+
+		IF position <= size_of_array ( self . entries ) THEN
+        	
+			element = self . entries [ position ]		
+
+			IF ( element . put_in_database ()) THEN
+
+				keep_looking = FALSE
+				found_one    = TRUE
+
+			ELSE
+
+				position = position + 1
+
+			ENDIF	
+
+		ELSE
+
+			keep_looking = FALSE
+			found_one    = FALSE
+
+		ENDIF
+
+	ENDWHILE
+
+	RETURN ( found_one )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_save (       self     ,
+					      VALUE identity )	
+
+{
+*	Save the template information back to the database.
+*	This must be called within a write transaction.
+*
+*******************************************************************************}
+
+	DECLARE entry        ,
+		count        ,
+		order_number ,
+		position
+
+	entry = SELECT batch_tmpl_entry . identity
+		FOR UPDATE
+		WHERE identity = identity
+		ORDER ON order_number
+
+	count    = 1
+	position = 0
+
+	WHILE entry <> EMPTY DO
+
+		IF self . get_next_update ( position ) THEN
+
+			self . entries [ position ] . update ()
+
+			UPDATE batch_tmpl_entry
+
+		ELSE
+
+			DELETE batch_tmpl_entry
+		
+		ENDIF
+
+		count = count + 1
+
+		NEXT batch_tmpl_entry 
+
+		entry = SELECT batch_tmpl_entry . identity
+
+	ENDWHILE			
+
+	WHILE self . get_next_update ( position ) DO
+
+		order_number = justify ( pad ( count , " " ,10 ),"RIGHT")
+
+		RESERVE ENTRY batch_tmpl_entry, identity      :
+						order_number
+	
+		self . entries [ position ] . update ()
+
+		UPDATE batch_tmpl_entry
+
+		count = count + 1
+
+	ENDWHILE
+
+	ARRAY self . entries ARRAY_SIZE ( 0 )
+	self . data_setup = FALSE
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_quit ( self )
+
+{
+*	Quit any changes made to the template.
+*
+*
+*******************************************************************************}
+
+	ARRAY self . entries ARRAY_SIZE ( 0 )
+	self . data_setup = FALSE
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_size ( self )
+
+{
+*	Return the size of the template
+*
+*******************************************************************************}
+	
+	RETURN ( size_of_array ( self . entries ))
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_is_end_section (       self ,
+						        VALUE row  )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE is_end_sequence  ,
+		entry
+
+	IF row < self . size () THEN
+
+		entry = self . get_entry ( row + 1 )
+		is_end_sequence = entry . is_new_slot ()		
+
+	ELSE
+
+		is_end_sequence = TRUE
+
+	ENDIF
+
+	RETURN ( is_end_sequence )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_alter_children (       self       ,
+						        VALUE start_from ,
+							VALUE alter_by   )
+
+{
+*	Alter all the children from the given point.
+*
+*
+*******************************************************************************}
+
+	DECLARE count    ,
+		element  ,
+		parent   ,
+		alter_it 
+
+	count = start_from
+
+	WHILE count <= self . size () DO
+
+		element = self . get_entry ( count )
+
+		parent  = element . get_parent () 		
+
+		IF parent = 0 THEN
+
+			alter_it = FALSE
+
+		ELSEIF parent >= start_from THEN
+
+			alter_it = TRUE
+
+		ELSE
+
+			alter_it = FALSE
+
+		ENDIF
+
+		IF alter_it THEN
+
+        	
+			element . alter_parent ( alter_by ) 
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_has_child (       self   ,
+						   VALUE parent )
+
+{
+*	Ask everything below the parent to see if it has a child.
+*
+*
+*******************************************************************************}
+
+	DECLARE count             ,
+		element
+
+	count  = parent + 1
+
+	WHILE count <= self . size () DO
+
+		element = self . get_entry ( count )
+
+		IF element . is_this_your_parent ( parent ) THEN
+
+			RETURN ( TRUE )
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+	RETURN ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_insert (       self  ,
+						VALUE row   ,
+					        VALUE type  )
+
+{
+*	Insert a new entry at the given row.
+*
+*
+*******************************************************************************}
+
+	DECLARE entry      , 
+		next_entry 
+
+	next_entry = self . get_entry ( row - 1 )
+
+	CREATE OBJECT STD_BATCH_TEMPLATE_ENTRY , entry
+
+	entry . initialise ( type                       ,
+		             next_entry . get_section ()) 	
+
+	array_insert_slice ( self . entries ,
+			     1              ,
+			     row            )
+
+	self . entries [ row ] = entry
+
+	self . alter_children ( row  ,
+			        1    )			
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_remove (       self  ,
+						VALUE row   )
+
+{
+*	Delete the entry at the given row - if allowed. Return TRUE
+*	if the remove was allowed.
+*
+*
+*******************************************************************************}
+
+	DECLARE can_remove   ,
+		element     
+
+	element = self . get_entry ( row )
+	can_remove = element . can_remove ()
+
+	IF can_remove THEN
+
+		IF self  . has_child ( row )  THEN
+
+			can_remove = FALSE
+
+		ELSE		
+
+	    		array_remove_slice ( self . entries ,
+				             1              ,
+					     row            )
+
+			self . alter_children ( row    ,
+						-1     )
+
+		ENDIF
+
+	ENDIF
+
+	RETURN ( can_remove )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_get_entry (       self  ,
+						   VALUE row   )
+
+{
+*	Get the entry at the given row.
+*
+*
+*******************************************************************************}
+
+	RETURN ( self . entries [ row ] )
+
+ENDROUTINE
+                                       
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_is_runtime ( self )
+
+{                                               
+*	Is this runtime - No
+*
+*******************************************************************************}
+
+	RETURN ( FALSE )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_get_analysis ( self )
+
+{
+*	Get the analysis defined for the batch.
+*
+*******************************************************************************}
+
+	RETURN ( self . analysis )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_list_action_set_analysis (       self     ,
+						      VALUE analysis )	
+
+{
+*	Set the analysis defined for the batch.
+*	*** Change any component lists defined on the batch
+*
+*******************************************************************************}
+
+	IF NOT blank ( self . analysis ) THEN
+
+		IF self . analysis THEN
+
+		ENDIF
+
+	ENDIF
+
+	self . analysis = analysis
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_get_analysis ( grid )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE analysis 
+
+	analysis = grid . batch . get_analysis ()
+
+	RETURN ( analysis )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_get_entry (       grid  ,
+						   VALUE row   )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE element 
+
+	element = grid . batch . get_entry ( row )
+
+	RETURN ( element )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_set_titles (       grid      ,
+						    VALUE redisplay )	
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE count     ,
+		entry     ,
+		title_num ,
+		new_title
+
+	SET FORMAT "99"
+
+	count     = 1
+	title_num = 1
+
+	WHILE count <= grid . cell_rows DO
+
+		entry = grid . get_entry ( count )
+
+		IF ( entry . is_section_header ()) THEN
+
+	                new_title = " " 
+
+		ELSE
+
+			new_title = string ( title_num )
+			title_num = title_num + 1
+		
+		ENDIF
+
+		entry . set_title ( new_title )
+
+		IF redisplay THEN
+
+			IF new_title <> grid . title_text_left [ count , 1] THEN
+		
+				grid . title_text_left [ count , 1 ] = new_title
+				grid . redisplay_title_left ( count )
+
+        		ENDIF
+                                       
+		ELSE
+                                       
+			grid . title_text_left [ count , 1 ] = new_title
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_build_parent_list ( grid         ,
+						           child        ,
+							   select_array )	
+                                       
+{
+* 	Build a select array with all the possible parent values for the
+*	given child element.
+*
+*******************************************************************************}
+
+	DECLARE count           ,
+		next_array      ,
+		possible_parent ,
+		wanted_type 
+
+	ARRAY select_array ARRAY_SIZE ( 0 , 2 )
+
+	wanted_type = child . get_parent_class ()
+
+	select_array [ 1, 1 ] = " "
+	select_array [ 1, 2 ] = 0
+                                                                               
+	select_array [ 2, 1 ] = "?"
+	select_array [ 2, 2 ] = -1
+
+	next_array = 3
+
+	grid . batch . has_section ( child . get_section () ,
+				     count                  )	
+
+	count = count + 1
+
+	possible_parent = grid . get_entry ( count )
+
+	WHILE possible_parent <> child DO
+                                                  
+		IF ( possible_parent . get_type   () = wanted_type ) AND
+                   ( possible_parent . get_repeat () = 1           ) THEN
+
+			select_array [ next_array , 1 ] = strip ( possible_parent . get_title ())
+			select_array [ next_array , 2 ] = count
+
+			next_array      = next_array + 1
+
+		ENDIF	
+	
+		count           = count + 1
+
+		possible_parent = grid . get_entry ( count )
+			
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_insert_entry (       grid    ,
+						      VALUE new_row ,
+						      VALUE type    )	
+
+{
+*
+*
+*******************************************************************************}
+
+	grid . batch . insert ( new_row ,
+			        type    )  
+
+	grid . insert_row ( new_row              ,
+		            1                    ,
+		            GRID_SEPARATOR_NONE  )      
+
+	grid . set_titles ( TRUE )
+
+	grid . redisplay_column ( 3 ) { What if this column moves? }
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_delete_entry (       grid ,
+						      VALUE row  )
+
+{
+*
+*
+*******************************************************************************}
+
+	IF grid . batch . remove ( row ) THEN
+
+		grid . remove_row ( row )
+		grid . set_titles ( TRUE )
+		grid . redisplay_column ( 3 )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_grid_action_is_end_section (       grid ,
+						        VALUE row  )
+
+{
+*
+*
+*******************************************************************************}
+
+	RETURN ( grid . batch . is_end_section ( row ))
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{	Form Routines                                                          }
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid_display (       grid        ,
+                                           VALUE cell_column ,
+		                           VALUE cell_row    ,
+			                         screen      ,
+   		                           VALUE column      ,
+		                           VALUE row         ,
+		    	                   VALUE cell_width  ,
+			                   VALUE cell_height )
+
+{
+*
+*
+*****************************************************************************}
+
+	DECLARE element 
+
+	element = grid . batch . get_entry ( cell_row )
+
+	lib_grid_display_array ( grid                   ,
+				 cell_column            ,
+				 cell_row               ,
+				 screen                 ,
+				 column                 ,
+				 row                    , 
+				 cell_width             ,
+				 element                ,
+				 grid . prompt_details  ,
+				 "BATCH_TEMPLATE_ENTRY" ,
+				 FALSE                  ,
+				 PROMPT_DETAILS_310     )			
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid_prompt (       grid        ,
+                                          VALUE cell_column ,
+		                          VALUE cell_row    ,
+			                        screen      ,
+		                          VALUE column      ,
+		                          VALUE row         ,
+		    	                  VALUE cell_width  ,
+			                  VALUE cell_height )
+
+{
+*
+*
+*****************************************************************************}
+
+	DECLARE element 
+
+	element = grid . batch . get_entry ( cell_row )
+
+	lib_grid_prompt_array ( grid                   ,
+				cell_column            ,
+				cell_row               ,
+				screen                 ,
+				column                 ,
+				row                    , 
+				cell_width             ,
+				element                ,
+				grid . prompt_details  ,
+				"BATCH_TEMPLATE_ENTRY" ,
+				FALSE                  ,
+				PROMPT_DETAILS_310     )			
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid_insert ( grid )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE next_entry  ,
+		row
+
+	row = grid . current_row
+
+	next_entry = grid . get_entry ( row )	
+
+	IF next_entry . can_insert () THEN
+
+		grid . insert_entry ( row               ,
+				      BATCH_ENTRY_EMPTY )	
+
+		grid . set_position ( grid . current_column ,
+				      row                   )	
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid_remove ( grid )
+
+{
+*
+*
+*******************************************************************************}
+
+	grid . delete_entry ( grid . current_row )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid_validation ( grid )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE count   ,
+		valid   ,
+		message ,
+		entry
+
+	valid = TRUE
+	count = 1
+
+	WHILE count <= grid . cell_rows DO
+
+		entry = grid . get_entry ( count )
+
+		IF NOT entry . validate ( message ) THEN
+
+			flash_message ( message , TRUE )
+
+			grid . set_position ( 1     ,
+					      count )	
+
+			valid = FALSE
+                        count = grid . cell_rows
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+	RETURN ( valid )
+		
+ENDROUTINE
+
+{******************************************************************************}
+{****************************************************************************}
+
+ROUTINE batch_template_list_buttons (       button_list ,
+				      VALUE is_display  )
+
+{
+*       Create the button list for the form.
+*	
+*
+******************************************************************************}	
+
+	DECLARE next_button 
+
+	ARRAY button_list
+
+	next_button = 1
+
+	IF is_display THEN
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "EXIT"           ,
+					   EMPTY           )
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "HELP"           ,
+					   EMPTY           )
+
+	ELSE
+
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "DO"             ,
+					   EMPTY           )
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "INSERT HERE"    ,
+					   EMPTY           )
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "REMOVE"         ,
+					   EMPTY           )
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "HELP"           ,
+					   EMPTY           )
+
+		lib_grid_lastkey_button (  button_list     ,
+					   next_button     ,
+					  "EXIT"           ,
+					   EMPTY           )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_prompt_details (       prompt_details ,
+						   batch_type     ,
+					     VALUE is_grid	  )
+
+{
+*	Build the prompt details array.
+*	
+*
+******************************************************************************}	
+
+	DECLARE next_pos
+
+	ARRAY prompt_details ARRAY_SIZE ( 0 , 6 )
+
+	next_pos = 1
+
+                                                                          
+	prompt_details [ next_pos , 1 ] = get_user_message ( "BATCH_TEMPLATE_LIST_TYPE_TITLE" , 2) 
+	prompt_details [ next_pos , 2 ] = "ROUTINE"
+        prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+	prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_type"
+	prompt_details [ next_pos , 5 ] = get_user_message ( "BATCH_TEMPLATE_LIST_TYPE_TITLE" , 1)
+ 	prompt_details [ next_pos , 6 ] = 10
+
+	next_pos = next_pos + 1	
+
+	IF is_grid THEN
+
+	        prompt_details [ next_pos , 2 ] = "ROUTINE"
+		prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+		prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_repeat"
+		prompt_details [ next_pos , 5 ] = get_user_message ( "BATCH_TEMPLATE_LIST_REPEAT_TITLE" , 1)
+   		prompt_details [ next_pos , 6 ] = 10
+
+		next_pos = next_pos + 1	
+
+	        prompt_details [ next_pos , 2 ] = "ROUTINE"
+		prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+		prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_parent"
+		prompt_details [ next_pos , 5 ] = get_user_message ( "BATCH_TEMPLATE_LIST_PARENT_TITLE" , 1)
+		prompt_details [ next_pos , 6 ] = 10
+
+		next_pos = next_pos + 1	
+
+	ENDIF
+
+	prompt_details [ next_pos , 1 ] = get_user_message ( "BATCH_TEMPLATE_LIST_STANDARD_TITLE" , 2)
+	prompt_details [ next_pos , 2 ] = "ROUTINE"
+	prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+	prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_standard"
+	prompt_details [ next_pos , 5 ] = get_user_message ( "BATCH_TEMPLATE_LIST_STANDARD_TITLE" , 1)
+	prompt_details [ next_pos , 6 ] = 10
+
+	next_pos = next_pos + 1	
+
+	IF batch_type . type_supports_mlps THEN
+
+	        prompt_details [ next_pos , 1 ] = get_user_message ( "BATCH_TEMPLATE_LIST_LIMIT_TITLE" , 2)
+	        prompt_details [ next_pos , 2 ] = "ROUTINE"
+		prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+  		prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_limit"
+		prompt_details [ next_pos , 5 ] = get_user_message ( "BATCH_TEMPLATE_LIST_LIMIT_TITLE" , 1)
+  		prompt_details [ next_pos , 6 ] = 10
+
+		next_pos = next_pos + 1	
+
+	ENDIF
+
+	IF batch_type . type_supports_component_lists  THEN
+
+		prompt_details [ next_pos , 1 ] =  get_user_message ( "BATCH_TEMPLATE_LIST_COMP_LIST_TITLE" , 2)
+        	prompt_details [ next_pos , 2 ] = "ROUTINE"
+		prompt_details [ next_pos , 3 ] = "$BATCH_TEMPLATE_ENT" 
+		prompt_details [ next_pos , 4 ] = "batch_template_entry_prompt_component_list"
+		prompt_details [ next_pos , 5 ] =  get_user_message ( "BATCH_TEMPLATE_LIST_COMP_LIST_TITLE" , 1)
+		prompt_details [ next_pos , 6 ] = 10
+
+  		next_pos = next_pos + 1	
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_grid (       grid       ,
+				   VALUE is_display ,
+					 batch      )
+
+{
+*       Create the main grid for the form.
+*	
+*
+******************************************************************************}	
+
+	DECLARE prompt_details  ,
+		batch_type      ,
+		class_name
+
+	CREATE OBJECT STD_BATCH_TEMPLATE_GRID, grid 
+
+	CREATE OBJECT STD_BATCH_HEADER_BASE , batch_type
+
+	IF NOT blank ( SELECT batch_tmpl_header . batch_class ) THEN
+
+		class_name = SELECT batch_tmpl_header . batch_class	
+
+
+	ELSE
+
+		class_name = "BASE"
+
+
+	ENDIF
+	
+
+	batch_type . set_type ( class_name )		
+
+	batch_template_list_prompt_details ( prompt_details ,
+					     batch_type     ,	
+					     TRUE           )	
+
+	lib_grid_setup_columns (  prompt_details        ,
+				  grid                  ,
+				 "BATCH_TEMPLATE_ENTRY" )
+	
+	grid . prompt_details = prompt_details
+	grid . cell_columns   = size_of_array ( prompt_details )	
+
+	grid . row     = 1
+	grid . column  = 1
+
+	grid . vgl_library          = global ( "current_library" )
+
+	grid . prompt_cell_routine  = "batch_template_list_grid_prompt"
+	grid . display_cell_routine = "batch_template_list_grid_display"
+
+	IF NOT is_display THEN
+
+		grid . insert_routine     = "batch_template_list_grid_insert"
+		grid . remove_routine     = "batch_template_list_grid_remove"
+                grid . validation_routine = "batch_template_list_grid_validation"
+		
+	ENDIF
+
+	grid . cell_rows            = batch . size ()
+	grid . height               = global ( "SCREEN_HEIGHT" )
+
+	grid . title_separator_top  = GRID_SEPARATOR_BOTH
+	grid . title_rendition_top  = PROMPT_RENDITION_BOLD
+	grid . title_size_top       = 1
+
+	grid . title_separator_left  = GRID_SEPARATOR_BOTH
+	grid . title_rendition_left  = PROMPT_RENDITION_BOLD
+	grid . title_size_left       = 4          
+	grid . width                 = grid . width + grid . title_size_left + 1
+
+	grid . batch     = batch
+	grid . user_info = batch
+
+	grid . set_titles ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_create_form ( VALUE identity   ,
+						batch      ,
+				          VALUE is_display ,	
+					        form       )
+
+{
+*	Create the form for modifying a template list.
+*               
+*
+******************************************************************************}
+
+	DECLARE grid           ,
+		button_list    ,
+		header_message ,
+		footer_message ,
+		unused_buttons 
+
+
+	IF is_display THEN
+
+		header_message = get_user_message ( "BATCH_TEMPLATE_LIST_DISPLAY_HEADER" ,
+						       1                                 ) :
+						     " " : identity
+
+		footer_message = get_user_message ( "BATCH_TEMPLATE_LIST_DISPLAY_FOOTER" ,
+						     1                                   )
+                                                                  
+	ELSE
+	
+		header_message = get_user_message ( "BATCH_TEMPLATE_LIST_MODIFY_HEADER" ,
+						       1                                ) :
+						     " " : identity
+
+		footer_message = get_user_message ( "BATCH_TEMPLATE_LIST_MODIFY_FOOTER" ,
+						     1                                  )
+
+	ENDIF
+
+	batch_template_list_buttons ( button_list ,
+				      is_display  )
+	
+	batch_template_list_grid    ( grid        ,
+				      is_display  ,
+				      batch       )
+
+	lib_grid_create_form ( grid           ,
+			       form           ,
+			       NOT is_display ,
+			       0              ,
+			       header_message ,
+			       footer_message ,	
+			       unused_buttons )
+								
+	lib_form_add_vertical_buttons ( form         ,
+					button_list  )
+
+	form . display_only = is_display
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{	Labtable Interface Routines                                            }
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE batch_template_list_header_defined 
+
+{
+* 	Check to see if the header object has been defined.	
+*
+*******************************************************************************}
+
+	DECLARE defined
+
+	defined = FALSE 
+
+	IF variable_is_assigned ( batch_template_list_header ) THEN
+
+		defined = batch_template_list_header <> EMPTY
+
+	ENDIF
+
+	RETURN ( defined )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_form_defined 
+
+{
+* 	Check to see if the form object has been defined.	
+*
+*******************************************************************************}
+
+	DECLARE defined
+                
+	defined = FALSE 
+
+	IF variable_is_assigned ( batch_template_list_form ) THEN
+
+		defined = batch_template_list_form <> EMPTY
+
+	ENDIF
+
+	RETURN ( defined )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_copy ( VALUE identity      ,
+				   VALUE copy_identity )	
+
+{               
+*	
+*
+*******************************************************************************}
+
+	CREATE OBJECT STD_BATCH_TEMPLATE_LIST, batch_template_list_header 
+
+	batch_template_list_header . copy ( identity      ,
+					    copy_identity )	
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_modify ( VALUE identity )
+
+{
+*	
+*               
+*******************************************************************************}
+
+	DECLARE curr_help
+
+	IF NOT batch_template_list_header_defined () THEN
+
+		CREATE OBJECT STD_BATCH_TEMPLATE_LIST    , 
+			      batch_template_list_header 
+
+		batch_template_list_header . read_for_modify ( identity )
+
+	ENDIF
+
+        IF NOT batch_template_list_form_defined () THEN
+	
+		batch_template_list_create_form ( identity                   ,
+						  batch_template_list_header ,
+						  FALSE                      ,
+						  batch_template_list_form   )
+                
+	ENDIF
+
+	curr_help = GLOBAL ( "STD_EDITOR_HELP" )
+	SET GLOBAL "STD_EDITOR_HELP" TO "$BATCH_TMPL_LIST"
+
+	batch_template_list_form . start_prompt ()
+	batch_template_list_form . wait_prompt  ()
+	batch_template_list_form . end_prompt   ()
+
+	SET GLOBAL "STD_EDITOR_HELP" TO curr_help
+
+	IF batch_template_list_form . get_lastkey () = "EXIT" THEN
+			
+		batch_template_list_quit ()
+
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_display ( VALUE identity )
+
+{
+*	
+*
+*******************************************************************************}
+
+	IF NOT batch_template_list_header_defined () THEN
+
+		CREATE OBJECT STD_BATCH_TEMPLATE_LIST    , 
+			      batch_template_list_header 
+
+		batch_template_list_header . read_for_display ( identity )
+
+	ENDIF
+
+        IF NOT batch_template_list_form_defined () THEN
+	
+		batch_template_list_create_form ( identity                   ,
+						  batch_template_list_header ,
+						  TRUE                      ,
+						  batch_template_list_form   )
+
+	ENDIF
+
+	batch_template_list_form . start_prompt ()
+	batch_template_list_form . wait_prompt  ()
+	batch_template_list_form . end_prompt   ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_print ( VALUE identity )
+
+{
+*	        
+*
+*******************************************************************************}
+
+	DECLARE count     ,
+		entry     ,
+		list      ,
+		title_num ,
+		parent    ,
+		a         ,
+		b         ,
+		c         ,
+		d         ,
+		e         ,
+		f         ,
+		g
+
+	set format "9999"                                            
+
+	b = get_user_message ( "BATCH_TEMPLATE_LIST_TYPE_TITLE"      , 1) 
+ 	c = get_user_message ( "BATCH_TEMPLATE_LIST_REPEAT_TITLE"    , 1) 
+ 	d = get_user_message ( "BATCH_TEMPLATE_LIST_PARENT_TITLE"    , 1) 
+ 	e = get_user_message ( "BATCH_TEMPLATE_LIST_STANDARD_TITLE"  , 1) 
+ 	f = get_user_message ( "BATCH_TEMPLATE_LIST_LIMIT_TITLE"     , 1) 
+ 	g = get_user_message ( "BATCH_TEMPLATE_LIST_COMP_LIST_TITLE" , 1) 
+          
+LITERAL
+       $b______ $c______ $d_____ $e__________ $f__________ $g__________
+       -------- -------- ------- ------------ ------------ ------------
+$ENDLITERAL                                  
+   
+	CREATE OBJECT STD_BATCH_TEMPLATE_LIST, list
+
+	list . read_for_display ( identity )
+                    
+	count     = 1         
+	title_num = 1
+
+	WHILE count <= size_of_array ( list . entries ) DO 
+
+		entry = list . entries [ count ] 
+                                                                     
+		IF ( entry . is_section_header ()) THEN
+
+	                entry . set_title ( " " )
+
+		ELSE
+                                            
+			entry . set_title ( title_num ) 
+			title_num = title_num + 1
+
+		ENDIF
+		
+		count = count + 1
+
+	ENDWHILE           
+                                  
+	count     = 1         
+
+	WHILE count <= size_of_array ( list . entries ) DO           
+
+		entry = list . entries [ count ] 
+
+		a = entry . get_title ()
+		b = entry . get_user_name ()
+
+		IF entry . want_repeat () THEN
+
+			c = strip ( entry . repeat )
+
+		ELSE
+
+			c = ""
+
+		ENDIF
+
+		IF entry . want_parent () THEN
+
+			IF entry . parent > 0 THEN
+
+		       		parent = list . entries [ entry . parent ]
+
+				d = strip ( parent . get_title ())
+ 
+			ELSE
+
+				d = "?"                              
+
+			ENDIF                     
+
+		ELSE
+
+			d = "" 
+
+		ENDIF        
+
+		e = entry . standard
+		f = entry . limit
+		g = entry . comp_list
+
+LITERAL
+$a____ $b______ $c______ $d_____ $e__________ $f__________ $g__________
+$ENDLITERAL                                  
+
+		count = count + 1
+
+	ENDWHILE           
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_save ( VALUE identity )
+
+{
+*	
+*
+*******************************************************************************}
+
+	IF batch_template_list_header_defined () THEN
+
+		batch_template_list_header . save ( identity )
+
+	ENDIF
+
+	batch_template_list_header = EMPTY
+	batch_template_list_form   = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_quit 
+
+{
+*	
+*
+*******************************************************************************}
+
+	batch_template_list_header = EMPTY
+	batch_template_list_form   = EMPTY
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_list_labtable ( VALUE identity      ,
+				       VALUE copy_identity ,
+				       VALUE operation     )
+
+{
+*	Called from LTE to modify a given list. During the 'lifetime' of
+*	the LTE the details are held in a global variable called 
+*	batch_template_list_header, the screen details are held in
+*	a global variable called batch_template_list_form.
+*
+******************************************************************************}		
+
+	batch_template_list_initialise ()
+
+	IF operation = "COPY" THEN
+
+        	batch_template_list_copy ( identity      ,
+					   copy_identity )
+
+	ELSEIF operation = "MODIFY" THEN
+
+        	batch_template_list_modify ( identity )
+
+	ELSEIF operation = "DISPLAY" THEN
+
+        	batch_template_list_display ( identity )
+	
+	ELSEIF operation = "SAVE" THEN
+
+        	batch_template_list_save ( identity )
+
+	ELSEIF operation = "PRINT" THEN
+
+        	batch_template_list_print ( identity )
+	
+	ELSEIF operation = "QUIT" THEN
+
+        	batch_template_list_quit ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_list_create_validation ( line_editor )
+
+{
+*
+*
+*******************************************************************************}
+
+	DECLARE valid   ,
+		message 
+
+	valid = line_editor . object . validate ( message )
+
+	IF NOT valid THEN
+
+		flash_message ( message , TRUE )
+
+	ENDIF
+
+	RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_list_create_single ( new_element    ,
+					    batch_template )
+
+{
+*	Called from the batch create/modify call to put up a form and ask
+*	for an new entry
+*
+*******************************************************************************}
+
+	DECLARE form           ,
+		prompt_details ,
+		line_editor    ,
+		got_one        
+
+	CREATE OBJECT STD_BATCH_TEMPLATE_ENTRY , new_element
+
+	new_element . initialise ( BATCH_ENTRY_SAMPLE            ,
+				   BATCH_TEMPLATE_REPEAT_SECTION )
+
+	line_editor_initialise_new ()
+                          
+	batch_template_list_prompt_details ( prompt_details ,
+					     batch_template ,	
+					     FALSE          )	
+
+	CREATE OBJECT PROMPT_CLASS_FORM, form
+
+	form . height          = size_of_array ( prompt_details )
+	form . width           = 65
+	form . row             = 8
+	form . column          = 8
+	form . border          = TRUE
+	form . header          = get_user_message ( "BATCH_TEMPLATE_LIST_SINGLE_HEADER" , 1 )
+	form . footer          = get_user_message ( "BATCH_TEMPLATE_LIST_SINGLE_FOOTER" , 1 )
+
+        PROMPT OBJECT  line_editor
+               ON LINE 1
+               FROM    2
+               TO      form . width - 2
+               CLASS   "STD_LINE_EDITOR"
+               WITH ( height                  =  size_of_array ( prompt_details ) ,
+                      prompt_details          =  prompt_details                   ,
+		      object                  =  new_element                      ,
+		      user_info               =  batch_template                   ,
+		      user_callback_library   =  global ( "current_library" )     ,
+		      user_validation_routine = "batch_template_list_create_validation" )		
+		
+
+	form . add_prompt ( line_editor )
+
+	form . start_prompt ()
+	form . wait_prompt  ()
+	form . end_prompt   ()
+
+	got_one = ( form . get_lastkey () = "DO"        ) AND
+		  ( new_element . get_class () <> EMPTY )
+ 
+	RETURN ( got_one )
+
+ENDROUTINE
+

@@ -1,0 +1,1911 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name : $SP_LOGIN
+*
+* Purpose     : Sample Plan Login Class
+*
+* Portability : Not Checked
+*
+* Re-entrant  :
+*
+******************************************************************************}
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $AQL
+JOIN LIBRARY $DATABASE_BROWSE
+JOIN LIBRARY $GEN_APPR
+JOIN LIBRARY $LIB_INSPECT
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $LIB_TEXT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LOGIN
+JOIN LIBRARY $RECURSIVE_PERFORM
+JOIN LIBRARY $RULE_COUNT
+JOIN LIBRARY $SP_TREE_LIB
+JOIN LIBRARY $VARIABLE_COLLECTION
+
+CONSTANT DATATYPE_BOOLEAN                       = "B"
+CONSTANT DATATYPE_TEXT                          = "T"
+CONSTANT DATATYPE_INTEGER                       = "I"
+CONSTANT DATATYPE_REAL                          = "R"
+CONSTANT DATATYPE_PACKED_DECIMAL                = "P"
+CONSTANT DATATYPE_DATE                          = "D"
+CONSTANT DATATYPE_INTERVAL                      = "N"
+CONSTANT DATATYPE_FORMAT                        = "F"
+
+CONSTANT SP_LOGIN_LOCK_FILENAME                 = "SMP$TEXTREPORTS:SP_LOGIN_LOCK.TXT"
+
+{**************************************************************************}
+
+GLOBAL ROUTINE batch_login_initialise
+
+      IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+            recursive_perform_initialise   ( )
+            login_initialise               ( )
+            variable_collection_initialise ( )
+            rule_count_initialise          ( )
+            batch_login_class_declare      ( )
+
+            SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+      ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_class_declare
+
+      DEFINE CLASS "BATCH_LOGIN"
+
+            INHERIT "RECURSIVE_PERFORM"
+
+            INITIALISATION
+
+            PROPERTIES
+                  "login_table"                ,{Table used for comparison    }
+                  "login_identity"             ,{Record used for comparison   }
+                  "root_sp_identity"           ,{Root sample plan node id     }
+                  "root_sp_version"            ,{Root sample plan node version}
+                  "trigger_max_one_rule"       ,
+                  "rule_only_based_count"      ,
+                  "check_rules"                ,
+                  "pre_login_edit"             ,
+                  "user_callback_library"      ,
+                  "reporting_library"          ,
+                  "rule_default_library"       ,
+                  "rule_default_routine"       ,
+                  "output_to_literal"          ,
+                  "output_to_file"             ,
+                  "output_file_name"           ,
+                  "post_parse_callback"        ,
+                  "post_login_callback"        ,
+                  "post_add_object_callback"   ,
+                  "post_sample_login_callback" ,
+                  "post_test_assign_callback"  ,
+                  "rule_validation_callback"   ,
+                  "post_create_dynamic_mlp"    ,
+                  "job"                        ,
+                  "login_time"                 ,
+                  "current_counter_object"     ,
+                  "current_depth"              ,
+                  "current_sibling_pos"        ,
+                  "node_trigger_path"          ,
+                  "login_collection"           ,
+                  "rule_counter_collection"    ,
+                  "criteria_value_cache"       ,
+                  "job_dynamic_mlp"            ,
+                  "current_mlp_schedule"       ,
+                  "version_display_mode"       ,
+                  "select_array_node_display"  ,
+                  "select_array_user_display"
+
+            ACTIONS
+                  "login"                      ,
+                  "evaluate_node"              ,
+                  "evaluate_node_rules"        ,
+                  "evaluate_node_rule"         ,
+                  "get_rule_outcome"           ,
+                  "use_rule_counter"           ,
+                  "create_sample_object"       ,
+                  "create_test_object"         ,
+                  "add_test_from_current"      ,
+                  "add_test_schedule"          ,
+                  "add_schedule_from_current"  ,
+                  "add_to_output"              ,
+                  "default_rule_handler"       ,
+                  "lock_sample_plan"           ,
+                  "unlock_sample_plan"
+
+      END CLASS
+
+      DEFINE CLASS "LOGIN_ENTITY_SP_TEST"
+
+            INHERIT LOGIN_ENTITY_TEST_CLASS
+            
+            PROPERTIES
+                  "trigger_analysis"
+                  
+      END CLASS
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_class_initialisation ( self )
+{
+*
+******************************************************************************}
+
+      self . login_identity               = EMPTY
+      self . login_table                  = EMPTY
+      self . trigger_max_one_rule         = TRUE
+      self . rule_only_based_count        = TRUE
+      self . check_rules                  = TRUE
+      self . pre_login_edit               = FALSE
+      self . reporting_library            = "$spl_output_user"
+      self . rule_default_library         = "$spl_callback_user"
+      self . rule_default_routine         = "rule_handler"
+      self . output_to_literal            = TRUE
+      self . output_to_file               = FALSE
+      self . output_file_name             = EMPTY
+      self . user_callback_library        = "$spl_callback_user"
+      self . post_parse_callback          = "post_parse"
+      self . post_login_callback          = "post_login"
+      self . post_add_object_callback     = "post_add_object"
+      self . post_sample_login_callback   = "post_sample_login"
+      self . post_test_assign_callback    = "post_test_assign"
+      self . rule_validation_callback     = "rule_validation"
+      self . post_create_dynamic_mlp      = "post_create_dynamic_mlp"
+      self . job                          = ""
+      self . current_counter_object       = EMPTY
+      self . current_depth                = 0
+      self . current_sibling_pos          = 0
+      self . node_trigger_path            = ""
+      self . version_display_mode         = DISPLAY_VERSION_HIGHEST
+
+      self . job_dynamic_mlp              = EMPTY
+
+      ARRAY self . select_array_node_display
+      ARRAY self . select_array_user_display
+
+      ARRAY self . current_mlp_schedule ARRAYSIZE ( 0, 2 )
+
+      CREATE OBJECT LOGIN_COLLECTION_CLASS , self . login_collection
+      self . login_collection . add_index ( "template" )
+
+      OBJECT_ASSIGN_UNCOUNTED ( self . login_collection . user_info, self )
+
+      CREATE OBJECT VARIABLE_COLLECTION_CLASS, self . criteria_value_cache
+
+      CREATE OBJECT "STD_OBJECT_DATABASE", self . rule_counter_collection
+
+      self . rule_counter_collection . initialise ( "rule_count" )
+
+      self . table                          = "sample_plan_header"
+      self . verify_forward_perform_routine = "verify_forward_routine"
+      self . callback_library               = GLOBAL( "CURRENT_LIBRARY" )
+      self . root_sp_identity               = SELECT sample_plan_header . identity
+                                                WHERE removeflag = FALSE
+                                                AND   parent_identity = ""
+                                                AND   ( status = APPR_APPROVED   OR
+                                                        is_approval_node = FALSE    )
+                                                ORDER ON version DESCENDING
+
+      self . root_sp_version = SELECT sample_plan_header . version
+
+      ARRAY self . select_array_first
+      ARRAY_SELECT_ADD ( self . select_array_first ,
+                         ARRAY_SELECT_EQ           ,
+                         "identity"                ,
+                         self . root_sp_identity   )
+
+      ARRAY_SELECT_ADD ( self . select_array_first ,
+                         ARRAY_SELECT_AND          ,
+                         EMPTY                     ,
+                         EMPTY                     )
+
+      ARRAY_SELECT_ADD ( self . select_array_first ,
+                         ARRAY_SELECT_EQ           ,
+                         "version"                 ,
+                         self . root_sp_version    )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE initialise_select_arrays( self )
+
+{
+*
+*
+******************************************************************************}
+
+      DECLARE criteria
+
+      sp_tree_lib_initialise_select_array( self . select_array_rest )
+
+      ARRAY criteria
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_PUSH , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ   , "STATUS", APPR_APPROVED )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_AND  , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_PUSH , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_LE   , "ACTIVATION_DATE", self . login_time )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_OR   , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ   , "ACTIVATION_DATE", NULL )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_POP  , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_POP  , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_OR   , EMPTY, EMPTY )
+
+      ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ   , "IS_APPROVAL_NODE", FALSE )
+
+      self . select_array_node_display = criteria
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_lock_sample_plan ( self )
+{
+*
+******************************************************************************}
+
+    DECLARE test_lock, form
+
+    form = EMPTY
+
+    REPEAT
+
+        test_lock = transfer_lock_server_file ( SP_LOGIN_LOCK_FILENAME )
+    
+        IF ( test_lock <> EMPTY ) THEN
+
+            IF ( form = EMPTY ) THEN
+
+                CREATE OBJECT "STD_FORM", form
+            
+                form . header       = "Wait for Sample Plan lock"
+                form . height       = 3
+                form . width        = 60
+                form . column       = 15
+                form . row          = 10
+                form . button_style = FORM_BUTTON_NONE
+
+                form . add_display ( "Waiting ..."           ,
+                                     1                       ,
+                                     2                       ,
+                                     PROMPT_RENDITION_NORMAL )
+
+                form . start_prompt ( )
+
+                window_set_status ( "Waiting for Sample Plan Lock" )
+
+            ENDIF
+
+            SLEEP FOR INTERVAL ( "0 00:00:01" )
+
+        ENDIF
+
+    UNTIL ( test_lock = EMPTY )
+    
+    IF form <> EMPTY THEN
+
+        form . stop_prompt ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_unlock_sample_plan ( self )
+{
+*
+******************************************************************************}
+
+    transfer_unlock_server_file ( SP_LOGIN_LOCK_FILENAME )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_login ( self )
+{
+*
+******************************************************************************}
+
+      DECLARE create_own_transaction, ok, context, user_ok
+      DECLARE old_audit_suppression
+
+      self . lock_sample_plan ( )
+
+      ok = TRUE
+     
+      IF IS_DATE(SELECT job_header.date_to_start) THEN
+          self . login_time = SELECT job_header.date_to_start
+          fm("self.login_time: ":self . login_time)
+      ELSE
+          self . login_time = NOW
+          fm("date_to_start: ":(SELECT job_header.date_to_start))
+      ENDIF  
+
+      old_audit_suppression = GLOBAL( "AUDIT_SUPPRESSION" )
+      SET GLOBAL "AUDIT_SUPPRESSION" TO "PROMPT"
+
+      create_own_transaction = NOT transaction_is_write ( )
+
+      initialise_select_arrays( self )
+
+      report_header( self )
+
+      IF ( self . root_sp_identity <> EMPTY ) THEN
+
+            self . variables . set_global( "login_status", TRUE )
+
+            self . variables . set       ( "found_block_outlet"  , FALSE  )
+            self . variables . set       ( "branch_version_limit", 1      )
+
+            self . perform ( "sample_plan_node_login"    ,
+                             GLOBAL( "CURRENT_LIBRARY" ) )
+                             
+            ok = self . variables . read( "login_status" )
+            
+      ELSE
+            report_error( self, GET_USER_MESSAGE ( "SP_LOGIN_NO_PLAN", 1 )  )
+            
+            ok = FALSE
+            
+      ENDIF
+
+      IF ok THEN
+
+            ok = lib_db_select_padded ( self . login_table, self . login_identity, TRUE )
+            
+      ENDIF
+      
+      IF ok AND VALID_FIELD( self . login_table, "node_trigger_path" ) THEN
+
+            ASSIGN 'self . login_table' . node_trigger_path = self . node_trigger_path
+
+      ENDIF
+
+      IF ok THEN
+         
+            IF ( self . post_parse_callback   <> EMPTY ) AND
+               ( self . user_callback_library <> EMPTY ) THEN
+
+                  CALL_ROUTINE self . post_parse_callback
+                        USING self
+                        RETURNING user_ok
+                        IN LIBRARY self . user_callback_library
+
+                  ok = ( user_ok <> FALSE )
+
+            ENDIF
+
+      ENDIF
+
+      IF ok AND self . pre_login_edit THEN
+
+            ok = self . login_collection . edit ( )
+      
+      ENDIF
+
+      IF ok THEN
+      
+            IF create_own_transaction THEN
+                  START WRITE TRANSACTION GET_USER_MESSAGE ( "SP_LOGIN_TRANS_LOGIN", 1 )
+            ENDIF
+
+            push_file_descriptor( self . login_table, context )
+
+            ok = self . login_collection . login ( self . job )
+
+            pop_file_descriptor( context )
+
+        {IF lock_state ( self . table ) = "SELECTED_WRITE" THEN }
+            UPDATE 'self . login_table'
+            self . rule_counter_collection . invoke_all ( "UPDATE" )
+        {ENDIF }
+      ENDIF
+
+      IF ok THEN      
+
+            IF ( self . post_login_callback   <> EMPTY ) AND
+               ( self . user_callback_library <> EMPTY ) THEN
+
+                  CALL_ROUTINE self . post_login_callback
+                        USING self
+                        RETURNING user_ok
+                        IN LIBRARY self . user_callback_library
+
+                  ok = ( user_ok <> FALSE )
+
+            ENDIF
+
+      ENDIF
+
+      IF create_own_transaction THEN
+            
+            IF ok THEN
+                  COMMIT
+            ELSE
+                  ROLLBACK
+            ENDIF
+      ENDIF
+      
+      self . unlock_sample_plan ( )
+
+      SET GLOBAL "AUDIT_SUPPRESSION" TO old_audit_suppression
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE verify_forward_routine(       tree            ,
+                                VALUE depth           ,
+                                VALUE sibling_pos     ,
+                                VALUE max_sibling_pos )
+{
+*
+******************************************************************************}
+
+        RETURN( sp_tree_lib_verify_forward_routine( tree            ,
+                                                    depth           ,
+                                                    sibling_pos     ,
+                                                    max_sibling_pos ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE sample_plan_node_login(       batch_login     ,
+                                VALUE depth           ,
+                                VALUE sibling_pos     ,
+                                VALUE max_sibling_pos )
+{
+*     Recursive Perform's Callback routine. Called for every node in the
+*     sample plan's decision tree.
+*
+******************************************************************************}
+
+      DECLARE conditional, continue_deeper, node_id
+      DECLARE parent_identity, node_can_trigger, vgl_library, vgl_routine
+      DECLARE pos, spec_set_identity, spec_set_version
+
+      continue_deeper  = FALSE
+      node_can_trigger = FALSE
+
+      batch_login . current_depth       = depth
+      batch_login . current_sibling_pos = sibling_pos
+
+      conditional     = SELECT sample_plan_header . conditional
+      parent_identity = SELECT sample_plan_header . parent_identity
+
+      IF ( conditional = "IF" ) OR ( sibling_pos = 1 )  THEN
+            batch_login . variables . set( "found_block_outlet", FALSE )
+      ENDIF
+
+      IF NOT batch_login . variables . read( "found_block_outlet" ) THEN
+
+            IF ( BLANK ( parent_identity ) ) THEN
+
+                  node_can_trigger = TRUE
+
+            ELSEIF ( conditional = "ELSE" ) THEN
+
+                  node_can_trigger = TRUE
+
+            ELSEIF ( conditional = "IF" ) OR ( conditional = "ELSEIF" ) THEN
+
+                  node_can_trigger = batch_login . evaluate_node( )
+
+            ENDIF
+
+            vgl_library = SELECT sample_plan_header . vgl_library
+            vgl_routine = SELECT sample_plan_header . vgl_routine
+
+            IF ( NOT BLANK ( vgl_library ) ) AND
+               ( NOT BLANK ( vgl_routine ) ) THEN
+
+                  CALL_ROUTINE vgl_routine
+                        USING batch_login, node_can_trigger
+                        IN LIBRARY vgl_library
+
+            ENDIF
+
+      ENDIF
+
+      report_node( batch_login, node_can_trigger )
+
+      IF node_can_trigger THEN
+
+            node_id = STRIP ( SELECT sample_plan_header . identity ) : "/" :
+                      STRIP ( SELECT sample_plan_header . version  )
+
+            batch_login . node_trigger_path = batch_login . node_trigger_path :
+                                              node_id : ","
+
+            spec_set_identity = SELECT sample_plan_header . spec_set_identity
+            spec_set_version  = SELECT sample_plan_header . spec_set_version
+
+            IF NOT BLANK( spec_set_identity ) THEN
+
+                  IF NOT exists_in_array ( batch_login . current_mlp_schedule ,
+                                           spec_set_identity                  ,
+                                           spec_set_version                   )
+
+                        pos = size_of_array( batch_login . current_mlp_schedule ) + 1
+                        batch_login . current_mlp_schedule[pos, 1] = spec_set_identity
+                        batch_login . current_mlp_schedule[pos, 2] = spec_set_version
+
+                  ENDIF
+
+            ENDIF
+
+            batch_login . evaluate_node_rules ( )
+
+            batch_login . variables . set( "found_block_outlet", TRUE )
+
+            continue_deeper = TRUE
+      ENDIF
+
+      RETURN ( continue_deeper )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_evaluate_node( batch_login )
+{
+*       Sample plan header record must be selected
+*
+******************************************************************************}
+
+      DECLARE table, start_table, field, test_value, datatype, node_can_trigger
+      DECLARE criteria_fields, criteria_operator, criteria_value, field_datatype
+      DECLARE old_format
+
+      node_can_trigger = FALSE
+
+      criteria_fields   = SELECT sample_plan_header . criteria_fields
+      criteria_operator = SELECT sample_plan_header . criteria_operator
+      criteria_value    = SELECT sample_plan_header . criteria_value
+
+      start_table = database_browse_get_base_table ( criteria_fields )
+      table       = database_browse_get_table      ( criteria_fields )
+      field       = database_browse_get_field      ( criteria_fields )
+
+      IF ( start_table = TOUPPER( batch_login . login_table ) ) OR
+         ( batch_login . login_identity = EMPTY               ) THEN
+
+            {*** get test value ***}
+
+            test_value = batch_login . criteria_value_cache . read( criteria_fields )
+
+            IF test_value = EMPTY THEN
+                  test_value = get_login_record_test_value( batch_login . login_identity ,
+                                                            criteria_fields              )
+
+                  batch_login . criteria_value_cache . set( criteria_fields, test_value )
+            ENDIF
+
+            datatype = SELECT sample_plan_header . criteria_datatype
+
+            IF datatype = DATATYPE_FORMAT THEN
+
+                  GET_FIELD_DETAILS 'table' . 'field', "DATA_TYPE", field_datatype
+
+                  datatype = translate_datatype( field_datatype )
+
+            ENDIF
+
+            test_value     = try_coercing_value( test_value     , datatype )
+            criteria_value = try_coercing_value( criteria_value , datatype )
+
+            old_format = GLOBAL ( "FORMAT_TEXT" ) 
+            SET FORMAT "99999999.9999999999"
+
+            IF ( NUMTEXT( test_value ) AND NUMTEXT( criteria_value ) ) THEN
+
+                  node_can_trigger = criteria_fulfilled( test_value       ,
+                                                         criteria_operator,
+                                                         criteria_value   )
+
+            ELSE
+
+                  node_can_trigger = criteria_fulfilled( STRIP( test_value )     ,
+                                                         criteria_operator       ,
+                                                         STRIP( criteria_value ) )
+
+            ENDIF
+
+            SET FORMAT old_format
+
+      ENDIF
+
+      RETURN( node_can_trigger )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE try_coercing_value( VALUE initial_value, VALUE datatype )
+{
+*     Returns 'initial value' after it has been coerced to the passed
+*     datatype. If it can't be coerced 'initial value' is returned untouched
+*
+******************************************************************************}
+
+      DECLARE coerced_value
+
+      coerced_value = coerce_value( initial_value, datatype )
+
+      IF coerced_value = ERROR THEN
+            coerced_value = initial_value
+      ENDIF
+
+      RETURN( coerced_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE translate_datatype( VALUE datatype )
+{
+*
+******************************************************************************}
+
+      DECLARE translated_datatype
+
+      translated_datatype = ERROR
+
+      IF datatype = "Text" THEN
+            translated_datatype = DATATYPE_TEXT
+
+      ELSEIF datatype = "Integer" THEN
+            translated_datatype = DATATYPE_INTEGER
+
+      ELSEIF datatype = "Real" THEN
+            translated_datatype = DATATYPE_REAL
+
+      ELSEIF datatype = "Packed decimal" THEN
+            translated_datatype = DATATYPE_PACKED_DECIMAL
+
+      ELSEIF datatype = "Date" THEN
+            translated_datatype = DATATYPE_DATE
+
+      ELSEIF datatype = "Interval" THEN
+            translated_datatype = DATATYPE_INTERVAL
+
+      ELSEIF datatype = "Boolean" THEN
+            translated_datatype = DATATYPE_BOOLEAN
+
+      ENDIF
+
+      RETURN( translated_datatype )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE coerce_value( VALUE initial_value, VALUE datatype )
+{
+*     Returns 'initial value' after it has been coerced to the passed
+*     datatype. If it can't be coerced ERROR is returned
+*
+******************************************************************************}
+
+      DECLARE coerced_value
+
+      coerced_value = ERROR
+
+      IF datatype = DATATYPE_TEXT THEN
+
+            coerced_value = STRING( initial_value )
+
+      ELSEIF datatype = DATATYPE_INTEGER THEN
+
+            IF NUMTEXT( initial_value ) THEN
+                  coerced_value = TRUNC( NUMERIC( initial_value ) )
+            ENDIF
+
+      ELSEIF datatype = DATATYPE_REAL THEN
+
+            IF NUMTEXT( initial_value ) THEN
+                  coerced_value = NUMERIC( initial_value )
+            ENDIF
+
+      ELSEIF datatype = DATATYPE_PACKED_DECIMAL THEN
+
+            IF NUMTEXT( initial_value ) THEN
+                  coerced_value = PACKED_DECIMAL( initial_value )
+            ENDIF
+
+      ELSEIF datatype = DATATYPE_DATE THEN
+
+            IF DATE( initial_value ) <> ERROR THEN
+                  coerced_value = DATE( initial_value )
+            ENDIF
+
+      ELSEIF datatype = DATATYPE_INTERVAL THEN
+
+            IF IS_INTERVAL( initial_value ) THEN
+                  coerced_value = INTERVAL( initial_value )
+            ENDIF
+
+      ELSEIF datatype = DATATYPE_BOOLEAN THEN
+
+            initial_value = TOUPPER( STRIP( initial_value ) )
+
+            IF ( initial_value = FALSE ) OR ( initial_value = TRUE ) THEN
+               
+                  coerced_value = ( initial_value = TRUE )
+                  
+            ENDIF
+
+      ENDIF
+
+      RETURN( coerced_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_login_record_test_value( VALUE initial_identity ,
+                                     VALUE fields           )
+{
+*     Returns the value in the record pointed to by fields when starting from
+*     the record initial_identity.
+*     eg If fields = 'JOB_HEADER.PRODUCT_ID.COUNTRY' then the value returned
+*     will be that of the login record's product's country
+*
+******************************************************************************}
+
+      DECLARE table, field, dot_pos, test_value, identity, context
+
+      test_value = EMPTY
+
+      dot_pos = INDEX( fields, "." )
+
+      IF dot_pos > 0 THEN
+            table = LEFTSTRING( fields, dot_pos - 1 )
+      ELSE
+            table = fields
+      ENDIF
+
+      push_file_descriptor( table, context )
+
+      identity = initial_identity
+
+      IF ( valid_table( table ) ) THEN
+
+            dot_pos = INDEX( fields, "." )
+            fields = RIGHTSTRING( fields, STRINGLENGTH( fields ) - dot_pos )
+
+            WHILE INDEX( fields, "." ) > 0 DO
+
+                  field = LEFTSTRING( fields, INDEX( fields, "." ) - 1 )
+
+                  IF lib_db_select_padded ( table, identity, FALSE ) THEN
+
+                        identity = SELECT 'table' . 'field'
+
+                  ENDIF
+
+                  GET_FIELD_DETAILS 'table' . 'field', "LINK_TABLE", table
+
+                  fields = RIGHTSTRING( fields, STRINGLENGTH( fields ) - INDEX( fields, "." ) )
+
+            ENDWHILE
+
+            lib_db_select_padded ( table, identity, FALSE )
+
+            test_value = SELECT 'table' . 'fields'
+
+      ENDIF
+
+      pop_file_descriptor( context )
+
+      RETURN ( test_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE criteria_fulfilled( VALUE test_value        ,
+                            VALUE criteria_operator ,
+                            VALUE criteria_value    )
+{
+*     Performs a comparison between test_value and criteria_value using
+*     criteria operator and returning a boolean indicating the result
+*
+******************************************************************************}
+
+      DECLARE fulfils
+
+      IF criteria_operator = "EQ" THEN
+
+            fulfils = ( test_value = criteria_value )
+
+      ELSEIF criteria_operator = "NE" THEN
+
+            fulfils = ( test_value <> criteria_value )
+
+      ELSEIF criteria_operator = "GE" THEN
+
+            fulfils = ( test_value >= criteria_value )
+
+      ELSEIF criteria_operator = "GT" THEN
+
+            fulfils = ( test_value > criteria_value )
+
+      ELSEIF criteria_operator = "LE" THEN
+
+            fulfils = ( test_value <= criteria_value )
+
+      ELSEIF criteria_operator = "LT" THEN
+
+            fulfils = ( test_value < criteria_value )
+
+      ELSEIF criteria_operator = "LK" THEN
+
+            fulfils = lib_text_is_like( test_value, criteria_value, "_", "%" )
+
+      ELSEIF criteria_operator = "NL" THEN
+
+            fulfils = NOT lib_text_is_like( test_value, criteria_value, "_", "%" )
+
+      ELSE
+
+            fulfils = FALSE
+
+      ENDIF
+
+      RETURN ( fulfils )
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_evaluate_node_rules( self )
+{
+*
+******************************************************************************}
+
+      DECLARE continue, sph_id, sph_ve, rule
+
+      continue = TRUE
+
+      sph_id = SELECT sample_plan_header . identity
+      sph_ve = SELECT sample_plan_header . version
+
+      rule = SELECT sample_plan_rule . rule_id
+                  WHERE identity = sph_id
+                  AND   version  = sph_ve
+                  ORDER ON order_number
+
+      WHILE ( rule <> EMPTY ) AND ( continue = TRUE ) DO
+
+            continue = self . evaluate_node_rule( )
+
+            NEXT sample_plan_rule
+            rule = SELECT sample_plan_rule . rule_id
+
+      ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_evaluate_node_rule( self )
+{
+*
+******************************************************************************}
+
+      DECLARE valid, rule_valid, continue, sph_id, sph_ve, rule_id, analysis_no
+
+      continue = TRUE
+
+      IF self . rule_only_based_count THEN
+
+            IF self . check_rules THEN
+                  rule_valid = self . get_rule_outcome( )
+
+                  IF ( rule_valid ) THEN
+                        self . current_counter_object . success( )
+                        continue = NOT self . trigger_max_one_rule
+                  ENDIF
+            ELSE
+                  rule_valid = TRUE
+            ENDIF
+
+      ENDIF
+
+      sph_id  = SELECT sample_plan_header . identity
+      sph_ve  = SELECT sample_plan_header . version
+      rule_id = SELECT sample_plan_rule . rule_id
+
+      analysis_no = SELECT sample_plan_entry . entry_number
+                          WHERE identity = sph_id
+                          AND   version  = sph_ve
+                          ORDER ON order_number
+
+      WHILE ( analysis_no <> EMPTY ) DO
+
+            valid = SELECT sample_plan_matrix . valid
+                        WHERE identity              = sph_id
+                        AND   version               = sph_ve
+                        AND   rule_id               = rule_id
+                        AND   analysis_entry_number = analysis_no
+
+            IF ( valid = TRUE ) THEN
+
+                  IF self . check_rules THEN
+
+                        IF NOT self . rule_only_based_count THEN
+                              rule_valid = self . get_rule_outcome( )
+                        ENDIF
+
+                  ELSE
+                        rule_valid = TRUE
+                  ENDIF
+
+                  report_rule( self, rule_valid )
+
+                  IF ( rule_valid ) THEN
+
+                        IF self . check_rules THEN
+                              IF NOT self . rule_only_based_count THEN
+                                    self . current_counter_object . success( )
+                              ENDIF
+                        ENDIF
+
+                        add_to_login_object( self )
+
+                  ENDIF
+
+            ENDIF
+
+            NEXT sample_plan_entry
+            analysis_no = SELECT sample_plan_entry . entry_number
+
+      ENDWHILE
+
+      RETURN ( continue )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_get_rule_outcome( self )
+{
+*
+******************************************************************************}
+
+      DECLARE vgl_library, vgl_routine, rule_valid, rule_id
+
+      self . current_counter_object = self . use_rule_counter( )
+
+      rule_id = SELECT sample_plan_rule . rule_id
+
+      vgl_library = SELECT rule . vgl_library
+                          WHERE identity = rule_id
+
+      IF ( NOT BLANK( vgl_library ) ) THEN
+
+            vgl_routine = SELECT rule . vgl_routine
+
+            IF ( BLANK( vgl_routine ) ) THEN
+                  vgl_routine = rule_id
+            ENDIF
+
+      ELSE
+
+            vgl_library = self . rule_default_library
+            vgl_routine = self . rule_default_routine
+
+      ENDIF
+
+      CALL_ROUTINE vgl_routine
+            USING self
+            RETURNING rule_valid
+            IN LIBRARY vgl_library
+
+      IF ( self . rule_validation_callback <> EMPTY ) AND
+         ( self . user_callback_library <> EMPTY    ) THEN
+
+          CALL_ROUTINE self . rule_validation_callback
+                  USING self, rule_valid
+                  IN LIBRARY self . user_callback_library
+
+      ENDIF
+
+      RETURN( rule_valid = TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_use_rule_counter( self )
+{
+*
+******************************************************************************}
+
+      DECLARE node_key, base, error_message, record_locked, counter_object
+      DECLARE rule_id, analysis_number
+
+      rule_id         = SELECT sample_plan_rule . rule_id
+      analysis_number = SELECT sample_plan_entry . entry_number
+
+      node_key = lib_db_padded_to_array( "sample_plan_header"                 ,
+                                         SELECT sample_plan_header . identity )
+
+      IF self . rule_only_based_count THEN
+            base = node_key[1]
+      ELSE
+            base = node_key[1] : analysis_number
+      ENDIF
+
+      CREATE OBJECT "RULE_COUNT", counter_object
+      counter_object . time = self . login_time
+      record_locked = NOT counter_object . use( rule_id, base )
+
+      IF record_locked THEN
+
+            flash_message( GET_USER_MESSAGE ( "SP_LOGIN_ERROR", 1 ) , TRUE )
+
+            error_message = GET_USER_MESSAGE ( "SP_LOGIN_ERROR", 1 )
+
+            report_error ( self, error_message )
+
+            self . variables . set( "login_status", FALSE )
+      ELSE
+
+            self . rule_counter_collection . add ( counter_object )
+
+      ENDIF
+
+      RETURN( counter_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_sample_template_to_use( self )
+{
+*
+******************************************************************************}
+
+      DECLARE template_to_use, job_sample_template, template_id
+
+      template_id = SELECT sample_plan_entry . template_id
+
+      IF BLANK( template_id ) THEN
+
+            job_sample_template = SELECT job_header . sample_template
+                                      WHERE job_name = self . job
+
+            IF ( job_sample_template <> EMPTY     ) AND
+               ( NOT BLANK( job_sample_template ) ) THEN
+
+                  template_to_use = job_sample_template
+
+            ELSE
+
+                  template_to_use = "BLANK"
+
+            ENDIF
+
+      ELSE
+
+            template_to_use = template_id
+
+      ENDIF
+
+      RETURN( template_to_use )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_create_sample_object( self )
+{
+*
+******************************************************************************}
+
+      DECLARE sample_object, template_id, sample_syntax_template
+
+      template_id = get_sample_template_to_use( self )
+
+      CREATE OBJECT LOGIN_ENTITY_SAMPLE_CLASS, sample_object
+
+      sample_object . template            = template_id
+      sample_object . vgl_library         = GLOBAL( "CURRENT_LIBRARY" )
+      sample_object . post_login_callback = "post_sample_login_callback"
+
+      {*** if specified, set sample's syntax to that specified by job ***}
+      
+      sample_syntax_template = SELECT job_header . sample_syntax_id
+                                      WHERE job_name = self . job
+                                      
+      IF NOT BLANK( sample_syntax_template ) THEN
+      
+            sample_object . syntax = sample_syntax_template
+            
+      ENDIF
+
+      CREATE OBJECT LOGIN_COLLECTION_CLASS, sample_object . login_collection
+      OBJECT_ASSIGN_UNCOUNTED ( sample_object . login_collection . user_info, self )
+      sample_object . login_collection . user_info = self
+
+      sample_object . login_collection . add_index( "trigger_analysis" )
+      
+      self . login_collection . add ( sample_object )
+
+      RETURN( sample_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_create_test_object( self, sample_object )
+{
+* Creates a test object for the current context
+*
+* Parameters : self , the sample plan batch login object
+*
+******************************************************************************}
+
+      DECLARE test_object, column_set, field_name, field_value
+      DECLARE trigger_rule, trigger_analysis
+
+      CREATE OBJECT "LOGIN_ENTITY_SP_TEST", test_object
+
+      trigger_analysis = SELECT sample_plan_entry . identity    :
+                         SELECT sample_plan_entry . version     :
+                         SELECT sample_plan_entry . entry_number
+
+      test_object . trigger_analysis = trigger_analysis
+
+      test_object . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+      test_object . post_login_callback = "post_test_assign_callback"
+
+      trigger_rule = SELECT rule . identity
+
+      test_object . population_fields . set( "TRIGGER_ANALYSIS" ,
+                                             trigger_analysis   )
+
+      test_object . population_fields . set( "TRIGGER_RULE" ,
+                                             trigger_rule   )
+
+      column_set = SELECT sample_plan_header . column_set
+
+      field_name = SELECT column_set_entry . field_name
+                          WHERE identity   = column_set
+                          AND   field_type = "TEST_INFO"
+                          ORDER ON order_number
+
+      WHILE field_name <> EMPTY DO
+
+            IF valid_field( "SAMPLE_PLAN_ENTRY", field_name ) THEN
+
+                  field_value = SELECT sample_plan_entry . 'field_name'
+
+                  test_object . population_fields . set( field_name  ,
+                                                         field_value )
+
+            ENDIF
+
+            NEXT column_set_entry
+            field_name = SELECT column_set_entry . field_name
+
+      ENDWHILE
+
+      sample_object . login_collection . add ( test_object )
+
+      RETURN( test_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_add_test_from_current( self, sample_object )
+{
+* Adds the currently selected sample plan entry analysis to the passed sample
+* object
+*
+* Parameters : self          , the sample plan batch login object
+*              sample_object , the Login Entity Sample object
+*
+******************************************************************************}
+
+      DECLARE test_object, replicates, analysis_id, analysis_version
+      DECLARE instrument_type, instrument, component_list, trigger_analysis
+
+      test_object = EMPTY
+
+      trigger_analysis = SELECT sample_plan_entry . identity    :
+                         SELECT sample_plan_entry . version     :
+                         SELECT sample_plan_entry . entry_number
+
+      IF sample_object . login_collection . get_by_index( "trigger_analysis" ,
+                                                           trigger_analysis  ) = EMPTY THEN
+
+            test_object = self . create_test_object( sample_object )
+            
+            analysis_id       = SELECT sample_plan_entry . analysis_id
+            analysis_version  = SELECT sample_plan_entry . analysis_version
+
+            instrument        = SELECT sample_plan_entry . instrument
+            instrument_type   = SELECT sample_plan_entry . instrument_type
+            component_list    = SELECT sample_plan_entry . component_list
+            replicates        = SELECT sample_plan_entry . replicates
+
+            test_object . replicates       = replicates
+            test_object . analysis         = analysis_id
+            test_object . analysis_version = analysis_version
+
+            test_object . population_fields . set( "INSTRUMENT" ,
+                                                   instrument   )
+
+            test_object . population_fields . set( "INSTRUMENT_TYPE" ,
+                                                   instrument_type   )
+
+            test_object . population_fields . set( "COMPONENT_LIST" ,
+                                                   component_list   )
+
+            IF ( self . post_add_object_callback  <> EMPTY ) AND
+               ( self . user_callback_library     <> EMPTY ) THEN
+
+                  CALL_ROUTINE self . post_add_object_callback
+                        USING self, sample_object, test_object
+                        IN LIBRARY self . user_callback_library
+
+            ENDIF
+
+      ENDIF
+
+      RETURN( test_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_add_test_schedule(       self          ,
+                                                    sample_object ,
+                                              VALUE test_schedule )
+{
+* Adds the passed test schedule to the passed sample object
+*
+* Parameters : self          , the sample plan batch login object
+*              sample_object , the Login Entity Sample object
+*              test_schedule , test schedul identity
+*
+******************************************************************************}
+
+      DECLARE analysis_id, instrument, instrument_type, component_list
+      DECLARE test_object, context
+
+      push_file_descriptor( "test_sched_entry", context )
+
+      analysis_id = SELECT test_sched_entry . analysis_id
+                  WHERE identity = test_schedule
+                  ORDER ON order_num
+
+      WHILE analysis_id <> EMPTY DO
+
+            IF ( SELECT test_sched_entry . is_analysis = FALSE ) THEN
+
+                  self . add_test_schedule( sample_object, analysis_id )
+
+            ELSE
+
+                  test_object = self . create_test_object( sample_object )
+
+                  IF test_object <> EMPTY THEN
+                  
+                        instrument      = SELECT test_sched_entry . instrument
+                        instrument_type = SELECT test_sched_entry . instrument_type
+                        component_list  = SELECT test_sched_entry . component_list
+                  
+                        test_object . analysis         = analysis_id
+                  
+                        test_object . population_fields . set( "INSTRUMENT" ,
+                                                               instrument   )
+                  
+                        test_object . population_fields . set( "INSTRUMENT_TYPE" ,
+                                                               instrument_type   )
+                  
+                        test_object . population_fields . set( "COMPONENT_LIST" ,
+                                                               component_list   )
+                                  
+                        IF ( self . post_add_object_callback  <> EMPTY ) AND
+                           ( self . user_callback_library     <> EMPTY ) THEN
+                  
+                              CALL_ROUTINE self . post_add_object_callback
+                                    USING self, sample_object, test_object
+                                    IN LIBRARY self . user_callback_library
+                  
+                        ENDIF
+                  
+                  
+                  ENDIF
+
+            ENDIF
+
+            NEXT test_sched_entry
+            analysis_id = SELECT test_sched_entry . analysis_id
+
+      ENDWHILE
+      
+      pop_file_descriptor( context )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_add_schedule_from_current( self, sample_object )
+{
+* Adds the currently selected sample plan entry test schedule to the passed
+* sample object
+*
+* Parameters : self          , the sample plan batch login object
+*              sample_object , the Login Entity Sample object
+*
+******************************************************************************}
+
+      DECLARE test_schedule
+
+      test_schedule = SELECT sample_plan_entry . test_schedule
+
+      self . add_test_schedule( sample_object, test_schedule )
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE add_to_login_object( batch_login )
+{
+*
+******************************************************************************}
+
+      DECLARE template_id, sample_object, is_analysis
+
+      template_id = get_sample_template_to_use( batch_login )
+
+      sample_object = batch_login . login_collection . get_by_index( "template"  ,
+                                                                     template_id )
+
+      IF sample_object = EMPTY THEN
+
+            sample_object = batch_login . create_sample_object( )
+
+      ENDIF
+
+      is_analysis = SELECT sample_plan_entry . is_analysis
+
+      IF is_analysis THEN
+            batch_login . add_test_from_current( sample_object )
+      ELSE
+            batch_login . add_schedule_from_current( sample_object )
+      ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_matching_mlp( batch_login )
+{
+*
+*
+******************************************************************************}
+
+      DECLARE header_select, entry_select, entry_link_array, found_array
+      DECLARE entry_field_array, ok
+
+      ARRAY header_select
+      ARRAY entry_select
+
+      ARRAY entry_link_array
+      entry_link_array[1,1] = "identity"
+
+      ARRAY entry_field_array
+      entry_field_array[1] = "mlp_id"
+      entry_field_array[2] = "mlp_version"
+
+      IF lib_db_get_header_with_entries( "mlp_header"                       ,
+                                         "mlp_schedule"                     ,
+                                         TRUE                               ,
+                                         TRUE                               ,
+                                         header_select                      ,
+                                         entry_select                       ,
+                                         entry_link_array                   ,
+                                         entry_field_array                  ,
+                                         batch_login . current_mlp_schedule ,
+                                         found_array                        ) > 0 THEN
+
+            ok = TRUE
+
+      ELSE
+
+            ok = create_matching_mlp( batch_login )
+
+            IF NOT ok THEN
+                  report_error ( batch_login, GET_USER_MESSAGE ( "SP_LOGIN_ERROR_DYN_MLP", 1 ) )
+
+                  flash_message( GET_USER_MESSAGE ( "SP_LOGIN_ERROR_DYN_MLP", 1 ), TRUE )
+            ENDIF
+
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE create_matching_mlp( batch_login )
+{
+*     Creates an MLP and a schedule that contains the mlps defined in
+*     batch_login . current_mlp_schedule
+*
+******************************************************************************}
+
+      DECLARE ok, do_commit, new_id, errors, order_number, schedule_key
+      DECLARE padded_schedule_key, mlp_key, padded_mlp_key, match_array
+      DECLARE id_unique
+
+      match_array = batch_login . current_mlp_schedule
+
+      ok = TRUE
+
+      IF NOT transaction_is_write( ) THEN
+            START WRITE TRANSACTION GET_USER_MESSAGE ( "SP_LOGIN_TRANS_DYN_MMLP", 1 )
+            do_commit = TRUE
+      ELSE
+            do_commit = FALSE
+      ENDIF
+
+      REPEAT
+            new_id = GET SYNTAX( "MLP" )
+
+            id_unique = ( SELECT mlp_header . identity
+                            WHERE identity = new_id
+                            AND   product_version = PACKED_DECIMAL( 1 ) ) = EMPTY
+
+      UNTIL id_unique
+
+      ARRAY mlp_key
+      mlp_key[1] = new_id
+      mlp_key[2] = PACKED_DECIMAL( 1 )
+
+      padded_mlp_key = lib_db_array_to_padded ( "mlp_header" ,
+                                                mlp_key      )
+
+      RESERVE ENTRY mlp_header, padded_mlp_key, errors
+
+      ok = ok AND ( errors = EMPTY )
+
+      IF ok THEN
+
+            ASSIGN mlp_header . description = GET_USER_MESSAGE ( "SP_LOGIN_MLP_DESC", 1 )  : NOW
+            ASSIGN mlp_header . modifiable  = FALSE
+
+            order_number = 1
+            WHILE ( order_number <= size_of_array( match_array ) ) AND ( ok ) DO
+
+                  ARRAY schedule_key
+                  schedule_key[1] = new_id
+                  schedule_key[2] = PACKED_DECIMAL( 1 )
+                  schedule_key[3] = match_array[order_number, 1]
+
+                  padded_schedule_key = lib_db_array_to_padded ( "mlp_schedule" ,
+                                                                 schedule_key   )
+
+                  RESERVE ENTRY mlp_schedule, padded_schedule_key, errors
+
+                  ok = ok AND ( errors = EMPTY )
+
+                  IF ok THEN
+
+                        ASSIGN mlp_schedule . mlp_version = match_array[order_number, 2]
+                        ASSIGN mlp_schedule . order_num   = order_number
+
+                        UPDATE mlp_schedule
+                  ENDIF
+
+                  order_number = order_number + 1
+
+            ENDWHILE
+
+            CALL_ROUTINE batch_login . post_create_dynamic_mlp
+                  IN LIBRARY batch_login . user_callback_library
+
+            UPDATE mlp_header
+
+      ENDIF
+
+      IF do_commit THEN
+            IF ok THEN
+                  COMMIT
+            ELSE
+                  ROLLBACK
+            ENDIF
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE post_sample_login_callback ( login_object )
+{
+*       Called after the sample is physically logged in
+*
+*******************************************************************************}
+
+      DECLARE batch_login, ok, user_ok
+
+      ok = TRUE
+
+      batch_login = login_object . collection . user_info
+
+      IF batch_login . job_dynamic_mlp = EMPTY THEN
+
+            IF ( size_of_array ( batch_login . current_mlp_schedule ) > 0 ) THEN
+
+                  ok = get_matching_mlp ( batch_login )
+            
+            IF ok THEN
+                  batch_login . job_dynamic_mlp = SELECT mlp_header . identity
+            ENDIF
+
+            ENDIF
+
+      ENDIF
+
+      IF ok THEN
+
+            IF batch_login . job_dynamic_mlp <> EMPTY THEN
+                  ASSIGN sample . dynamic_product = batch_login . job_dynamic_mlp
+            ENDIF
+
+            UPDATE sample
+
+            IF ( batch_login . post_sample_login_callback <> EMPTY ) AND
+               ( batch_login . user_callback_library <> EMPTY      ) THEN
+
+                  CALL_ROUTINE batch_login . post_sample_login_callback
+                        USING batch_login, login_object
+                              RETURNING user_ok
+                        IN LIBRARY batch_login . user_callback_library
+
+                  ok = ok AND ( user_ok = TRUE )
+
+            ENDIF
+      
+      ENDIF
+
+      IF ok THEN
+            report_sample( batch_login, login_object )
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE post_test_assign_callback ( login_object )
+{
+*       Called after the test is physically logged in
+*
+*******************************************************************************}
+
+      DECLARE batch_login, ok, user_ok
+
+      ok = TRUE
+
+      batch_login = login_object . collection . user_info
+
+      IF ( batch_login . post_test_assign_callback <> EMPTY ) AND
+         ( batch_login . user_callback_library     <> EMPTY ) THEN
+
+            CALL_ROUTINE batch_login . post_test_assign_callback
+                  USING batch_login, login_object
+                  RETURNING user_ok
+                  IN LIBRARY batch_login . user_callback_library
+
+            ok = ok AND ( user_ok = TRUE )
+
+      ENDIF
+
+      IF ok THEN
+            report_test( batch_login, login_object )
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_login_action_add_to_output ( batch_login, VALUE text )
+{
+*
+*******************************************************************************}
+
+      DECLARE new_file_name
+
+      IF ( batch_login . output_to_file = TRUE ) THEN
+
+            IF ( batch_login . output_file_name = EMPTY ) THEN
+
+                  new_file_name = batch_login . job
+                  new_file_name = SUBSTITUTE ( new_file_name , " " , "" )
+                  new_file_name = SUBSTITUTE ( new_file_name , "." , "_" )
+                  new_file_name = TOLOWER ( new_file_name )
+                  new_file_name = "smp$userfiles:" : new_file_name : ".job"
+
+                  batch_login . output_file_name = new_file_name
+
+            ENDIF
+
+            IF FILE EXISTS ( batch_login . output_file_name ) THEN
+                  FILE EXTEND batch_login . output_file_name
+            ELSE
+                  FILE CREATE batch_login . output_file_name
+            ENDIF
+
+            FILE WRITE batch_login . output_file_name , text
+            FILE CLOSE batch_login . output_file_name
+
+      ENDIF
+
+      IF ( batch_login . output_to_literal ) THEN
+
+            add_to_literal ( text )
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_header ( batch_login )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_header"
+                  USING batch_login
+                  IN LIBRARY batch_login . reporting_library
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_node ( batch_login, VALUE node_can_trigger )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_node"
+                  USING batch_login, node_can_trigger
+                  IN LIBRARY batch_login . reporting_library
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_rule ( batch_login, VALUE rule_valid )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_rule"
+                  USING batch_login, rule_valid
+                  IN LIBRARY batch_login . reporting_library
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_sample ( batch_login, login_object )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_sample"
+                  USING batch_login, login_object
+                  IN LIBRARY batch_login . reporting_library
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_test ( batch_login, login_object )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_test"
+                  USING batch_login, login_object
+                  IN LIBRARY batch_login . reporting_library
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE report_error ( batch_login, VALUE error_text )
+{
+*
+*******************************************************************************}
+
+      IF batch_login . reporting_library <> EMPTY THEN
+
+            CALL_ROUTINE "report_error"
+                  USING batch_login, error_text
+                  IN LIBRARY batch_login . reporting_library
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_to_literal ( VALUE text )
+{
+*
+*******************************************************************************}
+
+LITERAL
+$text__________________________________________________________________________
+$ENDLITERAL
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE exists_in_array ( array_2d, VALUE find1, VALUE find2 )
+{
+*
+*******************************************************************************}
+
+      DECLARE count, found
+
+      found = FALSE
+
+      count = 1
+      WHILE ( count <= size_of_array( array_2d ) ) AND NOT found DO
+
+            IF ( array_2d[count, 1] = find1 ) AND ( array2d[count, 2] = find2 ) THEN
+                  found = TRUE
+            ELSE
+                  count = count + 1
+            ENDIF
+
+      ENDWHILE
+
+      RETURN( found )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_login_action_default_rule_handler( batch_login )
+{
+*
+******************************************************************************}
+
+      DECLARE usage_count, fulltest_count, fulltest_date, start_date
+      DECLARE frequency, interval_period, probation_period, probation_number
+      DECLARE valid, counter
+
+      counter = batch_login . current_counter_object
+
+      usage_count    = SELECT rule_count . usage_count    IN OBJECT counter
+      fulltest_count = SELECT rule_count . fulltest_count IN OBJECT counter
+      fulltest_date  = SELECT rule_count . fulltest_date  IN OBJECT counter
+      start_date     = SELECT rule_count . start_date     IN OBJECT counter
+
+      frequency        = SELECT rule . frequency
+      interval_period  = SELECT rule . interval
+      probation_period = SELECT rule . probation_period
+      probation_number = SELECT rule . probation_number
+
+      valid = FALSE
+
+      IF ( batch_login . login_time - start_date ) <= ( probation_period ) THEN
+            valid = TRUE
+      ENDIF
+
+      IF ( usage_count ) <= ( probation_number ) THEN
+            valid = TRUE
+      ENDIF
+
+      IF frequency > 0 THEN
+
+            IF ( usage_count - fulltest_count ) >= ( frequency ) THEN
+                  valid = TRUE
+            ENDIF
+            
+      ENDIF
+
+      IF interval_period > 0 THEN
+
+            IF fulltest_date = DATE( "" ) THEN
+                  valid = TRUE
+            ELSE
+                  IF ( batch_login . login_time - fulltest_date ) >= ( interval_period ) THEN
+                        valid = TRUE
+                  ENDIF
+            ENDIF
+      ENDIF
+
+      RETURN ( valid )
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

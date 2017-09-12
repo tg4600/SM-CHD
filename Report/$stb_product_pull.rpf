@@ -1,0 +1,3288 @@
+{******************************************************************************
+*
+* Module Name   : $STB_PRODUCT_PULL
+*
+* Purpose       :
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : No
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_FLAGS
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+
+JOIN LIBRARY $EXPLORER_UTILS
+JOIN LIBRARY $LAB
+JOIN LIBRARY $LABTABLIB
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_INVENTORY
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_GRID
+JOIN LIBRARY $PROMPT_SPLIT
+JOIN LIBRARY $PROMPT_QTY_UNIT
+JOIN LIBRARY $PROMPT_TOOLBAR
+JOIN LIBRARY $STB_GLBL
+JOIN LIBRARY $STB_LIB
+JOIN LIBRARY $STB_LOGIN
+
+GLOBAL CONSTANT PULL_PRODUCT_CLASS   = "INVENTORY_FORM" { back compat only }
+GLOBAL CONSTANT INVENTORY_FORM_CLASS = "INVENTORY_FORM"
+GLOBAL CONSTANT INVENTORY_GRID_CLASS = "INVENTORY_GRID"
+GLOBAL CONSTANT PRODUCT_GRID_CLASS   = "PRODUCT_GRID"
+GLOBAL CONSTANT CONDITION_GRID_CLASS = "CONDITION_GRID"
+
+CONSTANT TOTAL_DISPLAY_POS         = 1
+
+CONSTANT FORMAT_3_DP = "999999999.999"
+
+{*************************************************************************}
+
+ROUTINE inventory_form_define_classes
+
+{
+*
+**************************************************************************}
+
+      set_up_std_prompt_split_class  ( )
+      prompt_qty_unit_initialisation ( )
+      prompt_toolbar_initialise      ( )
+      set_up_std_prompt_grid_class   ( )
+
+      DEFINE CLASS INVENTORY_FORM_CLASS
+
+            INITIALISATION
+
+            INHERIT PROMPT_CLASS_FORM
+
+            PROPERTIES
+                  "parent_matrix"         ,
+                  "product_object"        ,
+                  "condition_object"      ,
+                  "new_product"           ,
+                  "layer_pull_amount"     ,
+                  "condition_pull_amount" ,
+                  "header_id"             ,
+                  "product_pulls"         ,
+                  "layer_identities"      ,
+                  "product_unit"          ,
+                  "original_pull_amount"  ,
+                  "original_pull_unit"    ,
+                  "form_layer"            ,
+                  "form_condition"        ,
+                  "layer_grid"            ,
+                  "condition_grid"        ,
+                  "toolbar"
+                  
+            ACTIONS
+                  "get_data"                          ,
+                  "create_splitter"                   ,
+                  "create_layer_grid"                 ,
+                  "create_conditions_grid"            ,
+                  "create_total_product_details"      ,
+                  "re_overage_condition"              ,
+                  "re_overage_layer"                  ,
+                  "re_overage_all"                    ,
+                  "new_condition_object"              ,
+                  "new_layer_object"                  ,
+                  "get_layer_pull_amount"             ,
+                  "get_total_pull_amount"             ,
+                  "get_batch_availability"            ,
+                  "get_batch_required"                ,
+                  "calculate_overage"                 ,
+                  "get_current_layer_pull_amount"     ,
+                  "get_current_layer_identity"        ,
+                  "get_current_condition_identity"    ,
+                  "update_all"                        ,
+                  "update_amount_displays"            ,
+                  "do_batch_availability_scenario"    ,
+                  "check_batch_availability_scenario" ,
+                  "create_missing_objects"            ,
+                  "is_modifiable"                     ,
+                  "end_prompt"                        ,
+                  "create_toolbar"                    ,
+                  "add_toolitems"                     ,
+                  "option_re_overage_current_condition",
+                  "option_re_overage_current_layer",
+                  "option_re_overage_current_matrix",
+                  "start_prompt"
+                
+            
+      END CLASS
+
+      DEFINE CLASS INVENTORY_GRID_CLASS
+
+            INHERIT PROMPT_GRID_EX_CLASS
+
+            INITIALISATION
+
+            PROPERTIES
+                  "inventory_form" ,
+                  "prompt_details" ,
+                  "table"
+            ACTIONS
+                  "clear_left_titles" ,
+                  "set_top_titles"    ,
+                  "check_move"        ,
+                  "add_field"         ,
+                  "add_routine"       ,
+                  "get_row_object"    ,
+                  "prompt_cell"       ,
+                  "display_cell"      ,
+                  "find_column"       ,
+                  "redisplay_identified_cell",
+                  "format_quantity"
+
+      END CLASS
+
+      DEFINE CLASS PRODUCT_GRID_CLASS
+
+            INITIALISATION
+
+            INHERIT INVENTORY_GRID_CLASS
+
+            PROPERTIES
+                  "current_layer_number"
+
+            ACTIONS
+                  "get_row_object"
+
+
+      END CLASS
+
+      DEFINE CLASS CONDITION_GRID_CLASS
+
+            INHERIT INVENTORY_GRID_CLASS
+
+            ACTIONS
+                  "get_row_object" 
+
+
+      END CLASS
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Pull Product Object                                                       *}
+{*****************************************************************************}
+
+{*************************************************************************}
+
+ROUTINE inventory_form_class_initialisation ( self )
+
+{
+* Inventory Form Class Initialisation
+*
+* Parameters : self , Inventory Form Object
+*
+**************************************************************************}
+
+      self . prompt_id = "$STB_PRODUCT_PULL_MAIN"
+
+      CREATE OBJECT "STD_OBJECT_DATABASE", self . product_object
+
+      self . product_object . initialise ( "LAYER_ENTRY" )
+      self . product_object . add_index( "LAYER_FACTOR" )
+
+      CREATE OBJECT "STD_OBJECT_DATABASE", self . condition_object
+
+      self . condition_object . initialise ( "CONDITION_ENTRY" )
+      self . condition_object . add_index( "LAYER_FACTOR" )
+      self . condition_object . add_index( "C_FACTOR" )
+
+      ARRAY self . layer_pull_amount ARRAYSIZE ( 0 , 2 )
+      ARRAY self . condition_pull_amount ARRAYSIZE ( 0 , 2 )
+
+      ARRAY self . product_pulls
+
+      ARRAY self . layer_identities ARRAYSIZE ( 0 )
+      
+      self . form_layer     = EMPTY
+      self . form_condition = EMPTY
+      
+      self . layer_grid     = EMPTY
+      self . condition_grid = EMPTY
+
+      self . toolbar        = EMPTY
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_update_all( self )
+
+{
+*
+* Parameters : self , Inventory Form object
+*
+******************************************************************************}
+
+      self . layer_grid . redisplay_contents( )
+      self . condition_grid . redisplay_contents ( )
+
+      self . update_amount_displays( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_create_missing_objects( self )
+
+{
+* Creates the layer entry and condition entry objects which are not created
+* when a layer is inserted. TODO: create them upfront
+*
+* Parameters : self , Inventory Form object
+*
+******************************************************************************}
+
+      DECLARE l_axis_point_db, c_axis_point_db, layer_id, condition_id
+      DECLARE layer_object, condition_object, matrix_object, copy_header_id
+      DECLARE copy_header_ver, batch_id, overage, is_copy
+
+      matrix_object = self . parent_matrix
+
+      is_copy = ( matrix_object . mode = "COPY" ) OR
+                ( ( matrix_object . mode = "ADD" ) AND ( matrix_object . matrix_type = "S" ) )
+                
+      IF is_copy THEN
+      
+            IF matrix_object . is_protocol( ) THEN
+
+                  copy_header_id  = LEFTSTRING  ( matrix_object . copy_value, 20 )
+                  copy_header_ver = RIGHTSTRING ( matrix_object . copy_value, 10 )
+
+            ELSE
+
+                  IF matrix_object . mode = "ADD" THEN
+                        copy_header_id  = SELECT pds_proto . identity
+                        copy_header_ver = SELECT pds_proto . protocol_version
+                  ELSE
+                        copy_header_id  = LEFTSTRING  ( matrix_object . copy_value, 20 )
+                        copy_header_ver = PACKED_DECIMAL( 1 )
+                  ENDIF
+            ENDIF
+      ENDIF
+      
+      l_axis_point_db = matrix_object . layer_factors
+      c_axis_point_db = matrix_object . c_factors
+
+      l_axis_point_db . set_first( )
+
+      WHILE l_axis_point_db . current <> EMPTY DO
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                        IN OBJECT l_axis_point_db . current
+
+            IF self . product_object . get_by_index( "LAYER_FACTOR", layer_id ) = EMPTY THEN
+                  
+                  layer_object = self . new_layer_object( layer_id )
+                  
+                  IF is_copy THEN
+                              
+                        batch_id = SELECT layer_entry . batch_number
+                                          WHERE header = copy_header_id
+                                          AND version = copy_header_ver
+                                          AND layer_factor = layer_id
+                                          
+                        ASSIGN layer_entry . batch_number
+                              IN OBJECT layer_object = batch_id
+                  
+                  ENDIF
+                  
+            ENDIF
+
+            c_axis_point_db . set_first( )
+
+            WHILE c_axis_point_db . current <> EMPTY DO
+            
+                  condition_id = SELECT pds_axis_point . axis_point_name
+                                    IN OBJECT c_axis_point_db . current
+            
+                  IF matrix_object . get_condition_object( layer_id, condition_id ) = EMPTY THEN
+                        condition_object = self . new_condition_object( layer_id, condition_id )
+                        
+                        IF is_copy THEN
+
+                              overage = SELECT condition_entry . overage
+                                                WHERE header = copy_header_id
+                                                AND version = copy_header_ver
+                                                AND layer_factor = layer_id
+                                                AND c_factor = condition_id
+
+                              IF overage <> EMPTY THEN
+
+                                    ASSIGN condition_entry . overage
+                                          IN OBJECT condition_object = overage
+
+                              ENDIF
+
+                        ENDIF
+                        
+                  ENDIF
+            
+                  c_axis_point_db . set_next( )
+                  
+            ENDWHILE
+
+
+            l_axis_point_db . set_next( )
+            
+      ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_is_modifiable( self )
+
+{
+* Returns True if the matrix data is modifiable
+*
+* Parameters : self , Inventory Form object
+*
+******************************************************************************}
+
+      DECLARE modifiable
+
+      modifiable = ( NOT self . display_only                      ) AND
+                   ( NOT self . parent_matrix . is_active_study() )
+
+      RETURN( modifiable )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_create_toolbar( self )
+{
+* Adds toolbuttons to the toolbar
+*
+* Parameters : self, Inventory Form object
+*
+*******************************************************************************}
+
+    CREATE OBJECT TOOLBAR_CLASS , self . toolbar
+    self . toolbar . width   = self . width
+    self . toolbar . height  = 1
+        
+    self . add_prompt( self . toolbar )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_add_toolitems ( self, toolbar )
+
+{
+* Add toolbutton items 
+*
+* Parameters : self, Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE item, matrix_object
+      
+      matrix_object = self . parent_matrix
+
+      IF ( NOT matrix_object . is_active_study( ) ) THEN
+
+            CREATE OBJECT TOOLBAR_TEXT_CLASS, item
+            item . value = "Reoverage Options:"
+            item . display_only = TRUE
+            item . width   = 15
+
+            toolbar . add_item ( item )
+
+            CREATE OBJECT TOOLBAR_BUTTON_CLASS, item
+            item . set_action( self, "OPTION_RE_OVERAGE_CURRENT_CONDITION" )
+            item . set_icon ( "INT_TEMP_RIGHT" )
+            item . tooltip = "Reoverage current condition"
+
+            toolbar . add_item ( item )
+
+            CREATE OBJECT TOOLBAR_BUTTON_CLASS, item
+            item . set_action( self, "OPTION_RE_OVERAGE_CURRENT_LAYER" )
+            item . set_icon ( "INT_ITEM_FRONT" )
+            item . tooltip = "Reoverage current layer"
+
+            toolbar . add_item ( item )
+
+            CREATE OBJECT TOOLBAR_BUTTON_CLASS, item
+            item . set_action( self, "OPTION_RE_OVERAGE_CURRENT_MATRIX" )
+            item . set_icon ( "INT_WORLD" )
+            item . tooltip = "Reoverage all"
+
+            toolbar . add_item ( item )
+
+            toolbar . add_separator( )
+
+            CREATE OBJECT TOOLBAR_TEXT_CLASS, item
+            item . value = "Reoverage (%)"
+            item . display_only = TRUE
+            item . width   = 10
+
+            toolbar . add_item ( item )
+
+            CREATE OBJECT TOOLBAR_TEXT_REAL_CLASS, item
+            item . identity = "OVERAGE_PERCENT"
+            item . value    = 50
+            item . minimum  = 0
+            item . maximum  = 100
+            item . places   = 1
+            item . width    = 5
+            item . justification = PROMPT_JUSTIFY_LEFT
+
+            toolbar . add_item ( item )
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_option_re_overage_current_condition( self )
+{
+* Reoverages the current condition
+*
+* Parameters : self, Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE layer_id, condition_id
+
+      layer_id     = self . get_current_layer_identity( )
+      condition_id = self . get_current_condition_identity( )
+
+      IF ( layer_id <> EMPTY ) AND ( condition_id <> EMPTY ) THEN
+            
+            self . re_overage_condition( layer_id, condition_id )
+            
+            self . update_all( )
+            
+      ENDIF
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_option_re_overage_current_layer( self )
+{
+* Reoverages the current layer
+*
+* Parameters : self, Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE layer_id
+
+      layer_id = self . get_current_layer_identity( )
+
+      IF layer_id <> EMPTY THEN
+            
+            self . re_overage_layer( layer_id )
+            
+            self . update_all( )
+            
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_option_re_overage_current_matrix( self )
+{
+* Reoverages the current matrix
+*
+* Parameters : self, Inventory Form object
+*
+*******************************************************************************}
+
+      self . re_overage_all( )
+
+      self . update_all( )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+GLOBAL ROUTINE create_product_form ( matrix_object )
+
+{
+*
+* Create product info form.
+*
+**************************************************************************}
+
+      DECLARE form
+
+      inventory_form_define_classes ( )
+
+      CREATE OBJECT INVENTORY_FORM_CLASS, form
+
+      form . icon   = "INT_PROPERTIES"
+      form . column = 52
+      form . row    = 11
+      form . height = 18
+      form . width  = matrix_object . overview_form . width
+      
+
+      form . parent_matrix = matrix_object
+      form . button_style  = FORM_BUTTON_NONE
+      form . visible       = FALSE
+
+      form . display_only = matrix_object . is_display_only( )
+
+      form . header_id = form . parent_matrix . header_id
+
+      IF ( matrix_object . is_active_study( ) ) THEN
+            form . header = GET_USER_MESSAGE ( "STB_INVENTORY_ACT_HEADER_MESSAGE", 1 )
+      ELSE
+            form . header = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_MESSAGE", 1 )
+      ENDIF
+
+      form . get_data ( form . display_only )
+
+      form . create_missing_objects( )
+
+      form . create_toolbar( )
+      form . add_toolitems( form . toolbar )
+
+      form . create_splitter( )
+      
+      form . create_layer_grid ( form . display_only )
+
+      form . create_conditions_grid ( form . display_only )
+
+      form . create_total_product_details ( )
+
+      matrix_object . product_info_form = form
+
+      RETURN( form )
+
+ENDROUTINE 
+
+{*************************************************************************}
+
+ROUTINE inventory_form_action_start_prompt ( self )
+
+{
+* Start Prompt override
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      self . std_form :: start_prompt( )
+
+      IF self . layer_grid . cell_rows > 0 THEN
+            self . layer_grid . set_position( 1, 1 )
+      ENDIF
+      
+      IF self . condition_grid . cell_rows > 0 THEN
+            self . condition_grid . set_position( 1, 1 )
+      ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE inventory_form_action_get_data ( self , VALUE display_only )
+
+{
+* Loads the data into the object databases
+*
+* Parameters : self         , Inventory Form object
+*              display_only , If true the data is selected for read
+*
+**************************************************************************}
+
+      DECLARE select_array, header_id, return_value, product_object
+      DECLARE condition_object
+
+      ARRAY select_array
+
+      product_object   = self . product_object
+      condition_object = self . condition_object
+
+      header_id = self . parent_matrix . header_id
+
+      ARRAY_SELECT_ADD ( select_array        ,
+                         ARRAY_SELECT_EQ     ,
+                         "HEADER"            ,
+                         STRIP ( header_id ) )
+
+      ARRAY_SELECT_ADD ( select_array       ,
+                         ARRAY_SELECT_EQ    ,
+                         "MATRIX_TYPE"       ,
+                         STRIP ( self . parent_matrix . matrix_type ) )
+
+      ARRAY_SELECT_ADD ( select_array           ,
+                         ARRAY_SELECT_ORDER     ,
+                         "HEADER"               ,
+                         ARRAY_SELECT_ASCENDING )
+
+      ARRAY_SELECT_ADD ( select_array           ,
+                         ARRAY_SELECT_ORDER     ,
+                         "LAYER_FACTOR"         ,
+                         ARRAY_SELECT_ASCENDING )
+
+      IF ( self . parent_matrix . is_protocol( ) ) THEN
+
+            ARRAY_SELECT_ADD ( select_array     ,
+                               ARRAY_SELECT_EQ ,
+                               "VERSION"        ,
+                               STRIP ( self . parent_matrix . header_ver ) )
+      ENDIF
+
+      IF ( display_only ) THEN
+
+            product_object . select ( select_array )
+
+            return_value = condition_object . select ( select_array )
+      ELSE
+
+            product_object . select_for_update ( select_array )
+
+            return_value = condition_object . select_for_update ( select_array )
+      ENDIF
+
+      IF ( condition_object . size () < 1 ) THEN
+            return_value = FALSE
+      ENDIF
+
+      RETURN ( return_value )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE inventory_form_action_create_splitter ( self )
+{
+*
+* Create the splitter
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE main_split
+
+      CREATE OBJECT "STD_FORM", self . form_layer
+      CREATE OBJECT "STD_FORM", self . form_condition
+
+      CREATE OBJECT PROMPT_SPLIT_CLASS , main_split
+      
+      main_split . height = self . height - 2.5
+      main_split . width  = self . width - 1
+      main_split . row    = 2
+      main_split . column = 0.5
+
+      main_split . set_size( 1 , 2 )
+
+      main_split . set_row_height( 1, main_split . height * 0.5 )
+      main_split . set_row_height( 2, main_split . height * 0.5 )
+
+      self . form_layer . height  = main_split . cell_height[1]
+      self . form_layer . width   = main_split . width
+
+      self . form_condition . height = main_split . cell_height[2]
+      self . form_condition . width  = main_split . width
+      
+      main_split . add_form ( 1 , 1 , self . form_layer )
+      main_split . add_form ( 1 , 2 , self . form_condition )
+      
+      self . add_prompt ( main_split )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_layer_grid_columns_protocol ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title
+
+      grid . add_field( "", "LAYER_FACTOR" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_PRODUCT", 1 )
+      grid . add_routine( "", title , 15, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_PRODUCT" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_BATCH_REQUIRED", 1 )
+      grid . add_routine( "REQUIRED", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_TOTAL_REQUIRED" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_REPORTING_UNIT" )
+
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_layer_grid_columns_study ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title
+
+      grid . add_field( "", "LAYER_FACTOR" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_PRODUCT", 1 )
+      grid . add_routine( "", title , 15, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_PRODUCT" )
+      
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_BATCH", 1 )
+      grid . add_routine( "", title , 15, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_BATCH" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_BATCH_AVAILABLE", 1 )
+      grid . add_routine( "BATCH_AVAILABLE", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_BATCH_AVAILABLE" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_BATCH_REQUIRED", 1 )
+      grid . add_routine( "REQUIRED", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_TOTAL_REQUIRED" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_REPORTING_UNIT" )
+
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_layer_grid_columns_active_study ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title
+
+      grid . add_field( "", "LAYER_FACTOR" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_PRODUCT", 1 )
+      grid . add_routine( "", title , 15, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_PRODUCT" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_BATCH", 1 )
+      grid . add_routine( "", title , 15, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_BATCH" )
+
+      title = "Total Qty"
+      grid . add_routine( "REQUIRED", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_TOTAL_REQUIRED" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "LAYER_GRID_PROMPT_REPORTING_UNIT" )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE inventory_form_action_create_layer_grid ( self, VALUE display_only )
+{
+*
+* Create the product info top grid.
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE grid
+
+      CREATE OBJECT PRODUCT_GRID_CLASS, grid
+
+      grid . inventory_form = self
+      grid . height         = 2
+      grid . width          = 10
+      grid . row            = 1
+      grid . column         = 2
+      grid . cell_columns   = 6
+      grid . cell_rows      =  self . parent_matrix . layer_count ()
+      grid . display_only   = display_only
+      grid . full_screen    = TRUE
+
+      grid . table = "LAYER_ENTRY"
+
+      IF self . parent_matrix . is_protocol( ) THEN
+            
+            add_layer_grid_columns_protocol( self, grid )
+            
+      ELSEIF self . parent_matrix . is_study( ) THEN
+
+            IF self . parent_matrix . is_active_study( ) THEN
+
+                  add_layer_grid_columns_active_study( self, grid )
+            
+            ELSE
+                  
+                  add_layer_grid_columns_study( self, grid )
+                  
+            ENDIF
+
+      ENDIF
+
+      grid . enter_cell_routine   = "LAYER_GRID_ENTER_CELL_ROUTINE"
+
+      grid . parent_prompt = self
+
+      grid . clear_left_titles( )
+      
+      grid . set_top_titles ( )
+
+      self . form_layer . add_prompt ( grid )
+      
+      self . layer_grid = grid
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_condition_grid_columns_protocol ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title
+
+      grid . add_field( "", "C_FACTOR" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_PULLS", 1 )
+      grid . add_routine( "", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULL_COUNT" )
+      
+      title = "Required"
+      grid . add_routine( "PULL_AMOUNT", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULL_AMOUNT" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_OVERAGE", 1 )
+      grid . add_routine( "OVERAGE", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_OVERAGE" )
+      
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_TOT_REQUIRED", 1 )
+      grid . add_routine( "REQUIRED", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_TOTAL_REQUIRED" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 6, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_REPORTING_UNIT" )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_condition_grid_columns_study ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title
+
+      grid . add_field( "", "C_FACTOR" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_PULLS", 1 )
+      grid . add_routine( "", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULL_COUNT" )
+      
+      title = "Required"
+      grid . add_routine( "PULL_AMOUNT", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULL_AMOUNT" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_OVERAGE", 1 )
+      grid . add_routine( "OVERAGE", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_OVERAGE" )
+      
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_TOT_REQUIRED", 1 )
+      grid . add_routine( "REQUIRED", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_TOTAL_REQUIRED" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 6, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_REPORTING_UNIT" )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE add_condition_grid_columns_active_study ( self, grid )
+{
+*
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE title, pos
+
+      grid . add_field( "", "C_FACTOR" )
+
+      pos = grid . add_field( "", "ALLOCATION_ID" )
+      grid . prompt_details [pos , 5] = "Alloc. Id"
+      grid . prompt_details [pos , 6] = 8
+
+      title = "Pulled Count"
+      grid . add_routine( "", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULLED_COUNT" )
+
+      title = "Unpulled Count"
+      grid . add_routine( "", title , 12, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_UNPULLED_COUNT" )
+
+      title = "Pulled Qty"
+      grid . add_routine( "PULLED_AMOUNT", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_PULLED_AMOUNT" )
+
+      title = "Unpulled Qty"
+      grid . add_routine( "UNPULLED_AMOUNT", title , 10, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_UNPULLED_AMOUNT" )
+
+      title = "Spare Qty"
+      grid . add_routine( "SPARE_AMOUNT", title , 8, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_SPARE_AMOUNT" )
+
+      title = GET_USER_MESSAGE ( "STB_INVENTORY_HEADER_UNIT", 1 )
+      grid . add_routine( "", title , 6, GLOBAL( "CURRENT_LIBRARY" ), "CONDITION_GRID_PROMPT_REPORTING_UNIT" )
+
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE inventory_form_action_create_conditions_grid ( self, VALUE display_only )
+{
+*
+* Create product info form bottom grid.
+*
+* Parameters : self , Inventory Form object
+*
+**************************************************************************}
+
+      DECLARE grid, conditions_per_layer
+
+      IF self . parent_matrix . layer_count( ) > 0 THEN
+            conditions_per_layer = self . parent_matrix . condition_count( )
+      ELSE
+            conditions_per_layer = 0
+      ENDIF
+
+      CREATE OBJECT CONDITION_GRID_CLASS, grid
+
+      grid . inventory_form = self
+      grid . height         = 2
+      grid . width          = 10
+      grid . row            = 1
+      grid . column         = 2
+      grid . cell_rows      = conditions_per_layer
+      grid . display_only   = display_only
+      grid . full_screen    = TRUE
+
+      grid . table = "CONDITION_ENTRY"
+
+      IF self . parent_matrix . is_protocol( ) THEN
+            
+            add_condition_grid_columns_protocol( self, grid )
+            
+      ELSEIF self . parent_matrix . is_study( ) THEN
+      
+            IF self . parent_matrix . is_active_study( ) THEN
+      
+                  add_condition_grid_columns_active_study( self, grid )
+                  
+            ELSE
+            
+                  add_condition_grid_columns_study( self, grid )
+                  
+            ENDIF
+
+      ENDIF
+
+      grid . parent_prompt = self
+
+      grid . clear_left_titles( )
+      
+      grid . set_top_titles ( )
+
+      self . form_condition . add_prompt ( grid )
+      
+      self . condition_grid = grid
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_prompt_cell (       self        ,
+                                            VALUE cell_column ,
+                                            VALUE cell_row    ,
+                                                  window      ,
+                                            VALUE column      ,
+                                            VALUE row         ,
+                                            VALUE cell_width  ,
+                                            VALUE cell_height )
+{
+* 
+*
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE object
+
+      object = self . get_row_object( cell_row )
+
+      lib_grid_prompt_array ( self                  ,
+                              cell_column           ,
+                              cell_row              ,
+                              window                ,
+                              column                ,
+                              row                   ,
+                              cell_width            ,
+                              object                ,
+                              self . prompt_details ,
+                              self . table          ,
+                              FALSE                 ,
+                              PROMPT_DETAILS_310    )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_display_cell (       self        ,
+                                             VALUE cell_column ,
+                                             VALUE cell_row    ,
+                                                   window      ,
+                                             VALUE column      ,
+                                             VALUE row         ,
+                                             VALUE cell_width  ,
+                                             VALUE cell_height )
+{
+* 
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE object
+
+      object = self . get_row_object( cell_row )
+
+      lib_grid_display_array ( self                  ,
+                               cell_column           ,
+                               cell_row              ,
+                               window                ,
+                               column                ,
+                               row                   ,
+                               cell_width            ,
+                               object                ,
+                               self . prompt_details ,
+                               self . table          ,
+                               FALSE                 ,
+                               PROMPT_DETAILS_310    )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_find_column( self, VALUE column_id ) 
+{
+* Returns position of column with passed id or -1
+*
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE pos, found_pos
+       
+      found_pos = -1
+       
+      pos = 1
+      WHILE ( pos <= size_of_array( self . prompt_details ) ) AND ( found_pos = -1 ) DO
+       
+            IF self . prompt_details[pos,7] = column_id THEN
+            
+                  found_pos = pos
+            
+            ENDIF
+       
+            pos = pos + 1
+            
+      ENDWHILE
+
+      RETURN( found_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_redisplay_identified_cell(       self      , 
+                                                         VALUE column_id ,
+                                                         VALUE row_num   ) 
+{
+* Redisplays cell identified by passed column id and using passed row number
+*
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE col_num
+
+      col_num = self . find_column( column_id )
+
+      IF col_num <> -1 THEN
+            self . redisplay_cell( col_num, row_num )
+      ENDIF
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_prompt_product (       object      ,
+                                          grid        ,
+                                    VALUE cell_column ,
+                                    VALUE cell_row    ,
+                                    VALUE column      ,
+                                    VALUE row         ,
+                                    VALUE cell_width  ,
+                                          window      ,
+                                    VALUE is_display  )
+
+{
+* Layer Grid prompt for the column 'Product'
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value
+
+      cell_value = SELECT 'grid . inventory_form . parent_matrix . header_table' . product_id
+      
+      IF BLANK( cell_value ) THEN
+            cell_value = "No product defined"
+      ENDIF
+      
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_prompt_batch (       object      ,
+                                        grid        ,
+                                  VALUE cell_column ,
+                                  VALUE cell_row    ,
+                                  VALUE column      ,
+                                  VALUE row         ,
+                                  VALUE cell_width  ,
+                                        window      ,
+                                  VALUE is_display  )
+{
+* Layer Grid prompt for the column 'Batch'
+*
+*******************************************************************************}
+      
+      DECLARE product_id, select_array, cell_value, display_only
+
+      product_id = SELECT 'grid . inventory_form . parent_matrix . header_table' . product_id
+
+      display_only =     BLANK( product_id )                      OR
+                     NOT grid . inventory_form . is_modifiable( )
+
+      IF NOT BLANK( product_id ) THEN
+            
+            cell_value =  SELECT layer_entry . batch_number
+                             IN OBJECT object
+      ELSE
+      
+            cell_value = "N/A"
+
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+
+            ARRAY select_array
+
+            ARRAY_SELECT_ADD ( select_array    ,
+                               ARRAY_SELECT_EQ ,
+                               "INVENTORY_ID"  ,
+                               product_id      )
+      
+            PROMPT FOR cell_value
+                  BROWSE ON inventory_item_summary_view . item_id
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH( select_array       = select_array       ,
+                        display_only       = display_only       ,
+                        validation_routine = "batch_validation" ,
+                        user_info          = grid               )
+
+            ASSIGN layer_entry . batch_number
+                  IN OBJECT object = cell_value
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_prompt_total_required (       object      ,
+                                                 grid        ,
+                                           VALUE cell_column ,
+                                           VALUE cell_row    ,
+                                           VALUE column      ,
+                                           VALUE row         ,
+                                           VALUE cell_width  ,
+                                                 window      ,
+                                           VALUE is_display  )
+
+{
+* Layer Grid prompt for the column 'Batch Required'
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE layer_id, product_id, reporting_unit, reporting_qty, cell_value,
+              form, matrix_object
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix
+
+      product_id = SELECT 'matrix_object . header_table' . product_id
+
+      IF NOT BLANK( product_id ) THEN
+      
+            layer_id = SELECT layer_entry . layer_factor
+                             IN OBJECT object
+
+            reporting_qty = grid . inventory_form . get_layer_pull_amount( layer_id )
+            
+            reporting_unit = SELECT layer_entry . reporting_unit IN OBJECT object
+            
+            cell_value = matrix_object . format_quantity( reporting_qty, reporting_unit )
+            
+      ELSE
+      
+            cell_value = "N/A"
+      
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+      
+
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_prompt_batch_available (       object      ,
+                                                  grid        ,
+                                            VALUE cell_column ,
+                                            VALUE cell_row    ,
+                                            VALUE column      ,
+                                            VALUE row         ,
+                                            VALUE cell_width  ,
+                                                  window      ,
+                                            VALUE is_display  )
+
+{
+* Layer Grid prompt for the column 'Batch Available'. displays amount of the
+* specified batch is unallocated
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE batch_number, product_id, form, cell_value, matrix_object
+      DECLARE reporting_unit, reporting_qty
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix
+
+      product_id = SELECT 'matrix_object . header_table' . product_id
+
+      IF NOT BLANK( product_id ) THEN
+
+            batch_number = SELECT layer_entry . batch_number
+                               IN OBJECT object
+
+            reporting_qty = inventory_item_get_quantity_unallocated( product_id, batch_number )
+            
+            reporting_unit = SELECT layer_entry . reporting_unit IN OBJECT object
+
+            cell_value = matrix_object . format_quantity( reporting_qty, reporting_unit )
+
+      ELSE
+      
+            cell_value = "N/A"
+      
+      ENDIF
+            
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+      
+
+      
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_prompt_reporting_unit (       object      ,
+                                                 grid        ,
+                                           VALUE cell_column ,
+                                           VALUE cell_row    ,
+                                           VALUE column      ,
+                                           VALUE row         ,
+                                           VALUE cell_width  ,
+                                                 window      ,
+                                           VALUE is_display  )
+
+{
+* Layer Grid prompt for the column 'Batch Unit'
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE old_unit, unit, product_id, product_unit, form, display_only
+
+      display_only = FALSE
+
+      old_unit = SELECT layer_entry . reporting_unit IN OBJECT object
+      
+      IF BLANK( old_unit ) THEN
+            
+            form = grid . inventory_form
+
+            product_id = form . parent_matrix . get_product( )
+            product_unit = inventory_get_unit( product_id )
+      
+            IF product_unit <> EMPTY THEN
+            
+                  old_unit = product_unit
+                  
+            ELSE
+            
+                  old_unit = ""
+                  display_only = TRUE
+            
+            ENDIF
+
+      ENDIF
+      
+      unit = old_unit
+      
+      IF is_display THEN
+      
+            DISPLAY unit
+                  FORMAT layer_entry . reporting_unit
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR unit
+                  BROWSE ON unit_header
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH( display_only = display_only )
+
+            IF unit <> old_unit THEN
+                  
+                  ASSIGN layer_entry . reporting_unit = unit
+            
+                  {* redisplays cells that rely on this field *}
+                  
+                  grid . redisplay_identified_cell( "BATCH_AVAILABLE", cell_row )
+                  grid . redisplay_identified_cell( "REQUIRED", cell_row )
+
+            ENDIF
+
+      ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_pull_count (       object      ,
+                                                 grid        ,
+                                          VALUE cell_column ,
+                                          VALUE cell_row    ,
+                                          VALUE column      ,
+                                          VALUE row         ,
+                                          VALUE cell_width  ,
+                                                window      ,
+                                          VALUE is_display  )
+
+{
+* Condition Grid prompt. Total number of pulls in condition
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form
+
+      form = grid . inventory_form
+
+      condition_id = SELECT condition_entry . c_factor
+                         IN OBJECT object
+
+      layer_id = form . get_current_layer_identity( )
+
+      cell_value = form . parent_matrix . get_condition_pull_count( condition_id, layer_id )
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_unpulled_count (       object      ,
+                                                     grid        ,
+                                              VALUE cell_column ,
+                                              VALUE cell_row    ,
+                                              VALUE column      ,
+                                              VALUE row         ,
+                                              VALUE cell_width  ,
+                                                    window      ,
+                                              VALUE is_display  )
+
+{
+* Condition Grid prompt. Total number of unpulled pulls in condition
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form, total_count, pulled_count
+
+      form = grid . inventory_form
+
+      condition_id = SELECT condition_entry . c_factor
+                         IN OBJECT object
+
+      layer_id = form . get_current_layer_identity( )
+
+      total_count  = form . parent_matrix . get_condition_pull_count( condition_id, layer_id )
+      pulled_count = form . parent_matrix . get_condition_pulled_count( condition_id, layer_id )
+
+      cell_value = total_count - pulled_count
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_pulled_count (       object      ,
+                                                   grid        ,
+                                             VALUE cell_column ,
+                                             VALUE cell_row    ,
+                                             VALUE column      ,
+                                             VALUE row         ,
+                                             VALUE cell_width  ,
+                                                   window      ,
+                                             VALUE is_display  )
+
+{
+* Condition Grid prompt. Number of pulls pulled 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form
+
+      form = grid . inventory_form
+
+      condition_id = SELECT condition_entry . c_factor
+                         IN OBJECT object
+
+      layer_id = form . get_current_layer_identity( )
+
+      cell_value = form . parent_matrix . get_condition_pulled_count( condition_id, layer_id )
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_unpulled_amount (       object      ,
+                                                      grid        ,
+                                                VALUE cell_column ,
+                                                VALUE cell_row    ,
+                                                VALUE column      ,
+                                                VALUE row         ,
+                                                VALUE cell_width  ,
+                                                      window      ,
+                                                VALUE is_display  )
+
+{
+* Condition Grid prompt. Displays unpulled quantity
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form, product_id,
+              unpulled_qty, unit, matrix_object, total_qty, pulled_qty
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix 
+
+      product_id = form . parent_matrix . get_product( )
+
+      IF BLANK( product_id ) THEN
+      
+            cell_value = "N/A"
+            
+      ELSE
+            condition_id = SELECT condition_entry . c_factor
+                               IN OBJECT object
+
+            layer_id = form . get_current_layer_identity( )
+
+            total_qty  = matrix_object . get_condition_pull_amount( layer_id, condition_id )
+            pulled_qty = matrix_object . get_condition_pulled_amount( layer_id, condition_id )
+
+            unpulled_qty = total_qty - pulled_qty
+            
+            unit = SELECT condition_entry . reporting_unit IN OBJECT object
+
+            cell_value = matrix_object . format_quantity( unpulled_qty  , unit )
+
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_spare_amount (       object      ,
+                                                   grid        ,
+                                             VALUE cell_column ,
+                                             VALUE cell_row    ,
+                                             VALUE column      ,
+                                             VALUE row         ,
+                                             VALUE cell_width  ,
+                                                   window      ,
+                                             VALUE is_display  )
+
+{
+* Condition Grid prompt. Displays unrequired quantity
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form, product_id,
+              remaining_qty, unit, matrix_object
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix 
+
+      product_id = matrix_object . get_product( )
+
+      IF BLANK( product_id ) THEN
+      
+            cell_value = "N/A"
+            
+      ELSE
+            layer_id = form . get_current_layer_identity( )
+
+            condition_id = SELECT condition_entry . c_factor
+                               IN OBJECT object
+
+            remaining_qty = matrix_object . get_condition_spare_amount( layer_id, condition_id )
+            
+            unit = SELECT condition_entry . reporting_unit IN OBJECT object
+
+            cell_value = matrix_object . format_quantity( remaining_qty  , unit )
+
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_reporting_unit (       object      ,
+                                                     grid        ,
+                                               VALUE cell_column ,
+                                               VALUE cell_row    ,
+                                               VALUE column      ,
+                                               VALUE row         ,
+                                               VALUE cell_width  ,
+                                                     window      ,
+                                               VALUE is_display  )
+
+{
+* Condition Grid prompt for the column 'Unit'
+*
+* Parameters : 
+*
+*******************************************************************************}
+      
+      DECLARE old_unit, unit, product_id, product_unit, form, display_only
+      
+      display_only = FALSE
+      
+      old_unit = SELECT condition_entry . reporting_unit IN OBJECT object
+
+      IF BLANK( old_unit ) THEN
+      
+            form = grid . inventory_form
+      
+            product_id = form . parent_matrix . get_product( )
+            product_unit = inventory_get_unit( product_id )
+      
+            IF product_unit <> EMPTY THEN
+            
+                  old_unit = product_unit
+                  
+            ELSE
+            
+                  old_unit = ""
+                  display_only = TRUE
+            
+            ENDIF
+      
+      ENDIF
+      
+      unit = old_unit
+      
+      IF is_display THEN
+      
+            DISPLAY unit
+                  FORMAT condition_entry . reporting_unit
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR unit
+                  BROWSE ON unit_header
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH( display_only = display_only )
+
+            IF unit <> old_unit THEN
+
+                  ASSIGN condition_entry . reporting_unit = unit
+
+                  {* redisplays cells that rely on this field *}
+
+                  grid . redisplay_identified_cell( "PULL_AMOUNT", cell_row )
+                  grid . redisplay_identified_cell( "REQUIRED", cell_row )
+                  grid . redisplay_identified_cell( "OVERAGE", cell_row )
+
+                  {* active study columns *}
+                  grid . redisplay_identified_cell( "PULLED_AMOUNT", cell_row )
+                  grid . redisplay_identified_cell( "UNPULLED_AMOUNT", cell_row )
+                  grid . redisplay_identified_cell( "SPARE_AMOUNT", cell_row )
+
+            ENDIF
+                  
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_pulled_amount (       object      ,
+                                                    grid        ,
+                                              VALUE cell_column ,
+                                              VALUE cell_row    ,
+                                              VALUE column      ,
+                                              VALUE row         ,
+                                              VALUE cell_width  ,
+                                                    window      ,
+                                              VALUE is_display  )
+
+{
+* Condition Grid prompt. amount pulled for condition
+*
+* Parameters : 
+*
+*******************************************************************************}
+      
+      DECLARE cell_value, condition_id, layer_id, form, qty, unit, product_id, matrix_object
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix
+
+      product_id = matrix_object . get_product( )
+
+      IF BLANK( product_id ) THEN
+      
+            cell_value = "N/A"
+
+      ELSE
+            
+            condition_id = SELECT condition_entry . c_factor
+                               IN OBJECT object
+
+            layer_id = form . get_current_layer_identity( )
+
+            qty = matrix_object . get_condition_pulled_amount( layer_id, condition_id )
+            unit = SELECT condition_entry . reporting_unit IN OBJECT object
+            cell_value = matrix_object . format_quantity( qty, unit )
+
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_pull_amount (       object      ,
+                                                  grid        ,
+                                            VALUE cell_column ,
+                                            VALUE cell_row    ,
+                                            VALUE column      ,
+                                            VALUE row         ,
+                                            VALUE cell_width  ,
+                                                  window      ,
+                                            VALUE is_display  )
+
+{
+* Condition Grid prompt. Total pull amount required for condition
+*
+* Parameters : 
+*
+*******************************************************************************}
+      
+      DECLARE cell_value, condition_id, layer_id, form, qty, unit, product_id, matrix_object
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix
+
+      product_id = matrix_object . get_product( )
+
+      IF BLANK( product_id ) THEN
+      
+            cell_value = "N/A"
+
+      ELSE
+            
+            condition_id = SELECT condition_entry . c_factor
+                               IN OBJECT object
+
+            layer_id = form . get_current_layer_identity( )
+
+            qty = matrix_object . get_condition_pull_amount( layer_id, condition_id )
+            unit = SELECT condition_entry . reporting_unit IN OBJECT object
+            cell_value = matrix_object . format_quantity( qty, unit )
+
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_total_required (       object      ,
+                                                     grid        ,
+                                               VALUE cell_column ,
+                                               VALUE cell_row    ,
+                                               VALUE column      ,
+                                               VALUE row         ,
+                                               VALUE cell_width  ,
+                                                     window      ,
+                                               VALUE is_display  )
+
+{
+* Condition Grid prompt. The total amount of product required for the condition
+* (all condition's pulls + overage)
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE cell_value, condition_id, layer_id, form, qty, unit, amount,
+              product_id, matrix_object
+
+      form = grid . inventory_form
+
+      matrix_object = form . parent_matrix
+      
+      product_id = matrix_object . get_product( )
+
+      IF BLANK( product_id ) THEN
+      
+            cell_value = "N/A"
+
+      ELSE
+
+            condition_id = SELECT condition_entry . c_factor
+                         IN OBJECT object
+
+            layer_id = form . get_current_layer_identity( )
+
+            amount = matrix_object . get_condition_pull_amount( layer_id, condition_id )
+
+            qty = amount + SELECT condition_entry . overage IN OBJECT object
+            unit = SELECT condition_entry . reporting_unit IN OBJECT object
+            cell_value = matrix_object . format_quantity( qty, unit )
+            
+      ENDIF
+
+      IF is_display THEN
+      
+            DISPLAY cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  
+      ELSE
+      
+            PROMPT FOR cell_value
+                  CLASS "STD_PROMPT_TEXT"
+                  AT column , row
+                  TO column + cell_width - 1
+                  IN WINDOW window
+                  WITH ( display_only = TRUE )
+      ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE condition_grid_prompt_overage (       object      ,
+                                              grid        ,
+                                        VALUE cell_column ,
+                                        VALUE cell_row    ,
+                                        VALUE column      ,
+                                        VALUE row         ,
+                                        VALUE cell_width  ,
+                                              window      ,
+                                        VALUE is_display  )
+
+{
+* Condition Grid prompt for the column 'Overage'
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+      DECLARE overage, form, prompt_object, product_id, product_unit, unit
+
+      form = grid . inventory_form
+
+      product_id = form . parent_matrix . get_product( )
+      product_unit = inventory_get_unit( product_id )
+
+      overage = SELECT condition_entry . overage IN OBJECT object
+      unit    = SELECT condition_entry . reporting_unit IN OBJECT object
+
+      IF BLANK( unit ) THEN
+      
+            unit = product_unit
+      
+      ENDIF
+
+      PROMPT OBJECT prompt_object
+            CLASS "PROMPT_QTY_UNIT"
+            AT column , row
+            TO column + cell_width - 1
+            IN WINDOW window
+            WITH( display_only       = NOT form . is_modifiable() ,
+                  base_unit          = product_unit               ,
+                  display_unit       = unit                       ,
+                  minimum_value      = 0                          ,
+                  value              = overage                    ,
+                  hide_units         = TRUE                       )
+
+      prompt_object . start_prompt( )
+
+      IF NOT is_display THEN
+      
+            prompt_object . wait_prompt( )
+
+
+            ASSIGN condition_entry . overage IN OBJECT object = prompt_object . value
+
+            {* redisplays cells that rely on this field *}
+
+            grid . redisplay_cell( cell_column, cell_row )
+            grid . redisplay_identified_cell( "REQUIRED", cell_row )
+
+            form . layer_grid . redisplay_identified_cell( "REQUIRED", form . layer_grid . current_row )
+
+            grid . inventory_form . update_amount_displays ( )
+
+      ENDIF
+
+      prompt_object . end_prompt( )
+      prompt_object . set_globals( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_validation( self )
+
+{
+* Checks the amount available is sufficient to meet amount required. Warns the
+* user if it isn't
+*
+* Parameters :  self , batch prompt
+*
+******************************************************************************}
+
+      DECLARE product_id, batch_id, product_form, batch_required, ok, qty_available
+
+      product_form = self . user_info . inventory_form
+
+      batch_id = self . value
+      product_id = ( SELECT 'product_form . parent_matrix . header_table' . product_id )
+
+      qty_available = inventory_item_get_quantity_unallocated( product_id, batch_id )
+
+      batch_required = product_form . get_current_layer_pull_amount()
+            
+      IF ( qty_available < batch_required ) THEN
+      
+            ok = confirm_with_text( GET_USER_MESSAGE ( "STB_INVENTORY_QUANTITY_NOT_ENOUGH" , 1 ) )    
+      
+      ELSE
+      
+            ok = TRUE
+      
+      ENDIF
+      
+      RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_do_batch_availability_scenario(       self  ,
+                                                            VALUE layer_id      ,
+                                                            VALUE current_value ,
+                                                            VALUE new_value     )
+
+{
+*
+*
+******************************************************************************}
+
+      DECLARE batch_available, batch_required, ok, layer_object, layer_batch, product_id
+      
+      ok = TRUE
+      
+      layer_object = self . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+      layer_batch = SELECT layer_entry . batch_number
+                        IN OBJECT layer_object
+
+      IF BLANK( layer_batch ) THEN
+      
+            ok = TRUE
+      
+      ELSE
+      
+            product_id   = self . parent_matrix . get_product( )
+
+            batch_available = inventory_item_get_quantity_unallocated( product_id, layer_batch ) 
+      
+            IF batch_available <> ERROR THEN
+
+                  batch_required = self . get_batch_required( layer_id )
+                                   - current_value
+                                   + new_value
+
+                  IF ( batch_available < batch_required ) THEN
+
+                        ok = confirm_with_text( GET_USER_MESSAGE ( "STB_INVENTORY_QUANTITY_NOT_ENOUGH" , 1 ) )
+
+                  ENDIF
+
+            ELSE
+                  ok = FALSE
+            ENDIF
+            
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_check_batch_availability_scenario(       self  ,
+                                                                 VALUE layer_id      ,
+                                                                 VALUE current_value ,
+                                                                 VALUE new_value     )
+
+{
+* Description : TODO: remove. duplicate of above
+*
+* Parameters :
+*
+* Returns     :
+*
+******************************************************************************}
+
+      DECLARE batch_available, batch_required, ok, product_id, layer_object, layer_batch
+      
+      ok = FALSE
+
+      layer_object = self . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+      layer_batch = SELECT layer_entry . batch_number
+                        IN OBJECT layer_object
+
+      IF BLANK( layer_batch ) THEN
+      
+            ok = TRUE
+      
+      ELSE
+      
+            product_id   = self . parent_matrix . get_product( )
+
+            batch_available = inventory_item_get_quantity_unallocated( product_id, layer_batch ) 
+      
+            IF batch_available <> ERROR THEN
+
+                  batch_required = self . get_batch_required( layer_id )
+                                   - current_value
+                                   + new_value
+
+                  IF ( batch_available >= batch_required ) THEN
+
+                        ok = TRUE
+
+                  ENDIF
+
+            ENDIF
+
+      ENDIF
+
+      RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_current_layer_identity( self )
+
+{
+* Description : Returns the currently selected layer id or EMPTY
+*
+* Parameters : 
+*
+* Returns     : Layer id or EMPTY
+*
+******************************************************************************}
+
+      DECLARE layer_grid, layer_object, layer_id
+
+      layer_id = EMPTY
+
+      layer_grid = self . layer_grid
+
+      layer_object = layer_grid . get_row_object( layer_grid . current_row )
+
+      IF layer_object <> EMPTY THEN
+
+            layer_id = SELECT layer_entry . layer_factor
+                           IN OBJECT layer_object
+
+      ENDIF
+
+      RETURN( layer_id )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_current_condition_identity( self )
+
+{
+* Description : Returns the currently selected condition id or EMPTY
+*
+* Parameters : product_form object
+*
+* Returns     : condition id or EMPTY
+*
+******************************************************************************}
+
+      DECLARE condition_grid, condition_object, condition_id
+
+      condition_id = EMPTY
+
+      condition_grid = self . condition_grid
+
+      condition_object = condition_grid . get_row_object( condition_grid . current_row )
+
+      IF condition_object <> EMPTY THEN
+
+            condition_id = SELECT condition_entry . c_factor
+                              IN OBJECT condition_object
+
+      ENDIF
+
+      RETURN( condition_id )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_condition_pull_count(       self         ,
+                                                        VALUE condition_id ,
+                                                        VALUE layer_id     )
+
+{
+* Returns the number of pulls for the passed condition and layer
+*
+******************************************************************************}
+
+      DECLARE count, pull_db
+
+      pull_db = self . parent_matrix . pulls
+
+      count = 0
+      pull_db . set_first()
+      WHILE pull_db . current <> EMPTY DO
+
+            IF ( SELECT 'pull_db . table' . c_factor
+                  IN OBJECT pull_db . current = condition_id ) AND
+               ( SELECT 'pull_db . table' . layer_factor
+                  IN OBJECT pull_db . current = layer_id     ) AND
+               ( NOT pull_db . current . deleted             ) THEN
+
+                  count = count + 1
+
+            ENDIF
+
+            pull_db . set_next()
+
+      ENDWHILE
+
+      RETURN( count )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_current_layer_pull_amount( self )
+
+{
+* Description :
+*
+* Parameters :
+*
+* Returns     :
+*
+******************************************************************************}
+
+      DECLARE layer_id
+
+      layer_id = self . get_current_layer_identity( )
+
+      RETURN( self . get_layer_pull_amount( layer_id ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_layer_pull_amount( self, VALUE layer_id )
+
+{
+* Description : Returns the sum of all pull amounts in the passed layer
+*
+* Parameters : the product form object, layer id
+*
+* Returns     : total layer amount
+*
+******************************************************************************}
+
+      DECLARE axis_point_db, layer_amount, condition_id
+      DECLARE condition_overage, condition_object
+
+      axis_point_db = self . parent_matrix . c_factors
+
+      layer_amount = 0
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            condition_id = SELECT pds_axis_point . axis_point_name
+                               IN OBJECT axis_point_db . current
+
+
+            condition_object = self . parent_matrix . get_condition_object( layer_id, condition_id )
+
+            IF ( condition_object <> EMPTY ) AND ( NOT condition_object . deleted ) THEN
+
+                  condition_overage = SELECT condition_entry . overage
+                                          IN OBJECT condition_object
+
+                  layer_amount = layer_amount
+                                 + self . parent_matrix . get_condition_pull_amount( layer_id, condition_id )
+                                 + condition_overage
+            ENDIF
+
+            axis_point_db. set_next ()
+
+      ENDWHILE
+
+      RETURN( layer_amount )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_total_pull_amount( self )
+
+{
+* Description : Returns the sum of all pull amounts in the protocol/study
+*
+* Parameters : self , Inventory Form object
+*
+* Returns     : total amount
+*
+******************************************************************************}
+
+      DECLARE axis_point_db, total_amount, layer_id
+
+      axis_point_db = self . parent_matrix . layer_factors
+
+      total_amount = 0
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                           IN OBJECT axis_point_db . current
+
+            total_amount = total_amount + self . get_layer_pull_amount( layer_id )
+
+            axis_point_db . set_next ()
+
+      ENDWHILE
+
+      RETURN( total_amount )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE layer_grid_enter_cell_routine (       self        ,
+                                        VALUE cell_column ,
+                                        VALUE cell_row    )
+{
+* 
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      self . inventory_form . update_all()
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_update_amount_displays( self )
+{
+* 
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE matrix_total_text, amount, unit, product
+
+      matrix_total_text = ""
+
+      product = self . parent_matrix . get_product( )
+
+      IF NOT BLANK( product ) THEN
+
+            amount  = self . get_total_pull_amount( )
+            unit    = self . parent_matrix . get_product_unit( )
+      
+            matrix_total_text = GET_USER_MESSAGE ( "STB_INVENTORY_PRODUCT_TOTAL" , 1 ) :
+                                " " : amount : " (" : STRIP( unit ) : ")"
+
+      ENDIF
+
+      self . display_objects[ TOTAL_DISPLAY_POS ] . set_text( matrix_total_text )
+      
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_calculate_overage(       self ,
+                                               VALUE layer_id     ,
+                                               VALUE condition_id )
+
+{
+* Returns the overage for the passed layer's condition
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE pull_amount, overage, item, pcnt
+
+      pull_amount = self . parent_matrix . get_condition_pull_amount( layer_id, condition_id )
+
+      item = self . toolbar . get_item_by_identity( "OVERAGE_PERCENT" )
+      
+      IF item <> EMPTY THEN
+            pcnt = item . value
+      ELSE
+            pcnt = 0
+      ENDIF
+
+      overage = ( pull_amount * pcnt ) / 100.0
+
+      RETURN( overage )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_re_overage_condition(       self         , 
+                                                    VALUE layer_id     ,
+                                                    VALUE condition_id )
+{
+* Recalculates the overage required for condition identified by the passed
+* parameters
+*
+* Parameters : self         , Inventory Form object
+*              layer_id     ,
+*              condition_id ,
+*
+*******************************************************************************}
+
+      DECLARE row_object, new_overage, old_format
+
+      new_overage = self . calculate_overage( layer_id     ,
+                                              condition_id )
+
+      row_object = self . parent_matrix . get_condition_object( layer_id, condition_id )
+
+      old_format = GLOBAL( "FORMAT_TEXT" )
+
+      SET FORMAT FORMAT_3_DP
+
+      ASSIGN condition_entry . overage IN OBJECT row_object = new_overage
+
+      SET FORMAT old_format 
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_re_overage_layer( self, VALUE layer_id )
+{
+* Reoverages all conditions on passed layer
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE c_axis_point_db,  condition_id
+
+      c_axis_point_db = self . parent_matrix . c_factors
+
+      c_axis_point_db . set_first ()
+      WHILE c_axis_point_db . current <> EMPTY DO
+
+            condition_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT c_axis_point_db . current
+
+            self . re_overage_condition( layer_id, condition_id )
+
+            c_axis_point_db . set_next ()
+
+      ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_re_overage_all( self )
+{
+* Reoverages all conditions on all layers
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE l_axis_point_db, layer_id
+
+      l_axis_point_db = self . parent_matrix . layer_factors
+
+      l_axis_point_db . set_first ()
+      WHILE l_axis_point_db . current <> EMPTY DO
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT l_axis_point_db . current
+
+            self . re_overage_layer( layer_id )
+
+            l_axis_point_db . set_next ()
+
+      ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_form_action_create_total_product_details ( self )
+{
+* 
+*
+* Parameters : self , Inventory Form object
+*
+*******************************************************************************}
+
+      DECLARE tot_prompt_object
+      
+      PROMPT OBJECT tot_prompt_object
+            CLASS "STD_PROMPT_TEXT"
+            ON LINE self . height + 1
+            FROM 1
+            WITH ( lowered = FALSE ,
+                   width   = self . width )
+
+      self . add_display ( tot_prompt_object )
+      
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_batch_required( self, VALUE layer_id )
+
+{
+* Return how much of the current layer's batch is required for this study
+*
+* Parameters : self , Inventory Form object
+*
+******************************************************************************}
+
+      DECLARE layer_object, layer_batch, layer_pos, total_batch_required
+      DECLARE test_layer_batch, layer_amount_required, axis_point_db, layer_axis_object
+
+      axis_point_db = self . parent_matrix . layer_factors
+
+      layer_object = self . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+      layer_batch = SELECT layer_entry . batch_number
+                        IN OBJECT layer_object
+
+      {*** add up how much product is required from the current batch id ***}
+
+      total_batch_required = 0
+
+      layer_pos = 1
+      WHILE layer_pos <= axis_point_db . size() DO
+
+            layer_axis_object = axis_point_db . get_by_number ( layer_pos )
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                        IN OBJECT layer_axis_object
+
+            layer_object = self . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+            test_layer_batch = SELECT layer_entry . batch_number
+                                    IN OBJECT layer_object
+
+            IF test_layer_batch = layer_batch THEN
+
+                  layer_amount_required = self . get_layer_pull_amount( layer_id )
+
+                  total_batch_required = total_batch_required + layer_amount_required
+
+            ENDIF
+
+            layer_pos = layer_pos + 1
+
+      ENDWHILE
+
+      RETURN( total_batch_required )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_get_batch_availability( self, VALUE layer_id )
+
+{
+* Return how much batch is available in product units
+*
+* Parameters : self     , Inventory form object
+*              layer_id , layer identity
+*
+******************************************************************************}
+
+      DECLARE layer_object, layer_batch, product_id, available_qty
+
+      available_qty = ERROR
+
+      product_id =      SELECT 'self . parent_matrix . header_table' . product_id
+      layer_object = self . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+      layer_batch = SELECT layer_entry . batch_number
+                        IN OBJECT layer_object
+
+      IF NOT BLANK( layer_batch ) THEN
+      
+            available_qty = inventory_item_get_quantity_unallocated( product_id, layer_batch ) 
+      
+      ENDIF
+
+      RETURN( available_qty )
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_new_layer_object(       self     ,
+                                              VALUE layer_id )
+
+{
+* Description : Creates a new layer object
+*
+* Parameters :
+*
+* Returns     : new object or EMPTY if error
+*
+******************************************************************************}
+
+      DECLARE new_id, new_object, errors
+
+      IF ( self . parent_matrix . is_protocol( ) ) THEN
+
+            new_id = self . header_id
+                  : packed_decimal ( self . parent_matrix . header_ver )
+                  : layer_id
+                  : self . parent_matrix . matrix_type
+      ELSE
+            new_id = self . header_id
+                  : packed_decimal ( 1 )
+                  : layer_id
+                  : self . parent_matrix . matrix_type
+      ENDIF
+
+      CREATE OBJECT "STD_OBJECT_RECORD", new_object
+
+      new_object . new = TRUE
+
+      new_object . table = "LAYER_ENTRY"
+
+      object_add_table ( new_object, "LAYER_ENTRY" )
+
+      RESERVE ENTRY layer_entry
+            IN OBJECT new_object, new_id, errors
+
+      IF ( errors = EMPTY ) THEN
+
+            self . product_object . add ( new_object )
+
+      ENDIF
+
+      RETURN( new_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_new_condition_object(       self     ,
+                                                  VALUE layer_id         ,
+                                                  VALUE new_condition_id )
+
+{
+* Description : Creates a new condition object
+*
+* Parameters :
+*
+* Returns     : new object or EMPTY if error
+*
+******************************************************************************}
+
+      DECLARE new_id, new_object, errors
+
+      IF ( self . parent_matrix . is_protocol( ) ) THEN
+
+            new_id = self . parent_matrix . header_id
+                    : packed_decimal (self . parent_matrix . header_ver)
+                    : layer_id
+                    : new_condition_id
+                    : self . parent_matrix . matrix_type
+      ELSE
+            new_id = self . header_id
+                    : packed_decimal ( 1 )
+                    : layer_id
+                    : new_condition_id
+                    : self . parent_matrix . matrix_type
+      ENDIF
+
+      CREATE OBJECT "STD_OBJECT_RECORD", new_object
+
+      new_object . new = TRUE
+
+      new_object . table = "CONDITION_ENTRY"
+      object_add_table ( new_object, "CONDITION_ENTRY" )
+
+      RESERVE ENTRY condition_entry
+            IN OBJECT new_object, new_id, errors
+
+      IF ( errors = EMPTY ) THEN
+
+            self . condition_object . add ( new_object )
+      ELSE
+            new_object = EMPTY
+      ENDIF
+
+      RETURN( new_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE inventory_form_action_end_prompt( self )
+
+{
+* End Prompt
+*
+* Parameters : self , Inventory Form Object
+*
+******************************************************************************}
+
+      self . layer_grid     = EMPTY
+      self . condition_grid = EMPTY
+
+      self . std_form :: end_prompt( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Inventory Grid Object                                                     *}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+ROUTINE inventory_grid_class_initialisation( self )
+
+{
+* Inventory Grid Class Initialisation
+*
+* Parameters :
+*
+******************************************************************************}
+
+      ARRAY self . prompt_details
+
+      self . inventory_form = EMPTY
+      self . table = EMPTY
+      self . title_size_left = 2
+      self . title_size_top  = 1
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_add_field( self, VALUE id, VALUE field )
+{
+* Adds the passed field column to the end of the grid's prompt details array
+*
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE prompt_details, pos
+
+      prompt_details = self . prompt_details
+
+      pos = explorer_utils_add_detail_field ( self . table   ,
+                                              field          ,
+                                              prompt_details ,
+                                              TRUE           )
+                                        
+      prompt_details [pos , 5] = prompt_details [pos , MESSAGE_POSITION]
+      prompt_details [pos , 7] = id
+
+      RETURN( pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_add_routine(       self  ,
+                                           VALUE id    ,
+                                           VALUE title ,
+                                           VALUE wid   ,
+                                           VALUE lib   ,
+                                           VALUE rout  )
+{
+* Adds the passed routine column to the end of the grid's prompt details array
+*
+* Parameters : self , Inventory Grid Object
+*
+*******************************************************************************}
+
+      DECLARE prompt_details, pos
+
+      prompt_details = self . prompt_details
+      
+      pos = size_of_array( prompt_details ) + 1
+
+      prompt_details [ pos , MESSAGE_POSITION ] = title
+      prompt_details [ pos , TYPE_POSITION    ] = "ROUTINE"
+      prompt_details [ pos , ROUTINE_POSITION ] = rout
+      prompt_details [ pos , LIBRARY_POSITION ] = lib
+      prompt_details [ pos , 5                ] = title
+      prompt_details [ pos , 6                ] = wid
+      prompt_details [ pos , 7                ] = id
+      
+      RETURN( pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_check_move(       self       ,
+                                          VALUE old_column ,
+                                          VALUE old_row    ,
+                                                new_column ,
+                                                new_row    )
+
+{
+* Called when cell is changed
+*
+* Parameters : self       , The Inventory Grid object
+*              old_column , Column we're moving from
+*              old_row    , Row we're moving from
+*              new_column , Column we're moving to
+*              new_row    , Row we're moving to
+*
+*******************************************************************************}
+
+      IF old_row > 0 THEN
+            self . title_text_left[ old_row, 1 ] = ""
+            self . re_display_title_left( old_row )
+      ENDIF
+      
+      IF new_row > 0 THEN
+            self . title_text_left[ new_row, 1 ] = ">"
+            self . re_display_title_left( new_row )
+      ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_clear_left_titles( self )
+{
+* Clears the text in all left titles
+*
+* Parameters : self  , The Inventory Grid object
+*
+*******************************************************************************}
+
+      DECLARE pos
+
+      {* Clear Left Titles *}
+      pos = 1
+      WHILE pos <= self . cell_rows DO
+      
+            self . title_text_left[ pos, 1 ] = ""
+
+            pos = pos + 1
+      
+      ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE inventory_grid_action_set_top_titles( self )
+{
+* Sets the text in the top titles
+*
+* Parameters : self  , The Inventory Grid object
+*
+*******************************************************************************}
+
+      lib_grid_setup_columns ( self . prompt_details, self, self . table )
+      
+      self . cell_columns = size_of_array( self . prompt_details )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Product Grid Object                                                       *}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+ROUTINE product_grid_class_initialisation( self )
+
+{
+* 
+*
+* Parameters :
+*
+******************************************************************************}
+
+      self . current_layer_number = EMPTY
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE product_grid_action_get_row_object( self, VALUE cell_row )
+
+{
+* Description : Returns the layer_entry record object for the passed
+*               cell row
+*
+* Parameters :
+*
+* Returns     :
+*
+******************************************************************************}
+
+      DECLARE layer_id, product_form, row_object, matrix_object
+
+      row_object = EMPTY
+
+      product_form = self . inventory_form
+
+      matrix_object = product_form . parent_matrix
+
+      layer_id = matrix_object . get_layer_id_at_position( cell_row )
+
+      row_object = product_form . product_object . get_by_index( "LAYER_FACTOR", layer_id )
+
+      IF row_object = EMPTY THEN
+            row_object = product_form . new_layer_object( layer_id )
+      ENDIF
+
+      RETURN ( row_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Condition Grid Object                                                     *}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+ROUTINE condition_grid_action_get_row_object( self, VALUE cell_row )
+
+{
+* Description : Returns the condition_entry record object for the passed
+*               cell row
+*
+* Parameters :
+*
+* Returns     :
+*
+******************************************************************************}
+
+      DECLARE condition_id, product_form, row_object, layer_id, matrix_object
+
+      row_object = EMPTY
+
+      product_form = self . inventory_form
+
+      matrix_object = product_form . parent_matrix
+
+      layer_id = product_form . get_current_layer_identity( )
+
+      IF layer_id <> EMPTY THEN
+
+            condition_id = matrix_object . get_condition_id_at_position( cell_row )
+
+            row_object = matrix_object . get_condition_object( layer_id, condition_id )
+
+            IF row_object = EMPTY THEN
+                  row_object = product_form . new_condition_object( layer_id, condition_id )
+            ENDIF
+      ENDIF
+
+      RETURN ( row_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{* Global Routines                                                           *}
+{*****************************************************************************}
+
+{*************************************************************************}
+
+GLOBAL ROUTINE product_form_insert_new_layer (       matrix_object    ,
+                                               VALUE new_row_position ,
+                                               VALUE new_layer_id     )
+{
+*
+*     If a layer is inserted onto the matrix grid then reflect on the product
+*     info form. TODO: should be done up front at creation time
+*
+**************************************************************************}
+
+      DECLARE product_form, layer_grid, axis_point_db, condition_id
+
+      product_form = matrix_object . product_info_form
+
+      product_form . new_layer_object( new_layer_id )
+
+      {add new condition objects}
+
+      axis_point_db = product_form . parent_matrix . c_factors
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            condition_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT axis_point_db . current
+
+
+            product_form . new_condition_object( new_layer_id ,
+                                                 condition_id )
+
+            axis_point_db. set_next ()
+
+      ENDWHILE
+
+      layer_grid = product_form . layer_grid
+
+      layer_grid . insert_row( new_row_position, 1, GRID_SEPARATOR_NONE )
+
+ENDROUTINE
+
+
+{*************************************************************************}
+
+GLOBAL ROUTINE product_form_remove_layer ( matrix_object, VALUE layer_id )
+
+{
+*
+*     If a layer is removed from the matrix grid then reflect on the product
+*     info form.
+*
+**************************************************************************}
+
+      DECLARE product_form, layer_grid, condition_object, axis_point_db
+      DECLARE condition_id, layer_object
+
+      product_form = matrix_object . product_info_form
+
+      layer_grid = product_form . layer_grid
+
+      layer_object = layer_grid . get_row_object( matrix_object . current_layer )
+
+      layer_object . delete()
+
+      {loop through layer's condition objects and remove them}
+
+      axis_point_db = product_form . parent_matrix . c_factors
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            condition_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT axis_point_db . current
+
+            condition_object = matrix_object . get_condition_object( layer_id, condition_id )
+
+            condition_object . delete()
+
+            axis_point_db . set_next ()
+
+      ENDWHILE
+
+      layer_grid . remove_row( matrix_object . current_layer )
+
+ENDROUTINE
+
+
+{*************************************************************************}
+
+GLOBAL ROUTINE product_form_remove_c_factor ( matrix_object )
+
+{
+*
+*     If a condition factor is removed from the matrix grid then reflect
+*     on the product info form.
+*
+**************************************************************************}
+
+      DECLARE product_form, condition_grid, condition_object, condition_id
+      DECLARE axis_point_db, layer_id
+
+      product_form = matrix_object . product_info_form
+
+      condition_grid = product_form . condition_grid
+
+      condition_object = condition_grid . get_row_object( matrix_object . current_c )
+
+      condition_id = SELECT condition_entry . c_factor
+                        IN OBJECT condition_object
+
+
+      {loop through all layers removing condition object}
+
+      axis_point_db = product_form . parent_matrix . layer_factors
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT axis_point_db . current
+
+            condition_object = matrix_object . get_condition_object( layer_id, condition_id )
+
+            IF condition_object <> EMPTY THEN
+            
+                  condition_object . delete()
+                  
+            ENDIF
+
+            axis_point_db . set_next ()
+
+      ENDWHILE
+
+      condition_grid . remove_row( matrix_object . current_c )
+
+
+ENDROUTINE
+
+
+{*************************************************************************}
+
+GLOBAL ROUTINE product_form_insert_new_c_factor (       matrix_object    ,
+                                                  VALUE new_condition_id ,
+                                                  VALUE insert_position  )
+
+{
+*
+*     If a condition factor is inserted onto the matrix grid then reflect
+*     on the product info form.
+*
+**************************************************************************}
+
+      DECLARE product_form, condition_grid, axis_point_db, layer_id
+
+      product_form = matrix_object . product_info_form
+
+      {loop through all layers adding new condition object}
+
+      axis_point_db = product_form . parent_matrix . layer_factors
+
+      axis_point_db . set_first ()
+      WHILE axis_point_db . current <> EMPTY DO
+
+            layer_id = SELECT pds_axis_point . axis_point_name
+                              IN OBJECT axis_point_db . current
+
+
+            product_form . new_condition_object( layer_id, new_condition_id )
+
+            axis_point_db. set_next ()
+
+      ENDWHILE
+
+      condition_grid = product_form . condition_grid
+
+      condition_grid . insert_row( insert_position, 1, GRID_SEPARATOR_NONE )
+
+
+ENDROUTINE

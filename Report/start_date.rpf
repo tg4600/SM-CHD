@@ -1,0 +1,552 @@
+{***********************************************************************
+* Module Name   : START_DATE
+* Purpose       : Start test, by adding component Weighing / Spreading
+* Document Ref  :
+* Specification :
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-04-23  Tommy Bøgeskov  Created
+************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY TOOLBOX
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_DDE
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BROWSE
+
+DECLARE form, Step, key, rowi, test_no, count, grid_tag {, test_tag, step_tag }
+DECLARE test_n, grid, check_ok, results_array, the_date, TestCount
+
+    test_n = 0
+    create_form(form, Step)
+    key = form.get_lastkey()
+
+    IF key = "DO" THEN
+        {fm ("size_of_array(form.prompt_objects[grid_tag].userinfo) ":size_of_array(form.prompt_objects[grid_tag].userinfo))}
+        IF size_of_array(form.prompt_objects[grid_tag].userinfo) = 0 THEN
+            EXIT
+        ELSE
+
+            grid = form.prompt_objects [grid_tag]
+
+            SET DATE FORMAT "DD-Mon-YYYY H24:MI"
+                the_date = STRING(NOW())
+            RESTORE DATE FORMAT
+
+            ARRAY results_array
+            results_array[1,1]="component_name"
+            results_array[1,2]="text"
+            results_array[1,3]="result_type"
+            results_array[2,1]= Step.Text
+            results_array[2,2]="Ok " : the_date
+            results_array[2,3]="T"
+
+            rowi = 1
+            TestCount = 0
+
+            WriteToLog(GetArray(grid.userinfo))
+            
+            WHILE rowi <= size_of_array(grid.userinfo) DO
+                IF grid.userinfo [rowi, 1] = "YES" THEN
+                    ARRAY check_ok ARRAYSIZE(2)
+                    test_no = grid.userinfo [rowi, 3]
+                    WriteToLog("Adding '":STRIP(results_array[2,1]):"' to test number: ":test_no)
+                    PUT_TEST_RESULTS test_no, results_array, check_ok
+                    count = 1
+                    WHILE (count <> 3) DO
+                        IF (check_ok[count] <> EMPTY) THEN
+                            FM("Error. Reason: " :check_ok[count])
+                            WriteToLog("Error. Reason: " :check_ok[count])
+                        ENDIF
+                        count = count + 1
+                    ENDWHILE
+                    TestCount = TestCount + 1
+                ENDIF
+                rowi = rowi + 1
+            ENDWHILE
+        ENDIF
+
+        IF TestCount = 0 THEN
+            fm("No tests started.")
+        ELSEIF TestCount = 1 THEN
+            fm("Component '":STRIP(results_array[2,1]):"' added/updated for ":STRIP(TestCount):" test.")
+        ELSE
+            fm("Component '":STRIP(results_array[2,1]):"' added/updated for ":STRIP(TestCount):" tests.")
+        ENDIF
+    ENDIF
+
+EXIT
+
+{***********************************************
+Routine: create_form
+Purpose: Create incidents form
+Parameters: Job string Value for header
+***********************************************}
+ROUTINE create_form (form, Step)
+
+DECLARE TestNum, test_criteria, phrase_list
+ARRAY test_criteria
+ARRAY phrase_list
+
+    array_select_add(test_criteria, ARRAY_SELECT_EQ, "STATUS", "V")        
+    array_select_add(test_criteria, ARRAY_SELECT_OR,  EMPTY, EMPTY)
+    array_select_add(test_criteria, ARRAY_SELECT_EQ, "STATUS", "P")        
+    array_select_add(test_criteria, ARRAY_SELECT_OR,  EMPTY, EMPTY)
+    array_select_add(test_criteria, ARRAY_SELECT_EQ, "STATUS", "C") 
+    array_select_add(test_criteria, ARRAY_SELECT_ORDER, "TEST_NUMBER", ARRAY_SELECT_DESCENDING )
+
+    load_phrase_text ( "STEP", phrase_list )
+
+    CREATE OBJECT PROMPT_CLASS_FORM, form
+
+    form.header    = "Start analysis..."
+    form.column    = 5
+    form.row       = 10
+    form.height    = 10
+    form.width     = 100
+    form.return_behaviour = FORM_RETURN_LEAVE
+
+    form.add_display ("Select step: ",
+                       2,1,PROMPT_RENDITION_NORMAL)
+
+    PROMPT OBJECT Step
+        AT 15, 1
+        CHOOSE OUTOF phrase_list
+        WITH (WIDTH = 20)
+              
+    {step_tag = } form.add_prompt (Step)
+
+    form.add_display("Test Number: ", 2, 2, PROMPT_RENDITION_BOLD)
+
+    PROMPT OBJECT TestNum
+       AT 15, 2
+       BROWSE ON test
+       WITH ( enter_prompt_routine = "enter_tst_prompt",
+              leave_prompt_routine = "leave_tst_prompt",
+              VGL_library          = GLOBAL( "CURRENT_LIBRARY"),
+              select_array         = test_criteria, 
+              VALUE                = "")
+
+    {test_tag = } form.add_prompt(TestNum)
+
+    create_grid(form)
+
+    form.start_prompt()
+    form.wait_prompt()
+    form.end_prompt()
+
+ENDROUTINE
+
+{***********************************************
+Routine: enter_tst_prompt
+Purpose: set default value
+Parameters: self - prompt object
+***********************************************}
+ROUTINE enter_tst_prompt(self)
+    self.text = ""
+ENDROUTINE
+
+{***********************************************
+Routine: leave_tst_prompt
+Purpose: Populate the grid
+Parameters: self - prompt object
+***********************************************}
+ROUTINE leave_tst_prompt (self)
+DECLARE analysis, sample, ana_ver, ana_type, a_sample, TST, row, 
+        grid, form, t_ana_type, j, test_array, t_status
+    
+    form    = self.parent_prompt
+    grid    = form.prompt_objects [grid_tag]
+    
+    IF test_n  <> self.value THEN
+        test_n = self.value
+        ARRAY test_array ARRAYSIZE (0,4)
+        IF test_n <> 0 THEN
+            a_sample = SELECT test.sample WHERE test_number = test_n
+            analysis = SELECT test.analysis WHERE test_number = test_n
+            ana_ver  = SELECT test.analysis_version WHERE test_number = test_n
+            ana_type = SELECT versioned_analysis.analysis_type WHERE identity = analysis
+                                       AND analysis_version = ana_ver
+            TST = SELECT test.test_number WHERE sample = a_sample AND (status = "V" OR status = "P" OR status = "C")
+            WHILE TST <> EMPTY
+
+                IF NUMTEXT(TST) THEN
+                    IF NUMERIC(TST) <> 0 THEN
+                        IF TestNumExist(TST, form) = 0 THEN
+                            test_array[size_of_array(test_array) + 1, 1] = TST
+                            {form.prompt_objects[stock_tag].set_enabled(TRUE) }
+                        ENDIF
+                    ENDIF
+                ENDIF
+            NEXT test
+                TST = SELECT test.test_number
+            ENDWHILE
+
+            IF SIZE_OF_ARRAY(test_array) > 0 THEN
+                j = 1
+                WHILE j <= SIZE_OF_ARRAY(test_array)
+                    test_n = test_array[j, 1]
+                    analysis = SELECT test.analysis WHERE test_number = test_n
+                    ana_ver  = SELECT test.analysis_version
+                    t_ana_type = SELECT versioned_analysis.analysis_type
+                                    WHERE identity = analysis
+                                    AND analysis_version = ana_ver
+                    IF (t_ana_type = ana_type) THEN
+                        Analysis = SELECT test.analysis WHERE test_number = test_n
+                        t_status = SELECT test.status
+                        row = TestNumExist(test_n, form)
+                        IF row > 0 THEN
+                            IF INDEX("V",t_status) = 0 THEN
+                                grid.userinfo[row, 1] = " - "
+                            ELSE
+                                grid.userinfo[row, 1] = "YES"
+                            ENDIF
+                        ELSE
+                            sample   = SELECT test.sample WHERE test_number = test_n
+                            row = SIZE_OF_ARRAY(grid.userinfo) + 1
+                            grid.insert_row ( row , 1 , GRID_SEPARATOR_NONE )
+
+                            IF INDEX("V",t_status) = 0 THEN
+                                grid.userinfo[row, 1] = " - "
+                            ELSE
+                                grid.userinfo[row, 1] = "YES"
+                            ENDIF
+                            grid.userinfo[row, 2] = t_status
+                            grid.userinfo[row, 3] = test_n
+                            grid.userinfo[row, 4] = sample:": ":STRIP(SELECT sample.id_text WHERE id_numeric = sample)
+                            grid.userinfo[row, 5] = STRIP(Analysis) :"/":STRIP(SELECT test.test_count)
+                            grid.userinfo[row, 6] = t_ana_type
+                            grid.userinfo[row, 7] = NOW
+                            grid.userinfo[row, 8] = Analysis
+                            grid.userinfo[row, 9] = sample
+                        ENDIF
+                    ENDIF
+                    j = j + 1
+                ENDWHILE
+
+            ENDIF
+            grid.re_display_contents ( )
+        ENDIF
+
+    ENDIF
+    self.text = "         0"
+    form.active_prompt = 1 {test_tag }
+    
+ENDROUTINE
+
+{*************************************************
+Routine: TestNumExist
+Purpose: Checks if current testnumber is in grid
+Parameters: TestNumber
+**************************************************}
+ROUTINE TestNumExist (VALUE TestNumber, form)
+DECLARE Answer, i, grid
+
+    Answer  = 0
+    i       = 1
+    grid    = form.prompt_objects [grid_tag]
+
+    IF size_of_array(grid.userinfo) <> 0 THEN
+
+        WHILE i <= size_of_array(grid.userinfo) DO
+            IF STRIP(grid.userinfo[i, 3]) = STRIP(TestNumber) THEN
+                Answer = i
+                i = size_of_array(grid.userinfo)
+            ENDIF
+            i = i + 1
+        ENDWHILE
+    ENDIF
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************
+Routine: create_grid
+Purpose: Create grid
+Parameters: form    object  form to paste grid to
+**************************************************}
+ROUTINE create_grid (form)
+DECLARE grid
+
+CREATE OBJECT PROMPT_CLASS_GRID, grid
+
+ARRAY grid.userinfo ARRAYSIZE (0,10)
+
+grid.row = 4
+grid.column = 1
+grid.width = form.width - 2
+grid.height = form.height - 4
+grid.cell_rows = 0
+grid.cell_columns = 6
+
+grid.column_size[ 1] =  5
+grid.column_size[ 2] =  5
+grid.column_size[ 3] = 10
+grid.column_size[ 4] = 30
+grid.column_size[ 5] = 20
+grid.column_size[ 6] = 20
+grid.column_size[ 7] = 20
+
+grid.title_separator_top = GRID_SEPARATOR_BOTH
+grid.column_separator [ 1] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 2] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 3] = GRID_SEPARATOR_BOTH
+grid.column_separator [ 4] = GRID_SEPARATOR_BOTH
+
+grid.title_size_top = 1
+grid.title_rendition_top = PROMPT_RENDITION_BOLD
+
+grid.title_text_top [ 1, 1] = "Start"
+grid.title_text_top [ 2, 1] = "Status"
+grid.title_text_top [ 3, 1] = "Test number"
+grid.title_text_top [ 4, 1] = "Sample"
+grid.title_text_top [ 5, 1] = "Analysis"
+grid.title_text_top [ 6, 1] = "Analysis type"
+
+grid.display_cell_routine = "DISPLAY_GRID_CELL"
+grid.prompt_cell_routine  = "PROMPT_GRID_CELL"
+grid.mouse_click_routine  = "GRID_MOUSE_CLICKED"
+grid.enter_cell_routine   = "ENTER_CELL_ROUTINE"
+
+grid.fixed_columns_left = 1
+grid.return_behaviour = GRID_RETURN_FOLLOW
+grid_tag = form.add_prompt(grid)
+
+RETURN (grid)
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    ENTER_CELL_ROUTINE
+Purpose:    Activated when user clicked in cell
+Parameters: self        object  the grid
+            cell_column integer what column was clicked
+            cell_row    integer what row was clicked
+*************************************************************************}
+ROUTINE ENTER_CELL_ROUTINE ( self ,
+                VALUE cell_column ,
+                VALUE cell_row)
+
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    grid_mouse_clicked
+Purpose:    Activated when user clicked in cell
+Parameters: self        object  the grid
+            cell_column integer what column was clicked
+            cell_row    integer what row was clicked
+*************************************************************************}
+ROUTINE grid_mouse_clicked ( self ,
+                VALUE cell_column ,
+                VALUE cell_row )
+
+    IF (cell_column = "1") AND (cell_row <> "-1") THEN
+
+        IF self.user_info [cell_row,1] = "YES" THEN
+            self.user_info [cell_row,1] = " - "
+        ELSEIF self.user_info [cell_row,1] = " - "
+            self.user_info [cell_row,1] = "YES"
+        ENDIF
+
+        self.rebuild()
+
+    ENDIF
+
+ENDROUTINE
+
+{***********************************************
+Routine: display_grid_cell
+Purpose: Standard routine to display grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE display_grid_cell (     self ,
+                VALUE cell_column ,
+                VALUE cell_row ,
+                window ,
+                VALUE column ,
+                VALUE row ,
+                VALUE cell_width ,
+                VALUE cell_height )
+
+DISPLAY self.user_info [cell_row, cell_column]
+    AT column, row
+    IN WINDOW window
+    TO column + cell_width -1
+
+ENDROUTINE
+
+{***********************************************
+Routine: prompt_grid_cell
+Purpose: Standard routine to prompt grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE prompt_grid_cell (  self ,
+                VALUE cell_column ,
+                VALUE cell_row ,
+                window ,
+                VALUE column ,
+                VALUE row ,
+                VALUE cell_width ,
+                VALUE cell_height )
+
+PROMPT FOR self.user_info [cell_row, cell_column]
+        BOLD UNDERLINE
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+        WITH (display_only = TRUE)
+
+ENDROUTINE
+
+{*****************************************************************************}
+ROUTINE prompt_for_field_value(       identity    ,
+                                VALUE prompt_text ,
+                                VALUE form_header ,
+                                VALUE table       ,
+                                VALUE field       )
+
+{
+*   Prompts for a value from the passed field and table using prompt_text as
+*   the prompt, form_header as the form header and returning the selected
+*   identity in 'identity'.
+*   Returns TRUE if the user pressed OK, FALSE otherwise
+*
+******************************************************************************}
+
+    DECLARE form, prompt_width, field_prompt, link_table, link_field
+
+    GET_FIELD_DETAILS 'table'.'field' , "LINK_TABLE" , link_table
+    GET_FIELD_DETAILS 'table'.'field' , "LINK_FIELD" , link_field
+
+    IF link_table <> EMPTY THEN
+        table = link_table
+        field = link_field
+    ENDIF
+
+    GET_FIELD_DETAILS 'table'.'field' , "FIELD_SIZE" , prompt_width
+
+    CREATE OBJECT "STD_FORM" , form
+    form.header = form_header
+    form.width = LENGTH ( prompt_text ) + prompt_width + 4
+    form.height = 1
+    form.column = ( GLOBAL ( "GUI_WIDTH" )  - form.width  ) / 2
+    form.row    = ( GLOBAL ( "GUI_HEIGHT" ) - form.height ) / 2
+
+    form.prompt_id = "$DATATREE_FIELD_PROMPT_" : STRIP( table : "_" : field )
+
+    form.add_display ( prompt_text , 1 , 1 , PROMPT_RENDITION_NORMAL )
+
+    PROMPT OBJECT field_prompt
+        BROWSE ON 'table'.'field'
+
+    field_prompt.row    = 1
+    field_prompt.column = LENGTH ( prompt_text ) + 1
+    field_prompt.width  = prompt_width
+
+    form.add_prompt ( field_prompt )
+
+    form.start_prompt ( )
+
+    {form.active_prompt = field_prompt.tag }
+
+    form.wait_prompt  ( )
+    form.end_prompt ( )
+
+    identity = field_prompt.value
+
+    RETURN ( form.get_lastkey() = "DO" )
+
+ENDROUTINE
+
+{***********************************************
+Routine: promptfortest
+Purpose: Create incidents form
+Parameters: Job string Value for header
+***********************************************}
+ROUTINE promptfortest (form, test_n)
+DECLARE TestNumber
+CREATE OBJECT PROMPT_CLASS_FORM, form
+
+form.header    = "Test number..."
+form.column    = 5
+form.row       = 5
+form.height    = 5
+form.width     = 30
+form.return_behaviour = FORM_RETURN_LEAVE
+
+form.add_display ("Enter Test number: ",
+                   2,1,PROMPT_RENDITION_NORMAL)
+PROMPT OBJECT TestNumber
+              AT 20, 1
+              FORMAT TEXT_10
+form.add_prompt (TestNumber)
+
+    form.start_prompt()
+    form.wait_prompt()
+fm("TestNumber: ":TestNumber.Text)
+    form.end_prompt()
+
+ENDROUTINE
+
+{* ROUTINE grid_action_update_display
+**********************************************************
+ROUTINE grid_action_update_display (       self          ,
+                                               VALUE cell_column   ,
+                                               VALUE cell_row      ,
+                                               VALUE update_units  ,
+                                               VALUE update_text   ,
+                                               VALUE update_status )
+DECLARE comp_name , units , result_item , anal_name, row_format
+fm("grid_action_update_display")
+
+IF update_text OR update_status THEN
+    self.redisplay_cell ( cell_column , cell_row )
+    IF update_status THEN
+        self.redisplay_cell ( 1 , cell_row )
+    ENDIF
+ENDIF
+IF update_units THEN
+    comp_name = self.title_text_top [ cell_column, 1 ]
+    anal_name = self.title_text_top [ cell_column, 3 ]
+    result_item = self.result_collection .
+                    get_by_index ( "ROW_KEY",
+                    number_to_text (cell_row, ROW_FORMAT) :
+                    comp_name : anal_name )
+    IF result_item <> EMPTY THEN
+        units = result_item.result_object.result_unit
+        IF self.title_text_top [ cell_column, 2 ] != units THEN
+                self.title_text_top [ cell_column, 2 ] = units
+                self.redisplay_title_top ( cell_column )
+        ENDIF
+    ENDIF
+ENDIF
+ENDROUTINE}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+

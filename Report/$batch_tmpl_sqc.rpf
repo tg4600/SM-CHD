@@ -1,0 +1,712 @@
+{******************************************************************************
+*
+*	Display and Modify screens for spec. job fields.
+*
+*
+{*****************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+SET NAME "DEFER/"
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+JOIN LIBRARY $LIST_EDITOR
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LABTABLIB
+
+DECLARE the_list_editor ,
+	batch_list
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_pre_schedule ( line , display_id , new_value)
+                                    
+
+	PROMPT FOR       new_value 
+	       ON LINE   line 
+	       FROM      1
+	       IN WINDOW display_id
+	       BROWSE ON batch_sqc_header
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_description  ( VALUE column ,
+			              VALUE line    ,
+			              VALUE width_1 ,
+			                    display_id ,
+		                      VALUE is_display )
+
+
+        DECLARE description 
+	IF NOT is_display THEN
+                                                               
+		PROMPT ON LINE line FROM column IN WINDOW display_id
+
+	ELSE
+                                    
+
+		description = SELECT batch_sqc_header . description
+			      WHERE  identity =
+			      SELECT batch_tmpl_sqc . chart
+
+       		DISPLAY description ON LINE line FROM column
+				    IN WINDOW display_id
+
+	ENDIF
+
+ENDROUTINE                                            
+
+{*****************************************************************************}
+
+ROUTINE batch_tmpl_sqc_labtable_input ( VALUE template      ,
+				        VALUE copy_template ,
+				        VALUE mode          )
+
+{               
+*
+*
+******************************************************************************}
+
+	DECLARE header_line    ,
+		field_details  ,
+		answer         ,
+		prompt_details 
+
+	IF mode = "PRINT" THEN
+
+
+		header_line = ""
+                                                               
+		ARRAY field_details ARRAY_SIZE ( 0 , 2 )
+
+		field_details [ 1 , 1 ] = "CHART"
+		field_details [ 1 , 2 ] = get_user_message ( "BATCH_TMPL_SQC_CHART" , 1 )
+
+		print_fields ( "BATCH_TMPL_SQC"  ,
+				template         ,
+ 			        header_line      ,
+			        " " ,
+                                2                ,
+				28               ,
+				field_details    )
+		answer = TRUE
+
+	ELSE
+
+		ARRAY prompt_details ARRAY_SIZE ( 0 , 6 )
+
+		prompt_details [ 1 , 2 ] = "DISPLAY"
+      		prompt_details [ 1 , 3 ] = "BATCH_TMPL_SQC"
+		prompt_details [ 1 , 4 ] = "CHART"
+		prompt_details [ 1 , 5 ] =  3
+		prompt_details [ 1 , 6 ] =  10
+
+		prompt_details [ 2 , 2 ] = "ROUTINE"
+		prompt_details [ 2 , 3 ] = global ( "Current_library" )
+		prompt_details [ 2 , 4 ] = "BATCH_TMPL_SQC_DESCRIPTION"
+		prompt_details [ 2 , 5 ] = 3 + 10 + 5
+		prompt_details [ 2 , 6 ] = 70 - 10 - 10
+                                                  
+		answer = list_editor_version1
+				     ( 19 ,
+		                       70 ,
+  		                       5  ,
+                                       3  ,
+	                               "BATCH_TMPL_SQC" ,
+		                       GET_USER_MESSAGE ( "BATCH_TMPL_SQC_LIST_HEADER", 1 ) : 
+						template    ,
+		                       GET_USER_MESSAGE ( "BATCH_TMPL_SQC_LIST_TITLE", 1 ) ,
+		                       GET_USER_MESSAGE ( "MLPS_SCHEDULE_BOT_LINE", 1 ) ,
+		                       TRUE             ,
+		                       EMPTY            ,
+		                       EMPTY            ,
+                                       prompt_details   ,
+		                       "BATCH_TMPL_SQC_PRE_SCHEDULE"     ,
+		                       EMPTY            ,
+		                       EMPTY            ,
+		                       EMPTY            ,
+	                               copy_template    ,
+	                               template         ,
+	                               global ( "current_library" ) ,
+		                       mode            ,
+		                       The_list_editor )
+
+	ENDIF
+
+	return ( ANSWER )
+                                                         
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_read_chart_data ( VALUE chart     ,
+		   			       data      ,
+					 VALUE is_modify )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+	DECLARE batch ,
+		count
+
+	ARRAY data
+
+	count = 1                                        
+
+	IF is_modify THEN
+
+		batch = SELECT batch_tmpl_header . identity
+			FOR UPDATE
+			WHERE  ( analysis   = SELECT batch_sqc_header . analysis ) AND
+			       ( removeflag = FALSE                              )
+			ORDER ON identity
+
+	ELSE
+
+		batch = SELECT batch_tmpl_header . identity
+			WHERE  ( analysis   = SELECT batch_sqc_header . analysis ) AND
+			       ( removeflag = FALSE                              )
+			ORDER ON identity
+
+	ENDIF        
+
+	WHILE batch <> EMPTY DO                 
+
+		data [ count , 1 ] = batch
+		data [ count , 2 ] = SELECT batch_tmpl_header . description
+
+		IF is_modify THEN
+
+			data [ count , 3 ] = EMPTY <> SELECT batch_tmpl_sqc . identity
+						      FOR UPDATE
+						      WHERE ( chart    = chart ) AND
+							    ( identity = batch )                                             
+
+			data [ count , 4 ] = data [ count , 3 ] 
+
+		ELSE
+
+			data [ count , 3 ] = EMPTY <> SELECT batch_tmpl_sqc . identity
+						      WHERE ( chart    = chart ) AND
+							    ( identity = batch )                                             
+	
+			data [ count , 4 ] = FALSE
+	
+		ENDIF                        
+
+
+		NEXT batch_tmpl_header
+                
+		batch = SELECT batch_tmpl_header . identity
+
+		count = count + 1                               
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_insert_chart ( VALUE sqc_chart ,
+				      VALUE batch     )
+
+{
+*
+*
+*
+*******************************************************************************}
+	
+	DECLARE new_order
+
+	new_order = SELECT max batch_tmpl_sqc . order_number
+		    WHERE identity = batch
+
+	IF new_order = EMPTY THEN
+
+		new_order = packed_decimal ( 1 )
+
+	ELSE
+
+		new_order = packed_decimal ( new_order + 1 )
+
+	
+	ENDIF
+
+	RESERVE ENTRY batch_tmpl_sqc, batch : sqc_chart
+
+	ASSIGN batch_tmpl_sqc . order_number = new_order
+
+	UPDATE batch_tmpl_sqc
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_remove_chart ( VALUE sqc_chart ,
+				      VALUE batch     )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+	DECLARE identity
+
+	identity = SELECT batch_tmpl_sqc . identity
+		   FOR UPDATE
+		   WHERE ( identity = batch     ) AND
+			 ( chart    = sqc_chart ) 
+
+	IF identity <> EMPTY THEN
+
+		DELETE batch_tmpl_sqc
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_update_charts ( VALUE sqc_chart  ,
+				             batch_list )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+	DECLARE count    ,
+		identity  
+
+	count = 1 
+
+	WHILE count <= size_of_array ( batch_list ) DO
+
+		IF batch_list [ count , 3 ]  <> batch_list [ count , 4 ] THEN
+
+			identity = SELECT batch_tmpl_header . identity
+				   FOR UPDATE
+				   WHERE identity = batch_list [ count , 1 ]
+                        
+			IF identity <> EMPTY THEN
+
+				ASSIGN batch_tmpl_header . modified_by = operator
+				ASSIGN batch_tmpl_header . modified_on = now
+
+				UPDATE batch_tmpl_header
+
+			ENDIF                        
+
+			IF batch_list [ count , 3 ] THEN
+
+				batch_tmpl_sqc_insert_chart ( sqc_chart ,
+						              batch_list [ count , 1])
+			
+
+			ELSE
+
+				batch_tmpl_sqc_remove_chart ( sqc_chart ,
+						              batch_list [ count , 1])
+			
+
+			ENDIF                        
+
+		ENDIF               
+
+		count = count + 1
+
+	ENDWHILE
+                                             
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_print_charts ( VALUE sqc_chart  ,
+					    batch_list )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+	DECLARE count  ,
+		title                                  
+
+	IF size_of_array ( batch_list ) > 0 THEN
+
+		title = get_user_message ( "BATCH_TMPL_SQC_PRINT1" ,1 )                     
+
+LITERAL
+          
+$title________________________________________________________________________
+$ENDLITERAL
+
+		title = get_user_message ( "BATCH_TMPL_SQC_PRINT1" ,2 )                     
+
+LITERAL
+$title________________________________________________________________________
+$ENDLITERAL
+                     
+
+		count = 1
+
+		WHILE count <= size_of_array ( batch_list ) DO
+
+			IF batch_list [ count , 3 ] THEN
+
+LITERAL
+$batch_list______[count,1]  $batch_list_________________________________________[count,2]
+$ENDLITERAL
+
+			ENDIF
+
+			count = count + 1
+
+		ENDWHILE
+
+	ENDIF 
+
+ENDROUTINE      
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_chart_display (       grid        ,
+                                       VALUE cell_column ,
+		                       VALUE cell_row    ,
+			                     screen      ,
+		                       VALUE column      ,
+		                       VALUE row         ,
+	                               VALUE cell_width  ,
+		                       VALUE cell_height )
+                                        
+{
+*
+*
+*
+*******************************************************************************}
+
+
+	DISPLAY grid . user_info [ cell_row , cell_column ]
+		ON LINE row
+	        FROM    column
+		TO      column + cell_width - 1
+		IN WINDOW screen
+                INVERSE = grid . user_info [ cell_row , 3 ]
+			
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_chart_prompt  (       grid        ,
+                                       VALUE cell_column ,
+		                       VALUE cell_row    ,
+			                     screen      ,
+		                       VALUE column      ,
+		                       VALUE row         ,
+	                               VALUE cell_width  ,
+		                       VALUE cell_height )
+
+{
+*
+*
+*
+*******************************************************************************}
+
+	PROMPT 
+	       ON LINE row
+	       FROM    column           
+	       TO      column + cell_width - 1
+	       IN WINDOW screen
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_chart_select ( self )
+
+{                        
+*
+*
+*******************************************************************************}
+
+	DECLARE current_row
+
+	current_row = self . current_row
+
+	IF current_row > 0 THEN
+
+		self . user_info [ current_row , 3 ] = 
+				NOT self . user_info [ current_row , 3 ]
+                                      
+		self . redisplay_row ( current_row )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_chart_mouse (       self         ,
+			             VALUE cell_column ,
+				     VALUE cell_row    )
+
+{                        
+*
+*
+*******************************************************************************}
+
+	IF cell_row > 0 THEN
+
+		self . user_info [ cell_row , 3 ] = 
+				NOT self . user_info [ cell_row , 3 ]
+
+		self . redisplay_row ( cell_row )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_select_all ( self )
+
+{                        
+*
+*
+*******************************************************************************}
+
+	DECLARE count ,         
+		grid
+
+	grid = self . user_info         
+
+	count = 1
+
+	WHILE count <= grid . cell_rows DO
+
+		grid . user_info [ count , 3 ] = TRUE
+
+		count = count + 1
+
+	ENDWHILE
+
+	grid . redisplay_contents () 
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_remove_all ( self )
+
+{                        
+*
+*
+*******************************************************************************}
+
+	DECLARE count ,
+		grid
+
+	grid = self . user_info         
+
+	count = 1
+
+	WHILE count <= grid . cell_rows DO
+
+		grid . user_info [ count , 3 ] = FALSE
+
+		count = count + 1
+
+	ENDWHILE
+
+	grid . redisplay_contents () 
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_tmpl_sqc_define_chart_grid ( data        ,
+			                   grid_object )
+
+{                        
+*
+*
+*******************************************************************************}
+
+	CREATE OBJECT "STD_GRID_EDITOR"  , grid_object
+                                        
+	grid_object . width   = 5
+	grid_object . height  = global ( "SCREEN_HEIGHT" )
+
+	grid_object . column   = 1
+	grid_object . row      = 1
+
+	grid_object . border   = FALSE
+
+	grid_object . vgl_library          = global ( "current_library" )
+
+	grid_object . prompt_cell_routine  = "batch_tmpl_sqc_chart_prompt"
+	grid_object . display_cell_routine = "batch_tmpl_sqc_chart_display"
+	grid_object . select_routine       = "batch_tmpl_sqc_chart_select"
+	grid_object . mouse_click_routine  = "batch_tmpl_sqc_chart_mouse"
+
+
+
+	grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+	grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+	grid_object . title_size_top        = 1
+	grid_object . fixed_columns_left    = 1
+
+	grid_object . column_size [ 1 ] = 20
+	grid_object . column_size [ 2 ] = 52
+
+	grid_object . title_text_top [ 1 , 1 ] = get_user_message ( "BATCH_TMPL_SQC_BATCH" , 1 )
+	grid_object . title_text_top [ 2 , 1 ] = get_user_message ( "BATCH_TMPL_SQC_DESCRIPTION" , 1 )
+
+
+	grid_object . width = 71
+
+	grid_object . cell_columns = 2
+	grid_object . cell_rows    = size_of_array ( data )
+
+	grid_object . user_info = data
+                                        
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE batch_tmpl_sqc_from_sqc_chart ( VALUE sqc_chart     ,
+				        VALUE copy_chart    ,
+				        VALUE mode          )
+
+{               
+*
+*
+******************************************************************************}
+
+	DECLARE form        ,
+		grid        ,
+		button_list ,
+		no_buttons  ,
+		next_button
+
+	IF ( mode = "COPY"  ) THEN
+
+		batch_tmpl_sqc_read_chart_data ( copy_chart  ,
+						 batch_list  ,
+						 FALSE       )
+
+	ELSEIF ( mode = "MODIFY"  ) OR
+	       ( mode = "DISPLAY" ) THEN
+                                    
+		IF ( NOT variable_is_assigned ( batch_list )) OR
+		   ( batch_list = EMPTY                     ) THEN
+	
+			batch_tmpl_sqc_read_chart_data ( sqc_chart       ,
+							 batch_list      ,
+							 mode = "MODIFY" )
+
+		ENDIF                
+                                        
+ 		batch_tmpl_sqc_define_chart_grid ( batch_list ,
+				                   grid       )
+
+		ARRAY button_list	                                             
+                           
+		next_button = 1
+
+		lib_grid_lastkey_button (  button_list   ,
+					   next_button   ,
+					  "DO"           ,
+					   EMPTY         )            
+
+		lib_grid_action_button (  button_list                  ,
+					  next_button                  , 
+					  get_user_message ( "BATCH_TMPL_SQC_SELECT_ALL" , 1 )
+					  "BATCH_TMPL_SQC_SELECT_ALL"  ,
+					  global ( "current_library" ) ,
+					  grid                         )
+
+		lib_grid_action_button (  button_list                  ,
+					  next_button                  , 
+					  get_user_message ( "BATCH_TMPL_SQC_REMOVE_ALL" , 1 )
+					  "BATCH_TMPL_SQC_REMOVE_ALL"  ,
+					  global ( "current_library" ) ,
+					  grid                         )
+
+		lib_grid_lastkey_button (  button_list   ,
+					   next_button   ,
+					  "EXIT"         ,
+					   EMPTY         )
+
+	
+		lib_grid_create_form  ( grid              ,
+					form              ,
+					TRUE              ,
+					0                 ,
+					get_user_message ( "BATCH_TMPL_SQC_FORM_HEADER" , 1 )  ,
+		   			""                ,
+                        	        no_buttons        )
+
+		lib_form_add_vertical_buttons ( form        ,
+						button_list )
+
+		form . start_prompt ()	
+		form . wait_prompt  ()                        
+
+		IF form . get_lastkey () = "EXIT" THEN
+
+			batch_list = EMPTY
+
+		ENDIF
+
+		form . end_prompt   ()
+
+	ELSEIF mode = "PRINT" THEN
+
+		batch_tmpl_sqc_read_chart_data ( sqc_chart  ,
+					         batch_list ,
+					         FALSE      )
+	
+		batch_tmpl_sqc_print_charts ( sqc_chart  ,
+					      batch_list )
+
+	ELSEIF mode = "QUIT" THEN
+	
+		batch_list = EMPTY
+
+	ELSEIF mode = "SAVE" THEN
+                           
+		IF ( variable_is_assigned ( batch_list )) AND
+		   ( batch_list <>  EMPTY               ) THEN
+
+			batch_tmpl_sqc_update_charts ( sqc_chart  ,
+						       batch_list )
+
+		ENDIF		
+			       
+		batch_list = EMPTY
+
+			            
+	ENDIF
+
+	RETURN ( transaction_has_updates ())                                    
+                                           
+ENDROUTINE
+
+{*****************************************************************************}
+

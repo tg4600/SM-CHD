@@ -1,0 +1,250 @@
+{SMP$REPORTS:ROSDSRLIS.RPF}
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A00??        150393  LPE     Print summary result list.              .      }
+{ ========================== $GENRESLIS.RPF ================================== }
+
+
+{ - Set the length of the page -----------------------------------------------}
+SET NAME "DISPLAY/"
+SET PRINTERCODES TRUE
+
+ENABLE WINDOWS
+
+SET FORMAT "99"
+set samplestatus "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+set length 63
+set width 150
+
+set_esc_seq()
+get_sample_id()
+
+IF NOT(can_exit) THEN
+   get_sample_info()
+ENDIF
+
+ROUTINE set_esc_seq
+   esc = ASCII(27)
+{ PRIMARY AND SECONDARY FONTS }
+ primary_font = esc:"(0N":esc:"(s0p12h0s0b4099T"
+ {  ECMA 94, 12 tegn/tomme , Normal stil, Medium styrke }
+
+ secondary_font = esc:")10U":esc:")s0p12h0s0b4099T"
+ {  PC 8 D/N, proportional, 12 tegn/tomme, Normal stil, Medium styrke }
+
+ stand_pri =esc:"(3@"
+ stand_sec = esc:")3@"
+
+{ STILE }
+   normal = esc:"(s0S"
+   italic = esc:"(s1S"
+
+{ ORIENTATION }
+   port = esc:"&l0O"
+   lscape = esc:"&l1O"
+
+{ PITCH }
+  pit_8 = esc:"(s8H"
+  pit_10 = esc:"(s10H"
+  pit_12 = esc:"(s12H"
+  pit_16 = esc:"(s16H"
+
+ENDROUTINE
+
+{ - Set up the screen display and prompts ------------------------------------ }
+ROUTINE get_sample_id
+   CREATE TEXT WINDOW screen_box HEIGHT 8 WIDTH 40 BORDER
+
+   Display "  SUMMARY REPORT OF RESULTS ON SAMPLE   "
+         IN WINDOW screen_box on line 1 from 1 inverse
+   Display "Press EXIT to abort run "
+         IN WINDOW screen_box on line 8 from 1 BOLD
+   Display "Enter the Sample ID   : "
+         IN WINDOW screen_box on line 3 from 1
+   Display "Checking test         : "
+         IN WINDOW screen_box on line 5 from 1
+   Display "Component name        : "
+         IN WINDOW screen_box on line 6 from 1
+
+   PASTE TEXT WINDOW screen_box ON LINE 10 FROM 20
+
+{ - Prompt for Sample ID ----------------------------------------------------- }
+
+   can_exit = FALSE
+
+   REPEAT
+      sample_disp = " "
+      prompt for sample_disp browse on sample on line 3 from 24
+                         IN WINDOW screen_box
+
+  { Check for the pressing of EXIT key }
+      IF (lastkey = "EXIT") THEN
+         can_exit = TRUE
+      ENDIF
+   UNTIL ((can_exit=TRUE) OR (sample_disp<> EMPTY))
+ENDROUTINE
+
+ROUTINE get_sample_info
+
+   sampid = rightstring(strip(sample_disp),10)
+
+   sampid = select sample.id_numeric
+            where  id_numeric = sampid
+            order  on id_numeric
+
+
+   samptxt = select sample.id_text
+
+  { Calculate the date and time of the report }
+   report_date = substring(date(now),1,11)
+   report_time = substring(date(now),13,5)
+
+SET HEADER PAD(" "," ",72):"Page ##"
+
+LITERAL
+
+
+
+
+
+                          !USUMMARY RESULT LIST REPORT!U
+
+
+$endliteral
+
+  pr_sampid = " ":STRIP(sampid)
+  top_line = "List of all calculated results entered on ": report_date:" for"
+
+literal
+             $top_line________________________________________________________
+
+                           !BSample : $pr_sampid____
+                           $samptxt_______________!B
+
+
+$endliteral
+
+  { Get the first test number for this sample }
+  test_no = select test.test_number
+            where  ( sample  = sampid  )      {**MIG}
+
+  IF test_no = empty THEN
+
+literal
+         This sample does not have any tests defined.
+$endliteral
+  ELSE
+
+  { Define the headings for this and subsequent pages }
+
+  ON NEW PAGE
+
+LITERAL
+
+
+
+
+                           !BSample : $pr_sampid____
+                           $samptxt_______________!B
+
+
+
+!LUL 13HO TT 40HO TT 15HO TT 7HO UR!L
+| Analysis    | Component Name                         | Result        | Unit  |
+$ENDLITERAL
+  ENDON
+  ENDIF
+
+test_counter = 0
+
+   array comp_list
+   array result_list
+   array result_type
+   array result_unit
+   array analysis_str
+
+
+WHILE test_no <> empty DO
+
+
+   end_counter = 0
+   analid = select test.analysis_id
+   analstr= STRIP(analid):"/":STRIP(SELECT test.test_count)
+   analstr= LEFTSTRING(analstr,12)
+
+   display analstr in window screen_box on line 5 from 24
+
+   result_name = SELECT result.component_name
+               WHERE (test_number = test_no) AND
+                     (result_type = "K")
+               ORDER ON test_number
+
+
+   WHILE result_name <> empty DO
+      res_type = SELECT result.result_type
+      IF res_type = "K" THEN
+         test_counter = test_counter + 1
+         analysis_str [test_counter] = analstr
+         comp_list [test_counter] = result_name
+         DISPLAY result_name ON LINE 6 FROM 24 IN WINDOW screen_box BOLD
+         result_list[test_counter]   = STRIP(select result.text)
+         result_unit[test_counter]   = select result.units
+      ENDIF
+      next result
+      result_name = select result.component_name
+   ENDWHILE
+next test
+test_no = select test.test_number
+ENDWHILE
+
+count = 1
+
+IF test_counter > 0 THEN
+
+LITERAL
+!LUL 13HO TT 40HO TT 15HO TT 7HO UR!L
+| Analysis    | Component Name                         | Result        | Unit  |
+$ENDLITERAL
+
+WHILE count <= test_counter DO
+   IF ((count > 1) AND (analysis_str[count] = analysis_str[count-1])) THEN
+         pr_anal = ""
+   ELSE
+      pr_anal = analysis_str[count]
+   ENDIF
+   pr_comp = comp_list[count]
+   pr_res_val = JUSTIFY(PAD(result_list[count]," ",12),"RIGHT")
+   u = result_unit[count]
+   IF ((count MOD 20) = 0) THEN
+LITERAL
+!LLL 13HO BT 40HO BT 15HO BT 7HO LR!L
+$ENDLITERAL
+      NEW PAGE
+   ELSE
+LITERAL
+!LLT 13HO CC 40HO CC 15HO CC 7HO RT!L
+| $pr_anal____| $pr_comp_______________________________| $pr_res_val__ |$u____ |
+$ENDLITERAL
+   ENDIF
+   count = count + 1
+ENDWHILE
+
+
+sign_date = PAD(" "," ",14)
+sign = PAD(" "," ",30)
+
+LITERAL
+!LLL 13HO BT 40HO BT 15HO BT 7HO LR!L
+
+$ENDLITERAL
+ELSE
+LITERAL
+
+
+               There is no results for these analysis
+
+
+$ENDLITERAL
+ENDIF
+ENDROUTINE

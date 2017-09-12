@@ -1,0 +1,239 @@
+GLOBAL ROUTINE calculation(current_sample,
+			   current_test_number,
+			   current_component_name)
+
+{    The next two lines are required at the end of the calculation }
+
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0022        210694  LPE     Returnere WARNING hvis resultater (efter 1 dag)}
+{                               > 0.                                           }
+{------------------------------------------------------------------------------}
+
+calcresult=0
+initialize()
+number_of_res = find_number_of_res ()
+IF number_of_res <> 0 THEN
+   get_results()
+   IF (res_ok) THEN
+      calcresult = find_bpf_res ()
+   ELSE
+      CREATE TEXT WINDOW disp_win HEIGHT 4 WIDTH 55 BORDER =""
+      PASTE TEXT WINDOW disp_win On LINE 20 FROM 5
+      DISPLAY error_mess ON LINE 1 FROM 2 IN WINDOW disp_win BOLD
+      DISPLAY "Please Reenter." ON LINE 2 FROM 2 IN WINDOW disp_win
+      DISPLAY "Press any key to continue . . . "
+             ON LINE 4 FROM 2 IN WINDOW disp_win
+      dummy = getkey
+      calcresult = "NOTOK"
+   ENDIF
+ELSE
+   calcresult=EMPTY
+ENDIF
+return (calcresult) { The calculated result is returned here }
+ENDROUTINE
+
+{- - - - - - - - - - - - - START INITIALIZE - - - - - - - - - - - - - - - - - -}
+{ initialiserer arrays }
+ROUTINE initialize
+ENABLE WINDOWS
+ENDROUTINE
+{- - - - - - - - - - - - - END INITIALIZE - - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START FIND_NUMBER_OF_RES- - - - - - - - - - - - - -}
+{ Henter resultater }
+ROUTINE find_number_of_res
+
+declare res_str,comp_n,strip_comp_n,strip_cur_comp_n
+
+number_of_res = 0
+
+new_test_created = FALSE
+
+do_new_test = TRUE
+
+comp_n  = SELECT result.component_name
+		       WHERE test_number = current_test_number
+		       ORDER ON order_number
+
+strip_comp_n = strip_vol(comp_n)
+strip_cur_comp_n = LEFTSTRING(current_component_name,LENGTH(strip_comp_n))
+
+WHILE ((comp_n <> EMPTY) ) DO {AND pure}
+   res_str = SELECT result.text
+   IF res_str = "NEWTEST" THEN
+      new_test_created = TRUE
+   ENDIF
+   IF (TOUPPER(strip_comp_n) = TOUPPER(strip_cur_comp_n)) AND
+      (strip_cur_comp_n <> "")      THEN
+      number_of_res = number_of_res + 1
+   ENDIF
+   NEXT result
+   comp_n   = SELECT result.component_name
+   strip_comp_n = strip_vol(comp_n)
+   strip_cur_comp_n = LEFTSTRING(current_component_name,LENGTH(strip_comp_n))
+ENDWHILE
+RETURN (number_of_res)
+ENDROUTINE
+
+{- - - - - - - - - - - - - - END FIND_NUMBER_OF_RES- - - - - - - - - - - - - -}
+
+{- - - - - - - - - - - - - - START GET_RESULTS - - - - - - - - - - - - - - - -}
+
+ROUTINE get_results
+ARRAY  component    ARRAYSIZE (number_of_res+1) = " "
+ARRAY  result_val   ARRAYSIZE (number_of_res+1) = 0
+ARRAY  result_type  ARRAYSIZE (number_of_res+1) = " "
+ARRAY  result_str   ARRAYSIZE (number_of_res+1) = " "
+ARRAY  result_exp   ARRAYSIZE (number_of_res+1) = 0
+ARRAY  result_vol   ARRAYSIZE (number_of_res+1) = 0
+
+n = 0
+
+res_ok = TRUE
+
+comp_n = SELECT result.component_name
+		   WHERE test_number = current_test_number
+		   ORDER ON order_number
+
+WHILE comp_n <> EMPTY DO
+   strip_comp_n = strip_vol(comp_n)
+   strip_cur_comp_n = LEFTSTRING(current_component_name,LENGTH(strip_comp_n))
+   IF (TOUPPER(strip_comp_n) = TOUPPER(strip_cur_comp_n)) AND
+      (strip_cur_comp_n <> "") THEN
+
+      n = n + 1
+      component [n] = SELECT result.component_name
+      result_type [n] = SELECT result.result_type
+      result_str [n] = SELECT result.text
+      IF result_type [n] = "N" THEN
+         result_val [n] = RESULTVALUE(current_sample,current_test_number,
+                                component [n])
+      ENDIF
+      IF (result_val [n] < 0) THEN
+         res_ok = FALSE
+         error_mess= "Negatives are not allowed - Please reenter results."
+      ELSEIF ((result_val [n] - TRUNC(result_val [n])) <> 0) THEN
+         res_ok = FALSE
+         error_mess = "Decimals are not allowed - Please reenter results."
+      ENDIF
+      result_exp [n] = get_exponent(suffix(component[n]," "))
+      result_vol [n] = get_volume(component [n])
+   ENDIF
+   NEXT result
+   comp_n = SELECT result.component_name
+ENDWHILE
+ENDROUTINE
+
+{- - - - - - - - - - - - - END GET_RESULTS - - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START FIND_BPF_RES- - - - - - - - - - - - -  - - }
+ROUTINE find_bpf_res
+declare n,fort
+
+bpf_ok = TRUE
+
+n = 1
+
+bpf_res = "OK"
+WHILE ((n <= number_of_res) AND bpf_ok) DO
+   IF result_val[n] > 0 THEN
+      bpf_ok = FALSE
+      bpf_res = "WARNING"
+   ENDIF
+   n = n + 1
+ENDWHILE
+RETURN(bpf_res)
+ENDROUTINE
+{- - - - - - - - - - - - - END FIND_BPF_RES- - - - - - - - - - - - - -  - - }
+
+
+{- - - - - - - - - - - - - START GET_EXPONENT - - - - - - - - - - - - - -  - - }
+ROUTINE get_exponent(value suffix_string)
+
+declare n
+n = 1
+test_str = MIDSTRING(suffix_string,n,1)
+test_ord = ORD(test_str)
+WHILE (test_ord > 42) AND (test_ord < 58) AND (test_ord <> 44) DO
+   n = n + 1
+   test_str = MIDSTRING(suffix_string,n,1)
+   test_ord = ORD(test_str)
+ENDWHILE
+num_string = LEFTSTRING (suffix_string ,(n-1))
+RETURN(num_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END GET_EXPONENT - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START SUFFIX - - - - - - - - - - - - - -  - - }
+ROUTINE suffix (suffix_name, value tst_sign)
+declare n
+declare suf_nam
+declare value_pos
+declare suf_string
+
+suf_nam = STRIP(suffix_name)
+value_pos = LENGTH(suf_nam) - 1
+WHILE (SUBSTRING(suf_nam,value_pos,1) <> tst_sign) AND (value_pos > 0) DO
+   value_pos = value_pos - 1
+ENDWHILE
+n = LENGTH(suf_nam) - value_pos
+suf_string = RIGHTSTRING(suf_nam,n)
+RETURN(suf_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END SUFFIX - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START STRIP_VOL - - - - - - - - - - - - - -  - - }
+ROUTINE strip_vol (strip_name)
+declare n
+declare ml_pos
+declare rest_string
+
+strip_nam = TOUPPER(STRIP(strip_name))
+ml_pos = INDEX(strip_nam,"ML") - 1
+WHILE (SUBSTRING(strip_nam,ml_pos,1) <> " ") AND (ml_pos > 0) DO
+   ml_pos = ml_pos - 1
+ENDWHILE
+rest_string = SUBSTRING(strip_nam,1,ml_pos)
+RETURN(rest_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END SUFFIX - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START PREFIX - - - - - - - - - - - - - -  - - }
+ROUTINE prefix (pr_name, value sign)
+declare value_pos
+value_pos = INDEX(pr_name,sign)
+IF value_pos > 0 THEN
+   pr_str = LEFTSTRING(pr_name,value_pos)
+ELSE
+   pr_str = pr_name
+  ENDIF
+RETURN (pr_str)
+ENDROUTINE
+
+
+{- - - - - - - - - - - - - START GET_VOL - - - - - - - - - - - - - - - -  - - }
+
+ROUTINE get_volume(vol_string)
+vol_name = TOUPPER(STRIP(vol_string))
+ml_pos = INDEX(vol_name,"ML")
+start_pos = ml_pos -1
+IF ml_pos = 0 THEN
+   vol = 1
+ELSE
+   rest_str = SUBSTRING(vol_name,1,ml_pos)
+   WHILE (SUBSTRING(rest_str,start_pos,1) <> " ") AND (start_pos >0)
+      start_pos = start_pos - 1
+   ENDWHILE
+   vol_str = SUBSTRING(rest_str,start_pos+1,(ml_pos - start_pos -1))
+   IF NUMTEXT(vol_str) THEN
+	   vol = NUMERIC(vol_str)
+   ELSE
+	   vol = 1
+   ENDIF
+ENDIF
+RETURN(vol)
+ENDROUTINE
+{- - - - - - - - - - - - - END GET_VOL - - - - - - - - - - - - - - - - -  - - }
+

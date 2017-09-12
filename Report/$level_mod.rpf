@@ -1,0 +1,1150 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LEVEL_MOD.RPF
+*
+* Purpose       : General Level library. Provides vgl routines for modifying/
+*         using levels.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+* Modified_by   Modified_Date  Reason_________________________________________
+* LIT001        6 Apr 2007     Save product, product_version on mlp_values
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_UTILS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIMIT_MOD
+JOIN LIBRARY $LAB_USER
+JOIN LIBRARY $PROMPT_TOOLBAR
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+GLOBAL CONSTANT LEVEL_ENTRY_CLASS       = "STD_LEVEL_ENTRY"
+
+{* LOCAL CONSTANTS ************************************************************}
+
+
+CONSTANT LEVEL_MODIFY_DATABASE    = "LEVEL_MODIFY_DATABASE"
+
+{* VARIABLES ******************************************************************}
+
+DECLARE level_active  ,
+    level_deleted ,
+    level_read    ,
+    LEVEL_ID_SIZE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_initialise
+
+{
+*   Initialise the limit library.
+*
+*******************************************************************************}
+
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" )) THEN
+
+        prompt_toolbar_initialise ( )
+
+        level_mod_class_define ()
+
+        GET_FIELD_DETAILS limit . level_id ,
+                  "FIELD_SIZE" ,
+                  LEVEL_ID_SIZE
+
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+    ENDIF
+
+    ARRAY level_prompt_details   ARRAY_SIZE ( 0 , 6 )
+
+    level_prompt_details [ 1 , 2 ] = "ROUTINE"
+        level_prompt_details [ 1 , 3 ] = global ( "current_library" )
+    level_prompt_details [ 1 , 4 ] = "LEVEL_MOD_DISPLAY_LEVEL"
+    level_prompt_details [ 1 , 5 ] =
+            get_user_message ( "LEVEL_MOD_LEVEL" , 1 )
+    level_prompt_details [ 1 , 6 ] =  LEVEL_ID_SIZE
+
+    level_prompt_details [ 2 , 2 ] = "ROUTINE"
+        level_prompt_details [ 2 , 3 ] = global ( "current_library" )
+    level_prompt_details [ 2 , 4 ] = "LEVEL_MOD_CC"
+    level_prompt_details [ 2 , 5 ] =
+            get_user_message ( "LEVEL_MOD_CC" , 1 )
+    level_prompt_details [ 2 , 6 ] =  5
+
+    level_prompt_details [ 3 , 2 ] = "ROUTINE"
+        level_prompt_details [ 3 , 3 ] = global ( "current_library" )
+    level_prompt_details [ 3 , 4 ] = "LEVEL_MOD_LEVEL_TYPE"
+    level_prompt_details [ 3 , 5 ] =
+            get_user_message ( "LEVEL_MOD_LEVEL_TYPE" , 1 )
+    level_prompt_details [ 3 , 6 ] =  12
+
+    level_prompt_details [ 4 , 2 ] = "ROUTINE"
+        level_prompt_details [ 4 , 3 ] = global ( "current_library" )
+    level_prompt_details [ 4 , 4 ] = "LEVEL_MOD_LEVEL_DESCRIPTION"
+    level_prompt_details [ 4 , 5 ] =
+            get_user_message ( "LEVEL_MOD_LEVEL_DESCRIPTION" , 1 )
+    level_prompt_details [ 4 , 6 ] = 35
+
+    lab_user_mlps_level ( level_prompt_details )
+
+        ARRAY level_active  ARRAY_SIZE ( 0 )
+        ARRAY level_deleted ARRAY_SIZE ( 0 )
+
+    level_read = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_class_define
+
+{
+*   Define the classed used by the level package.
+*
+*******************************************************************************}
+
+
+    DEFINE CLASS LEVEL_ENTRY_CLASS
+
+        PROPERTIES "EXISTS"
+
+        TABLES LIMIT
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_get_entry_code
+
+{
+*   Get the level entry code - call the routine in $limit_mod
+*   so that the increments remain in sinc.
+*
+*******************************************************************************}
+
+    RETURN (limit_get_entry_code ())
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_save
+
+{ Save the changes to the level list back to the database,
+  the routine needs to be called inside a write transaction   }
+
+    { ------------------------------------------------------------- }
+    { LIT001 Start - save product info on mlp_values                }
+    { ------------------------------------------------------------- }
+
+    DECLARE count, product, product_version
+
+    product         = SELECT MLP_HEADER.IDENTITY
+    product_version = SELECT MLP_HEADER.PRODUCT_VERSION
+
+    IF level_read THEN
+
+        count = 1
+
+        WHILE count <= size_of_array ( level_deleted ) DO
+
+            IF level_deleted [ count ] . exists THEN
+
+                DELETE limit IN OBJECT
+                        level_deleted [ count ]
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+            count = 1
+
+        WHILE count <= size_of_array ( level_active ) DO
+
+            ASSIGN limit . min_limit       IN OBJECT level_active [ count ] = count
+            ASSIGN limit . product_id      IN OBJECT level_active [ count ] = product
+            ASSIGN limit . product_version IN OBJECT level_active [ count ] = product_version
+
+            { ------------------------------------------------------------- }
+            { LIT001 END - save product info on mlp_values                  }
+            { ------------------------------------------------------------- }
+
+            UPDATE limit IN OBJECT level_active [ count ]
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_get ( VALUE entry_code  ,
+                    VALUE mode        )
+
+{ Read the levels from the database into an array of objects }
+
+    DECLARE count        ,
+        level_id     ,
+        level_object
+
+    IF level_read THEN
+
+        RETURN
+
+    ENDIF
+
+    count = 1
+
+    IF mode = "MODIFY" THEN
+
+        level_id = SELECT limit . level_id
+               FOR UPDATE
+                   WHERE    entry_code = entry_code
+                   ORDER ON min_limit
+
+    ELSE
+
+        level_id = SELECT limit . level_id
+                   WHERE    entry_code = entry_code
+                   ORDER ON min_limit
+
+
+    ENDIF
+
+    WHILE level_id <> EMPTY DO
+
+
+        CREATE OBJECT LEVEL_ENTRY_CLASS, level_object
+            level_object . exists  = TRUE
+
+        object_copy_current_table (  level_object ,
+                        "limit"       )
+
+        level_active [ count ] = level_object
+
+        NEXT limit
+        level_id = SELECT limit . level_id
+
+        count = count + 1
+
+    ENDWHILE
+
+    level_read = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_copy ( VALUE entry_code     ,
+                     VALUE old_entry_code )
+
+{ Read the levels from the database into an array of objects }
+
+    DECLARE count        ,
+        level_id     ,
+        level_object
+
+    IF level_read THEN
+
+        RETURN
+
+    ENDIF
+
+    count = 1
+
+
+    level_id = SELECT limit . level_id
+               WHERE    entry_code = old_entry_code
+               ORDER ON min_limit
+
+    WHILE level_id <> EMPTY DO
+
+
+        CREATE OBJECT LEVEL_ENTRY_CLASS, level_object
+                level_object . exists = FALSE
+
+        RESERVE ENTRY limit IN OBJECT level_object ,
+                      entry_code : SELECT limit . level_id
+            COPY_FROM old_entry_code : SELECT limit . level_id ,
+            STATUS
+
+
+        level_active [ count ] = level_object
+
+        NEXT limit
+        level_id = SELECT limit . level_id
+
+        count = count + 1
+
+    ENDWHILE
+
+    level_read = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_display_level (       self        ,
+                            grid        ,
+                  VALUE cell_column ,
+                  VALUE cell_row    ,
+                      VALUE column      ,
+                      VALUE line        ,
+                      VALUE width_1     ,
+                        display_id  ,
+                      VALUE is_display  )
+
+    DECLARE level_id
+
+    level_id = SELECT limit . level_id IN OBJECT self
+
+    IF ( is_display ) THEN
+
+        DISPLAY level_id ON LINE line FROM column
+                 IN WINDOW display_id
+
+    ELSE
+
+        PROMPT ON LINE line FROM column
+               IN WINDOW display_id
+
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_cc (       self        ,
+                     grid        ,
+               VALUE cell_column ,
+               VALUE cell_row    ,
+                   VALUE column      ,
+               VALUE line        ,
+               VALUE width_1     ,
+                 display_id  ,
+               VALUE is_display  )
+
+
+    DECLARE cc
+
+    cc = SELECT limit . text_spec IN OBJECT self
+
+    IF cc = "Y" THEN
+
+        cc = TRUE
+
+    ELSEIF cc = "N" THEN
+
+        cc = FALSE
+
+    ENDIF
+
+    IF is_display THEN
+
+        DISPLAY cc ON LINE line FROM column
+               TO column + width_1 - 1
+                   IN WINDOW display_id
+               FORMAT boolean
+               WITH ( is_check = TRUE )
+
+
+    ELSE
+
+        PROMPT FOR cc ON LINE line FROM column
+                  TO column + width_1 - 1
+                      IN WINDOW display_id
+                  BROWSE ON boolean
+                  WITH ( is_check = TRUE )
+
+        IF lastkey <> "EXIT" THEN
+
+            IF cc THEN
+
+                ASSIGN limit . text_spec IN OBJECT self = "Y"
+
+            ELSE
+
+                ASSIGN limit . text_spec IN OBJECT self = "N"
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_get_level_data ( VALUE level_field ,
+                     self        )
+
+    DECLARE level_id, data
+
+    level_id = SELECT limit . level_id IN OBJECT self
+
+    IF SELECT mlp_level . level_id <> level_id THEN
+
+        level_id = SELECT mlp_level . level_id
+                   WHERE  level_id = level_id
+
+    ENDIF
+
+    data = SELECT mlp_level . 'level_field'
+
+    IF data = EMPTY THEN
+
+        data = "Level Doesn't exist"
+
+    ENDIF
+
+    RETURN ( data )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_level_type (       self        ,
+                             grid        ,
+                   VALUE cell_column ,
+                   VALUE cell_row    ,
+                           VALUE column      ,
+                       VALUE line        ,
+                       VALUE width_1     ,
+                         display_id  ,
+                       VALUE is_display  )
+
+
+    DECLARE data
+
+    data = level_mod_get_level_data ( "LEVEL_TYPE" ,
+                      self         )
+    IF is_display THEN
+
+        DISPLAY data ON LINE line FROM column
+                 TO column + width_1 - 1
+                     IN WINDOW display_id
+                 FORMAT mlp_level . level_type
+
+    {ELSE} ELSEIF grid . display_only = TRUE THEN
+
+        PROMPT FOR data ON LINE line FROM column
+                    TO column + width_1 - 1
+                        IN WINDOW display_id
+                WITH ( display_only = TRUE )
+
+
+        ELSE
+
+        PROMPT FOR data ON LINE line FROM column
+                    TO column + width_1 - 1
+                        IN WINDOW display_id
+                BROWSE ON DISPLAY
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_level_description (       self        ,
+                                    grid        ,
+                      VALUE cell_column ,
+                      VALUE cell_row    ,
+                                  VALUE column      ,
+                              VALUE line        ,
+                              VALUE width_1     ,
+                                display_id  ,
+                              VALUE is_display  )
+
+
+    DECLARE data
+
+    data = level_mod_get_level_data ( "DESCRIPTION" ,
+                      self          )
+    IF is_display THEN
+
+        DISPLAY data ON LINE line FROM column
+                 TO column + width_1 - 1
+                     IN WINDOW display_id
+                 FORMAT mlp_level . description
+
+    ELSE
+
+        PROMPT FOR data ON LINE line FROM column
+                    TO column + width_1 - 1
+                        IN WINDOW display_id
+                BROWSE ON DISPLAY
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_display (       grid        ,
+                            VALUE cell_column ,
+                    VALUE cell_row    ,
+                      screen      ,
+                    VALUE column      ,
+                    VALUE row         ,
+                    VALUE cell_width  ,
+                VALUE cell_height )
+
+    DECLARE data       ,
+        object     ,
+        field_name ,
+        is_display
+
+    IF ( insert_new_level ) OR
+       ( lib_grid_is_insert_line ( grid              ,
+                       cell_row          ,
+                       grid . user_info )) THEN
+
+
+        CLEAR LINE      row
+              FROM      column
+              TO        column + cell_width - 1
+              IN WINDOW screen
+
+    ELSE
+
+            object = level_active [ cell_row ]
+
+        lib_grid_display_array ( grid                 ,
+                     cell_column          ,
+                     cell_row             ,
+                         screen               ,
+                     column               ,
+                     row                  ,
+                     cell_width           ,
+                     object               ,
+                     level_prompt_details ,
+                     "LIMIT"              ,
+                     FALSE                ,
+                     PROMPT_DETAILS_310   )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_exists ( VALUE new_level )
+
+    DECLARE count  ,
+        found  ,
+        object ,
+        data
+
+    count = 1
+        found = FALSE
+
+    WHILE ( count <= size_of_array ( level_active )) AND
+          ( NOT found ) DO
+
+        object = level_active [ count ]
+
+        IF (strip ( SELECT limit . level_id IN OBJECT object )
+                      = strip ( new_level )) THEN
+
+            found = TRUE
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( found )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_already_deleted ( VALUE  level_id      ,
+                           deleted_level )
+
+    DECLARE count  ,
+        found  ,
+        object ,
+        data
+
+    count = 1
+        found = FALSE
+
+    WHILE ( count <= size_of_array ( level_deleted )) AND
+          ( NOT found ) DO
+
+        object = level_deleted [ count ]
+
+        IF (strip ( SELECT limit . level_id IN OBJECT object )
+                      = strip ( level_id )) THEN
+
+            found = TRUE
+
+        ELSE
+
+            count = count + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    IF found THEN
+
+        deleted_level = object
+            array_remove_slice ( level_deleted ,
+                         1             ,
+                         count         )
+
+    ENDIF
+
+    RETURN ( found )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_add_level (       self        ,
+                              VALUE cell_column ,
+                      VALUE cell_row    ,
+                    screen      ,
+                      VALUE column      ,
+                      VALUE row         ,
+                      VALUE cell_width  ,
+                      VALUE cell_height )
+
+
+    DECLARE accept_id       ,
+        insert_new_line ,
+        delete_row      ,
+        new_level       ,
+        level_object    ,
+        can_continue
+
+    new_level = " "
+
+
+    REPEAT
+
+        PROMPT FOR       new_level
+               ON LINE   row
+               FROM      column
+               IN WINDOW screen
+               BROWSE ON mlp_level
+
+        can_continue = lib_grid_add_checks ( self                ,
+                             blank ( new_level ) ,
+                             accept_id           ,
+                             insert_new_line     ,
+                             delete_row          )
+
+
+        IF accept_id THEN
+
+            can_continue = NOT level_mod_exists ( new_level )
+
+        ENDIF
+
+    UNTIL can_continue
+
+    insert_new_level = FALSE
+
+    IF insert_new_line THEN
+
+        self . insert_row ( self . cell_rows + 1 ,
+                    1                    ,
+                    GRID_SEPARATOR_NONE  )
+
+    ENDIF
+
+    IF accept_id THEN
+
+        IF NOT level_mod_already_deleted ( new_level    ,
+                           level_object ) THEN
+
+            CREATE OBJECT LEVEL_ENTRY_CLASS, level_object
+                level_object . exists = FALSE
+
+            RESERVE ENTRY limit IN OBJECT level_object ,
+                      entry_code    :
+                      new_level
+
+            ASSIGN limit . text_spec IN OBJECT level_object = "Y"
+
+            { ----------------------------------------- }
+            { LIT001 User fields on limit updated       }
+            { ----------------------------------------- }
+
+            ASSIGN limit . product_id      IN OBJECT level_object = SELECT MLP_HEADER.IDENTITY
+            ASSIGN limit . product_version IN OBJECT level_object = SELECT MLP_HEADER.PRODUCT_VERSION
+
+            { ----------------------------------------- }
+            { LIT001 END                                }
+            { ----------------------------------------- }
+
+        ENDIF
+
+                array_insert_slice ( level_active ,
+                     1            ,
+                     cell_row     )
+
+
+        level_active [ cell_row ] = level_object
+
+        self . redisplay_row ( cell_row )
+
+    ELSEIF delete_row THEN
+
+        self . remove_row ( cell_row )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_prompt (       grid        ,
+                           VALUE cell_column ,
+                   VALUE cell_row    ,
+                     screen      ,
+                   VALUE column      ,
+                   VALUE row         ,
+               VALUE cell_width  ,
+               VALUE cell_height )
+
+    DECLARE object, val
+
+    IF ( insert_new_level ) OR
+        ( lib_grid_is_insert_line ( grid              ,
+                       cell_row          ,
+                       grid . user_info ))
+{MOD GC 25-6-99}
+            IF NOT ( grid . user_info ) THEN
+{ENDMOD GC}
+        level_mod_add_level ( grid        ,
+                      cell_column ,
+                      cell_row    ,
+                      screen      ,
+                      column      ,
+                      row         ,
+                      cell_width  ,
+                      cell_height )
+{MOD GC 25-6-99}
+            ELSE
+
+                PROMPT FOR val
+                    ON LINE row
+                    FROM column
+                    TO column + cell_width - 1
+                    IN WINDOW screen
+                    WITH ( display_only = TRUE )
+
+            ENDIF
+{ENDMOD GC}
+        ELSE
+
+            object = level_active [ cell_row ]
+
+        lib_grid_prompt_array ( grid                 ,
+                    cell_column          ,
+                    cell_row             ,
+                    screen               ,
+                    column               ,
+                    row                  ,
+                    cell_width           ,
+                    object               ,
+                    level_prompt_details ,
+                    "LIMIT"              ,
+                     FALSE               ,
+                     PROMPT_DETAILS_310  )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_insert ( self )
+
+    DECLARE current_row    ,
+        current_column
+
+    current_row    = self . current_row
+
+    IF current_row < 1 THEN
+
+        current_row = 1
+
+    ENDIF
+
+    insert_new_level = TRUE
+    self . insert_row ( current_row , 1 , GRID_SEPARATOR_NONE )
+    self . set_position ( 1 , current_row )
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_remove ( self )
+
+    DECLARE current_row ,
+        object
+
+    IF self . current_row > size_of_array ( level_active ) THEN
+
+        object = EMPTY
+
+    ELSE
+
+        current_row = self . current_row
+        object = level_active [ current_row ]
+
+    ENDIF
+
+    IF object <> EMPTY THEN
+
+        level_deleted [ size_of_array ( level_deleted ) + 1 ] = object
+
+            array_remove_slice ( level_active ,
+                         1                    ,
+                         current_row          )
+
+        self . remove_row ( current_row )
+
+        IF self . cell_rows = 0 THEN
+
+            insert_new_level = TRUE
+            self . insert_row ( current_row , 1 , GRID_SEPARATOR_NONE )
+                self . set_position ( 1 , current_row )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_check_move (       grid           ,
+                               VALUE current_column ,
+                   VALUE current_row    ,
+                     new_column     ,
+                     new_row        )
+
+    IF lib_grid_is_insert_line ( grid             ,
+                     new_row          ,
+                     grid . user_info ) THEN
+
+        new_column = 1
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE level_mod_grid (       grid_object ,
+             VALUE mode        )
+
+    DECLARE count
+
+    CREATE OBJECT  "STD_GRID_EDITOR", grid_object
+
+    grid_object . width   = 74
+    grid_object . height  = 19
+
+    grid_object . column   = 1
+    grid_object . row      = 2
+
+    grid_object . border   = FALSE
+
+
+    grid_object . vgl_library          = global ( "current_library" )
+
+    grid_object . prompt_cell_routine  = "level_mod_prompt"
+    grid_object . display_cell_routine = "level_mod_display"
+
+    IF mode <> "DISPLAY" THEN
+
+        grid_object . insert_routine     = "level_mod_insert"
+        grid_object . remove_routine     = "level_mod_remove"
+        grid_object . check_move_routine = "level_mod_check_move"
+        grid_object . user_info          = FALSE
+
+
+    ELSE
+
+        grid_object . user_info    = TRUE
+                grid_object . display_only = TRUE
+
+    ENDIF
+
+    grid_object . title_separator_top   = GRID_SEPARATOR_CELLS
+    grid_object . title_rendition_top   = PROMPT_RENDITION_BOLD
+
+    grid_object . title_size_top        = 1
+    grid_object . fixed_columns_left    = 1
+    grid_object . cell_columns = size_of_array ( level_prompt_details )
+
+    grid_object . cell_rows  =
+        lib_grid_number_of_lines ( grid_object . user_info       ,
+                       size_of_array ( level_active ))
+
+    lib_grid_setup_columns ( level_prompt_details ,
+                 grid_object          ,
+                 "MLP_VALUES"         )
+
+    insert_new_level = FALSE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_screen ( VALUE mode       ,
+               VALUE entry_code )
+
+{
+*   The main routine to call to modify a level list.
+*
+*
+*******************************************************************************}
+
+    DECLARE form, grid, button_list, toolbar, item, button_object, id
+
+    ARRAY button_list
+
+    push_file_descriptor ("mlp_header", version)
+
+        id = " (":STRIP(SELECT mlp_header . identity WHERE entry_code = entry_code):"/":STRIP(SELECT mlp_header . product_version):")"
+
+    pop_file_descriptor(version)
+
+    level_mod_get ( entry_code ,
+                mode       )
+
+    level_mod_grid ( grid ,
+             mode )
+
+    lib_grid_create_form (  grid                                    ,
+                form                                    ,
+                MODE = "MODIFY"                        ,
+                0                                       ,
+                get_user_message ("level_mod_header",1):id ,
+                get_user_message ("level_mod_footer",1) ,
+                button_list                             )
+
+
+    CREATE OBJECT TOOLBAR_CLASS , toolbar
+    toolbar . column = 1
+    toolbar . height = 0.9
+
+    form . add_prompt( toolbar )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_INSERT", 1 ) :" (F5)"
+    item . send_lastkey = "INSERT HERE"
+    item . enabled      = ( mode <> "DISPLAY" )
+    item . set_icon( "INT_NEW_ITEM" )
+
+    toolbar . add_item ( item )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . tooltip      = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_REMOVE", 1 ) : " (F6)"
+    item . send_lastkey = "REMOVE"
+    item . enabled      = ( mode <> "DISPLAY" )
+    item . set_icon( "INT_DELETE_ITEM" )
+
+    toolbar . add_item ( item )
+
+    toolbar . add_separator( )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+    item . set_icon  ( "INT_HELP_BUBBLE" )
+    item . identity      = "HELP"
+    item . send_last_key = "HELP"
+    item . tooltip       = GET_USER_MESSAGE( "SMP_PROMPT_BUTTON_HELP", 1 ) : " (F1)"
+
+    toolbar . add_item ( item )
+
+    PROMPT OBJECT button_object
+        CLASS "STD_PROMPT_BUTTON"
+        WITH ( row          = form . height - 0.5 ,
+               column       = form . width - 9   ,
+               caption      = GET_USER_MESSAGE ( "SMP_PROMPT_BUTTON_CLOSE" , 1 ) ,
+               width        = 10   ,
+               send_lastkey = "DO" )
+
+    form . add_prompt ( button_object )
+
+    form . add_panel( 1                   ,
+                      form . height - 0.3 ,
+                      1                   ,
+                      form . width        ,
+                      PANEL_H_ALIGN_RIGHT + PANEL_H_EXPAND_ON )
+
+    form . prompt_id = GLOBAL ("CURRENT_LIBRARY") : "_LEVEL"
+    form . start_prompt ()
+    form . wait_prompt  ()
+    form . end_prompt   ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_print ( VALUE mode       ,
+              VALUE entry_code )
+
+{
+*   The main routine to call to print the level list.
+*
+*
+*******************************************************************************}
+
+    DECLARE count       ,
+        level       ,
+        output_line
+
+    level_mod_get ( entry_code ,
+                mode       )
+
+    count = 1
+
+    WHILE count <= size_of_array ( level_active ) DO
+
+        level = level_active [ count ]
+
+        output_line = SELECT limit . level_id IN OBJECT level
+        output_line = output_line : " "
+
+        output_line = output_line :
+             substring (  SELECT limit . text_spec IN OBJECT level ,
+                  1 , 1 )
+        output_line = output_line : " "
+
+        output_line = output_line :
+                  level_mod_get_level_data ( "LEVEL_TYPE"  ,
+                             level         )
+        output_line = output_line : " "
+
+        output_line = output_line :
+                  level_mod_get_level_data ( "DESCRIPTION" ,
+                             level         )
+
+literal
+$output_line___________________________________________________________________
+$endliteral
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_active_level_list ( VALUE mode       ,
+                          VALUE entry_code ,
+                        level_list )
+
+{
+*   The main routine to call to modify the Components of an MLP.
+*
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    ARRAY level_list
+
+    level_mod_get ( entry_code ,
+                mode       )
+
+    count = 1
+
+    WHILE count <= size_of_array ( level_active ) DO
+
+        level_list [ count ] = SELECT limit . level_id
+                       IN OBJECT level_active [ count ]
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE level_mod_deleted_level_list ( VALUE entry_code ,
+                         level_list )
+
+{
+*   The main routine to call to modify the Components of an MLP.
+*
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    ARRAY level_list
+
+
+    count = 1
+
+    WHILE count <= size_of_array ( level_deleted ) DO
+
+        level_list [ count ] = SELECT limit . level_id
+                       IN OBJECT level_deleted [ count ]
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE

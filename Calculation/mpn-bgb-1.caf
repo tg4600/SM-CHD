@@ -1,0 +1,346 @@
+
+{ This definition is required at the top of all calculations }
+
+GLOBAL ROUTINE calculation(cur_sample,
+			   cur_test_number,
+			   cur_component_name)
+
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0018        140194  LPE     Kalkulation f. Most Probable Number for 10 tub }
+
+{ The next two lines are required at the end of the calculation }
+
+JOIN LIBRARY $LIB_UTILS
+
+IF get_results () > 0 THEN
+   IF NOT(results_ok()) THEN
+      calcresult = "NOTOK"
+{M2003R1      
+      CREATE TEXT WINDOW notok_win HEIGHT 3 WIDTH 60 BORDER =""
+      PASTE TEXT WINDOW notok_win ON LINE 20 FROM 5
+      DISPLAY error_mess ON LINE 1 FROM 2 IN WINDOW notok_win BOLD
+      DISPLAY "Press any key to continue . . . . ."
+         ON LINE 2 FROM 2 IN WINDOW notok_win
+      dummy = getkey
+}
+      FLASH_MESSAGE(error_mess, TRUE)
+{**ME2003R1}
+
+   ELSE
+      calcresult = mpn_res
+   ENDIF
+ELSE
+   calcresult = EMPTY
+ENDIF
+
+return(calcresult) { The calculated result is returned here }
+
+ENDROUTINE
+
+{- - - - - - - - - - - - - START INITIALIZE - - - - - - - - - - - - - - - - - -}
+ROUTINE initialize
+SET FORMAT "999"
+ENABLE WINDOWS
+ENDROUTINE
+{- - - - - - - - - - - - - END INITIALIZE - - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START GET_RESULTS - - - - - - - - - - - - - - - - -}
+{ Henter resultater }
+ROUTINE get_results
+
+ARRAY comp_anal
+
+declare comp_n
+declare strip_comp_n
+declare strip_cur_comp_n
+
+
+number_of_res = 0
+
+max_range_found = FALSE
+
+new_test_created = FALSE
+
+comp_n  = SELECT result.component_name
+             WHERE (test_number = cur_test_number)
+             ORDER ON order_number
+
+WHILE comp_n <> EMPTY DO
+
+   strip_comp_n = TOUPPER(strip_vol(comp_n))
+   strip_cur_comp_n = LEFTSTRING(cur_component_name,LENGTH(strip_comp_n))
+   strip_cur_comp_n = TOUPPER(strip_cur_comp_n)
+
+   res_type = SELECT result.result_type
+   str = SELECT result.text
+   IF res_type = "K" THEN
+      IF ((INDEX(str,"<") = 0) OR (str = "NEWTEST")) THEN
+         new_test_created = TRUE
+      ENDIF
+   ENDIF
+   IF ((strip_comp_n = strip_cur_comp_n) AND
+      (strip_cur_comp_n <> "")) THEN
+      result_type = SELECT result.result_type
+      IF result_type = "N" THEN
+          res_val = SELECT result.value
+         result_exp  = get_exponent(suffix(comp_n," "))
+         result_vol = get_volume(comp_n)
+         number_of_res = number_of_res + 1
+      ENDIF
+   ENDIF
+   NEXT result
+   comp_n  = SELECT result.component_name
+ENDWHILE
+RETURN (number_of_res)
+
+ENDROUTINE
+{- - - - - - - - - - - - - END GET_RESULTS - - - - - - - - - - - - - - - - -}
+
+{- - - - - - - - - - - - - START STRIP_VOL - - - - - - - - - - - - - -  - - }
+ROUTINE strip_vol (strip_name)
+declare n
+declare ml_pos
+declare rest_string
+
+strip_nam = TOUPPER(STRIP(strip_name))
+ml_pos = INDEX(strip_nam,"ML") - 1
+WHILE (SUBSTRING(strip_nam,ml_pos,1) <> " ") AND (ml_pos > 0) DO
+   ml_pos = ml_pos - 1
+ENDWHILE
+rest_string = SUBSTRING(strip_nam,1,ml_pos)
+RETURN(rest_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END STRIP_VOL - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START RESULTS_OK - - - - - - - - - - - - -  - - }
+
+ROUTINE results_ok
+
+res_ok = TRUE
+
+IF (res_val < 0) THEN
+   res_ok = FALSE
+   error_mess= "Negatives are not allowed - Please reenter results."
+ELSEIF ((res_val - TRUNC(res_val)) <> 0) THEN
+   res_ok = FALSE
+   error_mess = "Decimals are not allowed - Please reenter results."
+ELSE
+   IF res_val <> 0 THEN
+      SET FORMAT "99999"
+      mpn_res = hent_mpn(res_val)
+      cr_new_test()
+      SET FORMAT "999.9"
+      IF res_val = 10 THEN
+         mpn_res = "NEWTEST"
+      ENDIF
+   ELSE
+      SET FORMAT "9"
+      mpn_res = "<":STRING(1)
+   ENDIF
+ENDIF
+RETURN(res_ok)
+ENDROUTINE
+
+{- - - - - - - - - - - - - END RESULTS_OK - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START CR_NEW_TEST- - - - - - - - - - - - - - -  - - }
+ROUTINE cr_new_test
+
+SET NOTPROTECTED
+
+new_test_nr1 =""
+
+{**D1340 HBe 14-8-01
+new_test_nr2 =""}
+
+
+res_str = STRING(res_val)
+
+IF res_val = 10 THEN
+   anal_id1 = PAD(("BGB44-":STRIP(res_str))," ",10)
+ELSE
+   anal_id1 = PAD(("BGB44-0":STRIP(res_str))," ",10)
+ENDIF
+IF NOT(new_test_created) THEN
+   new_test_nr1 = NEWTEST(cur_sample,anal_id1)
+ENDIF
+
+{**DS1340 HBe 13-8-01
+IF res_val = 10 THEN
+   anal_id2 = PAD("BGB-2"," ",10)
+   IF NOT(new_test_created) THEN
+      new_test_nr2 = NEWTEST(cur_sample,anal_id2)
+   ENDIF
+ENDIF
+**DE1340}
+
+
+{**MS1340 HBe 14-08-2001
+IF ((new_test_nr1 = ERROR) OR (new_test_nr2 = ERROR)) THEN
+**}
+IF (new_test_nr1 = ERROR) THEN
+{**ME1340}
+{**MS2003R1
+   CREATE TEXT WINDOW err_newtest HEIGHT 2 WIDTH 55 BORDER
+   PASTE TEXT WINDOW err_newtest ON LINE 19 FROM 2
+   DISPLAY  "ERROR CREATING NEWTEST ":new_test_nr1
+       IN WINDOW err_newtest ON LINE 1 FROM 3 BOLD
+   DISPLAY  "Press any key to continue ... "
+       IN WINDOW err_newtest ON LINE 2 FROM 3 BLINKING
+   dummy = getkey
+}
+   FLASH_MESSAGE("ERROR CREATING NEWTEST ":new_test_nr1, TRUE)
+
+{**DS2003R1}
+ELSE
+{**MS2003R1
+   CREATE TEXT WINDOW new_test_win HEIGHT 3 WIDTH 55 BORDER
+   PASTE TEXT WINDOW new_test_win ON LINE 19 FROM 2
+DE2003R1}
+   IF res_val = 10 THEN
+{ME 2003R1}
+{**MS1340 HBe 14-08-2001
+      DISPLAY "Two New analysis  :"
+             ON LINE 1 FROM 2 IN WINDOW new_test_win
+      DISPLAY STRIP(anal_id1):" and ":STRIP(anal_id2)
+         ON LINE 1 FROM 19 IN WINDOW new_test_win BOLD
+      DISPLAY " created for the sample."
+             ON LINE 2 FROM 1 IN WINDOW new_test_win
+**}
+{**MS 2003R1
+      DISPLAY "One New analysis  :"
+             ON LINE 1 FROM 2 IN WINDOW new_test_win
+      DISPLAY STRIP(anal_id1)
+         ON LINE 1 FROM 19 IN WINDOW new_test_win BOLD
+      DISPLAY " created for the sample."
+             ON LINE 2 FROM 1 IN WINDOW new_test_win
+}
+      FLASH_MESSAGE("One New analysis  :" : STRIP(anal_id1) : " created for the sample.", TRUE)
+{**ME2003R1}
+{**ME1340}
+   ELSE
+{**MS2003R1
+      DISPLAY "One New analysis  :"
+             ON LINE 1 FROM 2 IN WINDOW new_test_win
+      DISPLAY STRIP(anal_id1) ON LINE 1 FROM 19 IN WINDOW new_test_win BOLD
+      DISPLAY " created for the sample."
+             ON LINE 1 FROM (20+LENGTH(STRIP(anal_id1))) IN WINDOW new_test_win
+}
+      FLASH_MESSAGE("One New analysis  :" : STRIP(anal_id1) : " created for the sample.", TRUE)
+{**ME2003R1}
+   ENDIF
+{**DS2003R1
+      DISPLAY "Press any key to continue . . . . "
+             ON LINE 3 FROM 2 IN WINDOW new_test_win
+      dummy = getkey
+**DE2003R1}
+ENDIF
+
+ENDROUTINE
+{- - - - - - - - - - - - - END CR_NEW_TEST - - - - - - - - - - - - - - -  - - }
+
+
+{- - - - - - - - - - - - - START GET_EXPONENT - - - - - - - - - - -  - - }
+
+ROUTINE get_exponent(value suffix_string)
+
+declare n
+n = 1
+test_str = MIDSTRING(suffix_string,n,1)
+test_ord = ORD(test_str)
+WHILE (test_ord > 42) AND (test_ord < 58) AND (test_ord <> 44) DO
+   n = n + 1
+   test_str = MIDSTRING(suffix_string,n,1)
+   test_ord = ORD(test_str)
+ENDWHILE
+num_string = LEFTSTRING (suffix_string ,(n-1))
+RETURN(num_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END GET_EXPONENT - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START GET_VOL - - - - - - - - - - - - - - - -  - - }
+
+ROUTINE get_volume(vol_string)
+vol_name = TOUPPER(STRIP(vol_string))
+ml_pos = INDEX(vol_name,"ML")
+start_pos = ml_pos -1
+IF ml_pos = 0 THEN
+   vol = 1
+ELSE
+   rest_str = SUBSTRING(vol_name,1,ml_pos)
+   WHILE (SUBSTRING(rest_str,start_pos,1) <> " ") AND (start_pos >0)
+      start_pos = start_pos - 1
+   ENDWHILE
+   vol_str = SUBSTRING(rest_str,start_pos+1,(ml_pos - start_pos -1))
+   IF NUMTEXT(vol_str) THEN
+	   vol = NUMERIC(vol_str)
+   ELSE
+	   vol = 1
+   ENDIF
+ENDIF
+RETURN(vol)
+ENDROUTINE
+
+{- - - - - - - - - - - - - END GET_VOL - - - - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START SUFFIX - - - - - - - - - - - - - -  - - }
+ROUTINE suffix (suffix_name, value tst_sign)
+declare n
+declare suf_nam
+declare value_pos
+declare suf_string
+
+suf_nam = STRIP(suffix_name)
+value_pos = LENGTH(suf_nam) - 1
+WHILE (SUBSTRING(suf_nam,value_pos,1) <> tst_sign) AND (value_pos > 0) DO
+   value_pos = value_pos - 1
+ENDWHILE
+n = LENGTH(suf_nam) - value_pos
+suf_string = RIGHTSTRING(suf_nam,n)
+RETURN(suf_string)
+ENDROUTINE
+{- - - - - - - - - - - - - END SUFFIX - - - - - - - - - - - - - -  - - }
+
+{- - - - - - - - - - - - - START HENT_MPN - - - - - - - - - - - -  - - }
+
+ROUTINE hent_mpn  (VALUE res_val )
+
+ARRAY mpn
+
+SET FORMAT "99999"
+file_name = "SMP$TEXTFILES:MPN-10.TXT"
+n = 0
+FILE OPEN file_name, success
+IF success <> EMPTY THEN
+{**MS2003R1
+   CREATE TEXT WINDOW mess_window HEIGHT 1 WIDTH 80 BORDER =""
+   PASTE TEXT WINDOW mess_window ON LINE 24 FROM 1
+   disp_txt = "VMS - ERROR ":file_name:
+   " DOES NOT EXIST. KONTAKT EDB"
+   DISPLAY disp_txt IN WINDOW mess_window ON LINE 1 FROM 1 TO 80 BOLD
+   dummy = getkey
+}
+   FLASH_MESSAGE("SYSTEM ERROR. The file ":file_name:" DOES NOT EXIST. CONTACT HELPDESK", TRUE)
+
+{**ME2003R1}
+   mpn_result = "ERROR"
+ELSE
+   FILE READ file_name, file_line, success
+   WHILE (success = EMPTY) AND (file_line <> EMPTY) DO
+      n = n + 1
+      mpn [n] = NUMERIC(file_line)
+      FILE READ file_name, file_line, success
+   ENDWHILE
+   mpn_res = NUMERIC(mpn [res_val])
+   mpn_result = (mpn_res) /
+        (NUMERIC(result_vol)*(10^(NUMERIC(result_exp))))
+ENDIF
+FILE CLOSE file_name
+RETURN(mpn_result)
+ENDROUTINE
+
+{- - - - - - - - - - - - - END HENT_MPN - - - - - - - - - - - -  - - }
+
+

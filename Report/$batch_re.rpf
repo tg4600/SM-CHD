@@ -1,0 +1,666 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_RE.RPF
+*
+* Purpose       : Results Entry for Batch
+*
+* Document Ref. : 
+*
+* Specification : SE/T/VGSM320-WORK-BATCH
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : 
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_CLASS
+
+JOIN LIBRARY $BATCH
+JOIN LIBRARY $BATCH_ENTRY
+JOIN LIBRARY $BATCH_UTILS
+JOIN LIBRARY $BATCH_USER
+JOIN LIBRARY $BATCH_PRINT
+JOIN LIBRARY $BATCH_SQC
+JOIN LIBRARY $LIB_RE_GLOBALS
+JOIN LIBRARY $LIB_RE_INTERFACE
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+
+batch_re_menu ( 1 )
+
+{* CONSTANTS ******************************************************************}
+
+GLOBAL CONSTANT STD_BATCH_RE =  "STD_BATCH_RE"
+
+{* VARIABLES ******************************************************************}
+
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_re_initialise
+
+{
+*	Initialise the batch results entry module.
+*
+*******************************************************************************}
+
+	IF NOT global ( "LIBRARY_INITIALISED" ) THEN
+
+		batch_initialise ()
+		lib_re_interface_initialise ()
+		batch_re_define_class ()
+
+		SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+                             
+ROUTINE batch_re_define_class
+
+{
+*	Define the class for batch results entry
+*
+*******************************************************************************}
+
+	DEFINE CLASS STD_BATCH_RE
+
+		PROPERTIES "BATCH"              ,
+			   "BATCH_NAME"         ,
+			   "INCLUDE_CALCULATED"	,
+			   "INCLUDE_COMPLETED"  ,	
+			   "ANALYSIS"           ,
+			   "TEST_ARRAY"         ,
+			   "COMPONENT_ARRAY"    ,	
+			   "USER_INFO"
+
+		ACTIONS    "PROMPT_FOR_BATCH"  ,
+			   "BUILD_FORM"        ,
+			   "DO_IT"             ,		
+			   "READ_ANALYSIS"     ,
+			   "READ_ENTRIES"      ,
+			   "TEST_WANTED"       ,	
+			   "BUILD_ARRAYS"      ,
+			   "RESULT_ENTRY"  
+
+	END CLASS
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_build_form ( self ,
+					 form )	
+
+{                                  
+*	Create a batch form  
+*
+{******************************************************************************}
+
+	DECLARE prompt_object ,
+		terminator    ,
+		message_1     ,
+		message_2     ,
+		message_3     ,
+		max_size      ,
+		button_list   ,
+		count
+
+	IF global ( "TERMTYPE" ) = "GUI" THEN
+
+		terminator = " "
+
+	ELSE
+
+		terminator = ":" 	
+
+	ENDIF
+
+	message_1 = get_user_message ( "BATCH_RESULT_BATCH_TITLE"      , 1 )
+	message_2 = get_user_message ( "BATCH_RESULT_CALCULATED_TITLE" , 1 )
+	message_3 = get_user_message ( "BATCH_RESULT_COMPLETED_TITLE"  , 1 )
+
+	max_size  = find_max_number ( string_length ( message_1 ),
+				      string_length ( message_2 ))
+
+	max_size  = find_max_number ( string_length ( message_3 ),
+				      max_size                   )
+
+	max_size  = max_size 	
+
+	message_1 = pad ( message_1 , " " , max_size ) : terminator
+	message_2 = pad ( message_2 , " " , max_size ) : terminator
+	message_3 = pad ( message_3 , " " , max_size ) : terminator
+
+	CREATE OBJECT PROMPT_CLASS_FORM , form
+	       
+	form . height = 4
+	form . width  = 60
+	form . row    = 8
+	form . column = 9
+	form . border = TRUE
+	form . header = get_user_message ( "BATCH_RESULT_HEADER" ,1 ) 
+	form . footer = get_user_message ( "BATCH_RESULT_FOOTER" , 1 )
+
+	form . button_style     = FORM_BUTTON_NONE
+	form . return_behaviour = FORM_RETURN_STAY
+
+	form . select_routine   = "BATCH_RE_SELECT"
+	form . vgl_library      = global ( "current_library" )
+
+        form . add_frame ( ""            ,
+			   1             ,
+			   1             ,
+			   1             ,
+			   form . width  )		
+
+        form . add_frame ( ""            ,
+			   1             ,
+			   3             ,
+			   2             ,
+			   form . width  )		
+
+
+	form . add_display ( message_1                ,
+			     2                        ,
+			     1	                      ,
+			     PROMPT_RENDITION_BOLD    +
+			     PROMPT_RENDITION_RAISED  )
+
+	PROMPT OBJECT prompt_object
+	       ON LINE 1
+	       FROM 2 + max_size + 3
+	       BROWSE ON BATCH_HEADER 
+	       THEN SELECT		
+	
+	form . add_prompt ( prompt_object )
+
+	form . add_display ( message_2                ,
+			     2                        ,
+			     3	                      ,
+			     PROMPT_RENDITION_BOLD    +
+			     PROMPT_RENDITION_RAISED  )
+
+	PROMPT OBJECT prompt_object
+	       ON LINE 3
+	       FROM 2 + max_size + 3
+	       BROWSE ON BOOLEAN
+	       WITH ( is_check = TRUE )
+	
+	form . add_prompt ( prompt_object )
+
+	form . add_display ( message_3                ,
+			     2                        ,
+			     4	                      ,
+			     PROMPT_RENDITION_BOLD    +
+			     PROMPT_RENDITION_RAISED  )
+
+	PROMPT OBJECT prompt_object
+	       ON LINE 4
+	       FROM 2 + max_size + 3
+	       BROWSE ON BOOLEAN
+	       WITH ( is_check = TRUE )
+
+	form . add_prompt ( prompt_object )
+
+	IF global ( "TERMTYPE" ) = "GUI" THEN
+
+		form . height = form . height + 3
+
+		ARRAY button_list
+	
+		count = 1
+
+ 		lib_grid_lastkey_button (  button_list ,
+					   count       ,
+					  "DO"         ,
+					   get_user_message ( "BATCH_RESULT_RESULTS_BUTTON" , 1 ))
+
+
+		lib_grid_action_button (  button_list                                            ,
+					  count                                                  ,
+					  get_user_message ( "BATCH_RESULT_FAILURE_BUTTON" , 1 ) ,
+					  "BATCH_RE_FAILURE_BUTTON"                              ,
+					  global ( "current_library" )                           ,
+					  count                                                  )
+                      
+		lib_grid_action_button (  button_list                                            ,
+					  count                                                  ,
+					  get_user_message ( "BATCH_RESULT_CHART_BUTTON" , 1 )   ,
+					  "BATCH_RE_CHARTS_BUTTON"                               ,
+					  global ( "current_library" )                           ,
+					  count                                                  )
+
+ 		lib_grid_lastkey_button (  button_list ,
+					   count       ,
+					  "EXIT"       ,
+					   get_user_message ( "BATCH_RESULT_CLOSE_BUTTON" , 1 ))
+
+
+		lib_form_add_control_buttons ( form        ,
+					       button_list )
+	
+	
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_re_select ( self )
+
+{
+*	Do a failure report  
+*
+{******************************************************************************}
+
+	DECLARE batch_print
+
+	batch_print_initialise ()
+
+	CREATE OBJECT STD_BATCH_PRINT , batch_print
+
+	SET NAME "defer/"
+
+	batch_print . failure_report ( self . prompt_objects [ 1 ] . value ,
+				       TRUE                                )	
+
+	FLUSH_LITERAL
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_re_failure_button ( self )
+
+{
+*	Do a failure report  
+*
+{******************************************************************************}
+
+	batch_re_select ( self . parent_prompt )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_re_inspect_button ( self )
+
+{
+*	Call batch inspect  
+*
+{******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_re_charts_button ( self )
+
+{
+*	Call the charts program
+*
+{******************************************************************************}
+
+	DECLARE form
+
+	form = self . parent_prompt
+	
+	batch_sqc_charts_for_given ( form . prompt_objects [ 1 ] . value )
+				     	
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_prompt_for_batch ( self )
+
+{
+*	Get the ID of the batch.  
+*
+{******************************************************************************}
+
+	DECLARE form
+
+	SET BATCHSTATUS "VC"
+
+	self . build_form ( form )
+
+	form . start_prompt ()
+
+	REPEAT
+
+		batch_entry_reset ( )
+
+		form . set_position ( 1 )
+
+		form . wait_prompt  ()
+
+		IF form . get_lastkey () = "DO" THEN	
+			
+			self . batch_name         = form . prompt_objects [ 1 ] . value
+			self . include_calculated = form . prompt_objects [ 2 ] . value
+			self . include_completed  = form . prompt_objects [ 3 ] . value
+
+			self . do_it ()
+        	
+      		ENDIF
+
+	UNTIL form . get_lastkey () = "EXIT" 
+
+        form . end_prompt   ()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_do_it ( self )
+
+{
+*	Do all the work  
+*
+{******************************************************************************}
+
+	DECLARE got_one
+
+	CREATE OBJECT STD_BATCH_HEADER_BASE , self . batch
+
+  	IF self . batch . read_for_modify ( self . batch_name ,
+					    FALSE             )	 
+
+		got_one = batch_user_pre_result_entry ( self . batch )
+
+		IF got_one THEN
+
+			self . read_analysis ()
+			self . read_entries  ()
+
+			IF self . build_arrays  () THEN
+
+				self . result_entry  ()
+
+			ENDIF
+
+			batch_user_post_result_entry ( self . batch )
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_read_analysis ( self )
+
+{
+*	Get the analysis name of the batch.
+*
+*******************************************************************************}
+
+	ARRAY self . test_array
+	ARRAY self . component_array
+
+	self . analysis = self . batch . get_field ( "ANALYSIS" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_test_wanted ( self  ,
+					  entry )
+
+{
+*	.
+*
+*******************************************************************************}
+
+	DECLARE wanted ,
+		status
+
+	IF entry . get_test () <> EMPTY THEN
+
+		IF self . include_completed THEN
+
+			wanted = TRUE
+
+		ELSE
+
+			status = entry . get_samp_test_field ( "TEST_STATUS" )
+
+			wanted = INDEX ( "VP" , status ) > 0 
+
+		ENDIF
+
+	ELSE
+
+		wanted = FALSE
+
+	ENDIF
+
+	RETURN ( wanted )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_read_entries ( self )
+
+{
+*	.
+*
+*******************************************************************************}
+
+	DECLARE count  ,
+		pos    ,
+		entry
+
+	count = 1
+	pos   = 1
+
+	WHILE count <= self . batch . size () DO
+
+		entry = self . batch . get_entry ( count )
+
+		IF self . test_wanted ( entry ) THEN
+
+			self . test_array [ pos ] = entry . get_results ( FALSE )
+
+			pos = pos + 1
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE		
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_build_arrays ( self )
+
+{
+*	Build the required arrays.
+*
+*******************************************************************************}
+
+	DECLARE comp_list  ,
+		count      ,
+		name       ,
+		analysis   ,
+		status     ,
+		message
+
+
+	comp_list = self . batch . get_field ( "TEMPLATE_ID" )
+	analysis  = self . analysis
+
+	self . component_array [ 1 ,1 ] = analysis
+
+	count = 2
+	name = SELECT comp_list_entry . name
+	       WHERE  ( analysis     = analysis  ) AND
+		      ( comp_list    = comp_list ) AND
+		      ( result_entry = TRUE      )
+	       ORDER ON order_number	
+
+	IF name <> EMPTY THEN
+
+		WHILE name <> EMPTY DO
+
+			self . component_array [ 1 , count ] = name
+
+			NEXT comp_list_entry
+
+ 			name = SELECT comp_list_entry . name
+
+			count = count + 1
+
+ 		ENDWHILE
+
+		status = TRUE
+
+	ELSE
+
+		status = FALSE
+
+		message_fetch ( "BATCH_RESULT_NO_COMP" ,
+				 message               )
+
+		message_add_parameter ( message , strip ( comp_list ))
+
+		flash_message ( message_get_text  (  message , 1 ) ,
+				TRUE                             )
+
+	ENDIF
+
+	IF status THEN
+
+		IF size_of_array ( self . test_array ) = 0 THEN
+
+			message_fetch ( "BATCH_RESULT_NO_TESTS" ,
+					 message                )
+
+			flash_message ( message_get_text  (  message , 1 ) ,
+					TRUE                             )
+
+			status = FALSE
+
+		ENDIF
+
+	ENDIF
+
+	RETURN ( status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_re_check_header_complete ( lib_re_context ,
+                                         self           )
+
+{
+*	Callback from Result Entry to add batch header update to Result
+*	transaction
+*
+*******************************************************************************}
+
+	DECLARE temp
+
+	IF self . batch . is_complete () THEN
+
+		temp = SELECT batch_header . identity
+		       FOR UPDATE
+	       	       WHERE ( identity = SELECT batch_header . identity )
+
+		IF temp <> EMPTY THEN
+
+			self . batch . set_status ( "C" )
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_re_action_result_entry ( self )
+
+{
+*	Do the result entry
+*
+*******************************************************************************}
+
+	DECLARE lib_re_interface_grid_object, status, dummy
+
+	lib_re_interface_grid_object = lib_re_interface_grid_setup ( self . test_array         ,
+	                                                             self . component_array    ,
+	                                                             RE_MODIFY                 ,
+	                                                             self . include_calculated ,
+	                                                             status                    )
+
+	IF lib_re_interface_grid_object <> EMPTY THEN
+
+		lib_re_interface_grid_pre_commit_callback ( lib_re_interface_grid_object               ,
+		                                            "$BATCH_RE/batch_re_check_header_complete" ,
+		                                            self                                       )
+		                                            
+		lib_re_interface_grid_execute ( lib_re_interface_grid_object )
+
+		batch_re_check_header_complete ( dummy, self )
+
+	ELSEIF status <> EMPTY THEN
+
+		flash_message ( status , TRUE )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_re_menu ( VALUE option )
+
+{
+*	Called from menu to print a batch.  
+*
+*******************************************************************************}
+
+	DECLARE batch_re, curr_help
+
+	batch_re_initialise ()
+
+	CREATE OBJECT STD_BATCH_RE , batch_re
+
+	curr_help = GLOBAL ( "STD_EDITOR_HELP" )
+	SET GLOBAL "STD_EDITOR_HELP" TO "$BATCH_RESULT_ENTRY"
+
+	batch_re . prompt_for_batch ()
+
+	SET GLOBAL "STD_EDITOR_HELP" TO curr_help
+
+ENDROUTINE
+
+
+
+
+

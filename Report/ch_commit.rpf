@@ -1,0 +1,1880 @@
+{****************************************************************************************************************
+*
+* Module Name   : CH_COMMIT
+* Purpose       : COMMIT and ARCHIVE Job, Sample, Test, Result including Incident- and Audit-data
+*                
+*                 CANCEL_JOB:   Cancel job from view job_to_cancel
+*                 ARCHIVE_JOB:  Move            jobs from ACTIVE     to COMMITED    20 days after date_authorised
+*                 CA:           Move cancelled  jobs from COMMITTTED to ARCHIVE     90 days after modified_on
+*                 CR:           Move auhtorized jobs from COMMITTTED to RETENTION 2550 days after modified_on
+*                 Move single   job  to/from any table set, defined by master_menu item1
+*                 Move multiple jobs to/from any table set, defined by material and production_date 
+*                
+*****************************************************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+*****************************************************************************************************************
+* 1.0       2014-12-20  Tommy Bøgeskov  Created
+* 2.0       2015-01-29  Tommy Bøgeskov  Modified to use temp-file rather than array when collecting records,
+*                                       to reduce cpu usage, for very large jobs
+*****************************************************************************************************************}
+SET NAME "DEFER/"
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN LIBRARY $LIB_UTILS
+
+DECLARE repeat_interval
+
+    repeat_interval = SELECT timerqueue.repeat_interval FOR UPDATE WHERE report_name = GLOBAL("current_library")
+    START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+    ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+    UPDATE timerqueue
+    COMMIT
+ 
+DECLARE t, destination, records, rt_update, tm, cpu, check_time, log_time, cpu_limit, total, job, batch_size
+
+t               = NOW
+log_time        = 14
+cpu_limit       = 50
+batch_size      = 200
+repeat_interval = SELECT timerqueue.repeat_interval WHERE report_name = GLOBAL("current_library")
+
+    IF GLOBAL("MODE") = "BACKGROUND" THEN
+        {rt_update = SELECT timerqueue.run_time WHERE report_name = "UPDATE"
+        IF (rt_update < NOW - INTERVAL ("   0 00:01:00")) THEN
+            WriteToLog("Reset 'UPDATE'")
+            rt_update = SELECT timerqueue.run_time FOR UPDATE WHERE report_name = "UPDATE"
+            START WRITE TRANSACTION "Reset 'UPDATE'"
+            ASSIGN timerqueue.run_time = NOW
+            UPDATE timerqueue
+            COMMIT
+            CALL_ROUTINE "MAIN" IN LIBRARY "UPDATE"
+        ENDIF}
+
+        rt_update = (SELECT timerqueue.run_time WHERE report_name = GLOBAL("current_library")) - INTERVAL(repeat_interval)
+        IF rt_update < (NOW - INTERVAL(repeat_interval)) THEN
+            WriteToLog("Expected run time: ":rt_update:". Reset ":GLOBAL("current_library"):" to ":(NOW +  INTERVAL (repeat_interval)))
+            rt_update = SELECT timerqueue.run_time FOR UPDATE WHERE report_name = GLOBAL("current_library")
+            START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+            ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+            UPDATE timerqueue
+            COMMIT
+        ENDIF
+
+        CANCEL_JOB()
+        COMMIT_JOB()
+    ELSE
+        CANCEL_JOB()
+        COMMIT_JOB()
+        window_set_status("Completed")
+    ENDIF
+
+EXIT
+
+GLOBAL ROUTINE MoveJob(VALUE tbl_name, VALUE job, VALUE destination, r)
+{*************************************************************************
+* Purpose      : Move a job including sample, test, result, incident and audit
+*                to another table set (active, committed, retention or archive)
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+DECLARE filename, textfile, dest, src, source, total, p, tb, tc, a, status, record, line_read, check_ok, i
+ARRAY total
+
+    log_time    = 14
+    tbl_name    = STRIP(tbl_name)
+    job         = STRIP(job)
+    record      = job
+    destination = STRIP(destination)
+    filename    = "smp$textreports:":SUBSTITUTE(job, "/", "_"):".tmp"
+    textfile    = "smp$textreports:":SUBSTITUTE(job, "/", "_"):".txt"
+    
+    IF LEFTSTRING(tbl_name, 2) = "C_" THEN
+        source = "COMMITTED"
+    ELSEIF LEFTSTRING(tbl_name, 2) = "R_" THEN
+        source = "RETENTION"
+    ELSEIF LEFTSTRING(tbl_name, 8) = "ARCHIVE_" THEN
+        source = "ARCHIVE"
+    ELSE
+        source = "ACTIVE"
+    ENDIF
+
+    IF destination = "COMMITTED" THEN
+        dest = "C_"    
+    ELSEIF destination = "RETENTION" THEN
+        dest = "R_"    
+    ELSEIF destination = "ARCHIVE" THEN
+        dest = "ARCHIVE_"    
+    ELSE
+        dest = ""    
+    ENDIF
+
+    tb = NOW
+    check_time = SecondsElapsed(tb)
+
+    a  = 0
+    r  = 0
+    IF FILE EXISTS (filename) THEN
+        WriteToLog("FILE EXISTS (":filename:") ":FILE EXISTS (filename))
+    ELSEIF FILE EXISTS (textfile)
+        WriteToLog("FILE EXISTS (":textfile:") ":FILE EXISTS (textfile))
+    ENDIF
+
+    FILE CREATE filename, status
+
+    BuildJob(tbl_name, job, filename, tb, r, a, record)
+
+
+    FILE CLOSE filename, status
+
+    FILE COPY filename, textfile, status
+    FILE DELETE filename, status
+    
+    filename = textfile
+
+    FILE OPEN filename, status
+    FILE READ filename, line_read, check_ok
+    r = 0
+
+    WHILE (check_ok=EMPTY) DO
+        i = INDEX(line_read, ASCII(34):",":ASCII(34))
+        tbl_name = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+        p   = INDEX(tbl_name, "_")
+        src = LEFTSTRING(tbl_name, p )
+        IF (INDEX(";C_;R_;ARCHIVE_", src) = 0) THEN
+            src = ""
+        ENDIF
+        IF src <> dest THEN
+            r = r + 1
+            total[r, 1] = tbl_name 
+            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+            total[r, 2] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+            total[r, 3] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+            total[r, 4] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+            total[r, 5] = SUBSTITUTE(line_read, ASCII(34), "")
+        ENDIF    
+        FILE READ filename, line_read, check_ok
+    ENDWHILE
+
+    FILE CLOSE filename, status
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+    tc = NOW
+    RESTORE DATE FORMAT
+
+    IF SIZE_OF_ARRAY(total) > 0 THEN
+        MoveArray(total, destination, SecondsElapsed(tb), tc)
+    ELSE
+        fm("No records for ":STRIP(job):" found in ":source:"-tables")
+    ENDIF
+
+    FILE DELETE filename, status
+
+    RETURN (tb)
+    
+ENDROUTINE
+
+ROUTINE BuildJob(VALUE tbl_name, VALUE item1, filename, tb, r, a, VALUE record0) 
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE src, job, job_arr, i, item2, lnk_field, key_field, record
+ARRAY job_arr
+    
+    record = STRIP(item1)
+    {window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)}
+    lnk_field = "JOB_NAME"
+    key_field = "JOB_NAME"
+    item2 = ""
+    check_time = SecondsElapsed(tb) + log_time
+
+    src = INDEX(tbl_name, "JOB_HEADER") - 1
+    IF src > 1 THEN
+        src = SUBSTRING(tbl_name, 1, src)
+    ELSE
+        src = ""
+    ENDIF
+
+    IF GLOBAL("MODE") = "INTERACTIVE" THEN
+        job = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1 
+    ELSEIF tbl_name = "JOB_HEADER" THEN
+        job = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1 ORDER ON 'key_field'
+    ELSE
+        job = SELECT 'tbl_name'.'key_field' FOR UPDATE WHERE 'lnk_field' = item1 AND lot_id <> "PROCESSING" ORDER ON 'key_field'
+            IF job = item1 THEN
+                START WRITE TRANSACTION "PROCESSING"
+                ASSIGN 'tbl_name'.lot_id = "PROCESSING"
+                UPDATE 'tbl_name'
+                COMMIT
+            ELSE
+                RETURN
+            ENDIF
+    ENDIF
+
+    WHILE job <> EMPTY 
+        job_arr[SIZE_OF_ARRAY(job_arr) + 1, 1] = job
+    NEXT 'tbl_name'
+        job = SELECT 'tbl_name'.'key_field'
+    ENDWHILE
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(job_arr)
+        item1 = job_arr[i, 1]
+        record = STRIP(item1)
+        {IF GLOBAL("MODE") = "INTERACTIVE" THEN
+            window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)
+        ENDIF}
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        BuildSample(src, item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildSample(src, item1, filename, tb, r, a, record)
+        ENDIF
+        record = STRIP(item1)
+        BuildIncident(src, "JOB_NAME", item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildIncident("", "JOB_NAME", item1, filename, tb, r, a, record)
+        ENDIF
+        record = STRIP(item1)
+        BuildAudit(src, "JOB_HEADER", item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildAudit("", "JOB_HEADER", item1, filename, tb, r, a, record)
+        ENDIF
+        IF ((SecondsElapsed(tb) > log_time)) THEN
+            WriteToLog("Collected  ":JUSTIFY(PAD(STRIP(r + a), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"    ":PAD("", " ", 10):PAD(STRIP(item1), " ", 40))
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN (tb)
+
+ENDROUTINE
+
+ROUTINE BuildSample(VALUE src, VALUE item1, filename, tb, r, a, VALUE record0)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, smp, smp_arr, i, item2, lnk_field, key_field, record
+ARRAY smp_arr
+
+    lnk_field = "JOB_NAME"
+    key_field = "ID_NUMERIC"
+    item2     = ""
+    tbl_name  = src:"SAMPLE"
+    record = record0
+
+    smp = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1  ORDER ON 'key_field'
+
+    WHILE smp <> EMPTY 
+        smp_arr[SIZE_OF_ARRAY(smp_arr) + 1, 1] = smp
+    NEXT 'tbl_name'
+        smp = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(smp_arr)
+        item1 = smp_arr[i, 1]
+        record    = (SELECT 'tbl_name'.id_text WHERE id_numeric = item1)
+
+        {WriteToLog("Moved ":JUSTIFY(PAD(STRIP(SIZE_OF_ARRAY(Entity)), " ", 6), "RIGHT"):" records in ":TimeElapsed(SecondsElapsed(tb) + SecondsElapsed(tc)):" to ":PAD(destination, " ", 10):PAD(job, " ", 40))}
+        window_set_status("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):" ":record)
+        {window_set_status(JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))}
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        BuildTest(src, item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildTest("", item1, filename, tb, r, a, record)
+        ENDIF
+        record    = (SELECT 'tbl_name'.id_text WHERE id_numeric = item1)
+        BuildAudit(src, "SAMPLE", item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildAudit("", "SAMPLE", item1, filename, tb, r, a, record)
+        ENDIF
+        IF ((SecondsElapsed(tb) > check_time)) THEN
+            WriteToLog(JUSTIFY(PAD(STRIP(tbl_name), " ", 15), "LEFT"):
+                       JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":
+                       JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    {window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)}
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildTest(VALUE src, VALUE item1, filename, tb, r, a, VALUE record0)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, test, test_arr, i, item2, lnk_field, key_field, analysis, record
+ARRAY test_arr
+
+    lnk_field = "SAMPLE"
+    key_field = "TEST_NUMBER"
+    item2     = ""
+    record    = STRIP(record0)
+    {check_time = log_time}
+
+    tbl_name = src:"TEST"
+    test = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1  ORDER ON 'key_field'
+
+    WHILE test <> EMPTY 
+        test_arr[SIZE_OF_ARRAY(test_arr) + 1, 1] = test
+    NEXT 'tbl_name'
+        test = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(test_arr)
+        item1 = test_arr[i, 1]
+        analysis = PAD(STRIP(SELECT 'tbl_name'.analysis WHERE test_number = item1):"/":STRIP(SELECT 'tbl_name'.test_count), " ", 15)
+        record    = STRIP(record0):"/":analysis 
+        {window_set_status(JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))}
+        window_set_status("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):" ":record)
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        BuildResult(src, item1, filename, tb, r, a, analysis, record)
+        IF src <> "" THEN
+            BuildResult("", item1, filename, tb, r, a, analysis, record)
+        ENDIF
+        record    = STRIP(record0):"/":analysis 
+        BuildAudit(src, "TEST", item1, filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildAudit("", "TEST", item1, filename, tb, r, a, record)
+        ENDIF
+        {IF ((SecondsElapsed(tb) > check_time)) THEN
+            WriteToLog(JUSTIFY(PAD(STRIP(tbl_name), " ", 15), "LEFT"):
+                       JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":
+                       JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF}
+        i = i + 1
+    ENDWHILE
+    
+    {window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)}
+    
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildResult(VALUE src, VALUE item1, filename, tb, r, a, analysis, VALUE record0)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, result, result_arr, i, item2, lnk_field, key_field, record
+ARRAY result_arr
+
+    lnk_field = "TEST_NUMBER"
+    key_field = "NAME"
+    tbl_name = src:"RESULT"
+    record = record0
+    
+    result = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1 ORDER ON order_number
+
+    WHILE result <> EMPTY 
+        result_arr[SIZE_OF_ARRAY(result_arr) + 1, 1] = result
+    NEXT 'tbl_name'
+        result = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(result_arr)
+        item2 = result_arr[i, 1]
+        record = record0:"'":item2:"'"
+        {window_set_status("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):" ":record)}
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        record = record0:"'":item2:"'"
+        BuildAudit(src, "RESULTID", item1:STRIP(item2), filename, tb, r, a, record)
+        IF src <> "" THEN
+            BuildAudit("", "RESULTID", item1:STRIP(item2), filename, tb, r, a, record)
+        ENDIF
+        IF ((SecondsElapsed(tb) > check_time))AND (FALSE) THEN
+            WriteToLog(JUSTIFY(PAD(STRIP(tbl_name), " ", 15), "LEFT"):
+                       JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":
+                       JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    {window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)}
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildIncident(VALUE src, VALUE lnk_field, VALUE item1, filename, tb, r, a, VALUE record0)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, incident, incident_arr, i, item2, key_field, record
+ARRAY incident_arr
+
+    tbl_name  = src:"INCIDENTS"
+    key_field = "INCIDENT_ID"
+    item2     = ""
+    record    = record0
+
+    incident = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1 ORDER ON 'key_field'
+
+    WHILE incident <> EMPTY 
+        incident_arr[SIZE_OF_ARRAY(incident_arr) + 1, 1] = incident
+    NEXT 'tbl_name'
+        incident = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(incident_arr)
+        record    = "     Incident ":record0
+        item1 = incident_arr[i, 1]
+        {window_set_status(JUSTIFY(PAD(record, " " ,54), "LEFT"):" collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb))}
+        window_set_status("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):" ":record)
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        BuildCheckList(src, item1, filename, tb, r, a)
+        IF ((SecondsElapsed(tb) > check_time)) THEN
+            WriteToLog("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"              ":record)
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    {window_set_status(TimeElapsed(tb):" ":ROUND(r):" records ":PAD(tbl_name, " ", 20):" ":record)}
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildCheckList(VALUE src, VALUE item1, filename, tb, r, a)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, CheckList, CheckList_arr, i, item2, lnk_field, key_field
+ARRAY CheckList_arr
+
+    lnk_field = "INCIDENT_ID"
+    key_field = "ACTION_NUMBER"
+
+    tbl_name = src:"INC_CHECKLIST_RESULTS"
+    CheckList = SELECT 'tbl_name'.'key_field' WHERE 'lnk_field' = item1 ORDER ON 'key_field'
+
+    WHILE CheckList <> EMPTY 
+        CheckList_arr[SIZE_OF_ARRAY(CheckList_arr) + 1, 1] = CheckList
+    NEXT 'tbl_name'
+        CheckList = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(CheckList_arr)
+        item2 = CheckList_arr[i, 1]
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        i = i + 1
+    ENDWHILE
+    
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildAudit(VALUE src, VALUE lnk_field, VALUE item1, filename, tb, r, a, VALUE record0)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, Audit, Audit_arr, i, item2, key_field, Audits, tbl, key, pct, record
+ARRAY Audits
+ARRAY Audit_arr
+
+    tbl_name   = src:"AUDIT_EVENT"
+    key_field  = "EVENT"
+    item2      = ""
+    record     = record0
+    {check_time = SecondsElapsed(tb) + log_time}
+
+    Audit   = SELECT 'tbl_name'.'key_field' WHERE table_name =  lnk_field AND record_key0 = item1 ORDER ON 'key_field'
+
+    tbl     = src:STRIP(SELECT 'tbl_name'.table_name)
+    key     = STRIP(SELECT 'tbl_name'.record_key0)
+    IF (INDEX(tbl, "SAMPLE") > 0) AND (NUMTEXT(key)) THEN
+        key = SELECT 'tbl'.id_text WHERE id_numeric = key
+    ELSEIF (INDEX(tbl, "SAMPLE") > 0) AND (NUMTEXT(item1)) THEN
+        key = SELECT 'tbl'.id_text WHERE id_numeric = item1
+    ENDIF
+
+    WHILE Audit <> EMPTY 
+        Audit_arr[SIZE_OF_ARRAY(Audit_arr) + 1, 1] = Audit
+    NEXT 'tbl_name'
+        Audit = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(Audit_arr)
+        record     = STRIP(record0)
+        item1 = Audit_arr[i, 1]
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        BuildAuditData(src, item1, filename, r, tb)
+        item1 = SELECT 'tbl_name'.transaction WHERE event = item1
+        BuildAuditTransaction(src, item1, filename, r, tb)
+        pct = (100*i/SIZE_OF_ARRAY(Audit_arr))
+        IF pct/10 = ROUND(pct/10) THEN
+            window_set_status("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"        Audit ":record)
+        ENDIF    
+        IF ((SecondsElapsed(tb) > check_time)) THEN
+            WriteToLog("Collecting ":JUSTIFY(PAD(STRIP(i + r), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"        Audit ":record)
+            check_time = SecondsElapsed(tb) + log_time
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    a = a + i
+    
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildAuditTransaction(VALUE src, VALUE item1, filename, r, tb)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, Audit, Audit_arr, i, item2, key_field, lnk_field
+ARRAY Audit_arr
+tbl_name  = src:"AUDIT_TRANSACTION"
+key_field = "TRANSACTION"
+lnk_field = ""
+item2 = ""
+
+    IF item1 = EMPTY THEN
+        RETURN (SecondsElapsed(tb))
+    ENDIF
+    
+    Audit = SELECT 'tbl_name'.'key_field' WHERE transaction = item1 ORDER ON 'key_field'
+
+    WHILE Audit <> EMPTY 
+        Audit_arr[SIZE_OF_ARRAY(Audit_arr) + 1, 1] = Audit
+    NEXT 'tbl_name'
+        Audit = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(Audit_arr)
+        item1 = Audit_arr[i, 1]
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        i = i + 1
+    ENDWHILE
+    
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE BuildAuditData(VALUE src, VALUE item1, filename, r, tb)
+{*************************************************************************
+* Purpose      : Generic routine to create array from job_name
+*                including all sub entities
+* Parameters   : tbl_name, key_field, lnk_field, job_name, ord_field
+* Return Value : Array (total), id_text, test_number, incident_id
+**************************************************************************}
+DECLARE tbl_name, Audit, Audit_arr, i, item2, key_field, lnk_field
+ARRAY Audit_arr
+tbl_name = src:"AUDIT_DATA"
+key_field = "DATA"
+lnk_field = ""
+item2 = ""
+
+    Audit = SELECT 'tbl_name'.'key_field' WHERE event = item1 ORDER ON 'key_field'
+
+    WHILE Audit <> EMPTY 
+        Audit_arr[SIZE_OF_ARRAY(Audit_arr) + 1, 1] = Audit
+    NEXT 'tbl_name'
+        Audit = SELECT 'tbl_name'.'key_field' 
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(Audit_arr)
+        item1 = Audit_arr[i, 1]
+        AddToArray(STRIP(tbl_name), key_field, STRIP(item1), lnk_field, STRIP(item2), filename, r, tb)
+        i = i + 1
+    ENDWHILE
+    
+    RETURN (SecondsElapsed(tb))
+
+ENDROUTINE
+
+ROUTINE AddToArray(VALUE tbl_name, key_field, VALUE item1, lnk_field, VALUE item2, filename, r, tb)
+{*************************************************************************
+* Purpose      : Add item1 to aray
+*                if it's not already there
+* Parameters   : tbl_name, item1: variables to add
+* Return Value : Array(total), lnk_field, key_field
+**************************************************************************}
+
+DECLARE add_line, check_ok
+
+    IF item2 = "" THEN
+        add_line = ASCII(34):tbl_name:ASCII(34):",":ASCII(34):key_field:ASCII(34):",":ASCII(34):item1:ASCII(34):",":ASCII(34):ASCII(34):",":ASCII(34):ASCII(34)
+    ELSE
+        add_line = ASCII(34):tbl_name:ASCII(34):",":ASCII(34):lnk_field:ASCII(34):",":ASCII(34):item1:ASCII(34):",":ASCII(34):key_field:ASCII(34):",":ASCII(34):item2:ASCII(34)
+    ENDIF
+
+    FILE WRITE filename, add_line, check_ok
+    FILE EXTEND filename, check_ok
+    
+    r = r + 1
+
+ENDROUTINE
+
+ROUTINE MoveJobs (VALUE tbl_name)
+{*************************************************************************
+* Purpose      : Move jobs including sample, test, result from COMMITTED to ACTIVE    table set
+*                And then including incident and audit from ACTIVE    
+*                to COMMITTED table set or
+*                to RETENTION table set or
+*                to ARCHIVE table set or
+* Parameters   : N/A
+* Return Value : N/A
+**************************************************************************}
+DECLARE XJobs, job, content, j, src, status, sample, samples, s, {destination,} tb, a, total, tc, dest_table, dest, p 
+DECLARE date_authorised, job_status, template_id, modified_on, tbl_sample, r, record, filename, textfile, line_read, i 
+ARRAY samples
+ARRAY total
+ARRAY XJobs
+
+    src = INDEX(tbl_name, "JOB_HEADER") - 1
+    IF src > 1 THEN
+        dest_table = SUBSTRING(tbl_name, src + 1, 15)
+        src = SUBSTRING(tbl_name, 1, src)
+    ELSE
+        src = ""
+    ENDIF
+
+    job = SELECT 'tbl_name'.job_name 
+          WHERE lot_id <> "CH_COMMIT"
+          AND lot_id <> "PROCESSING"
+          AND template_id NOT LIKE "RDA%"  
+          AND template_id NOT LIKE "%STAB%"
+          ORDER ON date_authorised DESCENDING
+
+    IF job <> EMPTY THEN
+        push_file_descriptor (tbl_name, content)
+
+        {DEC2INTERVAL}
+
+        SET FORMAT "99.999999999"
+        tm = (SELECT COUNT c_job_header WHERE lot_id <> "CH_COMMIT")
+             / ((SELECT COUNT c_job_header WHERE modified_on > NOW - INTERVAL("1")) 
+             + (SELECT COUNT r_job_header WHERE modified_on > NOW - INTERVAL("1"))
+             + (SELECT COUNT archive_job_header WHERE modified_on > NOW - INTERVAL("1")))
+        tm = DEC2INTERVAL(tm)
+        tm = NOW + INTERVAL(tm)
+
+        SET FORMAT "99.99"
+        SET DATE FORMAT "DD-MON-YYYY H24:MI"
+        WriteToLog("")
+        WriteToLog(STRIP(((SELECT COUNT c_job_header WHERE lot_id = "CH_COMMIT") 
+                        + (SELECT COUNT r_job_header) 
+                        + (SELECT COUNT archive_job_header)) * 100 
+                        / ((SELECT COUNT c_job_header)
+                        +  (SELECT COUNT r_job_header)
+                        +  (SELECT COUNT archive_job_header)):" %  of jobs processed, estimated time of completion: ":tm))
+        RESTORE DATE FORMAT
+        SET FORMAT "999999.999"
+        pop_file_descriptor (content)
+    ENDIF
+
+    WHILE (job <> EMPTY) AND (SIZE_OF_ARRAY(XJobs) < batch_size) DO
+        XJobs[SIZE_OF_ARRAY(XJobs) + 1, 1] = job
+    NEXT 'tbl_name'
+        job = SELECT 'tbl_name'.job_name
+    ENDWHILE
+
+    IF GLOBAL("MODE") = "BACKGROUND" THEN
+        cpu = MovingAvgCpu(2, 1)
+    ELSE
+        cpu = 0
+    ENDIF
+    
+    IF (NOW - t) >= INTERVAL(repeat_interval) THEN
+        WriteToLog("CPU Load: ":STRIP(ROUND(cpu)):"%  Exit after ":repeat_interval:" ...")
+        EXIT
+    ELSEIF (cpu > cpu_limit) THEN
+        WriteToLog("CPU Load: ":STRIP(ROUND(cpu)):"%  Exit while CPU Load > ":cpu_limit:"% ...")
+        EXIT
+    ENDIF
+
+    j = 1
+    WHILE (j <= SIZE_OF_ARRAY(XJobs)) AND ((NOW - t) < INTERVAL(repeat_interval)) DO
+        job = XJobs[j, 1]
+        record = STRIP(job)
+        date_authorised = SELECT 'tbl_name'.date_authorised WHERE job_name = job
+        job_status      = SELECT 'tbl_name'.job_status
+        template_id     = SELECT 'tbl_name'.template_id
+        modified_on     = SELECT 'tbl_name'.modified_on
+        IF job_status = "X" THEN
+            tbl_sample = src:"SAMPLE"
+            IF ((SELECT COUNT 'tbl_sample' WHERE job_name = job AND status <> "X") > 0) THEN
+                job_status = "A"
+            ENDIF
+        ENDIF
+
+        IF ((job_status = "X") OR (job_status = "A")) AND (date_authorised < NOW - INTERVAL("30")) THEN
+            destination = "COMMITTED"
+            dest_table = "C_JOB_HEADER"
+            IF (INDEX(template_id, "RDA")  = 0) AND (INDEX(template_id, "STAB") = 0) THEN
+                {IF (modified_on < NOW - INTERVAl("7")) THEN}
+                    IF ((job_status = "X") AND (date_authorised < NOW - INTERVAL("90"))) THEN
+                        destination = "ARCHIVE"
+                        dest_table = "ARCHIVE_JOB_HEADER"
+                    ELSEIF ((job_status = "A") AND (date_authorised < NOW - INTERVAL("2550"))) THEN
+                        destination = "RETENTION"
+                        dest_table = "R_JOB_HEADER"
+                    ENDIF
+                {ENDIF}
+            ENDIF
+        ELSE
+            destination = "ACTIVE"
+            dest_table = "JOB_HEADER"
+        ENDIF   
+
+        IF (SELECT job_header.job_name WHERE job_name = job) = EMPTY THEN
+            {Default: The committed job does not exist in active tableset}
+            SET DATE FORMAT "DZ-MON-YYYY"
+            {WriteToLog("IF (":modified_on:" < ":DATE("14-FEB-2015"):") THEN")}
+            IF (modified_on = EMPTY) OR (modified_on < DATE("14-FEB-2015")) THEN
+                {MoveJob(tbl_name, job, "ACTIVE", records)
+                 MoveJob("JOB_HEADER", job, destination, records)}
+                MoveJob(tbl_name, job, destination, records)
+            ELSE
+                MoveJob(tbl_name, job, destination, records)
+            ENDIF
+            RESTORE DATE FORMAT
+            {IF destination <> "ACTIVE" THEN
+                MoveJob("JOB_HEADER", job, destination, records)
+            ENDIF}
+            status = SELECT 'dest_table'.job_name FOR UPDATE WHERE job_name = job
+            IF status = job THEN
+                START WRITE TRANSACTION "CH_COMMIT"
+                assign 'dest_table'.lot_id = "CH_COMMIT"
+                UPDATE 'dest_table'
+                COMMIT
+            ENDIF
+        ELSE
+            {The committed job has been created again in the active table set.
+             Mark the active job_header as DUPLICATE, commit samples etc.
+             Delete the duplicate job_header.}
+            status = SELECT job_header.job_name FOR UPDATE WHERE job_name = job
+            IF status = job THEN
+                START WRITE TRANSACTION    "DUPLICATE"
+                assign job_header.lot_id = "DUPLICATE"
+                UPDATE job_header
+                COMMIT
+            ENDIF
+            
+            WriteToLog(PAD("Consign samples from ":STRIP(job), " ", 55):" to ":STRIP(destination))
+
+            filename    = "smp$textreports:":SUBSTITUTE(job, "/", "_"):".tmp"
+            textfile    = "smp$textreports:":SUBSTITUTE(job, "/", "_"):".txt"
+            r = 0
+
+            IF NOT(FILE EXISTS (filename)) THEN
+
+                FILE CREATE filename, status
+
+                sample = SELECT sample.id_numeric WHERE job_name = job
+                WHILE sample <> EMPTY
+                    samples[SIZE_OF_ARRAY(samples) + 1, 1] = sample
+                NEXT sample
+                    sample = SELECT sample.id_numeric 
+                ENDWHILE
+
+                IF destination = "COMMITTED" THEN
+                    dest = "C_"    
+                ELSEIF destination = "RETENTION" THEN
+                    dest = "R_"    
+                ELSEIF destination = "ARCHIVE" THEN
+                    dest = "ARCHIVE_"    
+                ELSE
+                    dest = ""    
+                ENDIF
+
+                s = 1
+                WHILE s <= SIZE_OF_ARRAY(samples)
+                    tb = NOW
+                    a  = 0
+                    src = ""
+                    BuildSample(src, job, filename, tb, r, a, record)
+                    BuildIncident(src, "JOB_NAME", job, filename, tb, r, a, record)
+                    BuildAudit(src, "JOB_HEADER", job, filename, tb, r, a, record)
+
+                    FILE CLOSE filename, status
+                    FILE COPY filename, textfile, status
+                    FILE DELETE filename, status
+
+                    {window_set_status(ROUND(r):" records collected for ":job:"in ":TimeElapsed(tb))}
+                    filename = textfile
+
+                    tb = NOW
+                    r = 0
+                    FILE OPEN filename, status
+                    FILE READ filename, line_read, status
+
+                    WHILE (status = EMPTY) DO
+                        i = INDEX(line_read, ASCII(34):",":ASCII(34))
+                        tbl_name = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+                        p   = INDEX(tbl_name, "_")
+                        src = LEFTSTRING(tbl_name, p )
+                        IF (INDEX(";C_;R_;ARCHIVE_", src) = 0) THEN
+                            src = ""
+                        ENDIF
+                        IF src <> dest THEN
+                            r = r + 1
+                            total[r, 1] = tbl_name 
+                            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+                            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+                            total[r, 2] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+                            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+                            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+                            total[r, 3] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+                            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+                            i = INDEX(line_read, ASCII(34):",":ASCII(34))
+                            total[r, 4] = SUBSTITUTE(LEFTSTRING (line_read, i), ASCII(34), "")
+                            line_read = SUBSTRING(line_read, i + 2, LENGTH(line_read))
+                            total[r, 5] = SUBSTITUTE(line_read, ASCII(34), "")
+                        ENDIF    
+                        FILE READ filename, line_read, status
+                    ENDWHILE
+
+                    FILE CLOSE filename, status
+
+                    tc = NOW
+
+                    IF SIZE_OF_ARRAY(total) > 0 THEN
+                        MoveArray(total, destination, SecondsElapsed(tb), tc)
+                        {WriteToLog(PAD(tbl_name, " ", 15):PAD(job, " ", 40):" to ":PAD(destination, " ", 10):" with      ":JUSTIFY(PAD(STRIP(SIZE_OF_ARRAY(total) + a), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"  ":TimeElapsed(tc))}
+                        {window_set_status(PAD(tbl_name, " ", 15):PAD(job, " ", 20):" to ":PAD(destination, " ", 10):" with ":JUSTIFY(PAD(STRIP(SIZE_OF_ARRAY(total) + a), " ", 5), "RIGHT"):" records in ":TimeElapsed(tb):"  ":TimeElapsed(tc))}
+                    ELSE
+                        fm(STRIP(job):" not found in ":tbl_name)
+                    ENDIF
+
+                    {window_set_status("Data committed in ":TimeElapsed(tb):" ":STRIP(SIZE_OF_ARRAY(total)):" records")}
+
+                    FILE DELETE filename, status
+
+                    s = s + 1
+
+                ENDWHILE
+
+                {If all samples are committed, delete the job_header}
+                IF ((SELECT sample.id_numeric WHERE job_name = job) = EMPTY) THEN
+                    status = SELECT job_header.job_name FOR UPDATE WHERE job_name = job
+                    IF status = job THEN
+                        START WRITE TRANSACTION "Delete"
+                        DELETE job_header
+                        COMMIT
+                    ENDIF
+                ENDIF
+            ENDIF
+        ENDIF
+        j = j + 1
+    ENDWHILE
+    
+ENDROUTINE
+
+ROUTINE CANCEL_JOB
+{*************************************************************************
+* Purpose      : Cancel jobs without samples
+*                and jobs created by users for testing purposes
+*                (job_name like %/USER_ID%, selected from view JOB_TO_CANCEL)
+* Parameters   : N/A
+* Return Value : N/A
+**************************************************************************}
+DECLARE job_array, job, i
+
+ARRAY job_array
+
+    i = 1
+    job = SELECT job_to_cancel.job_name WHERE modified_on < NOW - INTERVAL("   0 04:00:00") {job_name like "%"}
+
+    WHILE (job <> EMPTY) DO
+        job_array[i,1] = job
+        i = i + 1
+    NEXT job_to_cancel
+    job = SELECT job_to_cancel.job_name
+    ENDWHILE
+
+{
+    job = SELECT job_header.job_name
+          WHERE job_status = "C"
+            AND old_status = " "
+            AND template_id = "P-BULK-ROS"
+            AND modified_on < NOW - INTERVAl("1")
+
+    WHILE (job <> EMPTY) DO
+        job_array[i,1] = job
+        i = i + 1
+    NEXT job_header
+    job = SELECT job_header.job_name
+    ENDWHILE
+}
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(job_array) DO
+        job = SELECT job_header.job_name FOR UPDATE WHERE job_name = job_array[i,1]
+        IF (job <> EMPTY) AND (job <> LOCKED) THEN
+            IF NOT ( TRANSACTION_IS_WRITE() ) THEN
+                 START WRITE TRANSACTION ( "Cancel Empty Job" )
+            ENDIF
+            CHANGE JOB STATUS TO "X"
+            WriteToLog(job_array[i,1]:" Cancelled")
+            UPDATE job_header
+            COMMIT
+            i = i + 1
+        ENDIF
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE COMMIT_JOB
+{*************************************************************************
+* Purpose      : Move jobs including sample, test, result, incident and audit
+*                from ACTIVE to COMMITTED table set
+* Parameters   : N/A
+* Return Value : N/A
+**************************************************************************}
+DECLARE XJobs, job, tbl_name, j, status, date_authorised, job_status, template_id, modified_on     
+ARRAY XJobs
+
+    tbl_name    = "JOB_HEADER"
+
+    job = SELECT 'tbl_name'.job_name
+          WHERE (job_status = "A" 
+              OR job_status = "X")
+            AND (date_authorised = null 
+              OR date_authorised < NOW - INTERVAl("30"))
+            AND  modified_on     < NOW - INTERVAl("7") 
+          ORDER ON modified_on
+
+    WHILE (job <> EMPTY) AND (SIZE_OF_ARRAY(XJobs) < 500) DO
+        XJobs[SIZE_OF_ARRAY(XJobs) + 1, 1] = job
+    NEXT 'tbl_name'
+        job = SELECT 'tbl_name'.job_name
+    ENDWHILE
+
+    j = 1
+    {t1 = NOW}
+    WHILE (j <= SIZE_OF_ARRAY(XJobs)) AND ((NOW - t) < INTERVAL(repeat_interval)) DO
+        IF (SELECT c_job_header.job_name WHERE job_name = XJobs[j, 1]) = EMPTY THEN
+            job = XJobs[j, 1]
+            date_authorised = SELECT 'tbl_name'.date_authorised WHERE job_name = job
+            job_status      = SELECT 'tbl_name'.job_status
+            template_id     = SELECT 'tbl_name'.template_id
+            modified_on     = SELECT 'tbl_name'.modified_on
+            status = SELECT job_header.job_name FOR UPDATE WHERE job_name = XJobs[j, 1]
+            IF status = XJobs[j, 1] THEN
+                START WRITE TRANSACTION "CH_COMMIT"
+                assign job_header.lot_id = "CH_COMMIT"
+                UPDATE job_header
+                COMMIT
+            ENDIF
+            IF ((job_status = "X") OR (job_status = "A")) AND (date_authorised < NOW - INTERVAL("30")) THEN
+                destination = "COMMITTED"
+                IF (INDEX(template_id, "RDA")  = 0) AND (INDEX(template_id, "STAB") = 0) THEN
+                    IF (modified_on < NOW - INTERVAl("7")) THEN
+                        IF ((job_status = "X") AND (date_authorised < NOW - INTERVAL("90"))) THEN
+                            destination = "ARCHIVE"
+                        ELSEIF ((job_status = "A") AND (date_authorised < NOW - INTERVAL("2550"))) THEN
+                            destination = "RETENTION"
+                        ENDIF
+                    ENDIF
+                ENDIF
+            ELSE
+                destination = "ACTIVE"
+            ENDIF   
+
+            tm = MoveJob("JOB_HEADER", XJobs[j, 1], destination, records)
+        ENDIF
+        j = j + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE MoveArray(Entity, destination, VALUE tb, tc)
+{*************************************************************************
+* Purpose      : Consign all entities listed in
+* Parameters   : array (Entity)
+* Return Value : N/A
+**************************************************************************}
+DECLARE i, tbl_name, field1, value1, field2, value2, status, consign_status, transaction, src, p, dest_table, check_time, source, date_aut
+
+check_time = SecondsElapsed(tb) {+ log_time}
+check_time = 1
+
+i = SIZE_OF_ARRAY(Entity)
+consign_status = EMPTY
+
+{i = 0}
+
+IF i > 0 THEN
+    transaction = "Move ":Entity[1,1]:": ":Entity[1,3]:" to ":destination
+    START WRITE TRANSACTION transaction
+    window_set_status("Committing ":JUSTIFY(PAD(STRIP(i), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):" ":job)    
+ENDIF
+{
+IF i > 5000 THEN
+    WriteDetail(JUSTIFY(PAD(STRIP(Entity[1,1]), " ", 15), "LEFT"):
+               JUSTIFY(PAD(Entity[1,3], " " , 40), "LEFT"):
+               " to ":PAD(destination, " ", 10):" total     ":
+               JUSTIFY(PAD(STRIP(i), " ", 6), "RIGHT"):" records in ":TimeElapsed(tb):"  ":TimeElapsed(tc))
+ENDIF
+}
+WHILE i > 0 DO
+
+    WHILE STRIP(Entity[i,1]) = "" DO
+    i = i - 1
+    ENDWHILE
+
+    tbl_name = Entity[i,1]
+    field1   = Entity[i,2]
+    value1   = Entity[i,3]
+    field2   = Entity[i,4]
+    value2   = Entity[i,5]
+    status   = value1
+
+    date_aut = EMPTY
+    IF (SELECT c_job_header.date_authorised WHERE job_name = job) <> EMPTY THEN
+        date_aut = SELECT c_job_header.date_authorised WHERE job_name = job
+    ELSEIF (SELECT job_header.date_authorised WHERE job_name = job) <> EMPTY THEN    
+        date_aut = SELECT job_header.date_authorised WHERE job_name = job
+    ELSEIF (SELECT r_job_header.date_authorised WHERE job_name = job) <> EMPTY THEN    
+        date_aut = SELECT r_job_header.date_authorised WHERE job_name = job
+    ELSEIF (SELECT archive_job_header.date_authorised WHERE job_name = job) <> EMPTY THEN    
+        date_aut = SELECT archive_job_header.date_authorised WHERE job_name = job
+    ENDIF
+    
+    IF LEFTSTRING(tbl_name, 2) = "C_" THEN
+        source = "COMMITTED"
+        {WriteToLog("date_authorised(":STRIP(job):") = ":date_aut)}
+    ELSEIF LEFTSTRING(tbl_name, 2) = "R_" THEN
+        source = "RETENTION"
+    ELSEIF LEFTSTRING(tbl_name, 8) = "ARCHIVE_" THEN
+        source = "ARCHIVE"
+    ELSE
+        source = "ACTIVE"
+    ENDIF
+
+    p   = INDEX(tbl_name, "_")
+    src = LEFTSTRING(tbl_name, p )
+    IF (INDEX(";C_;R_;ARCHIVE_", src) > 1) THEN
+        dest_table = MIDSTRING(tbl_name, p + 1, LENGTH(tbl_name) - p)
+    ELSE
+        dest_table = tbl_name
+        src = ""
+    ENDIF
+    
+    IF destination = "ACTIVE" THEN
+    ELSEIF destination = "COMMITTED" THEN
+        dest_table = "C_":dest_table
+    ELSEIF destination = "RETENTION" THEN
+        dest_table = "R_":dest_table
+    ELSEIF destination = "ARCHIVE" THEN
+        dest_table = "ARCHIVE_":dest_table
+    ENDIF
+
+    status   = value1
+        
+    IF (field2 <> "") AND (value2 <> "") THEN
+        IF (value1 = (SELECT 'dest_table'.'field1' WHERE 'field1' = value1 AND 'field2' = value2)) THEN
+            status = EMPTY
+            WriteToDuplicate("'":dest_table:"','":field1:"','":value1:"','":field2:"','":value2:"'")
+        ELSE
+            status = SELECT 'tbl_name'.'field1' FOR UPDATE WHERE 'field1' = value1 AND 'field2' = value2
+        ENDIF
+    ELSE
+        IF (value1 = (SELECT 'dest_table'.'field1' WHERE 'field1' = value1)) THEN
+            status = EMPTY
+            WriteToDuplicate("'":dest_table:"','":field1:"','":value1:"'")
+        ELSE
+            status = SELECT 'tbl_name'.'field1' FOR UPDATE WHERE 'field1' = value1
+        ENDIF
+    ENDIF
+    IF status = value1 THEN
+        IF destination = "ACTIVE" THEN
+            DECONSIGN 'tbl_name', consign_status
+        ELSE
+            CONSIGN 'tbl_name' TO destination, consign_status
+        ENDIF
+
+        IF consign_status <> EMPTY THEN
+            i = 0
+            ROLLBACK
+            fm(transaction:", UNSUCCESSFULL.":ASCII(10):
+               consign_status:ASCII(10):
+               tbl_name:".":field1:" = ": value1)
+            WriteToLog(transaction:", UNSUCCESSFULL. ":consign_status:" (": tbl_name:".":field1:" = ": value1:")")
+            RETURN
+        ENDIF
+
+        SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+        IF (i/5000 = ROUND(i/5000)) THEN
+            COMMIT
+            {WriteToLog("Moved      ":JUSTIFY(PAD(STRIP(i), " ", 6), "RIGHT"):" records in ":TimeElapsed(tc):" to ":PAD(destination, " ", 10):job)    }
+            START WRITE TRANSACTION transaction
+        ELSEIF (({SecondsElapsed(tb) +} SecondsElapsed(tc) > check_time) {AND (GLOBAL("MODE") = "INTERACTIVE")}) THEN
+            COMMIT
+            START WRITE TRANSACTION transaction
+            window_set_status("Committing ":JUSTIFY(PAD(STRIP(ROUND((SIZE_OF_ARRAY(Entity) - i)/SIZE_OF_ARRAY(Entity)*100)):" %", " ", 8), "RIGHT"):"       in ":TimeElapsed(SecondsElapsed(tb) + SecondsElapsed(tc)):"              ":job)    
+            check_time = {SecondsElapsed(tb) +} SecondsElapsed(tc) +1 {+ log_time}
+        ENDIF
+{       IF SecondsElapsed(tb) + SecondsElapsed(tc) > check_time THEN
+            WriteToLog(check_time:" Committing ":JUSTIFY(PAD(STRIP(ROUND((SIZE_OF_ARRAY(Entity) - i)/SIZE_OF_ARRAY(Entity)*100)):" %", " ", 8), "RIGHT"):"       in ":TimeElapsed(SecondsElapsed(tb) + SecondsElapsed(tc)):"              ":job)    
+            check_time = SecondsElapsed(tb) + SecondsElapsed(tc) + 1 
+        ENDIF}
+        RESTORE DATE FORMAT
+    ENDIF
+    i = i - 1
+ENDWHILE
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+    IF consign_status <> EMPTY THEN
+        ROLLBACK
+        WriteToLog("Moving     ":PAD(source:" job", " ", 15):PAD(job, " ", 40):" to ":PAD(destination, " ", 10):" failed: '":consign_status:"'")
+    ENDIF
+    COMMIT
+    WriteToLog("Moved      ":JUSTIFY(PAD(STRIP(SIZE_OF_ARRAY(Entity)), " ", 6), "RIGHT"):" records in ":TimeElapsed(SecondsElapsed(tb) + SecondsElapsed(tc)):" to ":PAD(destination, " ", 10):PAD(job, " ", 40):date_aut)
+    RESTORE DATE FORMAT
+
+ENDROUTINE
+
+GLOBAL ROUTINE MoveJobByJobname(option)
+{*************************************************************************
+* Purpose      : Initiate manual moving of jobs between table sets
+* Parameters   : option (master_menu.procedure_num)
+*                master_menu.table_name = source table
+*                master_menu.parameters = source,destination
+* Return Value : N/A
+**************************************************************************}
+
+DECLARE start_date, end_date, job, message_id, source, destination, tbl_name, duration
+
+    log_time = 9
+    records = 0
+    tbl_name = "JOB_HEADER"
+
+    SET DATE FORMAT "DZ-MON-YYYY"
+        start_date = DATE("01-JAN-1980")
+        end_date = NOW
+        end_date = end_date + INTERVAL("   0 23:59:59")
+    RESTORE DATE FORMAT
+
+    {WHILE (my_form (option, source, destination, tbl_name, job, end_date, start_date )) DO}
+    IF (my_form (option, source, destination, tbl_name, job, end_date, start_date )) THEN
+        SET DATE FORMAT "DZ-MON-YYYY"
+        message_id = "Move job: ":STRIP(job):ASCII(10):ASCII(10):
+                     "Produced on ":(SELECT 'tbl_name'.production_date WHERE job_name = job):ASCII(10):ASCII(10):
+                     "from ":source:" to ":destination:" table set"
+        IF confirm_with_message(message_id) THEN
+            duration = MoveJob(tbl_name, job, destination, records)
+            flashmessage("Job: '":STRIP(job):"' moved":ASCII(10):
+                         "from ":source:" to ":destination:" table set":ASCII(10):
+                         records:" records in ":TimeElapsed(duration), TRUE)
+        ELSE 
+            {fm("Not confirmed")}
+        ENDIF
+        RESTORE DATE FORMAT
+    ENDIF
+    {ENDWHILE}
+
+ENDROUTINE
+
+GLOBAL ROUTINE MoveJobsByMaterial(option)
+{*************************************************************************
+* Purpose      : Initiate manual moving of jobs between table sets
+* Parameters   : option (master_menu.procedure_num)
+*                master_menu.table_name = source table
+*                master_menu.parameters = source,destination
+* Return Value : N/A
+**************************************************************************}
+
+DECLARE start_date, end_date, material, job, job_array, message_id, source, destination, tbl_name, i, t0
+ARRAY job_array
+
+    log_time = 9
+    tbl_name = "MLP_HEADER"
+
+    SET DATE FORMAT "DZ-MON-YYYY"
+        start_date = DATE("01-JAN-1980")
+        end_date = NOW
+        end_date = end_date + INTERVAL("   0 23:59:59")
+    RESTORE DATE FORMAT
+
+    IF (my_form (option, source, destination, tbl_name, material, end_date, start_date )) THEN
+        IF (start_date = EMPTY) or (end_date = EMPTY) THEN
+            message_id = "No jobs for MLP: ": material:" to move":ASCII(10):
+                         "from ":source:" to ":destination:" table set"
+            fm(message_id)
+        ELSE
+            job = STRIP(ROUND(SELECT COUNT 'tbl_name'
+                                   WHERE product_name = material
+                                     AND production_date > start_date
+                                     AND production_date < end_date))
+            IF job > 0 THEN
+                SET DATE FORMAT "DZ-MON-YYYY"
+                message_id = "Move ": job:" jobs for MLP: ": material:ASCII(10):ASCII(10):
+                             "Produced between ":start_date:" and ":end_date:ASCII(10):ASCII(10):
+                             "from ":source:" to ":destination:" table set"
+                RESTORE DATE FORMAT
+                IF confirm_with_message(message_id) THEN
+                    t0 = now
+                    job = SELECT 'tbl_name'.job_name
+                           WHERE product_name = material
+                             AND production_date > start_date
+                             AND production_date < end_date
+                          ORDER ON date_created
+                    WHILE job <> EMPTY DO
+                        job_array[size_of_array(job_array) + 1] = job
+                    NEXT 'tbl_name'
+                        job = SELECT 'tbl_name'.job_name
+                    ENDWHILE
+                    i = 1
+                    WHILE i <= size_of_array(job_array) DO
+                        tm = MoveJob(tbl_name, job_array[i], destination, records)
+                        i = i + 1
+                    ENDWHILE
+                    fm(ROUND(i):" jobs moved to ":destination:" in ":TimeElapsed(SecondsElapsed(t0)):ASCII(10):GetArray(job_array))
+                ENDIF
+            ENDIF
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+
+ROUTINE my_form (option, source, destination, tbl_name, material, end_date, start_date )
+{*************************************************************************
+* Purpose      : Create form for selecting job(s) to move between tablesets
+* Parameters   : option (master_menu.procedure_num)
+*                source, destination (table sets)
+*                tbl_name (in source)
+* Return Value : material, end_date, start_date
+**************************************************************************}
+
+DECLARE prompt_object, lk1, form, parameters, pos, field, keyfield
+
+    parameters = SELECT master_menu . parameters WHERE procedure_num = option
+
+    pos = INDEX(parameters, ",")
+
+    IF pos = 0 THEN
+        fm("Invalid setup of paramteres form master menu ":STRIP(option))
+        EXIT
+    ELSE
+        source      = SUBSTRING(parameters, 1,       pos - 1)
+        destination = SUBSTRING(parameters, pos + 1, LENGTH(parameters) - pos)
+    ENDIF
+
+    IF tbl_name = "JOB_HEADER" THEN
+        IF STRIP(source) =  "ACTIVE" THEN
+            tbl_name = "JOB_HEADER"
+        ELSEIF STRIP(source) = "COMMITTED" THEN
+            tbl_name = "C_JOB_HEADER"
+        ELSEIF STRIP(source) = "RETENTION" THEN
+            tbl_name = "R_JOB_HEADER"
+        ELSEIF STRIP(source) = "ARCHIVE" THEN
+            tbl_name = "ARCHIVE_JOB_HEADER"
+        ELSE
+            fm("Invalid source destination (":STRIP(source):") definded in master menu (":STRIP(option):")")
+        ENDIF
+    ENDIF
+
+    PROMPT OBJECT form CLASS "STD_FORM"
+
+        form . header           = "Retrieve jobs from ":source:" to ":destination
+        form . row              = 10
+        form . column           = 10
+        form . height           = 8
+        form . width            = 60
+        form . button_style     = FORM_BUTTON_NONE
+        form . return_behaviour = FORM_RETURN_STAY
+
+        IF tbl_name = "MLP_HEADER" THEN
+            form . add_display ( "Material: ", 1, 1, PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+        ELSEIF INDEX(tbl_name, "JOB_HEADER") > 0 THEN
+            form . add_display ( "Job name: ", 1, 1, PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+        ENDIF
+
+        PROMPT FOR source
+        AT 5,5
+        FORMAT TEXT
+        WITH (DISPLAY_ONLY = TRUE)
+
+        PROMPT FOR destination
+        ON LINE 1 FROM 20
+        FORMAT TEXT
+        WITH (DISPLAY_ONLY = TRUE)
+
+        PROMPT OBJECT Material
+        ON LINE 1 FROM 10
+        BROWSE ON 'tbl_name'
+        form . add_prompt ( material )
+
+        IF tbl_name = "MLP_HEADER" THEN
+            PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT"
+            prompt_object . value   = "Start Date : "
+            prompt_object . row     = 3
+            prompt_object . column  = 1
+            prompt_object . height  = 1
+            prompt_object . width   = 20
+            form . add_display ( prompt_object )
+
+            PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT_DATE"
+            prompt_object . row            = 3
+            prompt_object . column         = 10
+            prompt_object . height         = 1
+            prompt_object . width          = 18
+            prompt_object . allow_date     = TRUE
+            prompt_object . allow_time     = FALSE
+            prompt_object . allow_interval = FALSE
+            form . add_prompt ( prompt_object )
+
+            PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT"
+            prompt_object . value   = "End Date : "
+            prompt_object . row     = 5
+            prompt_object . column  = 1
+            prompt_object . height  = 1
+            prompt_object . width   = 20
+            form . add_display ( prompt_object )
+
+            PROMPT OBJECT prompt_object CLASS "STD_PROMPT_TEXT_DATE"
+            prompt_object . row            = 5
+            prompt_object . column         = 10
+            prompt_object . height         = 1
+            prompt_object . width          = 18
+            prompt_object . allow_date     = TRUE
+            prompt_object . allow_time     = FALSE
+            prompt_object . allow_interval = FALSE
+            form . add_prompt ( prompt_object )
+        ENDIF
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_BUTTON"
+        prompt_object . caption      = get_user_message ( "SMP_PROMPT_BUTTON_OK" , 1 )
+        prompt_object . row          = 7
+        prompt_object . column       = 10
+        prompt_object . height       = 1
+        prompt_object . width        = 10
+        prompt_object . send_lastkey = "DO"
+        form . add_prompt ( prompt_object )
+
+        PROMPT OBJECT prompt_object CLASS "STD_PROMPT_BUTTON"
+        prompt_object . caption      = "Cancel"
+        prompt_object . row          = 7
+        prompt_object . column       = 30
+        prompt_object . height       = 1
+        prompt_object . width        = 10
+        prompt_object . send_lastkey = "EXIT"
+        form . add_prompt ( prompt_object )
+
+
+        form . start_prompt ()
+        form . wait_prompt ()
+        form . end_prompt ()
+
+        IF tbl_name = "MLP_HEADER" THEN
+            material   = form . prompt_objects [1] . value
+            IF STRIP(Material) = "" THEN
+                fm("No material selected")
+                EXIT
+            ENDIF
+            start_date = form . prompt_objects [2] . value
+            end_date   = form . prompt_objects [3] . value
+        ELSE
+            material   = form . prompt_objects [1] . value
+            IF STRIP(Material) = "" THEN
+                fm("No job selected")
+                EXIT
+            ENDIF
+        ENDIF
+
+        source = STRIP(source)
+        destination = STRIP(destination)
+
+        IF tbl_name = "MLP_HEADER" THEN
+            IF STRIP(source) =  "ACTIVE" THEN
+                tbl_name = "JOB_HEADER"
+            ELSEIF STRIP(source) = "COMMITTED" THEN
+                tbl_name = "C_JOB_HEADER"
+            ELSEIF STRIP(source) = "RETENTION" THEN
+                tbl_name = "R_JOB_HEADER"
+            ELSEIF STRIP(source) = "ARCHIVE" THEN
+                tbl_name = "ARCHIVE_JOB_HEADER"
+            ENDIF
+        ENDIF
+
+        IF start_date = "" THEN
+            SET DATE FORMAT "DZ-MON-YYYY"
+            start_date = DATE("01-JAN-1980")
+            field = "PRODUCTION_DATE"
+            keyfield = "PRODUCT_NAME"
+            start_date = MIN_DATE(tbl_name, field, keyfield, material)
+            RESTORE DATE FORMAT
+        ENDIF
+
+        IF end_date = "" THEN
+            SET DATE FORMAT "DZ-MON-YYYY"
+            end_date = NOW
+            field = "PRODUCTION_DATE"
+            keyfield = "PRODUCT_NAME"
+            end_date = MAX_DATE(tbl_name, field, keyfield, material)
+            RESTORE DATE FORMAT
+        ELSE
+            end_date = end_date + INTERVAL("   0 23:59:59")
+        ENDIF
+
+
+        lk1 = form . get_lastkey ()
+
+        IF lk1 = "EXIT" THEN
+           RETURN(FALSE)
+        ELSEIF lk1 = "ENTER" THEN
+           RETURN(TRUE)
+        ELSEIF lk1 = "DO" THEN
+           RETURN(TRUE)
+        ELSE
+           RETURN(FALSE)
+           FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk1),TRUE)
+        ENDIF
+
+
+
+ENDROUTINE
+
+ROUTINE MIN_DATE(tbl_name, field, key_field, id)
+{*************************************************************************
+* Purpose      : Alternative calculation of MIN(field)
+*                as VGL "SELECT MIN..." does not work on SQL server
+* Parameters   : tbl_name, field, key_field, id
+* Return Value : field value
+**************************************************************************}
+DECLARE dynamic_sql, dte
+
+    CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+    dynamic_sql . add_to_sql_statement ( "SELECT MIN(": field :") FROM ": tbl_name )
+    dynamic_sql . add_to_sql_statement ( " where ":key_field:" = '":STRIP(id):"'")
+    dynamic_sql . add_select_field ( tbl_name, field )
+    dynamic_sql . execute ()
+    dte = dynamic_sql . select ( 1 )
+    RETURN (dte)
+
+ENDROUTINE
+
+ROUTINE MAX_DATE(tbl_name, field, key_field, id)
+{*************************************************************************
+* Purpose      : Alternative calculation of MAX(field)
+*                as VGL "SELECT MAX..." does not work on SQL server
+* Parameters   : tbl_name, field, key_field, id
+* Return Value : field value
+**************************************************************************}
+DECLARE dynamic_sql, dte
+
+    CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+    dynamic_sql . add_to_sql_statement ( "SELECT MAX(": field :") FROM ": tbl_name )
+    dynamic_sql . add_to_sql_statement ( " where ":key_field:" = '":STRIP(id):"'")
+    dynamic_sql . add_select_field ( tbl_name, field )
+    dynamic_sql . execute ()
+    dte = dynamic_sql . select ( 1 )
+    RETURN (dte)
+
+ENDROUTINE
+
+ROUTINE SecondsElapsed(VALUE t)
+{*************************************************************************
+* Purpose      : Calculate number of milliseconds elapsed
+*                from t until NOW
+* Parameters   : t (DATE)
+* Return Value : Numeric value (seconds)
+**************************************************************************}
+DECLARE sec
+
+    IF IS_DATE(t) THEN
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+        t   = NOW - t
+        sec = NUMERIC(SUBSTRING(t,  1, 4))*24*60*60
+        sec = sec + NUMERIC(SUBSTRING(t,  6, 2))*60*60
+        sec = sec + NUMERIC(SUBSTRING(t,  9, 2))*60
+        sec = sec + NUMERIC(SUBSTRING(t, 12, 5))
+    RESTORE DATE FORMAT
+    ELSE
+        sec = t
+    ENDIF
+    
+    RETURN(sec)
+
+ENDROUTINE
+
+ROUTINE TimeElapsed(VALUE t)
+{*************************************************************************
+* Purpose      : Calculate number of milliseconds elapsed
+*                from t until NOW
+* Parameters   : t (DATE)
+* Return Value : Numeric value (seconds)
+**************************************************************************}
+DECLARE d, hh, mm, ss
+    
+    IF IS_DATE(t) THEN
+        t = SecondsElapsed(t)
+    ENDIF
+    
+    IF NUMTEXT(t) THEN
+        t  = TRUNC(t)
+        d  = TRUNC(t/(60*60*24))
+    t  = t-d*(60*60*24)
+    hh = TRUNC(t/3600)
+    t  = t-hh*3600
+        mm = TRUNC(t/60)
+    ss = t-mm*60
+
+        d  = RIGHTSTRING("    ":d,4)
+        hh = RIGHTSTRING("00":STRIP(hh),2)
+        mm = RIGHTSTRING("00":STRIP(mm),2)
+        ss = RIGHTSTRING("00":STRIP(ss),2)
+
+    IF d > 0 THEN
+            t = d:" ":hh:":":mm:":":ss
+    ELSEIF hh > 0
+            t = hh:":":mm:":":ss
+    ELSE
+        t = mm:":":ss
+    ENDIF
+
+    IF LENGTH(t) < 8 THEN
+            t = JUSTIFY(PAD(t, " ", 8), "RIGHT")
+    ENDIF
+
+    ENDIF    
+    
+    RETURN(t)
+
+ENDROUTINE
+
+ROUTINE RightTrim(item1)
+{*************************************************************************
+* Purpose      : Calculate number of milliseconds elapsed
+*                from t until NOW
+* Parameters   : t (DATE)
+* Return Value : Numeric value (seconds)
+**************************************************************************}
+    
+    item1 = LEFTSTRING(item1, LENGTH(item1))
+    WHILE RIGHTSTRING(item1, 1) = " " DO
+        item1 = LEFTSTRING(item1, LENGTH(item1) - 1)
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE CPU_LOAD (VALUE s)
+{*************************************************************************
+* Purpose      : Get CPU Load percentage from OS
+*                Sampling for s sec.
+* Return Value : CPU Load percentage (0-100)
+**************************************************************************}
+DECLARE cmd, status, file, line_read, i, n, c
+    s = STRIP(ROUND(s))
+    cmd = "C:\WIN2003\system32\typeperf.exe -sc 1 -si ":s:" ":
+          ASCII(34):"\processor(_total)\% processor time":ASCII(34):" | find /v ":
+          ASCII(34):"processor time":ASCII(34):" | find /v ":
+          ASCII(34):"Exiting":ASCII(34):" | find /v ":ASCII(34):"command":ASCII(34):" > C:\Temp\cpu.txt"
+    SPAWN cmd, status QUIETLY 
+
+    SLEEP FOR INTERVAL("0 00:00:00.50")
+    n = 0
+    c = 0
+    file = "C:\Temp\cpu.txt"
+    FILE OPEN file
+    FILE READ file, line_read, status
+    WHILE status = EMPTY
+        i = INDEX(line_read, ASCII(34):",":ASCII(34))
+        IF i > 0 THEN
+            n = n + 1
+            c = c + NUMERIC(SUBSTITUTE(STRIP(SUBSTRING(line_read, i + 3, 20)), ASCII(34), ""))
+        ENDIF
+        FILE READ file, line_read, status
+    ENDWHILE
+    FILE CLOSE file
+
+    IF n > 0 THEN
+        RETURN (c/n)
+    ELSE
+        RETURN (99.99)
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    IF GLOBAL("MODE") = "INTERACTIVE" THEN
+        WriteDetail(STRIP(Msg))
+    ELSE
+        WriteLog(Msg, global("current_library"))
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE WriteDetail(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    msg = STRIP(msg)
+    {msg = STRIP(SUBSTRING(msg, INDEX(msg, " "), LENGTH(msg)))}
+    window_set_status(msg)
+    WriteLog(Msg, STRIP(GLOBAL("current_library")):"_":STRIP(GLOBAL("OPERATOR")))
+    
+ENDROUTINE
+
+ROUTINE WriteToDuplicate(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    DECLARE i, tbl
+    
+    i   = INDEX(msg, ",") - 1
+    tbl = LEFTSTRING(msg, i)
+    
+    IF INDEX("JOB_HEADER, SAMPLE, TEST, RESULT, ", tbl) > 0
+        window_set_status(msg)
+        WriteLog(Msg, STRIP(GLOBAL("current_library")):"_DUPLICATE")
+    ENDIF    
+    
+ENDROUTINE
+
+
+ROUTINE MovingAvgCpu(VALUE n, VALUE p)
+{*************************************************************************
+* Purpose      : Caluculate moving average of CPU load 
+*              : If moving average < gloabl CPU_Limit, then quit
+* Parameters   : n = max. number of samples
+*              : p = period (in sec.)
+* Return Value : cpu = Avg CPU_LOAD for n samples of p sec.
+**************************************************************************}
+DECLARE avg_array, j, cpu, c
+ARRAY avg_array
+
+    avg_array[SIZE_OF_ARRAY(avg_array) + 1] = ROUND(CPU_LOAD(p))
+    window_set_status("CPU: ":avg_array[SIZE_OF_ARRAY(avg_array)]/1:"%   (":STRIP(SIZE_OF_ARRAY(avg_array)):" x ":STRIP(p):" sec.)")
+
+    WHILE SIZE_OF_ARRAY(avg_array) > n 
+        array_remove_slice(avg_array, 1, 1)
+    ENDWHILE
+    
+    j = 1
+    cpu = 0
+    WHILE j <= SIZE_OF_ARRAY(avg_array)
+        cpu = cpu + avg_array[j]
+        j = j + 1
+    ENDWHILE
+    
+    cpu = cpu/(j - 1)
+    
+    j = 1
+    c = 0
+    WHILE (cpu > cpu_limit) AND  ((NOW - t) < INTERVAL(repeat_interval)) DO
+        c = c + 1
+        avg_array[SIZE_OF_ARRAY(avg_array) + 1] = ROUND(CPU_LOAD(p))
+        WHILE SIZE_OF_ARRAY(avg_array) > n 
+            array_remove_slice(avg_array, 1, 1)
+        ENDWHILE
+
+        j = 1
+        cpu = 0
+        WHILE j <= SIZE_OF_ARRAY(avg_array)
+            cpu = cpu + avg_array[j]
+            j = j + 1
+        ENDWHILE
+        cpu = cpu/(j -1)
+        window_set_status("CPU: ":cpu:"%   (":STRIP(SIZE_OF_ARRAY(avg_array)):" x ":STRIP(p):" sec.)")
+        IF (cpu > cpu_limit) AND (c/10 = ROUND(c/10)) THEN
+            SET FORMAT "99.9"
+            {WriteToLog("CPU:   ":cpu:" %  (":STRIP(SIZE_OF_ARRAY(avg_array)):" x ":STRIP(p):" sec.) above limit (":STRIP(cpu_limit):")")}
+            SET FORMAT "999999.999"
+        ENDIF
+    ENDWHILE    
+
+    window_set_status("CPU: ":cpu:"%   (":STRIP(SIZE_OF_ARRAY(avg_array)):" x ":STRIP(p):" sec.)")
+    RETURN(cpu)
+
+ENDROUTINE
+
+
+ROUTINE MOVEBACK
+{*************************************************************************
+* Purpose      : Temporary routine to clean up committted audit tables
+*              : prior to running MoveJobs
+**************************************************************************}
+DECLARE c, a, id, batch, i, tbl_name, field, consign_status
+ARRAY a
+
+    batch    = 7500
+    tbl_name = "C_AUDIT_DATA"
+    field    = "DATA"
+
+    id = SELECT 'tbl_name'.'field' WHERE 'field' > 0
+
+        {(NOW - t) < INTERVAL(repeat_interval)}
+        WHILE size_of_array(a) < batch
+            a[size_of_array(a) + 1] = id
+        NEXT 'tbl_name'
+            id = SELECT 'tbl_name'.'field'
+        ENDWHILE
+
+        START WRITE TRANSACTION "Move from ":tbl_name
+
+        i = 1
+        WHILE i <= size_of_array(a)
+            id = SELECT 'tbl_name'.'field' FOR UPDATE WHERE 'field' = a[i]
+            IF id = a[i] THEN
+                DECONSIGN 'tbl_name', consign_status
+                IF consign_status <> EMPTY THEN
+                    ROLLBACK
+                    WriteToLog("DECONSIGN '":tbl_name:"' aborted. ":consign_status)
+                    EXIT
+                ENDIF
+            ENDIF    
+            i = i + 1
+        ENDWHILE
+
+        COMMIT
+        
+        c = SELECT COUNT 'tbl_name' WHERE 'field' > 0
+        
+        WriteToLog("DECONSIGN ":tbl_name:" remaining ":STRIP(ROUND(c)):" records")
+    
+ENDROUTINE
+
+
+ROUTINE MOVEBACK2
+{*************************************************************************
+* Purpose      : Temporary routine to clean up committted audit tables
+*              : prior to running MoveJobs
+**************************************************************************}
+DECLARE t0, c0, c, id, tbl_name, field, consign_status
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+        t0 = DATE("13-02-2015 10:07:08")
+    RESTORE DATE FORMAT 
+    
+    tbl_name = "C_AUDIT_DATA"
+    field    = "DATA"
+    
+    c0 = SELECT COUNT 'tbl_name' WHERE 'field' > 0
+
+    IF (c0 = 0) THEN
+        tbl_name = "C_AUDIT_EVENT"
+        field    = "EVENT"
+        c0 = SELECT COUNT 'tbl_name' WHERE 'field' > 0
+    ENDIF
+    
+    IF (c0 = 0) {OR (GLOBAL("MODE")="INTERACTIVE")} THEN
+        tbl_name = "C_AUDIT_TRANSACTION"
+        field    = "TRANSACTION"
+        c0 = SELECT COUNT 'tbl_name' WHERE 'field' > 0
+    ENDIF
+
+    IF tbl_name = "C_AUDIT_DATA" THEN
+        c0 = 13659615
+    ENDIF
+    
+    START WRITE TRANSACTION "Move from ":tbl_name
+
+    WHILE (NOW - t) < INTERVAL(repeat_interval)
+        id = SELECT 'tbl_name'.'field' FOR UPDATE WHERE 'field' > 0
+        window_set_status(id)
+        IF NUMTEXT(id)  THEN
+            DECONSIGN 'tbl_name', consign_status
+            IF consign_status <> EMPTY THEN
+                ROLLBACK
+                window_set_status("DECONSIGN '":tbl_name:"' aborted. ":consign_status)
+                EXIT
+            ENDIF
+        ELSE
+            START WRITE TRANSACTION "Move from ":tbl_name
+        ENDIF    
+    ENDWHILE
+
+    COMMIT
+
+    c = SELECT COUNT 'tbl_name' WHERE 'field' > 0
+
+    {t0 = TimeElapsed(SecondsElapsed(t0)/(ROUND(c0 - c)/c0))}
+    t0 = TimeElapsed(SecondsElapsed(t0)/(c0 - c)*c)
+    
+    WriteToLog("DECONSIGN ":ROUND(c0 - c):" (":STRIP(ROUND(c0 - c)*100/c0):" %) from ":tbl_name:" ":(ROUND(c)):" time remaining: ":t0)
+    
+    RETURN (c)
+    
+ENDROUTINE
+
+ROUTINE DEC2INTERVAL (VALUE t)
+
+DECLARE d, h, m, s
+
+    d = TRUNC(t)
+    t = (t-d)*24
+    
+    h = TRUNC(t)
+    t = (t-h)*60
+
+    m = TRUNC(t)
+    s = TRUNC((t-m)*60)
+
+    d = RIGHTSTRING("    ":STRIP(d), 4)
+    h = RIGHTSTRING("00":STRIP(h), 2)
+    m = RIGHTSTRING("00":STRIP(m), 2)
+    s = RIGHTSTRING("00":STRIP(s), 2)
+    
+    IF INTERVAL(d:" ":h:":":m:":":s) = ERROR THEN
+        WriteToLog("INTERVAL Error: '":d:" ":h:":":m:":":s:"' for t = ":t)
+        RETURN (INTERVAL("0"))
+    ELSE
+        RETURN (INTERVAL(d:" ":h:":":m:":":s))
+    ENDIF
+
+ENDROUTINE

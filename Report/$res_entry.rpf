@@ -1,0 +1,1615 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $RES_ENTRY.RPF
+*
+* Purpose       : Result entry front end routines for item selection for Result
+*                 entry.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+ENABLE WINDOWS                                                 { EA 11.03.2016 }
+SET COMPILE_OPTION DECLARE
+
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_RESULT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $RESULT_LIST
+JOIN LIBRARY $RESULT_SPREADSHEET
+JOIN LIBRARY $WKSBROWSE
+JOIN LIBRARY $LIB_RE_GLOBALS
+
+JOIN LIBRARY $RESULT_MATRIX
+
+DECLARE job_id, cur_prompt
+DECLARE job_prompt_tag , smp_prompt_tag  ,tst_prompt_tag, res_button_tag        {EA 14.03.2016}
+job_id = EMPTY
+
+res_single_job("DISPLAY")
+EXIT
+
+{-----------------------------------------------------------------------------}
+
+{***** res_barcode_test( RE_MODIFY )                                      *****}  { EA 11.03.2016 }
+
+{***** EXIT                                                               *****}  { EA 11.03.2016 }
+
+DECLARE option
+
+option = 0
+
+job_re_list_modify ( option )
+
+EXIT                                                          { EA 11.03.2016 }
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE create_prompt_form (       prompt_form     ,
+                             VALUE window_width    ,
+                             VALUE number_of_lines ,
+                                   window_header   ,
+                                   window_footer   )
+
+    DECLARE results_button, close_button
+
+    CREATE OBJECT PROMPT_CLASS_FORM , prompt_form
+
+    prompt_form . height = number_of_lines + 3
+    prompt_form . width  = window_width
+    prompt_form . row    = 11
+    prompt_form . column = ROUND ( ( GLOBAL ( "SCREEN_WIDTH" ) -
+                    window_width  ) / 2 )
+    prompt_form . border = TRUE
+    prompt_form . header = window_header
+    prompt_form . footer = window_footer
+    prompt_form . proportional = TRUE
+{*****     prompt_form . return_behaviour = FORM_RETURN_LEAVE             *****}     {EA 11.03.2016}
+    prompt_form . button_style = FORM_BUTTON_NONE
+    prompt_form . prompt_id    = "$RES_ENTRY_SELECT_" :
+                                 SUBSTITUTE( prompt_form . width : "_" : prompt_form . height, " ", "" )
+                                 
+    
+    PROMPT OBJECT results_button
+        CLASS "STD_PROMPT_BUTTON"
+            ON LINE prompt_form . height - 1
+            FROM prompt_form . width - 25 TO prompt_form . width - 15
+            WITH ( caption = GET_USER_MESSAGE("SMP_PROMPT_BUTTON_RESULTS",1) ,
+                   send_last_key = "DO",
+                   enabled = false   )                                          {EA 14.03.2016}
+    res_button_tag = prompt_form . add_prompt ( results_button )                {EA 14.03.2016}
+
+    PROMPT OBJECT close_button
+        CLASS "STD_PROMPT_BUTTON"
+            ON LINE prompt_form . height - 1
+            FROM prompt_form . width - 13 TO prompt_form . width - 3
+            WITH ( caption = GET_USER_MESSAGE("SMP_PROMPT_BUTTON_CLOSE",1),
+                   send_last_key = "EXIT" )
+    prompt_form . add_prompt ( close_button )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ SPREAD_SHEET_RESULTS - Single sample routines                               }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_single_sample ( VALUE mode )
+
+        DECLARE sample_id , sample_text , samp_numeric_string , tsr_header ,
+        tsr_footer , samp_text_string , window_width , prompt_form ,
+        title_width , samp_text_title , samp_id_title
+
+    IF mode = RE_MODIFY THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", tsr_header )
+        ELSEIF mode = RE_AUTHORISE THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", tsr_header )
+        ELSEIF mode = RE_DISPLAY THEN
+        set sample_status "VCARXIS"
+            message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", tsr_header )
+    ELSE
+            message_fetch ( "RES_ENTRY_HEAD_1", tsr_header )
+        set sample_status "VCA"
+    ENDIF
+
+        message_fetch ( "RES_ENTRY_FOOT_1", tsr_footer )
+
+        message_fetch ( "RES_ENTRY_DISPLAY_1", samp_numeric_string )
+        message_fetch ( "RES_ENTRY_DISPLAY_2", samp_text_string )
+
+        IF stringlength ( samp_numeric_string ) >
+           stringlength ( samp_text_string ) THEN
+
+        title_width = stringlength ( samp_numeric_string )
+        ELSE
+        title_width = stringlength ( samp_text_string )
+        ENDIF
+
+    window_width = 31 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         2            ,
+                         tsr_header   ,
+                         tsr_footer   )
+
+    PROMPT OBJECT samp_id_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                ,
+               width  = title_width         ,
+               value  = samp_numeric_string )
+
+    prompt_form . add_display ( samp_id_title )
+
+    PROMPT OBJECT samp_text_title
+        FORMAT TEXT
+                ON LINE 2 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = samp_text_string )
+
+    prompt_form . add_display ( samp_text_title )
+
+    PROMPT OBJECT sample_id
+                BROWSE ON sample
+                THEN select
+                ON LINE 1 FROM title_width + 2
+
+    prompt_form . add_prompt ( sample_id )
+
+    PROMPT OBJECT sample_text
+                BROWSE ON sample . id_text
+                ON LINE 2 FROM title_width + 2
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_display ( sample_text )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        samp_id_title . column = 1
+        samp_id_title . row = 1
+
+        sample_id . column = title_width + 2
+        sample_id . row = 1
+
+        samp_text_title . column = 1
+        samp_text_title . row = 2
+
+        sample_text . column = title_width + 2
+        sample_text . row = 2
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . set_position( sample_id . tag )
+
+    prompt_form . prompt_objects[res_button_tag].set_enabled(TRUE)
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        sample_text . set_text ( SELECT sample . id_text
+                           IN OBJECT sample_id )
+
+        prompt_form . set_enabled ( FALSE )
+        
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+        result_list_sample ( sample_id . value, mode )
+
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_enabled ( TRUE )
+
+        prompt_form . set_position( sample_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dsr ( option )
+
+    res_single_sample ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tsr ( option )
+
+    res_single_sample ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_asr ( option )
+
+    res_single_sample ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ SPREAD_SHEET_RESULTS - Sample / Test routines                               }
+{-----------------------------------------------------------------------------}
+
+ROUTINE get_sample_and_results ( VALUE analysis_id          ,
+                       result_prompt_window )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE sample_enter_prompt ( sample_id )
+
+    IF sample_id . get_lastkey () <> "EXIT" THEN
+
+        sample_id . select_array [1,3] =
+            sample_id . parent_prompt . prompt_objects [3] . value
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_sample_test ( VALUE mode )
+
+DECLARE tsr_header, tsr_footer, test_string, samp_numeric_string,
+    samp_text_string, window_width , title_width ,
+        prompt_form , select_array , anal_id , sample_id , sample_text ,
+        test_name , anal_title , samp_id_title , samp_text_title
+
+    IF mode = RE_MODIFY THEN
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", tsr_header )
+        set sample_status "VC"
+        ELSEIF mode = RE_AUTHORISE THEN
+            message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", tsr_header )
+        {set sample_status "VCI"}
+        set sample_status "VC"
+    ELSE
+            message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", tsr_header )
+        set sample_status "ARXVCIS"
+        {set sample_status "VCAI"}
+    ENDIF
+
+        message_fetch ( "RES_ENTRY_FOOT_1", tsr_footer )
+
+    message_fetch ( "RES_ENTRY_DISPLAY_3", test_string )
+        message_fetch ( "RES_ENTRY_DISPLAY_1", samp_numeric_string )
+        message_fetch ( "RES_ENTRY_DISPLAY_2", samp_text_string )
+
+        IF ( stringlength ( samp_numeric_string ) >
+             stringlength ( samp_text_string ) ) AND
+           ( stringlength ( samp_numeric_string ) >
+             stringlength ( test_string ) ) THEN
+
+                    title_width = stringlength ( samp_numeric_string )
+
+        ELSEIF ( stringlength ( samp_text_string ) >
+             stringlength ( samp_numeric_string ) ) AND
+           ( stringlength ( samp_text_string ) >
+             stringlength ( test_string ) ) THEN
+
+                    title_width = stringlength ( samp_text_string )
+    ELSE
+                    title_width = stringlength ( test_string )
+    ENDIF
+
+    window_width = 31 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         4 ,
+                         tsr_header   ,
+                         tsr_footer   )
+
+    ARRAY select_array
+
+    select_array [1,1] = ARRAY_SELECT_EQ
+    select_array [1,2] = "ANALYSIS"
+    select_array [1,3] = ""
+
+{**AS HBe 10-12-2007: Sort changed from ascending to descending. Undocumented in 2004R2}
+    select_array [2,1] = ARRAY_SELECT_ORDER
+    select_array [2,2] = "ID_TEXT"
+    select_array [2,3] = ARRAY_SELECT_ASCENDING
+{**AE HBe 10-12-2007}
+
+    select_array [3,1] = ARRAY_SELECT_ORDER
+    select_array [3,2] = "TEST_COUNT"
+    select_array [3,3] = ARRAY_SELECT_ASCENDING
+
+
+    PROMPT OBJECT anal_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE        ,
+               width  = title_width ,
+               value  = test_string )
+
+    prompt_form . add_display ( anal_title )
+
+    PROMPT OBJECT samp_id_title
+        FORMAT TEXT
+                ON LINE 3 FROM 1
+        WITH ( bold   = TRUE                ,
+               width  = title_width         ,
+               value  = samp_numeric_string )
+
+    prompt_form . add_display ( samp_id_title )
+
+    PROMPT OBJECT samp_text_title
+        FORMAT TEXT
+                ON LINE 4 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = samp_text_string )
+
+    prompt_form . add_display ( samp_text_title )
+
+    PROMPT OBJECT anal_id
+        BROWSE ON analysis
+        THEN SELECT
+        ON LINE 1 FROM ( 3 + stringlength ( test_string ))
+
+    prompt_form . add_prompt ( anal_id )
+
+    PROMPT OBJECT sample_id
+        BROWSE ON SAMP_TEST_VIEW
+                ON LINE 3 FROM ( 3 + stringlength ( samp_numeric_string ))
+        WITH ( enter_prompt_routine = "sample_enter_prompt",
+               vgl_library = GLOBAL ( "current_library" ) ,
+               select_array = select_array )
+
+    prompt_form . add_prompt ( sample_id )
+
+    PROMPT OBJECT sample_text
+                BROWSE ON sample . id_text
+                ON LINE 4 FROM title_width + 2
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_display ( sample_text )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        anal_title . column = 1
+        anal_title . row = 1
+
+        anal_id . column = title_width + 2
+        anal_id . row = 1
+
+        samp_id_title . column = 1
+        samp_id_title . row = 3
+
+        sample_id . column = title_width + 2
+        sample_id . row = 3
+
+        samp_text_title . column = 1
+        samp_text_title . row = 4
+
+        sample_text . column = title_width + 2
+        sample_text . row = 4
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+    prompt_form . set_position( anal_id . tag )
+
+    prompt_form . prompt_objects[res_button_tag].set_enabled(TRUE)
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        sample_text . set_text ( SELECT samp_test_view . id_text
+                           IN OBJECT sample_id )
+
+        test_name = anal_id . value
+
+        prompt_form . set_enabled ( FALSE )
+        
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+{fm("result_list_test_and_sample('":test_name:"', '":sample_id . value:"', '":mode:"')") }
+        result_list_test_and_sample ( test_name         ,
+                                      sample_id . value ,
+                                      mode              )
+
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_enabled ( TRUE )
+
+        prompt_form . set_position( anal_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_ttr ( option )
+
+    res_sample_test ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dtr ( option )
+
+    res_sample_test ( RE_DISPLAY )
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_atr ( option )
+
+    res_sample_test ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ SPREAD_SHEET_RESULTS - Sample Worksheet Routines                            }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_sample_worksheet ( VALUE mode )
+
+
+        DECLARE worksheet_id , worksheet_title_text , tsr_header ,
+        tsr_footer , window_width , prompt_form ,
+        title_width , worksheet_title
+
+        message_fetch ( "RES_ENTRY_HEAD_3", tsr_header )
+        message_fetch ( "RES_ENTRY_FOOT_1", tsr_footer )
+
+        message_fetch ( "RES_ENTRY_DISPLAY_4", worksheet_title_text )
+
+    title_width = length ( worksheet_title_text )
+
+    window_width = 32 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         1            ,
+                         tsr_header   ,
+                         tsr_footer   )
+
+    PROMPT OBJECT worksheet_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                 ,
+               width  = title_width          ,
+               value  = worksheet_title_text )
+
+    prompt_form . add_display ( worksheet_title )
+
+    PROMPT OBJECT worksheet_id
+                BROWSE ON sample_worksheet 
+                THEN select
+                ON LINE 1 FROM title_width + 2
+        WITH ( lock = ( mode <> RE_DISPLAY ) )
+
+    prompt_form . add_prompt ( worksheet_id )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        worksheet_title . column = 2
+        worksheet_title . row = 1
+
+        worksheet_id . column = title_width + 2
+        worksheet_id . row = 1
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+    prompt_form . set_position( worksheet_id . tag )
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        prompt_form . set_enabled ( FALSE )
+        
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        lock_retain ( "WORKSHEET" )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+        result_list_sample_worksheet ( worksheet_id . value , mode )
+
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        lock_unretain ( "WORKSHEET" )
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_enabled ( TRUE )
+
+        prompt_form . set_position( worksheet_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_rsw ( option )
+
+    res_sample_worksheet ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dsw ( option )
+
+    res_sample_worksheet ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_asw ( option )
+
+    res_sample_worksheet ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ RESULTS_BY_TEST - Result Entry For Analysis                                 }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_test_spreadsheet ( VALUE mode )
+
+        DECLARE analysis_id , prompt_form , anal_title ,
+                twr_header, twr_footer, analysis_string,
+                title_width, prompt_width, window_width
+
+    IF mode = RE_MODIFY THEN
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", twr_header )
+        ELSEIF mode = RE_AUTHORISE THEN
+            message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", twr_header )
+        ELSEIF mode = RE_DISPLAY THEN
+            message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", twr_header )
+    ENDIF
+
+        message_fetch ( "RES_ENTRY_FOOT_1", twr_footer )
+
+        IF stringlength ( twr_header ) > stringlength ( twr_footer ) THEN
+
+                title_width = stringlength ( twr_header ) + 4
+
+        ELSE
+
+                title_width = stringlength ( twr_footer ) + 4
+
+        ENDIF
+
+        message_fetch ( "RES_ENTRY_DISPLAY_5", analysis_string )
+
+        get_field_details analysis . identity, "FIELD_SIZE", prompt_width
+        prompt_width = prompt_width + 2 + stringlength ( analysis_string )
+
+        IF prompt_width > title_width THEN
+
+                window_width = prompt_width
+        ELSE
+                window_width = title_width
+        ENDIF
+
+    { This makes the window a reasonable size }
+
+    IF window_width < 32 THEN
+
+        window_width = 32
+
+    ENDIF
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         1 ,
+                         twr_header   ,
+                         twr_footer   )
+
+    PROMPT OBJECT anal_title
+        FORMAT TEXT
+        ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                             ,
+               width  = stringlength ( analysis_string ) ,
+               value  = analysis_string                  )
+
+    prompt_form . add_display ( anal_title )
+
+        PROMPT OBJECT analysis_id
+                BROWSE ON analysis
+                THEN select
+                ON LINE 1 FROM ( 3 + stringlength ( analysis_string ))
+
+    prompt_form . add_prompt ( analysis_id )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        anal_title . column = 2
+        anal_title . row = 1
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+    prompt_form . prompt_objects[res_button_tag].set_enabled(TRUE)
+
+    prompt_form . set_position( analysis_id . tag )
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+                result_spreadsheet_analysis ( analysis_id . value ,
+                                      mode                )
+
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_position( analysis_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_awr ( option )
+
+    res_test_spreadsheet ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dwr ( option )
+
+    res_test_spreadsheet ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_twr ( option )
+
+    res_test_spreadsheet ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{ RESULTS_BY_TEST - Result Entry For Analysis Worksheet                       }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_test_worksheet ( VALUE mode )
+
+    DECLARE worksheet_id , analysis_id , prompt_form , anal_title ,
+        twr_header, twr_footer, analysis_string,
+                title_width, prompt_width, window_width
+
+    IF mode = RE_AUTHORISE THEN
+
+            message_fetch ( "RES_ENTRY_HEAD_5", twr_header )
+            message_fetch ( "RES_ENTRY_FOOT_1", twr_footer )
+        ELSE
+            message_fetch ( "RES_ENTRY_HEAD_6", twr_header )
+            message_fetch ( "RES_ENTRY_FOOT_1", twr_footer )
+        ENDIF
+
+        IF stringlength ( twr_header ) > stringlength ( twr_footer ) THEN
+
+                title_width = stringlength ( twr_header ) + 4
+
+        ELSE
+
+                title_width = stringlength ( twr_footer ) + 4
+
+        ENDIF
+
+        message_fetch ( "RES_ENTRY_DISPLAY_4", analysis_string )
+
+        get_field_details worksheet . identity, "FIELD_SIZE", prompt_width
+
+        prompt_width = prompt_width + 2 + stringlength ( analysis_string )
+
+        IF prompt_width > title_width THEN
+
+                window_width = prompt_width
+        ELSE
+                window_width = title_width
+        ENDIF
+
+    { This makes the window a reasonable size }
+
+    IF window_width < 32 THEN
+
+        window_width = 32
+
+    ENDIF
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         1 ,
+                         twr_header   ,
+                         twr_footer   )
+
+    PROMPT OBJECT anal_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                            ,
+               width  = stringlength ( analysis_string ),
+               value  = analysis_string                 )
+
+    prompt_form . add_display ( anal_title )
+
+        PROMPT OBJECT analysis_id
+        BROWSE ON ANALYSIS_WORKSHEET
+                ON LINE 1 FROM ( 3 + stringlength ( analysis_string ))
+            WITH ( always_validate = TRUE )
+
+    prompt_form . add_prompt ( analysis_id )
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        anal_title . column = 2
+        anal_title . row = 1
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+    prompt_form . set_position( analysis_id . tag )
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        IF mode = RE_DISPLAY THEN
+            worksheet_id = SELECT worksheet . identity
+                           WHERE identity = analysis_id . text
+        ELSE
+            worksheet_id = SELECT worksheet . identity
+                           FOR UPDATE
+                           WHERE identity = analysis_id . text
+        ENDIF
+
+        IF worksheet_id <> LOCKED THEN
+
+            lock_retain ( "WORKSHEET" )
+
+            SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+            window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+            prompt_form . unpaste ( )
+
+            result_spreadsheet_analysis_worksheet ( worksheet_id ,
+                                mode         )
+                                
+            prompt_form . repaste ( )
+
+            SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+            lock_unretain ( "WORKSHEET" )
+
+        ENDIF
+
+        prompt_form . set_position( analysis_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_aaw ( option )
+
+    res_test_worksheet ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_daw ( option )
+
+    res_test_worksheet ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_raw ( option )
+
+    res_test_worksheet ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+{-----------------------------------------------------------------------------}
+{ RESULTS_BY_UD_TEST - Result Entry For User Defined Worksheet                }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_user_worksheet ( VALUE mode )
+
+DECLARE worksheet_id, user_worksheet_id , result_prompt_window
+
+    IF mode = RE_AUTHORISE THEN
+
+        CREATE TEXT WINDOW result_prompt_window
+            HEIGHT 5
+            WIDTH  50
+            BORDER
+            HEADER = GET_USER_MESSAGE("RES_ENTRY_HEAD_7" ,1)
+            FOOTER = GET_USER_MESSAGE("RES_ENTRY_FOOT_1" ,1)
+
+    ELSE
+
+        CREATE TEXT WINDOW result_prompt_window
+            HEIGHT 5
+            WIDTH  50
+            BORDER
+            HEADER = GET_USER_MESSAGE("RES_ENTRY_HEAD_8" ,1)
+            FOOTER = GET_USER_MESSAGE("RES_ENTRY_FOOT_1" ,1)
+
+    ENDIF
+
+    DISPLAY GET_USER_MESSAGE("RES_ENTRY_DISPLAY_4" ,1)
+        ON LINE 3 FROM 2
+        IN WINDOW result_prompt_window
+
+    PASTE TEXT WINDOW result_prompt_window
+        ON LINE 10
+        FROM 15
+
+    REPEAT
+
+        PROMPT ON LINE 3 FROM 15 FOR user_worksheet_id
+            IN WINDOW result_prompt_window
+            BROWSE ON USER_WORKSHEET
+                WITH ( always_validate = TRUE )
+
+        IF mode = RE_DISPLAY THEN
+            worksheet_id = SELECT worksheet . identity
+                           WHERE identity = user_worksheet_id
+        ELSE
+            worksheet_id = SELECT worksheet . identity
+                           FOR UPDATE
+                           WHERE identity = user_worksheet_id
+            lock_retain ( "WORKSHEET" )
+        ENDIF
+
+        IF lastkey <> "EXIT" THEN
+
+            IF ( worksheet_id <> empty ) AND
+               ( worksheet_id <> " " ) THEN
+
+                SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+                result_spreadsheet_user_worksheet (
+                            worksheet_id ,
+                                mode )
+
+                SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+            ENDIF
+
+        ENDIF
+
+        lock_unretain ( "WORKSHEET" )
+
+        CLEAR LINE 3 FROM 15 IN WINDOW result_prompt_window
+
+    UNTIL lastkey = "EXIT"
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_auw ( option )
+
+    res_user_worksheet ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_duw ( option )
+
+    res_user_worksheet ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_ruw ( option )
+
+    res_user_worksheet ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+
+{-----------------------------------------------------------------------------}
+{ MATRIX SPREAD_SHEET_RESULTS - Matrix Single sample routines                 }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_matrix_sample ( VALUE mode )
+
+
+    SET NOTPROTECTED    
+
+        DECLARE sample_id , sample_text , samp_numeric_string , tsr_header ,
+        tsr_footer , samp_text_string , window_width , prompt_form ,
+        title_width , samp_text_title , samp_id_title,
+        test_no, matrix_no, test_text_title, matrix_text_title,
+        select_array, empty_parent_context, empty_parent
+
+    ARRAY select_array
+
+
+    IF mode = RE_MODIFY THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", tsr_header )
+        ELSEIF mode = RE_AUTHORISE THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", tsr_header )
+        ELSEIF mode = RE_DISPLAY THEN
+        set sample_status "ARXVCIS"
+            message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", tsr_header )
+    ELSE
+            message_fetch ( "RES_ENTRY_HEAD_1", tsr_header )
+        set sample_status "VCA"
+    ENDIF
+
+        message_fetch ( "RES_ENTRY_FOOT_1", tsr_footer )
+
+        message_fetch ( "RES_ENTRY_DISPLAY_1", samp_numeric_string )
+        message_fetch ( "RES_ENTRY_DISPLAY_2", samp_text_string )
+
+        IF stringlength ( samp_numeric_string ) >
+           stringlength ( samp_text_string ) THEN
+
+        title_width = stringlength ( samp_numeric_string )
+        ELSE
+        title_width = stringlength ( samp_text_string )
+        ENDIF
+
+    window_width = 31 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         2            ,
+                         tsr_header   ,
+                         tsr_footer   )
+
+    PROMPT OBJECT samp_id_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                ,
+               width  = title_width         ,
+               value  = samp_numeric_string )
+
+    prompt_form . add_display ( samp_id_title )
+
+    PROMPT OBJECT samp_text_title
+        FORMAT TEXT
+                ON LINE 2 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = samp_text_string )
+
+    prompt_form . add_display ( samp_text_title )
+
+    PROMPT OBJECT sample_id
+                BROWSE ON sample
+                THEN select
+                ON LINE 1 FROM title_width + 2
+
+
+    prompt_form . add_prompt ( sample_id )
+
+    PROMPT OBJECT sample_text
+                BROWSE ON sample . id_text
+                ON LINE 2 FROM title_width + 2
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_display ( sample_text )
+
+
+    select_array [1,1] = ARRAY_SELECT_EQ
+    select_array [1,2] = "SAMPLE"
+    select_array [1,3] = ""
+
+    select_array [2,1] = ARRAY_SELECT_ORDER
+    select_array [2,2] = "TEST_COUNT"
+    select_array [2,3] = ARRAY_SELECT_ASCENDING
+
+
+    PROMPT OBJECT test_no               
+                BROWSE ON test . test_number
+                ON LINE 6 FROM title_width + 2
+        WITH (  lowered = TRUE ,
+            enter_prompt_routine = "matrix_enter_prompt",
+                vgl_library = GLOBAL ( "current_library" ) ,
+                select_array = select_array )
+
+
+    prompt_form . add_prompt ( test_no )
+
+    PROMPT OBJECT test_text_title
+        FORMAT TEXT
+                ON LINE 5 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = get_user_message ("SMP_MATRIX_ANAL_INPUT3", 1) )
+    prompt_form . add_display ( test_text_title )
+
+
+    PROMPT OBJECT matrix_no                 
+                BROWSE ON versioned_component . matrix_no
+                ON LINE 8 FROM title_width + 2
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_prompt ( matrix_no )
+
+    PROMPT OBJECT matrix_text_title
+        FORMAT TEXT
+                ON LINE 7 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = get_user_message ("SMP_MATRIX_ANAL_INPUT4", 1) )
+
+    prompt_form . add_display ( matrix_text_title )
+
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        samp_id_title . column = 2
+        samp_id_title . row = 1
+
+        samp_text_title . column = 2
+        samp_text_title . row = 3
+
+        sample_id . column = 2
+        sample_id . row = 2
+
+        sample_text . column = 2
+        sample_text . row = 4
+
+        test_no . column = 2
+        test_no . row = 6
+        
+        test_text_title . column = 2
+        test_text_title. row = 5
+
+        matrix_no . column = 2
+        matrix_no . row = 8
+        
+        matrix_text_title . column = 2
+        matrix_text_title. row = 7
+
+
+        prompt_form . add_frame ( "" , 1 , 1 , 9 , prompt_form . width - 13 )
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+    
+    prompt_form . set_position( sample_id . tag )
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        sample_text . set_text ( SELECT sample . id_text
+                           IN OBJECT sample_id )
+
+        prompt_form . set_enabled ( FALSE )
+        
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+        empty_parent         = EMPTY
+        empty_parent_context = EMPTY
+
+        result_matrix_sample ( sample_id . value    ,
+                               test_no . value      ,
+                               matrix_no . value    ,
+                               mode                 ,
+                               empty_parent         ,
+                               empty_parent_context )
+
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_enabled ( TRUE )
+
+        prompt_form . set_position( sample_id . tag )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dmsr ( VALUE option )
+
+    res_matrix_sample ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tmsr ( VALUE option )
+
+    res_matrix_sample ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_amsr ( VALUE option )
+
+    res_matrix_sample ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE matrix_enter_prompt ( self )
+
+    DECLARE sample_id
+
+    sample_id = self . parent_prompt . prompt_objects [3] . value
+
+    IF self . get_lastkey () <> "EXIT" THEN
+
+        self . select_array [1,3] = sample_id 
+            
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+{-----------------------------------------------------------------------------}
+{ SPREAD_SHEET_RESULTS - Job result entry routines                            }
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_single_job ( VALUE mode )
+
+    DECLARE form_header, form_footer, prompt_form, job_prompt_string, job_prompt_title, job_prompt
+    DECLARE smp_prompt_title, smp_prompt, tst_prompt_title, tst_prompt, smp_prompt_string, tst_prompt_string
+
+    IF mode = RE_MODIFY THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", form_header )
+        ELSEIF mode = RE_AUTHORISE THEN
+        set sample_status "VC"
+            message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", form_header )
+        ELSEIF mode = RE_DISPLAY THEN
+        set sample_status "ARXVCIS"
+            message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", form_header )
+    ELSE
+        set sample_status "VCA"
+            message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", form_header )
+    ENDIF
+
+        message_fetch ( "RES_ENTRY_FOOT_1", form_footer )
+
+        message_fetch ( "RESULT_ENTRY_JOB_NAME", job_prompt_string )
+
+    create_prompt_form (prompt_form,
+                        30         ,
+                        3          ,
+                        form_header,
+                        form_footer)
+
+    PROMPT OBJECT job_prompt_title
+        FORMAT TEXT
+        ON LINE 1 FROM 1  TO 16
+        WITH ( bold   = TRUE              ,
+               value  = job_prompt_string )
+
+    prompt_form . add_display ( job_prompt_title )
+
+    PROMPT OBJECT job_prompt
+        BROWSE ON job_header
+        ON LINE 1 FROM 15
+        WITH (enter_prompt_routine = "enter_job_prompt",
+              leave_prompt_routine = "leave_job_prompt",
+              vgl_library = GLOBAL("current_library"))
+
+    job_prompt_tag = prompt_form . add_prompt ( job_prompt )                 {EA 14.03.2016}
+
+    smp_prompt_string = STRIP("or Sample ID")
+    PROMPT OBJECT smp_prompt_title
+        FORMAT TEXT
+        ON LINE 2 FROM 1   TO 16
+        WITH ( bold   = TRUE              ,
+               value  = smp_prompt_string )
+
+    prompt_form . add_display ( smp_prompt_title )
+
+    PROMPT OBJECT smp_prompt
+        BROWSE ON sample
+        ON LINE 2 FROM 15
+        WITH (enter_prompt_routine = "enter_smp_prompt",
+              leave_prompt_routine = "leave_smp_prompt",
+              vgl_library = GLOBAL("current_library"))
+
+   smp_prompt_tag = prompt_form . add_prompt ( smp_prompt )                  {EA 14.03.2016}
+
+    tst_prompt_string = STRIP("or Test Number")
+    PROMPT OBJECT tst_prompt_title
+        FORMAT TEXT
+        ON LINE 3 FROM 1    TO 16
+        WITH ( bold   = TRUE              ,
+               value  = tst_prompt_string)
+
+    prompt_form . add_display ( tst_prompt_title )
+
+    PROMPT OBJECT tst_prompt
+        BROWSE ON test
+        ON LINE 3 FROM 15
+        WITH (enter_prompt_routine = "enter_tst_prompt",
+              leave_prompt_routine = "leave_tst_prompt",
+              vgl_library = GLOBAL("current_library"),
+              VALUE = "")
+
+     tst_prompt_tag = prompt_form . add_prompt ( tst_prompt )     {EA 14.03.2016}
+
+    prompt_form . start_prompt ()
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . set_position( job_prompt . tag )
+
+    cur_prompt = job_prompt_tag
+    reset_form_prompts(prompt_form)                                               {EA 14.03.2016}
+    prompt_form. repaste()                                                        {EA 11.03.2016 }
+    prompt_form . wait_prompt () 
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+        prompt_form . set_enabled ( FALSE )
+        
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+
+        prompt_form . unpaste ( )
+
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+
+        {result_list_job ( job_prompt . value, mode ) }
+        IF (job_id = (SELECT job_header.job_name WHERE job_name = job_id)) THEN
+            result_list_job ( job_id, mode )
+        ENDIF
+        
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+
+        prompt_form . repaste ( )
+
+        prompt_form . set_enabled ( TRUE )
+
+        reset_form_prompts(prompt_form)                                 {EA 14.03.2016}
+
+        {prompt_form . set_position( job_prompt . tag )}
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE job_re_list_display ( option )
+
+    res_single_job ( RE_DISPLAY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE job_re_list_modify ( option )
+
+    res_single_job ( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE job_re_list_authorise ( option )
+
+    res_single_job ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{-----------------------------------------------------------------------------}
+{-----------------------------------------------------------------------------}
+
+ROUTINE res_barcode_test ( VALUE mode )
+
+DECLARE tsr_header, tsr_footer, test_string, samp_numeric_string,
+        samp_text_string, window_width , title_width ,
+        prompt_form , test_id , test_id_title, sample_id
+        
+    IF mode = RE_MODIFY THEN
+        message_fetch ( "RESULT_ENTRY_ENTRY_TITLE", tsr_header )
+        set test_status "VC"
+    ELSEIF mode = RE_AUTHORISE THEN
+        message_fetch ( "RESULT_ENTRY_AUTHORISE_TITLE", tsr_header )
+        set test_status "VCP"
+    ELSE
+        message_fetch ( "RESULT_ENTRY_DISPLAY_TITLE", tsr_header )
+        set test_status "ARXVPCIS"
+    ENDIF
+
+    message_fetch ( "RES_ENTRY_FOOT_1", tsr_footer )
+    message_fetch ( "RES_ENTRY_DISPLAY_3", test_string )
+    message_fetch ( "RES_ENTRY_DISPLAY_1", samp_numeric_string )
+    message_fetch ( "RES_ENTRY_DISPLAY_2", samp_text_string )
+
+    IF (stringlength(samp_numeric_string) > stringlength(samp_text_string)) AND
+       (stringlength(samp_numeric_string) > stringlength(test_string))      THEN
+        title_width = stringlength ( samp_numeric_string )
+    ELSEIF (stringlength(samp_text_string) > stringlength(samp_numeric_string)) AND
+           (stringlength(samp_text_string) > stringlength(test_string)) THEN
+        title_width = stringlength ( samp_text_string )
+    ELSE
+        title_width = stringlength ( test_string )
+    ENDIF
+
+    window_width = 31 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         4 ,
+                         tsr_header   ,
+                         tsr_footer   )
+
+    samp_numeric_string = "Test Number:"
+
+    PROMPT OBJECT test_id_title
+        FORMAT TEXT
+        ON LINE 1 FROM 1
+        WITH ( bold   = TRUE               ,
+               width  = title_width        ,
+               value  = samp_numeric_string )
+
+    prompt_form . add_display ( test_id_title )
+
+    PROMPT OBJECT test_id
+        BROWSE ON test
+        THEN select
+        ON LINE 1 FROM title_width + 2
+
+    prompt_form . add_prompt ( test_id )
+    prompt_form . start_prompt ()
+    prompt_form . set_position( test_id . tag )
+    prompt_form . prompt_objects[res_button_tag].set_enabled(TRUE)
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+        sample_id = SELECT test.sample WHERE test_number = test_id.text
+        prompt_form . set_enabled ( FALSE )
+        window_set_status ( GET_USER_MESSAGE ( "RES_ENTRY_LOADING", 1 ))
+        prompt_form . unpaste ( )
+        SET GLOBAL "PARAM_ACTIVE" TO FALSE
+        result_list_sample ( sample_id, mode )
+        SET GLOBAL "PARAM_ACTIVE" TO TRUE
+        prompt_form . repaste ( )
+        prompt_form . set_enabled ( TRUE )
+        prompt_form . set_position( test_id . tag )
+        prompt_form . wait_prompt ()
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tbr ( option )
+
+    res_barcode_test( RE_MODIFY )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_dbr ( option )
+
+    res_barcode_test ( RE_DISPLAY )
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_abr ( option )
+
+    res_barcode_test ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE enter_job_prompt (self)
+    cur_prompt = job_prompt_tag
+    {self.text = "" }
+    {self.repaste() }                                                {EA11.03.2016}
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE enter_smp_prompt (self)
+    cur_prompt = smp_prompt_tag
+    {self.text = "" }
+    {self.repaste() }                                                {EA11.03.2016}
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE enter_tst_prompt (self)
+    cur_prompt = tst_prompt_tag
+    {self.text = "" }
+    {self.repaste() }                                                {EA11.03.2016}
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE leave_job_prompt (self)
+    IF NOT BLANK(self.text)
+        job_id = STRIP(self.text)
+        self.parent_prompt.prompt_objects[smp_prompt_tag].set_enabled(FALSE)         {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[smp_prompt_tag].repaste()                  {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[tst_prompt_tag].set_enabled(FALSE)         {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[tst_prompt_tag].repaste()                  {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[res_button_tag].set_enabled(TRUE)          {EA 14.03.2016}
+    ELSE
+        job_id = ""
+    ENDIF    
+    cur_prompt = job_prompt_tag
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE leave_smp_prompt (self)
+    IF NOT BLANK(self.text) AND BLANK(job_id) THEN
+        job_id = (SELECT sample.job_name WHERE id_numeric = self.text)
+        self.parent_prompt.prompt_objects[job_prompt_tag].set_text(job_id)               {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[job_prompt_tag].set_enabled(FALSE)         {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[job_prompt_tag].repaste()                  {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[tst_prompt_tag].set_enabled(FALSE)         {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[tst_prompt_tag].repaste()                  {EA 14.03.2016}
+        self.parent_prompt.prompt_objects[res_button_tag].set_enabled(TRUE)          {EA 14.03.2016}
+    ENDIF
+    cur_prompt = smp_prompt_tag
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE leave_tst_prompt (self)
+   
+DECLARE smp
+    IF NOT BLANK(self.text) AND BLANK(job_id) THEN
+        smp = SELECT test.sample WHERE test_number = self.text
+        IF (NOT BLANK(smp)) AND (smp <> EMPTY) THEN
+            job_id = (SELECT sample.job_name WHERE id_numeric = smp)
+            self.parent_prompt.prompt_objects[job_prompt_tag].set_text(job_id)           {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[job_prompt_tag].set_enabled(FALSE)     {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[job_prompt_tag].repaste()              {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[smp_prompt_tag].set_text(smp)          {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[smp_prompt_tag].set_enabled(FALSE)     {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[smp_prompt_tag].repaste()              {EA 14.03.2016}
+            self.parent_prompt.prompt_objects[res_button_tag].set_enabled(TRUE)      {EA 14.03.2016}
+        ENDIF
+    ENDIF
+    cur_prompt = tst_prompt_tag
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+
+{==============================================================================}
+{=[14.03.2016 (EA)]============================================================}
+ROUTINE reset_form_prompts(prompt_form)
+   prompt_form.prompt_objects[job_prompt_tag].set_text ("")
+   prompt_form.prompt_objects[job_prompt_tag].set_enabled(TRUE)                      {EA 14.03.2016}
+   prompt_form.prompt_objects[job_prompt_tag].repaste()                              {EA 14.03.2016}
+   prompt_form.prompt_objects[smp_prompt_tag].set_text("")
+   prompt_form.prompt_objects[smp_prompt_tag].set_enabled(TRUE)                      {EA 14.03.2016}
+   prompt_form.prompt_objects[smp_prompt_tag].repaste()                              {EA 14.03.2016}
+   prompt_form.prompt_objects[tst_prompt_tag].set_text ("")
+   prompt_form.prompt_objects[tst_prompt_tag].set_enabled(TRUE)                      {EA 14.03.2016}
+   prompt_form.prompt_objects[tst_prompt_tag].repaste()                              {EA 14.03.2016}
+   prompt_form.prompt_objects[res_button_tag].set_enabled(FALSE)                     {EA 14.03.2016}
+   prompt_form.active_prompt = cur_prompt
+ENDROUTINE

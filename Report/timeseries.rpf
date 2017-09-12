@@ -1,0 +1,253 @@
+{******************************************************************************
+* Module Name   : TIMESERIES.RPF
+* Purpose       : Import timeseries
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+{ Change log:                                                                   }
+{                                                                               }
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+HandleFiles (" ")
+
+EXIT
+
+GLOBAL ROUTINE HandleFiles ( VALUE option)
+
+DECLARE repeat_interval
+
+    repeat_interval = SELECT timerqueue.repeat_interval FOR UPDATE WHERE report_name = GLOBAL("current_library")
+    START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+    ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+    UPDATE timerqueue
+    COMMIT
+
+DECLARE source, files, filename, err_mes, i, l, t_number, analysis, version, comp, t_status, SQL, c, results
+
+ARRAY files
+ARRAY results
+
+    source = "smp$userfiles:timeseries\auto\*.txt"
+
+    FILE FIND source, files, err_mes
+
+    IF err_mes <> EMPTY THEN
+       WriteToLog(err_mes)
+       RETURN(EMPTY)
+    ENDIF
+
+    i = 1
+
+    WHILE i <= SIZE_OF_ARRAY(files) DO
+        filename = files[i]
+        window_set_status("Processing ":filename)
+        l = LENGTH(filename) - 1
+        WHILE (SUBSTRING(filename, l, 1) <> "\") and (l > 0) DO
+            l = l - 1
+        ENDWHILE
+        l = l + 1
+        t_number = RIGHTSTRING("          ":SUBSTRING(filename, l, LENGTH(filename) - l - 3),10)
+        IF NOT NUMTEXT(t_number) THEN
+            Rename(filename, "INVALID", t_number)
+        ELSE
+            analysis = select all_test.analysis WHERE test_number = t_number
+            IF analysis <> EMPTY THEN
+                version  = select all_test.analysis_version
+                t_status = select all_test.status
+                comp     = SELECT versioned_component.name WHERE analysis = analysis
+                                                             AND analysis_version = version
+                                                             AND (name = "pH(t)" OR name = "ph(t)")
+                IF (comp <> EMPTY) AND (INDEX("HUVPCA",t_status) > 0) THEN
+                    c = SELECT COUNT TIMESERIES WHERE TEST_NUMBER = t_number
+                    IF c > 0 THEN
+                        SQL = "DELETE TIMESERIES WHERE test_number = '":t_number:"'"
+                        WriteToLog("Delete ":STRIP(c):" entries in TIMESERIES (":SQL:")")
+                        execute_sql(SQL)
+                        execute_sql("COMMIT")
+                       { SLEEP FOR INTERVAL("0 00:00:05") }
+                    ENDIF
+                    GetData(files[i], t_number, STRIP(comp))
+                    execute_sql("COMMIT")
+                    results[1,1] = "NAME"
+                    results[1,2] = "TEXT"
+                    results[2,1] = comp
+                    results[2,2] = " "
+                    PUT_TEST_RESULTS t_number, results
+                ELSE
+                    IF (INDEX("HUVPC",t_status) = 0) THEN
+                        WriteToLog("Invalid status: (":t_status:") for test_number: ":STRIP(t_number))
+                    ELSEIF (comp = EMPTY) THEN
+                        WriteToLog("Component 'pH(t)' not found in ":STRIP(analysis):" for test ":STRIP(t_number))
+                    ENDIF
+                    Rename(files[i], "bak", t_number)
+                ENDIF
+            ELSE
+                WriteToLog("Test number ":STRIP(t_number):" not found in ACTIVE database.")
+                Rename(files[i], "bak", t_number)
+            ENDIF
+            IF FILE EXISTS (files[i]) THEN
+                {FILE DELETE (files[i])}
+                Rename(files[i], "OK", t_number)
+            ENDIF
+        ENDIF
+    i = i + 1
+    ENDWHILE
+    window_set_status("Completed")
+    RETURN
+ENDROUTINE
+{*************************************************************************
+* Purpose      : Extract timeseries from file
+*
+* Parameters   : Filename, test_number, component_name
+* Return Value : N/A
+**************************************************************************}
+ROUTINE GetData(filename, t_number, VALUE comp)
+DECLARE check_ok, pos, line, t, v, d, values, SQL
+    {WriteToLog("Read file: ":filename)}
+    FILE OPEN filename, check_ok
+    IF check_ok = EMPTY THEN
+        FILE READ filename, line, check_ok
+        WHILE check_ok = EMPTY DO
+            pos = INDEX(line," ")
+            t = NUMERIC(LEFTSTRING(line, pos))/60
+            IF ((SELECT count timeseries WHERE test_number = t_number AND TIMESTAMP = t) = 0) THEN
+                
+                line = STRIP(SUBSTRING(line, pos, LENGTH(line) - pos + 1))
+                pos = INDEX(line," ")
+                IF pos = 0 THEN
+                    pos = LENGTH(line)
+                ENDIF
+                SET FORMAT "99.999"
+                v = LEFTSTRING(line, pos)
+                v = STRIP(v)
+                v = NUMERIC(v)
+                v = STRING(v)
+                
+                IF t > 0 THEN
+                    line = STRIP(SUBSTRING(line, pos, LENGTH(line) - pos + 1))
+                    pos = INDEX(line," ")
+                    IF pos = 0 THEN
+                        pos = LENGTH(line)
+                    ENDIF
+                    SET FORMAT "99.99999"
+                    d = LEFTSTRING(line, pos)
+                    d = STRIP(d)
+                    d = NUMERIC(d)
+                    d = STRING(d)
+                ELSE 
+                    d = 0
+                ENDIF
+                
+                values = "'":t_number:"', '":comp:"', '":t:"', '":v:"', '":d:"'"
+                SQL = "INSERT INTO TIMESERIES (TEST_NUMBER, COMPONENT_NAME, TIMESTAMP, RESULT_VALUE, DELTA_VALUE) VALUES (":values:")"
+                execute_sql(SQL)
+            ENDIF
+            FILE READ filename, line, check_ok
+        ENDWHILE
+        FILE CLOSE filename
+    ELSE
+        WriteToLog(check_ok)
+    ENDIF
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log
+* Parameters   : Msg - what to write in log
+*                Current user
+*                Name for calling report
+* Return Value : N/A
+**************************************************************************}
+ROUTINE LogFile(VALUE msg, VALUE t_number)
+DECLARE pos, len, file_name, check_ok
+
+RETURN
+    WHILE     INDEX(msg, "----------------------------------------------------------------------------------------------------------------------------------") > 0 DO
+        Pos = (INDEX(msg, "----------------------------------------------------------------------------------------------------------------------------------") - 1)
+        Len = (LENGTH(msg)+1)
+        msg = SUBSTRING(msg, 1, pos):"EMPTY":SUBSTRING(msg, Pos + 256, Len - Pos - 256)
+    ENDWHILE
+
+    file_name = "smp$userfiles:timeseries\auto\":STRIP(t_number):".log"
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    IF NOT FILE EXISTS ( file_name ) THEN
+        FILE CREATE file_name, check_ok
+    ENDIF
+
+    FILE EXTEND file_name, check_ok
+    FILE WRITE file_name, Now():" ":msg, check_ok
+    FILE CLOSE file_name, check_ok
+
+    RESTORE DATE FORMAT
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log
+* Parameters   : Msg - what to write in log
+*                Current user
+*                Name for calling report
+* Return Value : N/A
+**************************************************************************}
+ROUTINE Rename(VALUE filename, VALUE ext, VALUE t_number)
+DECLARE l, path, file, newfile, err
+
+    l = LENGTH(filename) - 1
+    WHILE (SUBSTRING(filename, l, 1) <> "\") and (l > 0) DO
+        l = l - 1
+    ENDWHILE
+    path = SUBSTRING(filename, 1, l)
+    l = l + 1
+    file = STRIP(SUBSTRING(filename, l, LENGTH(filename)))
+
+    l = LENGTH(file) - 1
+    WHILE (SUBSTRING(file, l, 1) <> ".") and (l > 0) DO
+        l = l - 1
+    ENDWHILE
+    newfile = SUBSTRING(file, 1, l):ext
+
+    l = LENGTH(filename) - 1
+    WHILE (SUBSTRING(filename, l, 1) <> ".") and (l > 0) DO
+        l = l - 1
+    ENDWHILE
+
+    FILE COPY path:file, path:newfile, err
+    IF err = EMPTY THEN
+        FILE DELETE path:file, err
+        IF err = EMPTY THEN
+            IF ext = "OK" THEN
+                WriteToLog("Timeseries transferred from ":file:", file renamed to ":newfile)
+            ELSE
+                WriteToLog(file:" -> ":newfile)
+            ENDIF
+        ELSE
+            WriteToLog(err)
+        ENDIF
+    ELSE
+        WriteToLog(err)
+    ENDIF
+
+ENDROUTINE
+

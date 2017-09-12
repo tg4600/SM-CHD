@@ -1,0 +1,1648 @@
+{SMP$REPORTS:ROS_CSMLP.RPF}
+{-----------------------------------------------------------------------------}
+{                                                                             }
+{       Report Name             : ROS_CSMLP                                   }
+{       Report Description      : User-defineable routines for $csmlp         }
+{       Author                  : Susan  Doswell                              }
+{       Date                    : April 1992                                  }
+{                                                                             }
+{-----------------------------------------------------------------------------}
+{---------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                       }
+{---------------------------------------------------------------------------------}
+{**A0013        251093  LPE     Compare Sample with MLP customised print full     }
+{                               report.                                           }
+{**A0013-1      020694  LPE     In header print out Date Sample Taken.            }
+{                                                                                 }
+{**E0013-2      091194  LPE     Chr. Hansen's Laboratorium edited to              }
+{                               Chr. Hansen                                       }
+{**A0013-3      300195  LPE     If component.rep_control=NOS then don't print     }
+{                               max- and min-sepcifications                       }
+{**A1026        261196  JDY     Fixed bug with not initialized pr_un              }
+{                               Included handling of Limit Phrases                }
+{**D1040        100497  JDY     Do print numeric components with non numeric      }
+{                               result                                            }
+{**A1042        060597  JDY     Added printing of Sample Comment                  }
+{**A1239        261099  HBe     group_id added to full_report instead of bulk_id  }
+{---------------------------------------------------------------------------------}
+JOIN LIBRARY $csm_conf
+
+
+{-------------------------------------------------------------------------}
+{ Routine called by $CSMLP to produce full report depending on global     }
+{ CSM_rpt_rtn_full. To use the standard routine to produce the full report}
+{ set CSM_rpt_lib_full to "$LIB_CSMLP" and CSM_rpt_rtn_full to "Full_rep".}
+{ To use the routine below change CSM_rpt_lib_full to "$CSM_user" and add }
+{ VGL code (to produce the report) to this routine                        }
+{-------------------------------------------------------------------------}
+ROUTINE Full_rep (VALUE mlp_id,         { Product id }
+                  VALUE mlp_ver,        { Product version }
+                  VALUE sample_id,      { If sample comparison }
+                  VALUE test_id,        { If test comparison }
+                  VALUE pass,           { Comparison pass or fail, BOOLEAN }
+                  VALUE not_assigned,   { Tests in MLP not in sample, BOOLEAN }
+                  VALUE out_limits,     { Result(s) out of spec, BOOLEAN }
+                        comp_list,      { Array of components }
+                        levels ,    { Array of level info }
+                  VALUE total_comps,    { Number of components on MLP }
+                        spare_param1,   { Reserved for future use }
+                        spare_param2)   { Reserved for future use }
+
+DECLARE csp_file,description, line_co
+
+JOIN LIBRARY $LIB_UTILS
+
+
+ARRAY pm_str = " " {MIG }
+ARRAY res_str = " " {MIG}
+ARRAY jobsa  = " "
+
+{**DS1026 29/11-96}
+{  ARRAY wks_link_no
+   ARRAY save_wks_link_no
+
+   ARRAY wks_name
+   ARRAY save_wks_name  }
+{**DE1026 29/11-96}
+
+   ARRAY anal
+   ARRAY save_anal
+
+{**AS1025 26/11-96 }
+   ARRAY comp_type
+   ARRAY phrase_arr
+{**AE1025}
+
+{**DS1026 29/11-96}
+{  number_wks_no = 0
+   number_wks_name = 0
+
+   smpid = sample_id
+   find_wksno_for_smpid ( smpid ,
+                          number_wks_no ,
+                          number_wks_name )
+
+  tmp_count = 1
+
+  WHILE tmp_count <= number_wks_no
+
+      tst_smp = SELECT test.sample_id
+                WHERE (worksheet = wks_link_no[tmp_count])
+
+      tst_smp_txt = SELECT sample.id_text
+                    WHERE id_numeric = tst_smp
+
+      IF TOUPPER(SUBSTRING(tst_smp_txt,1,4)) = "STD-" THEN
+
+         flash_message(tst_smp:"*":STRIP(tst_smp_txt),true)
+
+      ENDIF
+
+      tmp_count = tmp_count + 1
+   ENDWHILE  }
+{**DE1026 29/11-96}
+
+
+{ So printer codes can be used }
+csp_file = "smp$userfiles:CSMLPFULL.lis"
+SET PRINTERCODES TRUE
+SET NAME "PRINTER/CSMFULLHP4"
+SET WIDTH 270
+SET LENGTH 100
+SET FORMAT "9999"
+
+
+element = 1
+number_of_lin = 0
+number_of_tst = 0
+ch_pass = TRUE
+
+WHILE (comp_list [element, 1] <> EMPTY) DO
+
+  do_print = TRUE
+
+  pm_wid = 26
+  pm_lin = 2
+  res_wid = 26
+  res_lin = 2
+
+{**AS1025 26/11-96}
+  IF   comp_list[ element, 5 ] = "N"
+  THEN comp_type[ element,1 ] = "N"
+  ELSE comp_type[ element,1 ] = SELECT component.result_type
+                                WHERE  analysis = comp_list[element,1]
+                                AND    name     = comp_list[element,2]
+       IF   comp_type[ element,1 ] = "O"
+       THEN comp_type[ element,2 ] = SELECT component.calculation
+       ENDIF
+  ENDIF
+{**AE1025 26/11-96}
+
+{**DS1040 10/04-97}
+{  IF ( (comp_list [element, 5] = "N") AND
+     (comp_list [element, 9] <> EMPTY) )  THEN
+
+      IF NOT(NUMTEXT(comp_list [element, 9])) THEN
+         do_print=FALSE
+      ENDIF
+   ENDIF }
+{**DE1040 10/04-97}
+
+   IF do_print THEN
+
+      IF NOT(comp_list [element , 7]) THEN
+         ch_pass = FALSE
+      ENDIF
+
+      min_str = SELECT mlp_values.min_limit
+                WHERE ( entry_code = comp_list [element,6] )  { **MIG }
+                  AND ( level_id   = levels [1,1]          )  { **MIG }
+
+      IF min_str <> EMPTY THEN
+
+         max_str  = SELECT mlp_values.max_limit
+         txt_spec = SELECT mlp_values.text_spec
+
+         IF ((min_str <> PAD(""," ",10)) OR (max_str <> PAD(""," ",10)) OR
+{**AS1025 26/11-96}
+            (comp_type[element,1] = "O") OR
+{**AE1025 26/11-96}
+            (SUBSTRING(txt_spec,1,10) <> PAD(""," ",10)))  THEN
+
+            number_of_tst = number_of_tst + 1
+            number_of_lin = number_of_lin + 2
+
+         ENDIF
+
+         IF (txt_spec <> PAD(""," ",234))  THEN
+
+            p_min =  STRIP (SELECT mlp_values.text_spec)
+            p_max = " "
+            pm_count = 1
+
+            split_lines ( p_min , pm_wid, pm_str , pm_count)
+
+            pm_lin = pm_count
+
+            { printed minimum.spec's lines }
+
+{**AS1025 26/11-96}
+         ELSEIF comp_type[ element, 1 ] = "O"   THEN
+            res_lin = 0
+            comp_type[ element, 3 ] = 0
+            res_val = SELECT limit_phrase_entry.result_value
+                      WHERE  limit_phrase = comp_type[element,2]
+                      AND    comparison = "P"
+                      ORDER  ON order_number
+            WHILE (res_val <> EMPTY) DO
+               res_count = 1
+               split_lines ( res_val , res_wid, phrase_arr , res_count )
+               res_lin = res_lin + res_count
+               comp_type[element,3] = comp_type[element,3]+1
+               comp_type[element,comp_type[element,3]+3] = STRIP(res_val)
+               NEXT limit_phrase_entry
+               res_val = SELECT limit_phrase_entry.result_value
+            ENDWHILE
+
+{**AE1025 26/11-96}
+         ENDIF
+
+         IF ((comp_list [element, 9] <> EMPTY) AND
+            (comp_list [element, 5] <> "N" )) THEN
+
+            pr_res = STRIP (comp_list [element, 9])
+            res_count = 1
+
+            split_lines ( pr_res , res_wid, res_str , res_count)
+
+            res_lin = res_count
+
+            { printed result lines }
+
+         ENDIF
+
+         IF pm_lin > res_lin THEN
+
+            number_of_lin = number_of_lin + pm_lin - 2
+
+         ELSE
+
+            number_of_lin = number_of_lin + res_lin - 2
+
+         ENDIF
+      ENDIF
+   ENDIF
+
+   element = element + 1
+
+ENDWHILE
+{ number_of_lin is number of lines to be printed inclusive phrases }
+{ for minimum or results }
+
+IF number_of_tst = 0 THEN
+  count = 1
+  pr_mlp_id = STRIP(mlp_id)
+  level_id  = SELECT mlp_levels.level_id
+               WHERE level_id = levels[count,1]
+
+  pr_level_id = STRIP(level_id)
+
+  CREATE TEXT WINDOW error_win HEIGHT 5 WIDTH 74 BORDER=""
+  PASTE TEXT WINDOW error_win ON LINE 7 FROM 3
+  DISPLAY "There is no specifications for MLP-ID : ":pr_mlp_id:
+          " with Level : ":pr_level_id ON LINE 3 FROM 2 IN WINDOW error_win
+  DISPLAY "Press any key to continue . . . . . ."
+      ON LINE 5 FROM 2 IN WINDOW error_win
+  dummy = getkey
+  UNPASTE TEXT WINDOW error_win
+LITERAL
+   There is no specifications for MLP-ID : $pr_mlp_id with Level : $pr_level_id
+$ENDLITERAL
+ELSE
+
+  max_lines = 56
+
+  IF number_of_lin > 42 THEN
+
+    new_page_count = number_of_tst - 5
+    pages = 2
+
+  ELSE
+
+    new_page_count = (number_of_tst +1)
+    pages = 1
+
+  ENDIF
+
+
+{ Define where the LITERAL statements are to be saved to }
+{csp_file = "smp$userfiles:CSMLP":strip(operator):".lis"}
+
+
+{SET NAME csp_file }
+
+  set_esc_seq() { SETUP ESCAPE SEQUENCES }
+
+  pos = esc:"*p+1200x+100Y"
+
+  header_txt = prim_cgt_14:sec_cgt_10:
+  {**E0013-2S*}
+  fed:"CHR. HANSEN A/S":normal:
+  {**E0013-2E*}
+  cgt_10:esc:"*p2110X":" Page ## of":pages
+
+  SET HEADER header_txt
+
+  smp_location = SELECT sample.location
+                 WHERE id_numeric = sample_id
+
+
+  dato = SUBSTRING(DATE(NOW),1,11)
+
+  IF PAD(smp_location," ",10) = PAD("ROSKILDE"," ",10) THEN
+    header_txt1 =cgt_10:
+    "22 Sdr. Ringvej, DK-4000 Roskilde, Phone: +45 42 37 06 37, ":
+    "Fax: +45 42 37 32 39":esc:"*p2100X":dato
+{    "22 Sdr. Ringvej, DK-4000 Roskilde, Phone: +45 42 37 06 37, ":
+     "Fax: +45 42 37 32 39":esc:"*p2120X":dato }
+  ELSE
+    header_txt1 =cgt_10:
+    "10-12 Bøge Alle, P.O. Box 407, DK-2970 Hørsholm, Phone +45 45 76 76 76, ":
+    "Fax: +45 45 76 70 56":esc:"*p2080X":dato
+{    "10-12 Bøge Alle, P.O. Box 407, DK-2970 Hørsholm, Phone +45 45 76 76 76, ":
+    "Fax: +45 45 76 70 56":esc:"*p2120X":dato }
+  ENDIF
+
+  ON NEW PAGE
+LITERAL
+   !L120HO!L
+   $header_txt1_____________________________________________________________________________________________________________________
+
+
+            $pr_sa_prod_desc__________________________________________________________
+            Partnumber : $pr_sa_prod__________  $h1_pos__ Batchnumber : $pr_batch_name___________     $h3_pos__ Sample ID : $pr_smpid_____________
+            MLP-ID : $pr_mlpid_ver____________  $h1_pos__ Sampling Point : $pr_smp_point              $h3_pos__ Date Sample Taken : $pr_taken_date
+            Level ID : $pr_level______________  $h1_pos__ $pr_bulk_jobname________________________________
+            $level_des___________________________________ $h1_pos__ Samples in Job : $h2_pos__ $pr_job_sa1_________________________________________
+$h2_pos__ $pr_job_sa2_________________________________________
+$h2_pos__ $pr_job_sa3_________________________________________ $cgt_10________________________ $lin_8____
+$st_pos__ !LUL55HO!L $x1_pos__ !LTT!L $x2_pos__ !LTT!L $x3_pos__ !LTT!L $x5_pos__ !LTT!L $x6_pos__ !LTT!L $x7_pos__!LUR!L
+$st_pos__ !LVE!LAnalysis    $x1_pos__ !LVE!LComponent name                  $x2_pos__ !LVE!LUnits  $x3_pos__ !LVE!L    Specifications $x5_pos__ !LVE!LResult  $x6_pos__ !LVE!LOut- $x7_pos__!LVE!L
+$st_pos__ !LVE!L             $x1_pos__ !LVE!L                                 $x2_pos__ !LVE!L        $x3_pos__ !LVE!L  Min  $x4_pos__ !LVE!L  Max  $x5_pos__ !LVE!L $x6_pos__ !LVE!Lcome $x7_pos__!LVE!L
+$ENDLITERAL
+  ENDON
+{ Code to do LITERAL statements for report to be added here }
+
+
+LITERAL
+!L120HO!L
+$header_txt1_____________________________________________________________________________________________________________________
+
+
+$ENDLITERAL
+  mlp_ver = STRIP(mlp_ver)
+
+  count = 1
+  WHILE (levels[count, 1] <> EMPTY) DO
+    level_id = SELECT mlp_levels.level_id
+               WHERE level_id = levels[count,1]
+
+    pr_level = level_id
+    level_des = SELECT mlp_levels.description
+    IF ((levels[ 2, 1] = EMPTY) ) AND (count > 1) THEN
+   { VED IKKE }
+    ENDIF
+  { Report just for single level or summary report}
+    IF (levels[ 2, 1] = EMPTY)  THEN
+   {****************************************}
+   {  Level_info (count) }  { Display max. min etc for all components for level }
+    ENDIF
+    count = count + 1
+  ENDWHILE
+
+
+
+  IF sample_id <> " " THEN
+
+    sample_id = SELECT sample.id_numeric
+                WHERE id_numeric = sample_id
+
+
+    pr_smpid = cgt_14:STRIP(sample_id):cgt_10
+
+    sa_prod = SELECT sample.product_name
+    IF sa_prod <> EMPTY THEN
+      sa_prod_desc = SELECT mlp_header.description
+                           WHERE identity = sa_prod
+
+    ENDIF
+
+    smp_point = SELECT sample.sampling_point
+
+    batch_name = SELECT sample.batch_name
+{**A0013-1S}
+    taken_date = SELECT sample.sampled_date
+{**A0013-1E}
+    smp_stat   = SELECT sample.status
+{**AS1042}
+    smp_comm   = STRIP ( SELECT sample.sample_comment )
+{**AE1042}
+    IF smp_stat = "A" THEN
+      pr_smp_stat = "Authorised"
+      smp_aut_text = SELECT sample.authorisation_notes
+    ENDIF
+    IF ((sa_prod = " ") OR (sa_prod = EMPTY)) THEN
+      pr_sa_prod = "There is no MLP associated with this sample"
+      pr_sa_prod_desc = " "
+    ELSE
+      pr_sa_prod = STRIP(sa_prod)
+      pr_sa_prod_desc = cgt_14:STRIP(sa_prod_desc):cgt_10
+    ENDIF
+    pr_mlpid_ver  = STRIP (mlp_id):" ver.":STRIP(mlp_ver)
+    pr_batch_name = cgt_14:STRIP(batch_name):cgt_10
+    pr_smp_point  = STRIP(smp_point)
+{**A0013-1S}
+    pr_taken_date = STRIP(SUBSTRING(taken_date,1,11))
+{**A0013-1E}
+   { * * * * * * Find Samples in Job * * * * * * * * * * * * * * * }
+    job_nam = SELECT sample.job_name
+    max_char = 50
+    l_char = max_char
+    l_sp = 2
+
+    job_smpid = SELECT sample.id_numeric
+                  WHERE job_name = job_nam
+
+    l_count = 1
+    WHILE job_smpid <> EMPTY DO
+      job_smpid = STRIP(job_smpid)
+      l_sa = LENGTH(job_smpid) + l_sp
+      IF l_char < l_sa THEN
+         l_count = l_count + 1
+         l_char = max_char
+      ENDIF
+      job_sa [l_count] = job_sa[l_count]:PAD(" "," ",l_sp):job_smpid
+      l_char = l_char - l_sa
+      NEXT sample
+      job_smpid = SELECT sample.id_numeric
+    ENDWHILE
+
+    pr_job_sa1 = job_sa[1]
+    pr_job_sa2 = job_sa[2]
+    pr_job_sa3 = job_sa[3]
+
+{***DS1239
+
+    IF SUBSTRING(smp_point,1,2) = "PK" THEN
+       bulk_jobname = SELECT job_header.bulk_job_id
+                      WHERE job_name = job_nam
+
+       IF bulk_jobname <> EMPTY THEN
+          pr_bulk_jobname = "Bulk Job ID : ":bulk_jobname
+       ELSE
+          pr_bulk_jobname = ""
+       ENDIF
+    ELSE
+       pr_bulk_jobname = ""
+    ENDIF
+
+***DE1239}
+
+  ENDIF
+
+{***AS1239}
+  group_id = SELECT sample.group_id
+             WHERE id_numeric = sample_id
+
+  IF group_id <> EMPTY THEN
+     pr_group_id = "GROUP ID : ":strip(group_id)
+  ELSE
+     pr_group_id = ""
+  ENDIF
+{***AE1239}
+
+  pos = esc:"*p+1200x+100Y"
+  h1_pos=esc:"*p900X"
+  h2_pos=esc:"*p1190X"
+  h3_pos=esc:"*p1650X"
+
+
+  st = 70
+  x1 = st+330   { analysisid }
+  x2 = x1+630   { componentname }
+  x3 = x2+160   { Units }
+  x4 = x3+250   { Min }
+  x5 = x4+250   { Max }
+  x6 = x5+500   { result }
+  x7 = x6+130   { Outcome }
+
+  st_pos = esc:"*p":st:"X"
+  x1_pos=esc:"*p":x1:"X"
+  x2_pos=esc:"*p":x2:"X"
+  x3_pos=esc:"*p":x3:"X"
+  x4_pos=esc:"*p":x4:"X"
+  x5_pos=esc:"*p":x5:"X"
+  x6_pos=esc:"*p":x6:"X"
+  x7_pos=esc:"*p":x7:"X"
+
+
+{LITERAL
+            $pr_sa_prod_desc__________________________________________________________
+            Partnumber : $pr_sa_prod__________  $h1_pos__ Batchnumber : $pr_batch_name___________     $h3_pos__ Sample ID : $pr_smpid_____________
+            MLP-ID : $pr_mlpid_ver____________  $h1_pos__ Sampling Point : $pr_smp_point              $h3_pos__ Date Sample Taken : $pr_taken_date
+            Level ID : $pr_level______________  $h1_pos__ Sample-Id's in Job : $pr_jobsmpid__________________________________
+            $level_des___________________________________ $h1_pos__ $pr_bulk_jobname________________________________
+
+$cgt_10______________ $lin_8____}
+
+
+{***M1239 'group_id' below replaces previous 'pr_bulk_jobname'.}
+
+LITERAL
+            $pr_sa_prod_desc__________________________________________________________
+            Partnumber : $pr_sa_prod__________  $h1_pos__ Batchnumber : $pr_batch_name___________     $h3_pos__ Sample ID : $pr_smpid_____________
+            MLP-ID : $pr_mlpid_ver____________  $h1_pos__ Sampling Point : $pr_smp_point              $h3_pos__ Date Sample Taken : $pr_taken_date
+            Level ID : $pr_level______________  $h1_pos__ $pr_group_id________________________________
+            $level_des___________________________________ $h1_pos__ Samples in Job : $h2_pos__ $pr_job_sa1_________________________________________
+$h2_pos__ $pr_job_sa2_________________________________________
+$h2_pos__ $pr_job_sa3_________________________________________ $cgt_10________________________ $lin_8____
+$st_pos__ !LUL55HO!L $x1_pos__ !LTT!L $x2_pos__ !LTT!L $x3_pos__ !LTT!L $x5_pos__ !LTT!L $x6_pos__ !LTT!L $x7_pos__!LUR!L
+$st_pos__ !LVE!LAnalysis    $x1_pos__ !LVE!LComponent name                  $x2_pos__ !LVE!LUnits  $x3_pos__ !LVE!L    Specifications $x5_pos__ !LVE!LResult  $x6_pos__ !LVE!LOut- $x7_pos__!LVE!L
+$st_pos__ !LVE!L             $x1_pos__ !LVE!L                                 $x2_pos__ !LVE!L        $x3_pos__ !LVE!L  Min  $x4_pos__ !LVE!L  Max  $x5_pos__ !LVE!L $x6_pos__ !LVE!Lcome $x7_pos__!LVE!L
+$ENDLITERAL
+
+  element = 1
+  old_anal_id = EMPTY
+  old_rep = EMPTY
+  old_comp_name = EMPTY
+  line_co =  0
+  lines_pr = 0
+  new_page_done = FALSE
+
+{ Display typicals etc for all components on MLP }
+
+  WHILE (comp_list [element, 1] <> EMPTY) DO
+
+    do_print = TRUE
+
+{**DS1040 10/04-97}
+{   IF comp_list [element, 5] = "N"  THEN
+
+      IF NOT(NUMTEXT(comp_list [element, 9])) THEN
+
+         do_print=FALSE
+      ENDIF
+   ENDIF }
+{**DE1040 10/04-97}
+
+ IF do_print THEN
+
+{**A0013-3S}
+    is_yo_culture = FALSE
+
+    comp_rep_control = SELECT component.rep_control
+                       WHERE ( analysis  = comp_list [element, 1] ) { **MIG }
+                         AND ( name = comp_list [element, 2] ) { **MIG }
+
+    IF comp_rep_control <> EMPTY THEN
+       IF STRIP(comp_rep_control) = "NOS"
+          is_yo_culture = TRUE
+       ENDIF
+    ENDIF
+{**A0013-3E}
+
+    min_str = SELECT mlp_values.min_limit
+               WHERE ( entry_code = comp_list [element,6])
+                 AND ( level_id   = levels [1,1]         )
+
+    max_str = SELECT mlp_values.max_limit
+    txt_spec = SELECT mlp_values.text_spec
+    IF min_str <> EMPTY THEN
+      IF ((min_str <> PAD(""," ",10)) OR (max_str <> PAD(""," ",10)) OR
+{**AS1025 26/11-96}
+         (comp_type[ element,1 ] = "O" ) OR
+{**AE1025 26/11-96}
+         (SUBSTRING(txt_spec,1,10) <> PAD(""," ",10)))  THEN
+        IF (comp_list [element, 10] <> "Rejected") THEN
+          units = comp_list [element, 10]
+         { Dont want to show analysis/rep if previous component had same analysis/rep}
+          IF ((old_anal_id <> comp_list [element, 1]) OR
+             (old_rep <> comp_list[element,3])) THEN
+            pr_anal = comp_list [element, 1] : "/" :
+                      STRIP (comp_list [element, 3])
+          ENDIF
+          pr_anal = PAD (pr_anal, " ", 13)
+          pr_comp = PAD(comp_list [element,2]," ",30)
+          pr_un   = PAD(STRIP (units)," ",6)      { Show result }
+
+{MIG          min_str = SELECT mlp_values.min_limit
+                    WHERE value_key = comp_list [element,6]:
+                    PAD(levels [1, 1]," ", 10)
+                    ORDER ON value_key
+}
+
+          min_str = SELECT mlp_values.min_limit
+                    WHERE ( entry_code = comp_list [element,6] ) AND
+                          ( level_id   = levels [1,1]          )
+
+     { Numeric component }
+          IF (comp_list [element, 5] = "N" ) THEN
+
+{**A0013-3S}
+            IF is_yo_culture THEN
+              p_min = ""
+              p_max = ""
+{**A0013-3E}
+
+            ELSE
+
+               IF (SELECT mlp_values.min_limit <> EMPTY) THEN
+                 p_min=  STRIP ( min_str)
+                 IF (SELECT mlp_values.max_limit > 0) THEN
+                   p_max = STRIP (SELECT mlp_values.max_limit)
+                 ELSE
+                   p_max = ""
+                 ENDIF
+               ENDIF
+            ENDIF
+
+          ELSE
+
+{**AS1025 26/11-96}
+{           IF (SELECT mlp_values.text_spec <> EMPTY) THEN      }
+            IF (SELECT mlp_values.text_spec <> EMPTY) AND
+              (NOT BLANK(SELECT mlp_values.text_spec)) THEN
+{**AE1025 26/11-96}
+
+              p_min =  STRIP (SELECT mlp_values.text_spec)
+              p_max = " "
+
+              pm_count = 1
+
+              split_lines ( p_min , pm_wid, pm_str , pm_count)
+
+              pm_lin = pm_count
+
+{**AS1025 26/11-96}
+{  Print phrase elements }
+            ELSEIF comp_type[element,1] = "O" THEN
+              phrase_count = 0
+              pm_lin = 0
+              WHILE phrase_count < comp_type[element,3] DO
+                phrase_count = phrase_count + 1
+                phrase_elem  = comp_type[element,phrase_count+3]
+                pm_lin = pm_lin + 1
+                split_lines ( phrase_elem, pm_wid, pm_str, pm_lin )
+              ENDWHILE
+{**AE1025 26/11-96}
+
+            ENDIF
+          ENDIF
+
+{**AS1025 26/11-96: pr_out must be defined to be printed in later step }
+          pr_out = EMPTY
+{**AE1025 26/11-96}
+
+          IF levels [2, 1] = EMPTY THEN
+            IF (comp_list [element, 7] = TRUE) THEN
+              pr_out = "Pass"
+            ELSE
+              pr_out = "Fail"
+            ENDIF
+          ENDIF
+          IF (comp_list [element, 9] = EMPTY) THEN
+            pr_res =  "NoResult"
+            pr_out = "Fail" { Ingen resultater medf. Fail }
+          ELSE
+            pr_res = STRIP (comp_list [element, 9])
+          ENDIF
+
+
+          res_wid = 26
+
+          pr_res = STRIP (comp_list [element, 9])
+          res_count = 1
+
+          split_lines ( pr_res , res_wid, res_str , res_count)
+
+          res_lin = res_count
+
+{          WHILE LENGTH(res_rst_str) <> 0 DO
+            res_str [res_lin] = STRIP(SPLITWORDS(res_rst_str,res_wid))
+            res_rst_str = SUBSTITUTE(res_rst_str,res_str[res_lin],"")
+            res_rst_str = res_rst_str - res_str[res_lin]
+            res_lin = res_lin + 1
+          ENDWHILE }
+
+          IF (comp_list [element, 5] = "N" ) THEN
+LITERAL
+$st_pos__ !LLT55HO!L $x1_pos__ !LCC!L $x2_pos__ !LCC!L $x3_pos__ !LCC!L $x5_pos__ !LCC!L $x6_pos__ !LCC!L $x7_pos__!LRT!L
+$st_pos__ !LVE!L$pr_anal_____ $x1_pos__ !LVE!L$pr_comp_______________________ $x2_pos__ !LVE!L$pr_un_ $x3_pos__ !LVE!L$p_min___ $x4_pos__ !LVE!L $p_max___ $x5_pos__ !LVE!L$pr_res_______________________ $x6_pos__ !LVE!L$pr_out_ $x7_pos__!LVE!L
+$ENDLITERAL
+          ELSE
+            ln_count = 1
+            pm_pr_str = pm_str[ln_count]
+            res_pr_str = res_str [ln_count]
+LITERAL
+$st_pos__ !LLT55HO!L $x1_pos__ !LCC!L $x2_pos__ !LCC!L $x3_pos__ !LCC!L $x5_pos__ !LCC!L $x6_pos__ !LCC!L $x7_pos__!LRT!L
+$st_pos__ !LVE!L$pr_anal_____ $x1_pos__ !LVE!L$pr_comp_______________________ $x2_pos__ !LVE!L$pr_un_ $x3_pos__ !LVE!L$pm_pr_str________________  $x5_pos__ !LVE!L$res_pr_str_______________ $x6_pos__ !LVE!L$pr_out_ $x7_pos__!LVE!L
+$ENDLITERAL
+            ln_count = ln_count + 1
+
+            IF pm_lin > res_lin THEN
+
+              WHILE ln_count <= pm_lin DO
+                pm_pr_str = pm_str[ln_count]
+                res_pr_str = res_str[ln_count]
+LITERAL
+$st_pos__ !LVE!L$x1_pos__ !LVE!L $x2_pos__ !LVE!L $x3_pos__ !LVE!L$pm_pr_str_______________  $x5_pos__ !LVE!L$res_pr_str_____________ $x6_pos__ !LVE!L $x7_pos__!LVE!L
+$ENDLITERAL
+                ln_count = ln_count + 1
+                lines_pr = lines_pr + 1
+              ENDWHILE
+            ELSE
+
+              WHILE ln_count <= res_lin DO
+
+                pm_pr_str = pm_str[ln_count]
+                res_pr_str = res_str[ln_count]
+LITERAL
+$st_pos__ !LVE!L$x1_pos__ !LVE!L $x2_pos__ !LVE!L $x3_pos__ !LVE!L$pm_pr_str_______________  $x5_pos__ !LVE!L$res_pr_str_____________ $x6_pos__ !LVE!L $x7_pos__!LVE!L
+$ENDLITERAL
+                ln_count = ln_count + 1
+                lines_pr = lines_pr + 1
+              ENDWHILE
+
+            ENDIF
+          ENDIF
+          lines_pr = lines_pr + 2
+          line_co = line_co + 1
+          IF (((line_co >= new_page_count) OR (lines_pr >= max_lines))
+            AND NOT(new_page_done)) THEN
+            new_page_done = TRUE
+LITERAL
+$st_pos__ !LLL55HO!L $x1_pos__ !LBT!L $x2_pos__ !LBT!L $x3_pos__ !LBT!L $x5_pos__ !LBT!L $x6_pos__ !LBT!L $x7_pos__!LLR!L
+$lin_6____
+$ENDLITERAL
+            NEW PAGE
+          ENDIF
+      { Now do levels information if all levels report }
+{         IF levels [2, 1] <> EMPTY THEN ** NOT USED
+            count = 1
+            res_pos = 7
+position in comp_info array where result for first level is
+            a = PAD (" ", " ", 15)
+            IF (comp_list [element, 8] = EMPTY) OR (STRIP (comp_list[element,8]) = " ") THEN
+            a = a : msg_no_typical
+          ELSE
+            a = a : "Typical : " : comp_list [element, 8]
+          ENDIF
+          WHILE (levels [count, 1] <> EMPTY) DO
+            a = PAD (a, " ", 38)
+            a = a : levels [count, 1]
+            a = PAD (a, " ", 49)
+            min_str = SELECT mlp_values.min_limit
+                      WHERE value_key = comp_list [element, 6] :
+                                 PAD ( levels [count,1], " ", 10)
+
+            IF comp_list [element, 5] = "N" THEN
+              IF min_str <> EMPTY THEN
+                a = a : STRIP (min_str)
+                IF (SELECT mlp_values.max_limit > 0) THEN
+                  a = a: " to " : STRIP (SELECT mlp_values.max_limit)
+                ENDIF
+              ELSE
+                a = a : "No limits"
+              ENDIF
+            ELSE
+              IF (SELECT mlp_values. text_spec) <> EMPTY THEN
+                a = a : STRIP (SELECT mlp_values.text_spec)
+              ELSE
+                a = a : "No specification"
+              ENDIF
+            ENDIF
+            a = PAD (a, " ",  74)
+            IF (comp_list [element, res_pos] = FALSE) THEN
+              a = a : "  Fail"
+            ELSE
+              a = a : "Pass"
+            ENDIF
+LITERAL
+$a________________________________________________________________________________
+$ENDLITERAL
+            count = count + 1
+            res_pos = 10 + count
+            a = PAD (" ", " ", 38)
+          ENDWHILE
+        ENDIF  ** NOT USED ** }
+
+          old_anal_id = comp_list [element, 1]
+          old_rep = comp_list [element, 3]
+          old_comp_name = comp_list [element, 2]
+        ENDIF
+      ENDIF
+    ENDIF
+ ENDIF
+    element = element + 1
+  ENDWHILE
+LITERAL
+$st_pos__ !LLL55HO!L $x1_pos__ !LBT!L $x2_pos__ !LBT!L $x3_pos__ !LBT!L $x5_pos__ !LBT!L $x6_pos__ !LBT!L $x7_pos__!LLR!L
+$ENDLITERAL
+
+{**AS1042}
+  do_sample_comment ( smp_comm )
+{**AE1042}
+
+{ * * Added by LPe 12/5-93 to print out Authorisation Comments * * * }
+
+  IF smp_stat = "A" THEN
+    do_aut_comments( smp_aut_text )
+  ENDIF
+
+{   ** NOT USED **
+  x = 1
+  WHILE (comp_list [x, 1] <> EMPTY) DO
+   Dont repeat information for replicates
+    IF (comp_list [x , 3] = 1) THEN
+     a = PAD (" ", " ", 3)
+     a = a : comp_list [x, 1] : " " : STRIP (comp_list [x, 2])
+     a = PAD (a, " ", 37)
+     a = a : comp_list [x, 10] : " "
+     a = PAD (a, " ", 48)
+     IF (comp_list [x, 8] = EMPTY) OR (STRIP (comp_list [x, 8]) = " ") THEN
+        a = a : msg_no_typical
+     ELSE
+        a = a : STRIP (comp_list [x, 8])
+     ENDIF
+     a = PAD (a, " ", 59)
+     min_str = SELECT mlp_values.min_limit
+               WHERE value_key = comp_list [x, 6]:PAD(levels [level_num, 1],
+                      " ", 10)
+
+     IF (comp_list [x, 5] = "N" ) THEN
+        IF (SELECT mlp_values.min_limit <> EMPTY) THEN
+           a = a : STRIP ( min_str)
+           a = PAD (a, " ", 70)
+           IF (SELECT mlp_values.max_limit > 0) THEN
+              a = a : " " : STRIP (SELECT mlp_values.max_limit)
+           ENDIF
+        ENDIF
+     ELSE
+        IF (SELECT mlp_values.text_spec <> EMPTY) THEN
+           a = a : " " : STRIP (SELECT mlp_values.text_spec)
+        ENDIF
+     ENDIF
+LITERAL
+$a______________________________________________________________________________
+$ENDLITERAL
+  ENDIF
+  x = x + 1
+ENDWHILE   ** NOT USED ** }
+  do_footer(sample_id , levels ,pass)
+ENDIF
+
+FLUSH_LITERAL
+
+RETURN (csp_file)
+
+{ Return report name }
+{ CSMLP, CSMLP_sample, CSMLP_test will then process report depending upon }
+{ option chosen/parameters passed to these routines }
+
+ENDROUTINE     { End of Full_rep }
+
+{-------------------------------------------------------------------------}
+{ Routine called by $CSMLP to produce summary report depending on global  }
+{ CSM_rpt_rtn_summary. To use the standard routine to produce the summary }
+{ report set CSM_rpt_lib_summary to "$LIB_CSMLP" and CSM_rpt_rtn_summary  }
+{ to "Summary_rep". To use the routine below change CSM_rpt_lib_summary to}
+{ "$CSM_user" and add VGL code (to produce the report) to this routine    }
+{-------------------------------------------------------------------------}
+
+ROUTINE Summary_rep (VALUE mlp_id,      { Product id      }
+                  VALUE mlp_ver,        { Product version }
+                  VALUE sample_id,      { If sample comparison }
+                        VALUE test_id,        { If test comparison }
+                  VALUE pass,           { Comparison pass or fail, BOOLEAN }
+                  VALUE not_assigned,   { Tests in MLP not in sample, BOOLEAN }
+                  VALUE out_limits,     { Result(s) out of spec, BOOLEAN }
+                            comp_list,          { Array of components }
+                            levels,             { Array of level info }
+                  VALUE total_comps,    { Number of components on MLP }
+                            spare_param1,               { Reserved for future use }
+                            spare_param2)               { Reserved for future use }
+
+DECLARE csp_file
+
+SET PRINTERCODES TRUE
+
+csp_file = "smp$userfiles:CSMLPSUMM.lis"
+
+{ Code to do LITERAL statements for report to be added here }
+
+SET WIDTH 200
+SET LENGTH 63
+
+{ Define where the LITERAL statements are to be saved to }
+
+SET NAME "PRINTER/CSMSUMMHP4"
+
+set_esc_seq()
+
+header_txt = pit_10:fed:
+{**E0013-2S*}
+"CHR. HANSEN A/S":pit_12:medium:PAD(" "," ",40):"Page ##"
+{**E0013-2E*}
+
+SET HEADER header_txt
+
+header_txt1 =
+pit_14:"10-12 Bøge Alle,P.O. Box 407, DK-2970 Hørsholm, "+
+ "Phone: +45 76 76 76":pit_12
+
+first =
+SUBSTRING(DATE(NOW),1,17):"           Sample Product Comparison "
+
+ON NEW PAGE
+LITERAL
+!L100HO!L
+$header_txt1__________________________________________________________________
+$ENDLITERAL
+       IF element < total_comps THEN
+LITERAL
+$pit_13
+
+         !LUL13HO TT 33HO TT 8HO TT 17HO UR!L
+         !LVE!L Analysis    !LVE!L Component name                  !LVE!L Units  !LVE!L  Specifications !LVE!L
+         !LVE!L             !LVE!L                                 !LVE!L        !LVE!L   Min  !LVE!L   Max  !LVE!L
+$ENDLITERAL
+       ENDIF
+ENDON
+
+
+{      !LUL13HO TT 33HO TT 8HO TT 15HO TT 9HO TT 9HO UR!L
+      !LVE!L Analysis    !LVE!L Component name                  !LVE!L Units  !LVE!LSpecifications !LVE!L Result  !LVE!L Outcome !LVE!L
+      !LVE!L             !LVE!L                                 !LVE!L        !LVE!L  Min  !LVE!L  Max  !LVE!L         !LVE!L         !LVE!L
+ }
+LITERAL
+$primary_font____ $secondary_font_______!L100HO!L
+$header_txt1__________________________________________________________________
+$pit_11
+$ENDLITERAL
+
+description = SELECT mlp_header.description
+              WHERE identity = mlp_id
+
+pr_mlp_ver =  STRIP (mlp_id): ".": STRIP (mlp_ver)
+count = 1
+WHILE (levels[count, 1] <> EMPTY) DO
+  level_id = SELECT mlp_levels.level_id
+             WHERE level_id = levels[count,1]
+
+   pr_level =  "Level " : STRIP (level_id):", "
+  IF (STRIP (SELECT mlp_levels.level_type) <> " ") THEN
+     pr_level = pr_level : " (" : STRIP (SELECT mlp_levels.level_type) : ")"
+  ENDIF
+  pr_level = pr_level : " ":STRIP (SELECT mlp_levels.description)
+  IF ((levels[ 2, 1] = EMPTY) ) AND (count > 1) THEN
+   { VED IKKE }
+  ENDIF
+  { Report just for single level or summary report}
+  IF (levels[ 2, 1] = EMPTY)  THEN
+   {****************************************}
+   {  Level_info (count) }  { Display max. min etc for all components for level }
+  ENDIF
+  count = count + 1
+ENDWHILE
+
+
+
+LITERAL
+!B    $first_____________________________________________________________________!B
+
+
+      !B!UProduct Details :!U!B
+      !BMLP-version!B           $pr_mlp_ver___________________________________
+      !BProduct description!B   $description__________________________________
+      !BMLP-level!B             $pr_level_________________________________________________________
+
+$ENDLITERAL
+
+IF sample_id <> " " THEN
+
+   sample_id = SELECT sample.id_numeric
+               WHERE id_numeric = sample_id
+
+   pr_smpid =  STRIP (sample_id)
+
+   smp_stat = SELECT sample.status
+{**AS1042}
+   smp_comm = STRIP ( SELECT sample.sample_comment )
+{**AE1042}
+   IF smp_stat = "V" THEN
+      pr_smp_stat = "Available"
+   ELSEIF smp_stat = "P" THEN
+      pr_smp_stat = "In Progress"
+   ELSEIF smp_stat = "C" THEN
+      pr_smp_stat = "Completed"
+   ELSEIF smp_stat = "A" THEN
+      pr_smp_stat = "Authorised"
+      smp_aut_text = SELECT sample.authorisation_notes
+   ELSEIF smp_stat = "S" THEN
+      pr_smp_stat = "Suspended"
+   ELSEIF smp_stat = "X" THEN
+      pr_smp_stat = "Cancelled"
+   ELSEIF smp_stat = "W" THEN
+      pr_smp_stat = "Awaiting Preperation"
+   ELSE
+      pr_smp_stat = "NOT KNOWN"
+   ENDIF
+
+
+   IF ( STRIP (SELECT sample.product_name) = " ") OR
+                        (SELECT sample.product_name = EMPTY) THEN
+     pr_part_num = "There is no MLP associated with this sample"
+     pr_batch_name = ""
+     pr_smp_prd = ""
+     pr_grade = ""
+   ELSE
+      pr_part_num = STRIP (SELECT sample.product_name)
+      pr_batch_name = STRIP(SELECT sample.batch_name)
+      pr_smp_prd = pr_part_num : "." : STRIP (SELECT sample.product_version)
+      pr_grade =   STRIP (SELECT sample.grade_name )
+   ENDIF
+ENDIF
+LITERAL
+
+      !U!BSample Details :!B!U
+      !BSample ID       :!B         $pr_smpid_______________________________________
+      !BStatus          :!B         $pr_smp_stat____________________________________
+      !BPartnumber      :!B         $pr_part_num____________________________________
+      !BBatchnumber     :!B         $pr_batch_name__________________________________
+      !BSample product  :!B         $pr_smp_prd_____________________________________
+      !BGrade (level)   :!B         $pr_grade_______________________________________
+
+
+$ENDLITERAL
+
+LITERAL
+$pit_13
+         !LUL13HO TT 33HO TT 8HO TT 17HO UR!L
+         !LVE!L Analysis    !LVE!L Component name                  !LVE!L Units  !LVE!L  Specifications !LVE!L
+         !LVE!L             !LVE!L                                 !LVE!L        !LVE!L   Min  !LVE!L   Max  !LVE!L
+$ENDLITERAL
+
+element = 1
+old_anal_id = EMPTY
+old_rep = EMPTY
+old_comp_name = EMPTY
+line_co =  1
+
+{ Display typicals etc for all components on MLP }
+WHILE (comp_list [element, 1] <> EMPTY) DO
+   IF (comp_list [element, 10] <> "Rejected") THEN
+      units = comp_list [element, 10]
+      { Dont want to show analysis/rep if previous component had same analysis/rep}
+      IF (old_anal_id <> comp_list [element, 1]) OR
+         (old_rep <> comp_list[element,3]) THEN
+         pr_anal = comp_list [element, 1] : "/" : STRIP (comp_list [element, 3])
+      ENDIF
+      pr_anal = PAD (pr_anal, " ", 13)
+      pr_comp = PAD(comp_list [element,2]," ",30)
+      pr_un =  PAD(STRIP (units)," ",6)      { Show result }
+      min_str = SELECT mlp_values.min_limit
+            WHERE ( entry_code = comp_list [element,6] )  { **MIG }
+              AND ( level_id   = levels [1,1]          )  { **MIG }
+
+
+     { Numeric component }
+     IF (comp_list [element, 5] = "N" ) THEN
+        IF (SELECT mlp_values.min_limit <> EMPTY) THEN
+           p_min=  STRIP ( min_str)
+           IF (SELECT mlp_values.max_limit > 0) THEN
+              p_max = STRIP (SELECT mlp_values.max_limit)
+           ELSE
+              p_max = ""
+           ENDIF
+        ENDIF
+     ELSE
+        IF (SELECT mlp_values.text_spec <> EMPTY) THEN
+           p_min =  STRIP (SELECT mlp_values.text_spec)
+           p_max = " "
+        ENDIF
+     ENDIF
+      IF (comp_list [element, 9] = EMPTY) THEN
+         pr_res =  "NoResult"
+      ELSE
+         pr_res = STRIP (comp_list [element, 9])
+      ENDIF
+
+
+      IF levels [2, 1] = EMPTY THEN
+         IF (comp_list [element, 7] = TRUE) THEN
+            pr_out = "Pass"
+         ELSE
+            pr_out = "Fail"
+         ENDIF
+      ENDIF
+      lf = LINESLEFT
+      IF ((LINESLEFT = 17) AND (element < total_comps)) THEN
+         lf = LINESLEFT
+LITERAL
+         !LLT13HO CC 33HO CC 8HO CC 8HO CC 8HO RT!L
+         |$pr_anal_____| $pr_comp_______________________ | $pr_un | $p_min | $p_max |
+         !LLL13HO BT 33HO BT 8HO BT 8HO BT 8HO LR!L
+$ENDLITERAL
+         NEW PAGE
+      ELSE
+LITERAL
+         !LLT13HO CC 33HO CC 8HO CC 8HO CC 8HO RT!L
+         |$pr_anal_____| $pr_comp_______________________ | $pr_un | $p_min | $p_max |
+$ENDLITERAL
+      ENDIF
+      { Now do levels information if all levels report }
+{      IF levels [2, 1] <> EMPTY THEN
+         count = 1
+         res_pos = 7
+position in comp_info array where result for first level is
+         a = PAD (" ", " ", 15)
+         IF (comp_list [element, 8] = EMPTY) OR (STRIP (comp_list[element,8]) = " ") THEN
+            a = a : msg_no_typical
+         ELSE
+            a = a : "Typical : " : comp_list [element, 8]
+         ENDIF
+         WHILE (levels [count, 1] <> EMPTY) DO
+            a = PAD (a, " ", 38)
+            a = a : levels [count, 1]
+            a = PAD (a, " ", 49)
+            min_str = SELECT mlp_values.min_limit
+                      WHERE value_key = comp_list [element, 6] :
+                                     PAD ( levels [count,1], " ", 10)
+
+            IF comp_list [element, 5] = "N" THEN
+               IF min_str <> EMPTY THEN
+                  a = a : STRIP (min_str)
+                  IF (SELECT mlp_values.max_limit > 0) THEN
+                     a = a: " to " : STRIP (SELECT mlp_values.max_limit)
+                  ENDIF
+               ELSE
+                  a = a : "No limits"
+               ENDIF
+            ELSE
+               IF (SELECT mlp_values. text_spec) <> EMPTY THEN
+                  a = a : STRIP (SELECT mlp_values.text_spec)
+               ELSE
+                  a = a : "No specification"
+               ENDIF
+            ENDIF
+
+            a = PAD (a, " ",  74)
+            IF (comp_list [element, res_pos] = FALSE) THEN
+               a = a : "  Fail"
+            ELSE
+               a = a : "Pass"
+            ENDIF
+LITERAL
+$a________________________________________________________________________________
+$ENDLITERAL
+           count = count + 1
+           res_pos = 10 + count
+           a = PAD (" ", " ", 38)
+         ENDWHILE
+      ENDIF }
+
+      old_anal_id = comp_list [element, 1]
+      old_rep = comp_list [element, 3]
+      old_comp_name = comp_list [element, 2]
+      element = element + 1
+   ENDIF
+ENDWHILE
+
+
+
+sign_date = "               "
+sign = "                             "
+LITERAL
+         !LLL13HO BT 33HO BT 8HO BT 8HO BT 8HO LR!L
+$ENDLITERAL
+{**AS1042}
+   do_sample_comment ( smp_comm )
+{**AE1042}
+IF smp_stat = "A" THEN
+   do_aut_comments(smp_aut_text)
+ENDIF
+
+
+{
+x = 1
+WHILE (comp_list [x, 1] <> EMPTY) DO
+   Dont repeat information for replicates
+  IF (comp_list [x , 3] = 1) THEN
+     a = PAD (" ", " ", 3)
+     a = a : comp_list [x, 1] : " " : STRIP (comp_list [x, 2])
+     a = PAD (a, " ", 37)
+     a = a : comp_list [x, 10] : " "
+     a = PAD (a, " ", 48)
+     IF (comp_list [x, 8] = EMPTY) OR (STRIP (comp_list [x, 8]) = " ") THEN
+        a = a : msg_no_typical
+     ELSE
+        a = a : STRIP (comp_list [x, 8])
+     ENDIF
+     a = PAD (a, " ", 59)
+     min_str = SELECT mlp_values.min_limit
+               WHERE value_key = comp_list [x, 6]:PAD(levels [level_num, 1],
+                      " ", 10)
+     IF (comp_list [x, 5] = "N" ) THEN
+        IF (SELECT mlp_values.min_limit <> EMPTY) THEN
+           a = a : STRIP ( min_str)
+           a = PAD (a, " ", 70)
+           IF (SELECT mlp_values.max_limit > 0) THEN
+              a = a : " " : STRIP (SELECT mlp_values.max_limit)
+           ENDIF
+        ENDIF
+     ELSE
+        IF (SELECT mlp_values.text_spec <> EMPTY) THEN
+           a = a : " " : STRIP (SELECT mlp_values.text_spec)
+        ENDIF
+     ENDIF
+LITERAL
+$a______________________________________________________________________________
+$ENDLITERAL
+  ENDIF
+  x = x + 1
+ENDWHILE }
+do_footer(sample_id , levels, pass)
+
+FLUSH_LITERAL
+
+{ Return report name }
+{ CSMLP, CSMLP_sample, CSMLP_test will then process report depending upon }
+{ option chosen/parameters passed to these routines }
+
+RETURN (csp_file)
+
+ENDROUTINE      { End of Summary_rep }
+
+
+{-------------------------------------------------------------------------}
+{ Routine called by $CSMLP depending on global CSM_auto_routine_call      }
+{ This will define what happens once a sample comparison has been done    }
+{-------------------------------------------------------------------------}
+ROUTINE Post_comparison (VALUE mlp_id,  { Product id      }
+                  VALUE mlp_ver,        { Product version }
+                  VALUE sample_id,      { Sample id-numeric }
+                  VALUE pass,           { Comparison pass or fail, BOOLEAN }
+                            comp_list,          { Array of components }
+                            levels,             { Array of level info }
+                            VALUE spare_param1, { Reserved for future use }
+                            VALUE spare_param2) { Reserved for future use }
+
+DECLARE continue, result, status_msg
+ENABLE WINDOWS
+
+{ An example of what you could do is shown below }
+IF pass
+   result = "passed"
+ELSE
+   result = "failed"
+ENDIF
+
+CREATE TEXT WINDOW status_msg HEIGHT 6 WIDTH 27 BORDER
+
+DISPLAY  "The comparison ": result ON LINE 2 FROM 2 IN WINDOW status_msg
+DISPLAY  "Press any key to continue " ON LINE 4 FROM 2 IN WINDOW status_msg
+
+PASTE TEXT WINDOW status_msg AT 2, 15
+
+continue = GETKEY
+UNPASTE TEXT WINDOW status_msg
+
+ENDROUTINE
+
+{-------------------------------------------------------------------------}
+{ Routine called by $CSMLP if global CSM_auth_check_rtn is set to         }
+{ "Pre_auth" and CSM_auth_check_lib is set to "$CSM_USER"                 }
+{ This defines the checks to be done before a sample is authorised :      }
+{ either interactively or in background                                   }
+{-------------------------------------------------------------------------}
+ROUTINE Pre_auth (VALUE mlp_id, { Product id      }
+                  VALUE mlp_ver,        { Product version }
+                  VALUE sample_id,      { Sample id-numeric }
+                  VALUE pass,           { Comparison pass or fail, BOOLEAN }
+                            comp_list,          { Array of components }
+                            levels,             { Array of level info }
+                            VALUE spare_param1, { Reserved for future use }
+                            VALUE spare_param2) { Reserved for future use }
+
+
+{ You could use the value of 'pass' to see if the sample passed or failed the }
+{ comparison }
+{IF NOT pass THEN
+   RETURN (FALSE)
+ENDIF
+}
+
+RETURN (TRUE)
+
+ENDROUTINE
+
+{**AS1042}
+ROUTINE do_sample_comment ( VALUE the_comment )
+   IF length ( the_comment ) > 0 THEN
+      do_some_comment ( the_comment, "SAMPLE COMMENTS" )
+   ENDIF
+ENDROUTINE
+{**AE1042}
+
+{** 1042 Modified do_aut_comments to generic Comment routine do_some_comment }
+ROUTINE do_aut_comments (VALUE smp_aut_text )
+   do_some_comment ( smp_aut_text, "AUTHORISATION COMMENTS" )
+ENDROUTINE
+
+ROUTINE do_some_comment ( VALUE smp_aut_text, VALUE comment_title )
+
+   DECLARE pg_wid, aut_lin, line_count
+
+   ARRAY aut_str
+
+   pg_wid = 80
+   aut_lin = 1
+
+   split_lines (smp_aut_text, pg_wid, aut_str,aut_lin )
+
+   a_pos=esc:"*p":(x5+100):"X"
+
+LITERAL
+$s_cgt_11___ $cgt_11___
+
+$st_pos__ !LUL36HO!L $a_pos__!LUR!L
+$st_pos__ !LVE!L!B $comment_title________ :!B $a_pos__!LVE!L
+$ENDLITERAL
+
+line_count = 1
+
+   WHILE line_count <= aut_lin DO
+
+      pr_str = aut_str [line_count]
+
+LITERAL
+$st_pos__ !LVE!L $pr_str____________________________________________________________________________ $a_pos__!LVE!L
+$ENDLITERAL
+
+      line_count = line_count + 1
+
+   ENDWHILE
+
+LITERAL
+$st_pos__ !LLL36HO!L $a_pos__!LLR!L
+$ENDLITERAL
+ENDROUTINE
+
+ROUTINE Do_footer( VALUE sample_id,
+		    	       levels ,VALUE pass)
+
+                         { TRUE if whole sample being processed }
+                         { FALSE if just test                   }
+DECLARE a, b, c,  count, res_missing
+
+a = " "
+b = " "
+c = " "
+
+msg_samp_on_spec = "Sample conforms to level limits"
+msg_samp_out_lims = "Sample does NOT conform to level limits"
+msg_test_on_spec = "Test conforms to level limits"
+msg_test_out_lims = "Test does NOT conform to level limits"
+msg_results_missing = "Failed because result(s) are missing"
+msg_test_not_assign = "Failed because test(s) in MLP not assigned"
+msg_not_tested = "MLP and sample had no matching components"
+msg_comps_tested = " components tested out of "
+
+
+
+{ Work out number of components }
+total_comp_test = 0
+comp_test = 0
+res_missing = FALSE
+
+WHILE comp_list [total_comp_test + 1,2] <> EMPTY DO
+
+  min_str = SELECT mlp_values.min_limit
+            WHERE ( entry_code = comp_list [total_comp_test + 1,6] )  { **MIG }
+              AND ( level_id    = levels [1,1]          )              { **MIG }
+
+{             WHERE value_key = comp_list [total_comp_test + 1,6]:
+              PAD(levels [1,1] ," ", 10)
+              ORDER ON value_key }
+
+  max_str = SELECT mlp_values.max_limit
+  txt_spec = SELECT mlp_values.text_spec
+
+  IF min_str <> EMPTY THEN
+
+    IF ((min_str <> pad(""," ",10)) OR (max_str <> pad(""," ",10)) OR
+       (SUBSTRING(txt_spec,1,10) <> PAD(""," ",10)))  THEN
+
+   IF ( (comp_list [element, 5] = "N") AND
+     (comp_list [element, 9] <> EMPTY) )  THEN
+
+       IF NUMTEXT(comp_list [element, 9]) THEN
+
+         comp_test = comp_test + 1
+
+      ENDIF
+
+   ELSE
+
+      comp_test = comp_test + 1
+
+   ENDIF
+
+
+      { See if there is a result }
+
+      IF ((comp_list [comp_test, 9] = EMPTY) AND
+                                NOT(CSM_pass_incomp_test)) THEN
+        res_missing = TRUE
+      ENDIF
+    ENDIF
+  ENDIF
+  total_comp_test = total_comp_test + 1
+ENDWHILE
+
+
+LITERAL
+$cgt_11___ $s_cgt_11___
+
+$st_pos__ !LUL20HO!L $x2_pos__ !LUR!L
+$st_pos__ !LVE!L!B COMPARISON INFORMATION:!B $x2_pos__ !LVE!L
+$st_pos__ !LVE!L                                         $x2_pos__ !LVE!L
+$ENDLITERAL
+
+IF total_comp_test = 0 THEN
+   a = msg_not_tested
+ELSE
+
+{**
+  count = 1
+   All levels must pass to pass so assume pass then if get level
+   which fails, comparison will fail
+
+  IF CSM_all_levels_pass THEN
+     pass = TRUE
+  ELSE
+      else assume fail then if one level passes, will pass
+     pass = FALSE
+  ENDIF
+
+  WHILE (levels [count,1] <> EMPTY) DO
+      comparison failed because a level failed
+     IF (levels [count, 2] = FALSE)
+        IF CSM_all_levels_pass THEN
+           pass = FALSE
+        ENDIF
+     ELSE
+         comparison passed because a level passed
+        IF NOT CSM_all_levels_pass THEN
+           pass = TRUE
+        ENDIF
+     ENDIF
+     count = count + 1
+  ENDWHILE
+
+**}
+
+  IF ch_pass THEN
+     IF sample_id <> " " THEN
+        a = msg_samp_on_spec
+     ELSE
+        a = msg_test_on_spec
+     ENDIF
+  ELSE
+     { Show why failed comparison }
+     IF out_limits THEN
+        IF sample_id <> " " THEN
+           a = msg_samp_out_lims
+        ELSE
+           a = msg_test_out_lims
+        ENDIF
+     ENDIF
+     IF res_missing THEN
+LITERAL
+$st_pos__ !LVE!L $msg_results_missing___________________ $x2_pos__ !LVE!L
+$st_pos__ !LVE!L                                         $x2_pos__ !LVE!L
+$ENDLITERAL
+     ENDIF
+     IF not_assigned THEN
+LITERAL
+$st_pos__ !LVE!L $msg_test_not_assign___________________ $x2_pos__ !LVE!L
+$st_pos__ !LVE!L                                         $x2_pos__ !LVE!L
+$ENDLITERAL
+     ENDIF
+  ENDIF
+ENDIF
+
+LITERAL
+$st_pos__ !LVE!L $a_____________________________________ $x2_pos__ !LVE!L
+$st_pos__ !LVE!L                                        $x2_pos__ !LVE!L
+$ENDLITERAL
+
+{d = STRIP ( comp_test ) : msg_comps_tested : STRIP ( number_of_tst )}
+
+pos = esc:"*p":(x3+100):"x2925Y"
+pos_1 = esc:"*p":(x3+105):"x2975Y"
+pos_2 = esc:"*p":(x3+150):"x3165Y"
+
+{pos = esc:"*p":(x3+100):"x3000Y"
+pos_1 = esc:"*p":(x3+105):"x3050Y"
+pos_2 = esc:"*p":(x3+150):"x3240Y" }
+
+{pos = esc:"*p":(x3+100):"x3000Y"
+pos_1 = esc:"*p":(x3+105):"x3050Y"
+pos_2 = esc:"*p":(x3+150):"x3240Y"}
+
+size = esc:"*c1000a250B"
+id = esc:"*c5G"
+p_rule = esc:"*c2P"
+raster_box = pos:size:id:p_rule
+
+{$st_pos__ !LVE!L $d_____________________________________ $x2_pos__ !LVE!L}
+
+LITERAL
+$st_pos__ !LLL20HO!L $x2_pos__ !LLR!L
+$raster_box_________________________________________________________
+$pos_1_______________ !BAcceptance of product!B
+$pos_2_______________ Date                         Signature
+$ENDLITERAL
+{$pos_2_______________ Date                        Signature $reset}
+
+ENDROUTINE      { End of Do_footer }
+
+ROUTINE set_esc_seq
+
+   esc = ASCII(27)
+
+prim_cgt_14 = esc:"(0N":esc:"(s1p14v0s0b4101T"
+{  Primary font :
+   0N = ECMA 94
+   1p = Proportional
+   14v = 10 høj
+   0s = normal style
+   0b = Medium stroke weight
+   4101t = CG Times }
+
+sec_cgt_10 = esc:")11U":esc:")s1p10v0s0b4101T"
+{  Secondary font :
+   11U = PC-8/DN
+   1p = Proportional
+   10v = 10 høj
+   0s = normal style
+   0b = Medium stroke weight
+   4101t = CG Times }
+
+{ STILE }
+   normal = esc:"(s0S"
+   italic = esc:"(s1S"
+
+{ STYRKE }
+   exfed = esc:"(s4B"
+   medium = esc:"(s0B"
+   fed = esc:"(s3B"
+   normal = esc:"(s0B"
+
+{ ORIENTATION }
+   port = esc:"&l0O"
+   lscape = esc:"&l1O"
+
+{ HEIGHT }
+  cgt_10 = esc:"(s10V"
+  cgt_11 = esc:"(s11V"
+  s_cgt_11 = esc:")s11V"
+  cgt_14 = esc:"(s14V"
+
+
+{ LINES PR. INCH }
+  lin_6 = esc:"&l6D"
+  lin_8 = esc:"&l8D"
+
+{ RESET }
+  reset=esc:"E"
+
+ENDROUTINE
+
+GLOBAL ROUTINE split_lines (VALUE in_str ,
+                     VALUE col_wid ,
+                     line_str ,
+                     line_count )
+
+
+declare len_in_str , rest, rest_str
+
+len_in_str = LENGTH(in_str)
+
+rest_str = in_str
+
+WHILE len_in_str <> 0 DO
+
+   line_str [ line_count ] = STRIP(SPLITWORDS(rest_str , col_wid))
+   len_line_str = LENGTH( line_str[line_count])
+   rest = len_in_str - len_line_str
+   rest_str = STRIP(SUBSTRING(rest_str ,(len_line_str + 1),rest))
+
+   IF rest < col_wid THEN
+
+     col_wid = rest
+
+   ENDIF
+
+   len_in_str = LENGTH(rest_str)
+
+   line_count = line_count + 1
+
+ENDWHILE
+
+line_count = line_count - 1
+
+ENDROUTINE
+{**DS1026 29/11-96}
+{
+ROUTINE find_wksno_for_smpid (VALUE smpid ,
+                                    number_wks_no,
+                                    number_wks_name             )
+
+declare  c_wks_no,
+         c_analid,
+         c_tst
+
+   c_wks_no = SELECT test.worksheet_id
+                  WHERE (sample_id = smpid) AND
+                        (worksheet_id <> 0)
+                  ORDER ON worksheet_id
+
+
+   WHILE c_wks_no <> EMPTY DO
+
+      c_wks_name = SELECT test.worksheet_name
+
+      IF c_wks_name = PAD(" "," ",20) THEN
+
+         number_wks_no = number_wks_no + 1
+         wks_link_no [number_wks_no] =  c_wks_no
+         anal [number_wks_no] = SELECT test . analysis
+
+      ELSE
+
+         number_wks_name = number_wks_name + 1
+         wks_name   [number_wks_name] = SELECT test . worksheet_name
+         sched_anal [number_wks_name] = SELECT test . analysis
+
+      ENDIF
+
+      NEXT test
+      c_wks_no = SELECT test.worksheet_id
+
+   ENDWHILE
+
+
+ENDROUTINE }   {find_wksno_for_smpid}
+{**DE1026 29/11-96}

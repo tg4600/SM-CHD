@@ -1,0 +1,920 @@
+{  **************************************************************************  }
+{                                                                              }
+{  Module Name : GET_EXTERNAL.RPF                                              }
+{                                                                              }
+{  Purpose     : Copy content of certain static information (MLP, Analysis)    }
+{                between environments (test, production).                      }
+{                                                                              }
+{  Requirements: SQL*Net must be available.                                    }
+{                Views against the environment to copy from must be            }
+{                introduced in structure.txt and the names of these views      }
+{                must be put into the tables EXTERNAL_AREA and EXTERNAL_TABLES }
+{                                                                              }
+{  Author      : Jacob Dybbro / 5-MAR-97                                       }
+{                                                                              }
+{  **************************************************************************  }
+
+SET NAME "DISPLAY/"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+
+ARRAY opt_arr
+
+CONSTANT link_id_pos = 5
+CONSTANT key_fld_pos = 1
+CONSTANT key_val_pos = 3
+
+SET NOTPROTECTED
+
+{  Check existance of central transfer tables }
+IF not ( valid_table ( "EXTERNAL_AREA" ) ) then
+   flash_message("ERROR: EXTERNAL_AREA table not known to smp", TRUE)
+   return
+ENDIF
+IF not ( valid_table ( "EXTERNAL_TABLES" ) ) then
+   flash_message("ERROR: EXTERNAL_TABLES table not known to smp", TRUE)
+   return
+ENDIF
+
+{  Setup of Generic Select Block used to make block select }
+gen_block = "Generic Select Block"
+
+{  Setup of Choose Area  }
+opt_arr[1,1] = "*"
+opt_arr[1,2] = "Choose Copy Area"
+areas = 0
+area = SELECT external_area . identity
+       WHERE  identity != NULL
+       ORDER  ON description
+WHILE area <> EMPTY DO
+   areas = areas + 1
+   desc = SELECT external_area . description
+   opt_arr[areas+1,1] = SUBSTRING( desc, 1, 1 )
+   opt_arr[areas+1,2] = STRIP(desc)
+   opt_arr[areas+1,3] = areas + 1
+   opt_arr[areas+1,4] = area
+   NEXT external_area
+   area = SELECT external_area . identity
+ENDWHILE
+
+IF areas <= 1 THEN
+   flash_message("ERROR: No areas in External_Area setup table",TRUE)
+   return
+ENDIF
+
+
+{  Make user enter choice of Copy Area  }
+choice  = ""
+the_key = ""
+WHILE (choice <> "Q") AND (the_key <> "EXIT") DO
+   CHOOSE choice OUTOF opt_arr AT 30,5
+   the_key = LASTKEY
+   if   (the_key <> "EXIT") and (choice <> "Q")
+   then handle_area( choice )
+   endif
+ENDWHILE
+
+{ ***** END MAIN PROGRAM ***** }
+
+
+ROUTINE handle_area( choice )
+
+   ARRAY ext_tables
+
+{  Set up all external tables for the chosen Copy Area }
+{  First one is the header - the rest are childs to the header table }
+   ext_tabs = 0
+   ext_table = SELECT external_tables . external_table
+               WHERE  area = opt_arr[ choice, 4 ]
+               ORDER  ON order_num
+   WHILE ext_table <> EMPTY DO
+      ext_tabs = ext_tabs + 1
+      ext_tables[ ext_tabs, 1 ] = ext_table
+      ext_tables[ ext_tabs, 2 ] = SELECT external_tables . internal_table
+      ext_tables[ ext_tabs, 4 ] = STRIP(SELECT external_tables.increment_id)
+      ext_tables[ ext_tabs, 5 ] = STRIP(SELECT external_tables.increment_field)
+      ext_tables[ ext_tabs, 6 ] = STRIP(SELECT external_tables.increment_substitute)
+
+{     IF   LENGTH(ext_tables[ext_tabs,4]) = inc_null_length
+      THEN ext_tables[ext_tabs,4] = EMPTY
+      ENDIF
+      IF   LENGTH(ext_tables[ext_tabs,5]) = inc_null_length
+      THEN ext_tables[ext_tabs,5] = EMPTY
+      ENDIF
+}
+      IF   NOT(known_table( ext_tables[ ext_tabs, 1] )) OR
+           NOT(known_table( ext_tables[ ext_tabs, 2] )) OR
+           NOT(tables_ok( ext_tables[ ext_tabs, 1], ext_tables[ ext_tabs, 2] ))
+      THEN return
+      ENDIF
+
+      NEXT external_tables
+      ext_table = SELECT external_tables . external_table
+   ENDWHILE
+
+   IF   ext_tabs < 1
+   THEN flash_message("ERROR: No external tables for this area",TRUE)
+   ELSE handle_ext_tables ( ext_tables, ext_tabs )
+   ENDIF
+
+ENDROUTINE  { Handle Area }
+
+
+ROUTINE  mod_field_array ( ext_field_arr, VALUE ext_fields, VALUE int_tab,
+                           copy_ext_fields )
+
+   DECLARE  e, i, found, int_fields
+   ARRAY    int_field_arr
+
+   get_field_names ( int_tab, int_field_arr )
+   int_fields = size_of_array ( int_field_arr )
+
+   e = 0
+   WHILE e<ext_fields DO
+      e = e+1
+      i = 0
+      found = FALSE
+      WHILE (i<int_fields) AND (NOT found) DO
+         i = i+1
+         IF ext_field_arr[e,1] = int_field_arr[i,1] THEN
+            found = TRUE
+         ENDIF
+      ENDWHILE
+
+      copy_ext_fields[e] = found
+
+   ENDWHILE
+
+ENDROUTINE  { Mod Field Array }
+
+ROUTINE  handle_ext_tables ( ext_tables, VALUE ext_tabs )
+
+   ARRAY ext_keys_arr
+   ARRAY int_keys_arr
+   ARRAY ext_fld_arr
+   ARRAY ext_tab_link
+   ARRAY ext_link_values
+   ARRAY increment_arr
+   ARRAY copy_fields
+
+   IF   NOT( get_links ( ext_tables, ext_tabs, ext_tab_link, links ) )
+   THEN RETURN ( FALSE )
+   ENDIF
+
+   header_table = ext_tables[ 1, 1 ]
+   build_key_array ( header_table, hdr_keys, ext_keys_arr )
+
+{  Setup of table and field to make the external child tables link to }
+   hdr_key = ext_keys_arr [ 1, 1 ]
+
+{  Build up array of field names available from external table }
+   get_field_names ( header_table, ext_fld_arr )
+   ext_fields = size_of_array ( ext_fld_arr )
+
+{  Build up nessesary keys for the internal table }
+   build_key_array ( ext_tables[1,2], int_keys, int_keys_arr )
+
+   mod_field_array ( ext_fld_arr, ext_fields, ext_tables[1,2], copy_fields )
+
+   ww = 48
+   wr = 10
+   wc = 16
+
+   CREATE   OBJECT PROMPT_CLASS_FORM, form
+
+   form . height  =  4
+   form . width   =  ww
+   form . row     =  wr
+   form . column  =  wc
+   form . border  =  TRUE
+   form . header  =  "Copy Area: ":opt_arr[choice,2]:". Enter Item"
+   form . footer  =  "Press ENTER or DO to copy / Exit to quit"
+
+   prompt_string = opt_arr[ choice, 2 ]:" Id:"
+   prompt_row    = 2
+   prompt_col    = 5
+   offset        = 5
+
+   PROMPT   OBJECT the_id
+            BROWSE ON 'header_table'
+            ON    LINE prompt_row FROM LENGTH(prompt_string)+offset+1
+            IN    WINDOW form . window
+
+   form . add_prompt ( the_id )
+
+   form . add_display ( prompt_string,
+                        offset,
+                        prompt_row,
+                        PROMPT_RENDITION_BOLD)
+
+   form . start_prompt ()
+
+   REPEAT
+
+      form . wait_prompt()
+
+      IF (form . get_lastkey () = "DO")    AND
+         (NOT BLANK( the_id . text ))      AND
+          get_sub_keys( hdr_keys, ext_keys_arr, the_id.text, header_table )
+      THEN
+
+         ok = TRUE
+
+{        Make the selected header record available }
+
+         select_array_setup( header_table, hdr_keys, ext_keys_arr )
+         hdr_rows = block_row_size ( gen_block )
+         IF   hdr_rows <> 1
+         THEN flash_message("ERROR: Number of header records:":
+                           strip(hdr_rows):" must be 1",TRUE)
+              ok = FALSE
+         ELSE
+
+{          Setup block row facilities for all external tables }
+           tab_no = 0
+           WHILE (tab_no < ext_tabs) AND (ok) DO
+              tab_no = tab_no + 1
+              int_tab_name = ext_tables [ tab_no, 2 ]
+              status = block_row_initialise( ext_tables[ tab_no, 3 ],
+                                             int_tab_name )
+              IF   status <> EMPTY
+              THEN flash_message("ERROR: Could not initialise block:":
+                                 int_tab_name,TRUE)
+                   ok = FALSE
+              ENDIF
+
+           ENDWHILE
+
+{          Initialise link table id's                   }
+           link_tab = 0
+           WHILE link_tab < links DO
+             link_tab = link_tab + 1
+             ext_link_values[ link_tab, 1 ] = 0
+           ENDWHILE
+
+{          Initialise increment substitution }
+           increments = 0
+
+{          Copy the header record }
+           IF (ok) AND
+              (copy_the_record ( header_table, ext_tables[ 1, 2 ],
+                                 ext_tables[ 1, 3 ],
+                                 ext_tab_link, links,
+                                 ext_fields, ext_fld_arr, copy_fields,
+                                 int_keys  , int_keys_arr,
+                                 ext_tables[1,4], ext_tables[1,5],
+                                 ext_tables[1,6],
+                                 increments, increment_arr ))
+           THEN
+
+{            Handle all child tables }
+             tab = 1
+             WHILE (tab < ext_tabs) AND (ok) DO
+               tab = tab + 1
+               ext_table = ext_tables[ tab, 1 ]
+               int_table = ext_tables[ tab, 2 ]
+               block_row = ext_tables[ tab, 3 ]
+               inc_id    = ext_tables[ tab, 4 ]
+               inc_field = ext_tables[ tab, 5 ]
+               inc_sub   = ext_tables[ tab, 6 ]
+               ok = handle_child_table( ext_table, int_table,
+                                        ext_tab_link, links,
+                                        block_row,
+                                        inc_id, inc_field, inc_sub,
+                                        increments, increment_arr )
+             ENDWHILE
+
+           ELSE ok = FALSE
+           ENDIF
+
+{          Commit and release all block rows to the database }
+           START WRITE TRANSACTION "Ad Area"
+           tab_no = 0
+           WHILE tab_no < ext_tabs DO
+             tab_no = tab_no + 1
+             block_row = ext_tables[ tab_no, 3 ]
+
+{            Block Row Commit                                   }
+             IF   ok
+             THEN status = block_row_update ( block_row )
+             ENDIF
+             status = block_row_release( block_row )
+           ENDWHILE
+
+           COMMIT
+
+         ENDIF
+
+         IF   ok
+         THEN flash_message(the_id.text:" has been copied",TRUE)
+         ELSE flash_message(the_id.text:" has NOT been copied",TRUE)
+         ENDIF
+
+      ENDIF
+
+   UNTIL form . get_lastkey () = "EXIT"
+
+   form . end_prompt ()
+
+ENDROUTINE  { Handle Ext Tables }
+
+
+ROUTINE  handle_child_table( VALUE ext_tab     , VALUE int_tab,
+                                   ext_tab_link, VALUE links,
+                                   block_row   ,
+                             VALUE inc_id      , VALUE inc_field,
+                             VALUE inc_sub     ,
+                                   increments  ,       increment_arr )
+
+   ARRAY   ext_fld_array
+   ARRAY   int_key_array
+   ARRAY   key_values
+   ARRAY   int_fld_array
+   DECLARE ext_fields, int_fields
+   DECLARE int_keys
+
+   get_field_names ( ext_tab, ext_fld_array )
+   ext_fields = size_of_array ( ext_fld_array )
+
+{  Find which field in the child table to use to link and select by }
+   link_found = FALSE
+   link_tab_no = 0
+
+   WHILE ( link_tab_no < links ) AND (NOT(link_found)) DO
+      link_tab_no = link_tab_no + 1
+      IF   ext_tab_link [ link_tab_no, 2 ] = ext_tab
+      THEN master_records = ext_link_values [ link_tab_no, 1 ]
+           link_found = TRUE
+           link_fields = ext_tab_link[ link_tab_no, 3 ]
+      ENDIF
+   ENDWHILE
+
+   IF NOT(link_found) THEN
+      flash_message("ERROR: Could not find link from child table:":
+                     ext_tab, TRUE)
+      return ( FALSE )
+   ENDIF
+
+
+{  Find all relevant records in the child table }
+   build_key_array ( int_tab, int_keys, int_key_array )
+
+   mod_field_array ( ext_fld_array, ext_fields, int_tab, copy_fields )
+
+   master_record = 0
+   WHILE master_record < master_records DO
+      master_record = master_record + 1
+
+      field_no = 0
+      WHILE field_no < link_fields DO
+         field_no = field_no + 1
+         key_values[ field_no, key_fld_pos ] =
+                  ext_tab_link[link_tab_no,(field_no*2)+3]
+         key_values[ field_no, key_val_pos ] =
+                  ext_link_values[link_tab_no,
+                                 (master_record-1)*link_fields+field_no+1]
+      ENDWHILE
+
+      select_array_setup ( ext_tab, link_fields, key_values)
+      rc = block_row_first( gen_block )
+      child_records = block_row_size ( gen_block )
+
+      child_record = 0
+      WHILE (child_record < child_records) DO
+         child_record = child_record + 1
+
+         IF   NOT (copy_the_record ( ext_tab, int_tab, block_row,
+                                     ext_tab_link, links,
+                                     ext_fields, ext_fld_array, copy_fields,
+                                     int_keys  , int_key_array,
+                                     inc_id    , inc_field, inc_sub,
+                                     increments, increment_arr ) )
+         THEN select_array_release()
+              RETURN ( FALSE )
+         ENDIF
+
+         rc = block_row_next ( gen_block )
+
+      ENDWHILE
+
+      select_array_release()
+
+   ENDWHILE
+
+   RETURN ( TRUE )
+
+ENDROUTINE     { Handle Child Table }
+
+
+ROUTINE  known_table ( tab_name )
+
+   IF   valid_table( tab_name )
+   THEN return ( TRUE )
+   ELSE flash_message("ERROR in setup. Table:":tab_name:
+                      " not known to SMP",TRUE)
+        return ( FALSE )
+   ENDIF
+
+ENDROUTINE  { Known Table }
+
+
+{  Check if all fields in the external table match some field in the internal }
+ROUTINE  tables_ok ( VALUE ext, VALUE int )
+
+   ARRAY fld_arr_int
+   ARRAY fld_arr_ext
+   DECLARE  hit_count
+
+   get_field_names ( ext, fld_arr_ext )
+   get_field_names ( int, fld_arr_int )
+
+   ext_rows = size_of_array ( fld_arr_ext )
+   int_rows = size_of_array ( fld_arr_int )
+
+   ext_row = 0
+   hit_count = 0
+   WHILE ext_row < ext_rows DO
+      ext_row = ext_row + 1
+      int_row = 0
+      field_ok = FALSE
+      WHILE (int_row < int_rows) AND (NOT(field_ok)) DO
+         int_row = int_row + 1
+         IF   fld_arr_ext[ext_row,1] = fld_arr_int[int_row,1]
+         THEN field_ok = TRUE
+              hit_count = hit_count + 1
+         ENDIF
+      ENDWHILE
+
+{**DS1077}
+{     IF   not(field_ok)
+      THEN flash_message("ERROR in setup. Mismatch in field name:":
+                          fld_arr_ext[ext_row,1],TRUE)
+           RETURN ( FALSE )
+      ENDIF    }
+{**DE1077}
+
+   ENDWHILE
+
+   IF   hit_count = 0
+   THEN flash_message("Error: No common fields to copy",TRUE)
+        RETURN ( FALSE )
+   ELSE RETURN ( TRUE  )
+   ENDIF
+
+ENDROUTINE  { Tables Ok }
+
+
+ROUTINE  copy_the_record ( VALUE ext_tab,       VALUE int_tab, block_row,
+                                 ext_tab_link,  VALUE links,
+                           VALUE no_ext_fields,       ext_field_array,
+                                                      copy_ext_fields,
+                           VALUE no_int_keys  ,       int_key_array,
+                           VALUE inc_id,        VALUE inc_field,
+                           VALUE inc_sub,
+                                 inc_count,           inc_conv_arr )
+
+   IF   no_int_keys < 1
+   THEN flash_message("ERROR: No internal keys for table:":int_tab,TRUE)
+        return ( FALSE )
+   ENDIF
+
+{  Build up the unique key for the record to insert }
+   key_no = 0
+   key_string = ""
+   WHILE key_no < no_int_keys DO
+      key_no = key_no + 1
+      key_val = block_row_field_select( gen_block, int_key_array[key_no,1] )
+
+      convert_increment( key_val, ext_tab, int_key_array[key_no,1],
+                         inc_id, inc_field, inc_sub, inc_count, inc_conv_arr )
+      key_string = key_string : PAD(key_val," ",int_key_array[key_no,2])
+   ENDWHILE
+
+   status = block_row_create_last( block_row, key_string )
+   IF   NOT(status)
+   THEN flash_message("ERROR: Could not insert block record",TRUE)
+        return ( FALSE )
+   ENDIF
+   status = block_row_last( block_row )
+   IF status <> EMPTY THEN
+      flash_message("ERROR: Could not move to last record. Message:":
+                     status, TRUE)
+      return ( FALSE )
+   ENDIF
+
+{  Save field values to join by in any later child tables }
+   link_tab = 0
+   WHILE link_tab < links DO
+      link_tab = link_tab + 1
+      IF   ext_tab_link [ link_tab, 1 ] = ext_tab
+      THEN
+         link_vals = ext_link_values[link_tab,1] + 1
+         ext_link_values[link_tab,1] = link_vals
+         link_fields = ext_tab_link [ link_tab, 3 ]
+         field_no = 0
+         WHILE field_no < link_fields DO
+            field_no = field_no + 1
+            field_name = ext_tab_link[ link_tab, 2 + (field_no*2) ]
+            key_val = block_row_field_select( gen_block, field_name )
+            ext_link_values[link_tab,link_fields*(link_vals-1)+1+field_no] =
+                  key_val
+         ENDWHILE
+      ENDIF
+   ENDWHILE
+
+   row = 0
+   while row < no_ext_fields do
+    row = row + 1
+    IF copy_ext_fields[row] THEN
+      the_field = ext_field_array [ row, 1 ]
+      val = block_row_field_select( gen_block, the_field )
+
+{     Check if this field is part of the unique key }
+{     If so it is not to be updated                 }
+      the_key = 0
+      no_key = TRUE
+      WHILE (the_key < no_int_keys) AND (no_key) DO
+         the_key = the_key + 1
+         IF   the_field = int_key_array[the_key,1]
+         THEN no_key = FALSE
+         ENDIF
+      ENDWHILE
+
+      get_field_details 'int_tab'.'the_field', "FIELD_SIZE", field_size
+      get_field_details 'int_tab'.'the_field', "DATA_TYPE" , data_type
+
+      if not(blank(val)) AND (val <> EMPTY) AND
+         ( (length(val)<=field_size) OR
+           ((data_type="Date") OR (data_type="Boolean"))
+         ) AND
+         (NOT(ext_field_array [ row , 2 ]))
+      then
+
+        convert_increment( val, ext_tab, the_field, inc_id,
+                           inc_field, inc_sub, inc_count, inc_conv_arr )
+
+{       Check if this field do link to something - if so then check     }
+{       if the value is present in the link table                       }
+
+        if get_link_table(ext_tab,int_tab,the_field,link_tab,link_fld) THEN
+
+           check_ok = EMPTY
+           check_ok = SELECT 'link_tab'.'link_fld'
+                      WHERE  'link_fld' = val
+           IF   check_ok <> val
+           THEN IF not_in_buffer( link_tab, link_fld, val ) THEN
+                   flash_message("ERROR: Missing identifier:":val:
+                                 " in ":link_tab:"/":link_fld,TRUE)
+                   return ( FALSE )
+                ENDIF
+           ENDIF
+
+        endif
+
+        IF no_key THEN
+
+           status = block_row_field_assign ( block_row, the_field, val )
+           IF   status <> EMPTY
+           THEN flash_message("ERROR: Could not update field:":the_field:
+                              ". Message:":status,TRUE)
+                return ( FALSE )
+           ENDIF
+        ENDIF
+
+      endif
+    ENDIF   { Check if the field is to be copied or not }
+
+   endwhile
+
+   RETURN ( TRUE )
+
+ENDROUTINE     { Copy The Record }
+
+
+ROUTINE  get_link_table ( VALUE ext_tab, VALUE int_tab, VALUE the_field,
+                          link_tab, link_fld )
+   DECLARE  ref_val
+
+   get_field_details 'int_tab'.'the_field', "LINK_TABLE", link_tab
+   get_field_details 'int_tab'.'the_field', "LINK_FIELD", link_fld
+
+{  Handle special data links not included in the data model links       }
+   IF   ((int_tab = "TEST_SCHED_ENTRY") AND (the_field="ANALYSIS_ID"))
+   THEN link_fld = "IDENTITY"
+        ref_val = block_row_field_select( gen_block, "IS_ANALYSIS" )
+        IF   ref_val
+        THEN link_tab = "ANALYSIS"
+        ELSE link_tab = "TEST_SCHED_HEADER"
+        ENDIF
+   ENDIF
+
+{  Check if this link is already handled in the table links found in get_links	}
+   if (link_tab <> EMPTY) AND (link_fld <> EMPTY)
+   then return(TRUE)
+   else return(FALSE)
+   endif
+
+ENDROUTINE
+
+ROUTINE  not_in_buffer ( VALUE tab, VALUE fld, VALUE val )
+
+   DECLARE  t, r, bl_row, rc, not_found, bl_val
+
+   not_found = TRUE
+
+   t = 0
+   WHILE (t < ext_tabs) AND (not_found) DO
+      t = t + 1
+      IF ext_tables[t,2] = tab THEN
+         bl_row = ext_tables[t,3]
+         rc = block_row_first( bl_row )
+         r = 0
+         WHILE (r < block_row_size( bl_row )) AND (not_found) DO
+            r = r + 1
+            bl_val = block_row_field_select ( bl_row, fld )
+            IF bl_val = val THEN
+               not_found = FALSE
+            ENDIF
+            rc = block_row_next ( bl_row )
+         ENDWHILE
+      ENDIF
+   ENDWHILE
+
+   return ( not_found )
+
+ENDROUTINE
+
+
+ROUTINE  convert_increment( inc_val, VALUE ext_tab, VALUE the_field,
+                            VALUE inc_id, VALUE inc_field, VALUE inc_sub,
+                            inc_count, inc_conv_arr )
+   IF (NOT BLANK(inc_id)) AND (NOT BLANK(inc_field)) THEN
+
+      IF (inc_sub = the_field) THEN
+         inc_no = 0
+         not_found = TRUE
+         WHILE (inc_no < inc_count) AND (not_found) DO
+            inc_no = inc_no + 1
+            IF (inc_conv_arr[inc_no,1] = inc_id) AND
+               (inc_conv_arr[inc_no,2] = inc_val)
+            THEN not_found = FALSE
+                 inc_val = inc_conv_arr[inc_no,3]
+            ENDIF
+         ENDWHILE
+
+         IF not_found THEN
+            inc_count = inc_count + 1
+            next_inc = INCREMENT( inc_id, inc_field )
+            inc_conv_arr[inc_count,1] = inc_id
+            inc_conv_arr[inc_count,2] = inc_val
+            inc_conv_arr[inc_count,3] = next_inc
+            inc_val = next_inc
+         ENDIF
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE     { Convert Increment }
+
+
+ROUTINE  build_key_array ( VALUE tab_name, no_of_keys, key_array_extended )
+
+   ARRAY key_array
+
+   get_table_details 'tab_name', "KEY0_FIELD", key_array
+   no_of_keys = size_of_array ( key_array )
+   the_key = 0
+   WHILE the_key < no_of_keys DO
+      the_key = the_key + 1
+      GET_FIELD_DETAILS 'tab_name'.'key_array[the_key]', "FIELD_SIZE", size
+      key_array_extended [ the_key, 1 ] = key_array [ the_key ]
+      key_array_extended [ the_key, 2 ] = size
+   ENDWHILE
+
+ENDROUTINE     { Build Key Array }
+
+ROUTINE  get_links ( ext_tab_arr, no_of_tabs, ext_link_arr, no_of_links )
+
+   ARRAY key_fields
+
+   no_of_links = 0
+
+   tab = 1
+   WHILE tab < no_of_tabs DO
+      tab = tab + 1
+      ext_tab = ext_tab_arr[ tab, 1 ]
+      get_table_details 'ext_tab', "KEY0_FIELD", key_fields
+      keys = size_of_array( key_fields )
+      common_link_table = EMPTY
+      key_count = 0
+      WHILE (key_count < keys) DO
+         key_count = key_count + 1
+         field_name = key_fields[ key_count ]
+         get_field_details 'ext_tab'.'field_name', "LINK_TABLE", link_tab
+         get_field_details 'ext_tab'.'field_name', "LINK_FIELD", link_fld
+
+         IF (link_tab <> EMPTY) AND (link_fld <> EMPTY) THEN
+
+            IF   common_link_table = EMPTY
+            THEN common_link_table = link_tab
+
+               not_found = TRUE
+               tab_link = 0
+               WHILE (tab_link < tab-1) AND (not_found) DO
+                  tab_link = tab_link + 1
+                  IF   ext_tab_arr [ tab_link, 2 ] = link_tab
+                  THEN not_found = FALSE
+                       no_of_links = no_of_links + 1
+                       ext_link_arr[no_of_links,1] = ext_tab_arr [ tab_link, 1 ]
+                       ext_link_arr[no_of_links,2] = ext_tab
+                       ext_link_arr[no_of_links,3] = 0
+                  ENDIF
+               ENDWHILE
+               IF not_found THEN
+                  flash_message("ERROR: No link found to any previous ":
+                                "tables for:":ext_tab,TRUE)
+                  return ( FALSE )
+               ENDIF
+
+            ELSE
+               IF   link_tab <> common_link_table
+               THEN flash_message("ERROR: Not all unique keys for table:":
+                                  ext_tab:" link to same master table",TRUE)
+                    return ( FALSE )
+               ENDIF
+            ENDIF
+
+            link_fields = ext_link_arr [ no_of_links, 3 ] + 1
+            pos = 2 + (link_fields * 2)
+            ext_link_arr[no_of_links,3]     = link_fields
+            ext_link_arr[no_of_links,pos]   = link_fld
+            ext_link_arr[no_of_links,pos+1] = field_name
+
+         ENDIF
+      ENDWHILE
+
+   ENDWHILE
+
+   return ( TRUE )
+
+ENDROUTINE     { Get Links }
+
+
+ROUTINE  get_sub_keys ( VALUE keys, key_arr, VALUE id, VALUE tab_name )
+
+   ARRAY sel_arr
+   ARRAY val_arr
+
+   key_arr [ 1, 3 ] = id
+   no_err = TRUE
+
+   key_no = 1
+   WHILE (key_no < keys) AND (no_err) DO
+
+      select_array_setup( tab_name, key_no, key_arr)
+
+      key_no = key_no + 1
+
+      rc = block_row_first  ( gen_block )
+      IF   check_empty_rc( rc, "Could not find first row" )
+      THEN
+         rc = TRUE
+         vals = 0
+         WHILE rc DO
+            vals = vals + 1
+            val = block_row_field_select( gen_block, key_arr[key_no,1] )
+            val_arr [ vals, 1 ] = val
+            rc = block_row_next ( gen_block )
+         ENDWHILE
+      ELSE no_err = FALSE
+      ENDIF
+
+      IF   no_err
+      THEN no_err = get_sub_key ( vals, val_arr, key_arr, key_no )
+      ENDIF
+
+      select_array_release()
+
+   ENDWHILE
+
+   RETURN ( no_err )
+
+ENDROUTINE     { Get Sub Keys }
+
+
+ROUTINE  get_sub_key ( VALUE vals, val_arr, key_arr, VALUE key_no )
+
+   ARRAY local_arr
+
+   val = 0
+   WHILE val < vals DO
+      val = val + 1
+      local_arr [ val, 1 ] = val_arr [ val, 1 ]
+      local_arr [ val, 2 ] = ""
+   ENDWHILE
+
+   t = ""
+   k = 0
+   WHILE k < key_no-1 DO
+      k = k + 1
+      IF k > 1 THEN
+         t = t : "/"
+      ENDIF
+      t = t : key_arr[k,3]
+   ENDWHILE
+
+   CREATE   OBJECT PROMPT_CLASS_FORM, get_sub
+
+   ch = 5
+
+   get_sub . height   =  ch
+   get_sub . width    =  ww
+   get_sub . row      =  wr+ch
+   get_sub . column   =  wc
+   get_sub . border   =  TRUE
+   get_sub . header   =  "Subkey for:" : t
+   get_sub . footer   =  "Press DO to select / Exit to quit"
+
+   key_pr = "Enter sub key:"
+
+   PROMPT   OBJECT get_sub . prompt_objects [ 1 ]
+            ON     LINE prompt_row FROM LENGTH(key_pr)+offset+1
+            IN     WINDOW get_sub . window
+            CHOOSE OUTOF local_arr
+
+   get_sub . add_display (  key_pr,
+                            offset,
+                            prompt_row,
+                            PROMPT_RENDITION_BOLD)
+
+   get_sub . start_prompt()
+
+   REPEAT
+
+      get_sub . wait_prompt()
+
+   UNTIL ( get_sub . get_lastkey () = "EXIT" ) OR
+         ( NOT BLANK( get_sub.prompt_objects[1].text ))
+
+   get_sub . end_prompt()
+
+   chosen_sub = get_sub.prompt_objects[1].text
+
+   IF   BLANK( chosen_sub ) OR
+        (get_sub . get_lastkey () = "EXIT")
+   THEN RETURN ( FALSE )
+   ELSE key_arr [ key_no, 3 ] = chosen_sub
+        RETURN ( TRUE  )
+   ENDIF
+
+ENDROUTINE     { Get Sub Key  }
+
+
+ROUTINE  select_array_setup ( VALUE block_table, VALUE keys, key_array)
+
+   ARRAY sel_array
+
+   rc = block_row_initialise( gen_block, block_table )
+   IF   not ( check_empty_rc(rc,"Initialising block") )
+   THEN return ( FALSE )
+   ENDIF
+
+   got_key = 0
+   arr_row = 0
+   WHILE (got_key < keys) DO
+      IF got_key > 1 THEN
+         arr_row = arr_row + 1
+         sel_arr [ arr_row, 1 ] = ARRAY_SELECT_AND
+      ENDIF
+      got_key = got_key + 1
+      arr_row = arr_row + 1
+      sel_array [ arr_row, 1 ] = ARRAY_SELECT_EQ
+      sel_array [ arr_row, 2 ] = key_array [ got_key, key_fld_pos ]
+      sel_array [ arr_row, 3 ] = key_array [ got_key, key_val_pos ]
+   ENDWHILE
+
+   rc = block_row_select ( gen_block, sel_array, FALSE )
+
+ENDROUTINE     { Select Array Setup }
+
+
+ROUTINE  select_array_release
+   rc = block_row_release( gen_block )
+   RETURN ( check_empty_rc(rc,"Releasing block") )
+ENDROUTINE     { Select Array Release }
+
+
+ROUTINE  check_empty_rc ( VALUE rc, VALUE mess )
+
+   IF   rc <> EMPTY
+   THEN flash_message("ERROR:":mess:"-":rc,TRUE)
+        RETURN ( FALSE )
+   ELSE RETURN ( TRUE  )
+   ENDIF
+
+ENDROUTINE     { Check Empty Rc }

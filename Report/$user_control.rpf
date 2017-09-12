@@ -1,0 +1,1139 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $USER_CONTROL.RPF
+*
+* Purpose       : To implement the following User and System Setup Menu
+*                 options:
+*
+*                     AUU - Add User                  (System)
+*                     DUU - Delete User               (System)
+*                     CPU - Change Your Password      (User)
+*                     SCA - Change Any Users Password (System)
+*                     DPX - Define Text Printer       (User)
+*                     DLX - Define Label Printer      (User)
+*                     CAU - Change Your Access Level  (User)
+*
+* Document Ref. : SE/T/TVGL-WORK-USERCON/1/4
+*
+* Specification : SE/T/TVGL-WORK-USERCON/1/3
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : N/A
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_USER_LOGIN
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $USER_ENVIRONMENT
+
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+ENABLE WINDOWS
+
+{* CONSTANTS ******************************************************************}
+
+CONSTANT window_margin = 5
+CONSTANT window_row = 10
+
+{* VARIBLES *******************************************************************}
+
+DECLARE global_name
+
+add_user ( 3 )
+
+{******************************************************************************}
+
+ROUTINE add_user ( VALUE menu_numb )
+
+{
+* Routine to add an operator to the password table with an initial password
+*
+*******************************************************************************}
+
+DECLARE add_user_window , id_prompt , pass_prompt , window_width , header_str ,
+    footer_str , dummy , user_length , pass_length , max_id_len ,  ver_prompt ,
+    max_prompt_len , menu_prompt1, menu_prompt2 , menu_prompt3 , can_leave ,
+    window_height , for_client
+
+    get_user_id_lengths ( user_length , dummy , pass_length )
+
+    max_id_len = find_max_number ( user_length , pass_length )
+
+    header_str  = GET_USER_MESSAGE ( "USER_CONTROL_ADD_USER_HEADER" , 1 )
+    footer_str  = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    id_prompt   = GET_USER_MESSAGE ( "USER_CONTROL_ADD_ID_PROMPT" , 1 )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        strip_the_colon ( id_prompt )
+        window_height = 1
+        for_client = TRUE
+        max_prompt_len = STRINGLENGTH ( id_prompt )
+
+    ELSE
+
+        pass_prompt = GET_USER_MESSAGE ( "USER_CONTROL_ADD_PASS_PROMPT" , 1 )
+        ver_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_ADD_VER_PROMPT" , 1 )
+
+        max_prompt_len = find_max_number ( STRINGLENGTH ( id_prompt ) ,
+                                           STRINGLENGTH ( pass_prompt ) )
+        max_prompt_len = find_max_number ( max_prompt_len            ,
+                                           STRINGLENGTH ( ver_prompt ) )
+
+        id_prompt   = PAD ( id_prompt   , " " , max_prompt_len )
+        pass_prompt = PAD ( pass_prompt , " " , max_prompt_len )
+        ver_prompt  = PAD ( ver_prompt  , " " , max_prompt_len )
+
+        window_height = 3
+        for_client = FALSE
+
+    ENDIF
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      max_prompt_len ,
+                                      max_id_len )
+
+        CREATE OBJECT "STD_FORM", add_user_window
+
+    add_user_window . HEIGHT       = window_height
+    add_user_window . WIDTH        = window_width
+    add_user_window . COLUMN       = window_position ( window_width )
+    add_user_window . ROW          = window_row
+    add_user_window . HEADER       = header_str
+    add_user_window . FOOTER       = footer_str
+    add_user_window . HELP_CONTEXT = "$USER_CONTROL_ADD_USER"
+    add_user_window . user_info    = for_client
+
+    add_user_window . add_frame ( "",1,1,window_height,window_width )
+
+    PROMPT OBJECT menu_prompt1
+           AT max_prompt_len + 2 , 1
+           BROWSE ON PERSONNEL
+           WITH ( always_validate    = TRUE            ,
+                  validation_routine = "valid_user_id" )
+
+    add_user_window . add_display ( id_prompt , 2 , 1 ,
+                                    PROMPT_RENDITION_BOLD )
+
+    add_user_window . add_prompt ( menu_prompt1 )
+
+    add_user_window . validation_routine   = "add_user_validation"
+
+    IF NOT for_client THEN
+
+            PROMPT OBJECT menu_prompt2
+                    AT max_prompt_len + 2, 2
+                    FORMAT password . cryptpass
+                    WITH ( silent_mode = TRUE )
+
+            PROMPT OBJECT menu_prompt3
+                    AT max_prompt_len + 2, 3
+                    FORMAT password . cryptpass
+                    WITH ( silent_mode = TRUE )
+
+            add_user_window . add_display ( pass_prompt , 2 , 2 ,
+                                            PROMPT_RENDITION_BOLD )
+
+            add_user_window . add_prompt ( menu_prompt2 )
+
+            add_user_window . add_display ( ver_prompt , 2 , 3 ,
+                                            PROMPT_RENDITION_BOLD )
+
+            add_user_window . add_prompt ( menu_prompt3 )
+
+    ENDIF
+
+    add_user_window . start_prompt ( )
+
+    REPEAT
+
+        add_user_window . wait_prompt ( )
+
+        IF ( menu_prompt1 . text = " "                 ) AND
+           ( add_user_window . get_lastkey () = "EXIT" ) AND
+           ( GLOBAL ( "LABTABLE_MODE" ) = "FALSE"      ) THEN
+
+                        can_leave = TRUE
+
+        ELSEIF ( GLOBAL ( "LABTABLE_MODE" ) = "TRUE"   ) THEN
+
+            can_leave = TRUE
+        ELSE
+            clear_prompts ( add_user_window )
+            can_leave = FALSE
+        ENDIF
+
+    UNTIL can_leave
+
+    add_user_window . end_prompt ( )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE clear_prompts ( self )
+
+DECLARE prompt_count , num_prompt
+
+    self . set_position ( 1 )
+
+    num_prompt  = size_of_array ( self . prompt_objects  )
+
+    prompt_count = 0
+
+    WHILE ( prompt_count < num_prompt ) DO
+
+        prompt_count = prompt_count + 1
+
+        self . prompt_objects [ prompt_count ] . set_text ( " " )
+
+    ENDWHILE
+
+ENDROUTINE
+
+
+{****************************************************************************}
+
+ROUTINE valid_user_id ( self )
+
+{  Routine to check if a valid operator exist on the system                 *
+*  Returns TRUE or FALSE as comfirmation                                    *}
+{****************************************************************************}
+
+DECLARE status , returned_value
+
+        status = SELECT password . identity
+                  WHERE identity  = self . value
+
+        IF ( status <> EMPTY ) THEN
+                 flash_message ( "DB_ID_EXISTS" , TRUE )
+                 returned_value = FALSE
+        ELSE
+                 returned_value = TRUE
+        ENDIF
+
+        RETURN ( returned_value )
+
+ENDROUTINE
+
+
+{**************************************************************************}
+
+ROUTINE add_user_validation ( self )
+
+{
+*
+*   Routine to add the new operator to the system.
+*   The add user routine calls this routine to add
+*   the new operator to the system
+*
+{**************************************************************************}
+
+DECLARE valid, status , new_user_id , password , verify_password
+
+    valid = FALSE
+    new_user_id     = self . prompt_objects [ 1 ] . value
+
+    IF self . user_info THEN
+
+        valid = user_login_client_change_any_password ( new_user_id )
+
+        IF valid THEN
+            flash_message ( "SMP_K_SUCCESS" , FALSE )
+        ELSE
+            flash_message ( "SMP_K_USERABORT" , FALSE )
+        ENDIF
+
+    ELSE
+
+        password        = self . prompt_objects [ 2 ] . value
+        verify_password = self . prompt_objects [ 3 ] . value
+
+        IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+            IF password = verify_password THEN
+
+                status = user_login_add_user ( new_user_id , password )
+
+                IF ( status = EMPTY ) THEN
+
+                    flash_message ( "SMP_K_SUCCESS" , FALSE )
+                    valid = TRUE
+
+                ELSE
+                    flash_message ( status , TRUE )
+                ENDIF
+
+            ELSE
+                flash_message ( "USER_CONTROL_PASS_MISMATCH" , TRUE )
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+
+    IF valid THEN
+
+        IF NOT user_environment_create ( new_user_id ) THEN
+
+            flash_message( "USER_CONTROL_ERR_ENVIRONMENT" , TRUE )
+            valid = FALSE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_user ( VALUE menu_numb )
+
+{
+* Routine to delete an operator from the password table
+*******************************************************************************}
+
+DECLARE delete_user_window , menu_prompt , id_prompt , dummy , can_leave ,
+    user_length , window_width, max_prompt_len , header_str , footer_str
+
+    get_user_id_lengths ( dummy , user_length , dummy )
+
+    header_str  = GET_USER_MESSAGE ( "USER_CONTROL_DELETE_USER_HEADER" , 1 )
+    footer_str  = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    id_prompt   = GET_USER_MESSAGE ( "USER_CONTROL_DELETE_PROMPT" , 1 )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+        strip_the_colon ( id_prompt   )
+    ENDIF
+
+    max_prompt_len = STRINGLENGTH ( id_prompt )
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      STRINGLENGTH ( id_prompt )  ,
+                                      user_length )
+
+    CREATE OBJECT "STD_FORM", delete_user_window
+
+        delete_user_window . HEIGHT = 1
+        delete_user_window . WIDTH = window_width
+        delete_user_window . COLUMN = window_position ( window_width )
+        delete_user_window . ROW  = window_row
+    delete_user_window . HEADER = header_str
+    delete_user_window . FOOTER = footer_str
+        delete_user_window . HELP_CONTEXT = "$USER_CONTROL_DELETE_PROMPT"
+
+    delete_user_window . return_behaviour = FORM_RETURN_STAY
+
+        delete_user_window . add_frame ( "",1,1,1,window_width )
+
+        PROMPT OBJECT menu_prompt
+                AT max_prompt_len + 2 , 1
+                BROWSE ON PASSWORD
+                WITH ( always_validate = TRUE )
+
+        delete_user_window . add_display ( id_prompt , 2 , 1 ,
+                                           PROMPT_RENDITION_BOLD )
+
+        delete_user_window . add_prompt ( menu_prompt )
+
+        delete_user_window . validation_routine = "del_validation"
+
+        delete_user_window . start_prompt ( )
+
+        REPEAT
+            delete_user_window . wait_prompt ( )
+
+                IF ( menu_prompt . text = " "                     ) AND
+           ( delete_user_window . get_lastkey () = "EXIT" ) AND
+           ( GLOBAL ( "LABTABLE_MODE" ) = "FALSE"         ) THEN
+
+                        can_leave = TRUE
+
+        ELSEIF ( GLOBAL ( "LABTABLE_MODE" ) = "TRUE"      ) THEN
+
+            can_leave = TRUE
+        ELSE
+            clear_prompts ( delete_user_window )
+                        can_leave = FALSE
+        ENDIF
+
+    UNTIL can_leave
+
+        delete_user_window . end_prompt ( )
+
+ENDROUTINE
+
+
+{**************************************************************************}
+
+ROUTINE del_validation ( self )
+
+{  deletes the operator obtained at the delete user routine and returns
+*  comfirmation                                                           *}
+{**************************************************************************}
+
+DECLARE valid, status , user_id
+
+    valid = FALSE
+    user_id = self . prompt_objects [ 1 ] . value
+
+    IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+        status = user_login_delete_user ( user_id )
+
+        IF ( status = EMPTY ) THEN
+
+            valid = TRUE
+
+        ELSE
+
+            flash_message ( status , TRUE )
+            screen_end_update ( )
+            SET GLOBAL "LASTKEY" TO "CONTINUE"
+
+        ENDIF
+
+    ENDIF
+
+    IF valid THEN
+
+        valid = user_environment_delete( user_id )
+
+    ENDIF
+
+    IF valid THEN
+        flash_message ( "SMP_K_SUCCESS" , FALSE )
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE change_password ( VALUE menu_numb )
+
+{
+*
+* Decide wether to call VGL or client password change code.
+*
+********************************************************************************}
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+        user_login_client_change_password ( )
+    ELSE
+        change_password_character_cell ( )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE change_password_character_cell
+
+{
+*
+* Routine to allow the current operator to change their password
+*
+********************************************************************************}
+
+DECLARE change_pass_window , old_prompt , new_prompt , ver_prompt ,
+    old_pass , new_pass , new_pass2 , pass_length , footer_str ,
+    max_prompt_len , window_width , dummy , header_str
+
+    get_user_id_lengths ( dummy , dummy , pass_length )
+
+    header_str  = GET_USER_MESSAGE ( "USER_CONTROL_CHANGE_PASS_HEADER" , 1 )
+    footer_str  = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    old_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_OLD" , 1 )
+    new_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_NEW" , 1 )
+    ver_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_VER" , 1 )
+
+    max_prompt_len = find_max_number ( STRINGLENGTH ( old_prompt ) ,
+                                       STRINGLENGTH ( new_prompt ) )
+
+    max_prompt_len = find_max_number ( max_prompt_len              ,
+                                       STRINGLENGTH ( ver_prompt ) )
+
+    old_prompt = PAD ( old_prompt , " " , max_prompt_len )
+    new_prompt = PAD ( new_prompt , " " , max_prompt_len )
+    ver_prompt = PAD ( ver_prompt , " " , max_prompt_len )
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      max_prompt_len ,
+                                      pass_length )
+
+    CREATE OBJECT "STD_FORM", change_pass_window
+
+    change_pass_window . HEIGHT = 3
+    change_pass_window . WIDTH = window_width
+    change_pass_window . COLUMN = window_position ( window_width )
+    change_pass_window . ROW  = window_row
+    change_pass_window . HEADER = header_str
+    change_pass_window . FOOTER = footer_str
+    change_pass_window . HELP_CONTEXT = "$USER_CONTROL_CHANGE_PASS"
+
+    change_pass_window . add_frame ( "",1,1,3,window_width )
+
+    PROMPT OBJECT old_pass
+                AT max_prompt_len + 2 , 1
+                FORMAT password . cryptpass
+                WITH ( silent_mode = TRUE )
+
+    PROMPT OBJECT new_pass
+                AT max_prompt_len + 2 , 2
+                FORMAT password . cryptpass
+                WITH ( silent_mode = TRUE )
+
+    PROMPT OBJECT new_pass2
+                AT max_prompt_len + 2 , 3
+                FORMAT password . cryptpass
+                WITH ( silent_mode = TRUE )
+
+    change_pass_window . add_display ( old_prompt , 2 , 1 ,
+                                           PROMPT_RENDITION_BOLD )
+
+    change_pass_window . add_prompt ( old_pass )
+
+    change_pass_window . add_display ( new_prompt , 2 , 2 ,
+                                           PROMPT_RENDITION_BOLD )
+
+    change_pass_window . add_prompt ( new_pass )
+
+    change_pass_window . add_display ( ver_prompt , 2 , 3 ,
+                                           PROMPT_RENDITION_BOLD )
+
+    change_pass_window . add_prompt ( new_pass2 )
+
+    change_pass_window . validation_routine = "change_validation"
+
+    change_pass_window . start_prompt ( )
+    change_pass_window . wait_prompt ( )
+    change_pass_window . end_prompt ( )
+
+ENDROUTINE
+
+{**************************************************************************}
+
+ROUTINE change_validation ( self )
+
+{ This routine checks the new password obtained in the change password
+* routine to be valid and makes the neccesssary changes                   *}
+{**************************************************************************}
+
+DECLARE valid, status , oldpass , newpass1 , newpass2
+
+        valid = FALSE
+        oldpass = self . prompt_objects [ 1 ] . value
+        newpass1 = self . prompt_objects [ 2 ] . value
+        newpass2 = self . prompt_objects [ 3 ] . value
+
+        IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+                IF ( newpass1 = newpass2 ) THEN
+
+                        IF user_login_change_password ( oldpass , newpass1 , status ) THEN
+                                flash_message ( "SMP_K_SUCCESS" , FALSE )
+                                valid = TRUE
+                        ELSE
+                                flash_message ( status , TRUE )
+                        ENDIF
+
+                ELSE
+                        flash_message ( "USER_CONTROL_PASS_MISMATCH" , TRUE )
+                ENDIF
+        ENDIF
+
+        RETURN ( valid )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE change_any_password ( VALUE menu_numb )
+JOIN LIBRARY expire_pwd
+
+{
+* Decide wether to call VGL or client password change code.
+*
+*******************************************************************************}
+
+	DECLARE user_id, password, done, status
+
+	done = FALSE
+
+	IF GLOBAL ( "PARAM_ACTIVE" )
+
+		PROMPT FOR user_id
+
+		IF GLOBAL ("PARAM_ACTIVE" )
+
+			PROMPT FOR password
+
+			IF user_login_change_any_password ( user_id, password, status ) THEN
+
+				done = TRUE
+				flash_message ( "SMP_K_SUCCESS", FALSE )
+
+			ELSE
+
+				flash_message ( status, TRUE )
+
+			ENDIF
+		ELSE
+
+			change_any_password_character_cell ( )
+
+		ENDIF
+
+	ENDIF
+
+	IF ( NOT done )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+        user_login_client_change_any_password ( EMPTY )
+{**AS1762 HBe 19-12-2006}
+        expire_password ( EMPTY )
+{**AE1762}
+    ELSE
+        change_any_password_character_cell ( )
+
+		ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE change_any_password_character_cell
+
+{
+* Routine to enable the system user to change any user's password
+*
+*******************************************************************************}
+
+DECLARE change__any_pass_win , id_prompt , menuprompt1 , menuprompt2 , dummy ,
+    pass_prompt , window_width , header_str , footer_str , can_leave ,
+    user_length , pass_length , max_id_len , max_prompt_len , menuprompt3,
+    ver_prompt
+
+    get_user_id_lengths ( dummy , user_length , pass_length )
+
+    max_id_len = find_max_number ( user_length , pass_length )
+
+    header_str  = GET_USER_MESSAGE ( "USER_CONTROL_CHANGE_ANY_HEADER" , 1 )
+    footer_str  = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    id_prompt   = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_USER" , 1 )
+    pass_prompt = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_NEW" , 1 )
+    ver_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_CH_PASS_VER" , 1 )
+
+    strip_the_colon ( id_prompt   )
+    strip_the_colon ( pass_prompt )
+    strip_the_colon ( ver_prompt  )
+
+    max_prompt_len = find_max_number ( STRINGLENGTH ( id_prompt   ) ,
+                                       STRINGLENGTH ( pass_prompt ) )
+    max_prompt_len = find_max_number ( max_prompt_len            ,
+                                       STRINGLENGTH ( ver_prompt ) )
+
+    id_prompt   = PAD ( id_prompt   , " " , max_prompt_len )
+    pass_prompt = PAD ( pass_prompt , " " , max_prompt_len )
+    ver_prompt  = PAD ( ver_prompt , " " , max_prompt_len )
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      max_prompt_len ,
+                                      max_id_len )
+
+        CREATE OBJECT "STD_FORM", change_any_pass_win
+
+        change_any_pass_win . HEIGHT = 3
+        change_any_pass_win . WIDTH = window_width
+        change_any_pass_win . COLUMN = window_position ( window_width )
+        change_any_pass_win . ROW  = window_row
+    change_any_pass_win . HEADER = header_str
+    change_any_pass_win . FOOTER = footer_str
+        change_any_pass_win . HELP_CONTEXT = "$USER_CONTROL_CHANGE_ANY_PASS"
+
+        change_any_pass_win . add_frame ( "",1,1,3,window_width )
+
+        PROMPT OBJECT menu_prompt1
+                AT max_prompt_len + 2 , 1
+                BROWSE ON PASSWORD
+                WITH (  always_validate = TRUE )
+
+        PROMPT OBJECT menu_prompt2
+                AT max_prompt_len + 2 , 2
+                FORMAT password . cryptpass
+                WITH ( silent_mode = TRUE )
+
+        PROMPT OBJECT menu_prompt3
+                AT max_prompt_len + 2 , 3
+                FORMAT password . cryptpass
+                WITH ( silent_mode = TRUE )
+
+        change_any_pass_win . add_display ( id_prompt , 2 , 1 ,
+                                                PROMPT_RENDITION_BOLD )
+
+        change_any_pass_win . add_prompt ( menu_prompt1 )
+
+        change_any_pass_win . validation_routine = "any_pass_validation"
+
+        change_any_pass_win . add_display ( pass_prompt , 2 , 2 ,
+                                                PROMPT_RENDITION_BOLD )
+
+        change_any_pass_win . add_prompt ( menu_prompt2 )
+
+        change_any_pass_win . add_display ( ver_prompt , 2 , 3 ,
+                                                PROMPT_RENDITION_BOLD )
+
+        change_any_pass_win . add_prompt ( menu_prompt3 )
+
+        change_any_pass_win . start_prompt ( )
+
+    REPEAT
+            change_any_pass_win . wait_prompt ( )
+
+                IF ( menu_prompt1 . text = " "                     ) AND
+           ( change_any_pass_win . get_lastkey () = "EXIT" ) AND
+           ( GLOBAL ( "LABTABLE_MODE" ) = "FALSE"          ) THEN
+
+                        can_leave = TRUE
+
+        ELSEIF ( GLOBAL ( "LABTABLE_MODE" ) = "TRUE"   ) THEN
+
+            can_leave = TRUE
+        ELSE
+            clear_prompts ( change_any_pass_win )
+                        can_leave = FALSE
+        ENDIF
+
+    UNTIL can_leave
+
+        change_any_pass_win . end_prompt ( )
+
+ENDROUTINE
+
+
+{**************************************************************************}
+
+ROUTINE any_pass_validation ( self )
+
+{ This routine checks the new password obtained in the change any password
+* routine to be valid and makes the neccesssary changes                   *}
+{**************************************************************************}
+
+DECLARE valid, status , user_id , password , validation_password
+
+        valid = FALSE
+
+        user_id             = self . prompt_objects [ 1 ] . value
+        password            = self . prompt_objects [ 2 ] . value
+        validation_password = self . prompt_objects [ 3 ] . value
+
+        IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+        IF password = validation_password THEN
+
+            IF user_login_change_any_password ( user_id , password , status ) THEN
+                flash_message ( "SMP_K_SUCCESS" , FALSE )
+                valid = TRUE
+            ELSE
+                flash_message ( status, TRUE )
+            ENDIF
+
+        ELSE
+            flash_message ( "USER_CONTROL_PASS_MISMATCH" , TRUE )
+        ENDIF
+
+        ENDIF
+
+        RETURN ( valid )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE define_text_printer ( VALUE menu_numb )
+
+{
+* Routine to re-define the default text printer
+********************************************************************************}
+
+    re_define_a_printer ( "USER_CONTROL_DEF_TEXT_HEADER" ,
+                          "$USER_CONTROL_CHANGE_TEXT" ,
+                          "TEXT_ID" )
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL ROUTINE define_label_printer ( VALUE menu_numb )
+
+{
+* Routine to re-define the default label printer
+********************************************************************************}
+
+        re_define_a_printer ( "USER_CONTROL_DEF_LABEL_HEADER" ,
+                          "$USER_CONTROL_CHANGE_LABEL"    ,
+                          "LABEL_ID"                      )
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE re_define_a_printer ( VALUE window_header    ,
+                          VALUE window_help      ,
+                          VALUE global_to_change )
+{
+* Routine to re-define one of the default printers
+********************************************************************************}
+
+DECLARE change_printer_window , id_prompt , id_size , max_prompt_len ,
+    window_width , header_str , footer_str , printer_id_prompt
+
+    get_printer_id_length ( id_size )
+
+        global_name = global_to_change  {global_name is a module wide global}
+
+    header_str = GET_USER_MESSAGE ( window_header , 1 )
+    footer_str = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    id_prompt  = GET_USER_MESSAGE ( "USER_CONTROL_PRINTER_PROMPT" , 1 )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+        strip_the_colon ( id_prompt )
+    ENDIF
+
+    max_prompt_len = STRINGLENGTH ( id_prompt )
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      STRINGLENGTH ( id_prompt )  ,
+                                      id_size                     )
+
+        CREATE OBJECT "STD_FORM" , change_printer_window
+
+        change_printer_window . HEIGHT = 1
+        change_printer_window . WIDTH = window_width
+        change_printer_window . COLUMN = window_position ( window_width )
+        change_printer_window . ROW  = window_row
+        change_printer_window . HEADER = header_str
+        change_printer_window . FOOTER = footer_str
+        change_printer_window . HELP_CONTEXT = "$USER_CONTROL_CHANGE_PRINTER_PROMPT"
+
+        change_printer_window . add_frame ( "",1,1,1,window_width )
+
+        PROMPT OBJECT printer_id_prompt
+                AT  max_prompt_len + 2 , 1
+                BROWSE ON PRINTER
+                WITH (  always_validate = TRUE ,
+                        value = GLOBAL ( global_name ) )
+
+        change_printer_window . add_display ( id_prompt , 2 , 1 ,
+                                                PROMPT_RENDITION_BOLD )
+
+        change_printer_window . add_prompt ( printer_id_prompt )
+
+        change_printer_window . validation_routine = "print_validation"
+
+        change_printer_window . start_prompt ( )
+        change_printer_window . wait_prompt ( )
+        change_printer_window . end_prompt ( )
+
+ENDROUTINE
+
+
+{**************************************************************************}
+
+ROUTINE print_validation ( self )
+
+{ re-defines the printer and returns confirmation                          }
+{**************************************************************************}
+
+DECLARE valid, text_name, key_array, padded_key, status
+
+        text_name = self . prompt_objects [ 1 ] . value
+
+        IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+                SET GLOBAL global_name TO text_name
+
+                {flash_message ( "SMP_K_SUCCESS" , FALSE )}
+                valid = TRUE
+        ELSE
+                valid = FALSE
+        ENDIF
+
+        IF valid THEN
+            ARRAY key_array
+            key_array[1] = "LABEL_ID"
+            key_array[2] = GLOBAL("Operator")
+            key_array[3] = "          "
+
+            padded_key = lib_db_array_to_padded( "CONFIG_ITEM", key_array )
+
+
+            SET NOTPROTECTED
+            START READ TRANSACTION "Check if default label printer is set"
+            RESERVE ENTRY config_item, padded_key, status
+
+            IF status = EMPTY THEN
+                START WRITE TRANSACTION "Set default label printer"
+                ASSIGN config_item . value = text_name
+                UPDATE config_item
+                COMMIT
+            ELSE
+                status = SELECT config_item . value FOR UPDATE
+                         WHERE identity = "LABEL_ID"
+                           AND operator = GLOBAL("Operator")
+                IF (status <> LOCKED) AND (status <> text_name) THEN
+                    START WRITE TRANSACTION "Update default label printer"
+                    ASSIGN config_item . value = text_name
+                    UPDATE config_item
+                    COMMIT
+                ENDIF
+            ENDIF
+        ENDIF
+
+        RETURN ( valid )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE change_access_level ( VALUE menu_numb )
+
+{
+* Routine to re-define the current user's authority level
+*
+*******************************************************************************}
+
+DECLARE change_auth_lev_window , auth_prompt , header_str , max_prompt_len ,
+    footer_str , window_width , auth_len , auth_id_prompt
+
+    get_authority_length ( auth_len )
+
+    header_str  = GET_USER_MESSAGE ( "USER_CONTROL_AUTH_LEV_HEADER" , 1 )
+    footer_str  = GET_USER_MESSAGE ( "USER_CONTROL_FOOTER" , 1 )
+    auth_prompt = GET_USER_MESSAGE ( "USER_CONTROL_AUTH_LEV_PROMPT" , 1 )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+        strip_the_colon ( auth_prompt )
+    ENDIF
+
+    max_prompt_len = STRINGLENGTH ( auth_prompt )
+
+    window_width = get_window_width ( STRINGLENGTH ( header_str ) ,
+                                      STRINGLENGTH ( footer_str ) ,
+                                      STRINGLENGTH ( auth_prompt ) ,
+                                      auth_len )
+
+        CREATE OBJECT "STD_FORM", change_auth_lev_window
+
+        change_auth_lev_window . HEIGHT = 1
+        change_auth_lev_window . WIDTH = window_width
+        change_auth_lev_window . COLUMN = window_position ( window_width )
+        change_auth_lev_window . ROW  = window_row
+    change_auth_lev_window . HEADER = header_str
+    change_auth_lev_window . FOOTER = footer_str
+        change_auth_lev_window . HELP_CONTEXT = "$USER_CONTROL_CHANGE_AUTH_LEV"
+
+        change_auth_lev_window . add_frame ( "",1,1,1,window_width )
+
+        PROMPT OBJECT auth_id_prompt
+               ON LINE 1 FROM max_prompt_len + 2
+           TO max_prompt_len + 3 + auth_len
+               FORMAT personnel . authority
+               WITH ( always_validate = TRUE ,
+                       value =  GLOBAL ( "CURRAUTH" ) )
+
+        change_auth_lev_window . add_display ( auth_prompt , 2 , 1 ,
+                                                PROMPT_RENDITION_BOLD )
+
+        change_auth_lev_window . add_prompt ( auth_id_prompt )
+
+        change_auth_lev_window . validation_routine = "auth_level_validation"
+
+        change_auth_lev_window . start_prompt ( )
+        change_auth_lev_window . wait_prompt ( )
+        change_auth_lev_window . end_prompt ( )
+
+ENDROUTINE
+
+
+{**************************************************************************}
+
+ROUTINE auth_level_validation ( self )
+
+{ Routine called by change_access_level to use the desired new authority
+* level and change the setting accordingly                                *}
+{**************************************************************************}
+
+DECLARE auth_numb , authority , valid
+
+    valid = FALSE
+    authority = self . prompt_objects [ 1 ] . value
+
+    IF ( self . get_lastkey ( ) <> "EXIT" ) THEN
+
+        auth_numb = NUMERIC ( authority )
+
+        IF ( auth_numb <= GLOBAL ( "BASEAUTH" ) ) THEN
+
+            SET GLOBAL "CURRAUTH" TO auth_numb
+            flash_message ( "SMP_K_SUCCESS" , FALSE )
+            valid = TRUE
+        ELSE
+            flash_message ( "USER_CONTROL_LEV_TOO_HIGH" , TRUE )
+        ENDIF
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE get_window_width ( VALUE header_len ,
+                       VALUE footer_len ,
+                       VALUE prompt_len ,
+                       VALUE ident_len  )
+{
+* Function to determine the width of a text window, given the length of
+* the window header and footer, the longest prompt, and the longest identity
+*
+*******************************************************************************}
+
+DECLARE max_len , prompt_line_len
+
+    max_len = 34
+
+    max_len = find_max_number ( max_len, header_len )
+    max_len = find_max_number ( max_len, footer_len )
+
+    prompt_line_len = prompt_len + ident_len + 5
+
+    max_len = find_max_number ( max_len, prompt_line_len )
+
+    max_len = max_len + 2
+
+    RETURN ( max_len )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE window_position ( VALUE window_width )
+
+{
+* Function to calculate the x-coordinate to paste a text window so that it
+* is centred ( based upon the window width and the screen width )
+********************************************************************************}
+
+DECLARE initial
+
+    initial = GLOBAL ( "SCREEN_WIDTH" ) - window_width
+
+    IF ( initial < 0 ) THEN
+
+        initial = 0
+    ENDIF
+
+    RETURN ( 1 + ( initial DIV 2 ) )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE get_user_id_lengths ( operator_length ,
+                          username_length ,
+                          password_length )
+{
+*       Routine to read the length of the operator identity length ( personnel
+*   table ) , the user name length ( password table ) and the password
+*   encryption length
+********************************************************************************}
+
+    GET_FIELD_DETAILS personnel . identity , "FIELD_SIZE" , operator_length
+    GET_FIELD_DETAILS password . identity , "FIELD_SIZE" , username_length
+    GET_FIELD_DETAILS password . cryptpass , "FIELD_SIZE" , password_length
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE get_printer_id_length ( id_length )
+{
+*  Routine to read the printer identity field width
+********************************************************************************}
+
+    GET_FIELD_DETAILS printer . identity , "FIELD_SIZE" , id_length
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE get_authority_length ( auth_length )
+
+{
+* Routine to read the width of the authority level field
+********************************************************************************}
+
+    GET_FIELD_DETAILS personnel . authority , "FIELD_SIZE" , auth_length
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE strip_the_colon ( string_to_strip )
+
+{
+*
+* Routine to strip training colon
+*
+********************************************************************************}
+
+DECLARE last_char
+
+        string_to_strip = strip ( string_to_strip )
+
+        last_char = substring ( string_to_strip, length ( string_to_strip ), 1 )
+
+        WHILE ( last_char = ":" ) OR ( last_char = "." ) DO
+
+                string_to_strip = strip ( substring ( string_to_strip,
+                                                      1,
+                                                      length ( string_to_strip )
+                                                                       - 1 ))
+
+                last_char = substring ( string_to_strip,
+                                        length ( string_to_strip ), 1 )
+
+        ENDWHILE
+
+ENDROUTINE
+

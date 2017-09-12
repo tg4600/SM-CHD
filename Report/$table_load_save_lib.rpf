@@ -1,0 +1,3325 @@
+{******************************************************************************
+*
+* Module Name   : $TABLE_LOAD_SAVE_LIB
+*
+* Purpose       : Common routines to the generic table loader and saver
+*
+* Document Ref. : SE/T/TVGL-WORK-INSTALL/1/13
+*
+* Specification : SE/T/TVGL-WORK-INSTALL/1/10
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_GENERAL
+
+JOIN LIBRARY $INSTALL_WINDOW
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $TABLE_LOAD_SAVE_PAR
+
+
+{* GLOBAL CONSTANTS ***********************************************************}
+
+GLOBAL CONSTANT TABLE_SAVER  = TRUE
+GLOBAL CONSTANT TABLE_LOADER = FALSE
+
+GLOBAL CONSTANT WIPE_TABLE             = "wipe_table"
+GLOBAL CONSTANT OVERWRITE_TABLE        = "overwrite_table"
+GLOBAL CONSTANT IGNORE_FILE            = "ignore_file"
+GLOBAL CONSTANT UNCHECKED_WITH_WIPE    = "unchecked_with_wipe"
+GLOBAL CONSTANT UNCHECKED_WITHOUT_WIPE = "unchecked_without_wipe"
+GLOBAL CONSTANT DEFAULT_OVERWRITE_MODE = IGNORE_FILE
+
+GLOBAL CONSTANT USE_SINGLE_TRANSACTION   = FALSE
+GLOBAL CONSTANT USE_MULTI_TRANSACTION    = TRUE
+GLOBAL CONSTANT DEFAULT_TRANSACTION_MODE = USE_SINGLE_TRANSACTION
+
+GLOBAL CONSTANT SINGLE_TRANSACTION_NUMBER  =   0
+GLOBAL CONSTANT MULTI_TRANSACTION_DEFAULT  = 100
+
+GLOBAL CONSTANT DEFAULT_CLIENT_CSV_FILE_DIR  = ""
+GLOBAL CONSTANT DEFAULT_CLIENT_CSV_FILE_EXTN = "csv"
+GLOBAL CONSTANT DEFAULT_CLIENT_CSV_FILE_NAME = "tabdump.csv"
+
+GLOBAL CONSTANT DEFAULT_CSV_FILE_DIR  = "smp$datafiles:"
+GLOBAL CONSTANT DEFAULT_CSV_FILE_EXTN = "csv"
+GLOBAL CONSTANT DEFAULT_CSV_FILE_NAME = "smp$datafiles:table_dump.csv"
+
+GLOBAL CONSTANT LOADER_ALLOWED_TO_PROMPT     = TRUE
+GLOBAL CONSTANT LOADER_NOT_ALLOWED_TO_PROMPT = FALSE
+
+{* CONSTANTS ******************************************************************}
+
+CONSTANT delimit_char = ASCII ( 34 )
+
+CONSTANT real_format = "99.9999999999999999E9999" { Allow maximum resolution   }
+CONSTANT date_format = "DZ-MZ-YYYY H24:MI:SS.CC"  { for reals and dates        }
+
+CONSTANT loader_batch_no_of_retries  = 10
+CONSTANT loader_batch_retry_interval = INTERVAL ( "0 00:00:10.00" )
+
+CONSTANT loader_retry   = 1
+CONSTANT loader_abort   = 2
+CONSTANT loader_proceed = 3
+
+CONSTANT null_value            = "<NULL>"
+CONSTANT parameter_value       = "parameter"
+CONSTANT parameter_value_start = "start_parameters"
+CONSTANT parameter_value_end   = "end_parameters"
+
+CONSTANT MULTI_TABLE_CSV  = TRUE
+CONSTANT SINGLE_TABLE_CSV = FALSE
+
+CONSTANT SETUP_EOFMARK      = "End of $SETUP Log File"
+
+{ Please don't de-message the next two constants, they are used by the installation scripts }
+
+CONSTANT SETUP_SUCC_STRING  = "Complete - Success"
+CONSTANT SETUP_FAIL_STRING  = "Complete - Failure"
+
+{* Module Variables ***********************************************************}
+
+DECLARE setup_logfile_name
+
+{* ROUTINES *******************************************************************}
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE table_load_save_lib_filter_fields ( VALUE name_of_table  ,
+                                                      list_of_fields )
+
+{
+*       Remove special fields modified_on, modified_by, has_attachments
+*
+*******************************************************************************}
+
+    DECLARE mod_by_field,
+            mod_on_field,
+            max_count,
+            source_count,
+            has_att_field
+
+    GET_TABLE_DETAILS 'name_of_table', 
+                      "MODIFIED_ON_FIELD",
+                      mod_on_field
+
+    GET_TABLE_DETAILS 'name_of_table', 
+                      "MODIFIED_BY_FIELD",
+                      mod_by_field
+
+    GET_TABLE_DETAILS 'name_of_table', 
+                      "ATTACHMENTS_FLAG_FIELD" ,
+                      has_att_field
+
+    IF ( mod_by_field <> EMPTY ) OR ( mod_on_field <> EMPTY ) THEN
+
+        source_count = 1
+
+        max_count = size_of_array ( list_of_fields )
+
+        WHILE ( source_count <= max_count ) DO
+
+            IF ( list_of_fields [ source_count ] = mod_by_field  ) OR
+               ( list_of_fields [ source_count ] = mod_on_field  ) OR
+               ( list_of_fields [ source_count ] = has_att_field ) THEN
+
+                array_remove_slice ( list_of_fields, 1, source_count )
+                max_count = max_count - 1
+
+            ELSE
+
+                source_count = source_count + 1
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE table_load_save_lib_default_select ( VALUE name_of_table  ,
+                                                       select_array   )
+
+{
+*       Add default select
+*
+*******************************************************************************}
+
+    DECLARE key0_fields     ,
+            count           ,
+            fields          ,
+            links_to_parent ,
+            order_field
+
+    ARRAY fields ARRAYSIZE ( 0 )
+
+    get_field_names_without_aliases ( name_of_table, fields )
+
+    count = 1
+
+    WHILE ( count <= size_of_array ( fields )) DO
+
+        GET_FIELD_DETAILS 'name_of_table'.'fields[count]',
+                          "LINKS_TO_PARENT",
+                          links_to_parent
+
+        IF links_to_parent THEN
+
+            array_select_add ( select_array           ,
+                               ARRAY_SELECT_ORDER     ,
+                               fields [ count ]       ,
+                               ARRAY_SELECT_ASCENDING )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    { If no selection criteria order by the key0 fields }
+
+    IF ( size_of_array ( select_array ) = 0 ) THEN
+
+        GET_TABLE_DETAILS 'name_of_table', "KEY0_FIELD", key0_fields
+
+        count = 1
+
+        WHILE ( count <= size_of_array ( key0_fields )) DO
+
+            array_select_add ( select_array           ,
+                               ARRAY_SELECT_ORDER     ,
+                               key0_fields [ count ]  ,
+                               ARRAY_SELECT_ASCENDING )
+
+            count = count + 1
+
+        ENDWHILE
+
+    ELSE
+
+        GET_TABLE_DETAILS 'name_of_table', "ORDER_FIELD", order_field
+
+        IF order_field <> EMPTY THEN
+
+            GET_FIELD_DETAILS 'name_of_table'.'order_field',
+                              "LINKS_TO_PARENT",
+                              links_to_parent
+
+            IF NOT links_to_parent THEN
+
+                array_select_add ( select_array           ,
+                                   ARRAY_SELECT_ORDER     ,
+                                   order_field            ,
+                                   ARRAY_SELECT_ASCENDING )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE get_field_names_without_aliases ( VALUE name_of_table  ,
+                                                    list_of_fields )
+
+{
+*       Returns a one dimensional array containing field names for the given
+*   table after removing alises
+*
+*******************************************************************************}
+
+    DECLARE full_array , source_count , dest_count , max_count
+
+    ARRAY full_array ARRAYSIZE ( 0 , 2 )
+
+    get_unordered_field_names ( name_of_table , full_array )
+
+    source_count = 0
+    dest_count = 0
+
+    max_count = size_of_array ( full_array )
+
+    WHILE ( source_count < max_count ) DO
+
+        source_count = source_count + 1
+
+        IF NOT ( full_array [ source_count , 2 ] ) THEN
+
+            dest_count = dest_count + 1
+
+            list_of_fields [ dest_count ] =
+                full_array [ source_count , 1 ]
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE get_field_sizes ( VALUE name_of_table ,
+                                    field_array   ,
+                                    size_array    )
+
+{
+*       The lengths of the fields in the given table with field names held in
+*   the one-dimensional array "field_array" are placed in the floppy or
+*   dynamic one-dimensional array "size_array".  Blank fields lead to zero
+*   lengths.
+*
+*******************************************************************************}
+
+    DECLARE no_of_fields , count , current_field
+
+    no_of_fields = size_of_array ( field_array )
+
+    count = 0
+
+    WHILE ( count < no_of_fields ) DO
+
+        count = count + 1
+
+        current_field = field_array [ count ]
+
+        IF ( BLANK ( current_field ) ) THEN
+
+            size_array [ count ] = 0
+        ELSE
+
+            GET_FIELD_DETAILS 'name_of_table' . 'current_field' ,
+                              "FIELD_SIZE"                      ,
+                               size_array [ count ]
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE display_wait_message (       mess_window  ,
+                                   VALUE message_id   ,
+                                   VALUE help_context )
+
+{
+*       Creates a message window to display the first line of the given message
+*   (or the text itself if there is no corresponding message).  The window
+*   is pasted in the same position as with flash message.
+*
+*******************************************************************************}
+
+    IF global ( "TERMTYPE" ) <> "GUI" THEN
+
+        DECLARE text , header_text , win_width , win_height ,
+                x_pos , y_pos
+
+        header_text = GET_USER_MESSAGE ( "MESSAGE_PRN_2831" , 1 )
+        text = GET_USER_MESSAGE ( message_id , 1 )
+
+        IF ( text = ERROR ) THEN
+            text = message_id
+        ENDIF
+
+        win_width  = 2 + find_max_number ( LENGTH ( header_text ) ,
+                                           LENGTH ( text )        )
+        win_height = 4
+
+        x_pos = ( GLOBAL ( "SCREEN_WIDTH"  ) - win_width - 1 ) / 2 + 1
+        y_pos = 6
+
+        CREATE TEXT WINDOW mess_window
+            HEIGHT win_height
+            WIDTH win_width
+            BORDER
+            HEADER = header_text
+            HELP CONTEXT = help_context
+
+        DISPLAY text AT 2 , 3 IN WINDOW mess_window
+
+        PASTE TEXT WINDOW mess_window AT x_pos , y_pos
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE output_csv_file ( VALUE file_name          ,
+                              VALUE name_of_table      ,
+                                    list_of_fields     ,
+                                    selection_criteria ,
+                  VALUE flash_status       ,
+                                    return_message     )
+
+{
+*       The routine which writes out the CSV file
+*
+*******************************************************************************}
+
+    DECLARE wait_window , error_message , error_occured , no_of_records ,
+            mess_ptr , original_date_format
+
+    original_date_format = GLOBAL ( "FORMAT_TEXT" )
+
+    SET FORMAT real_format
+
+    SET DATE FORMAT date_format
+
+    return_message = ""
+
+    error_occured = verify_table_and_field_names ( name_of_table  ,
+                                                   list_of_fields ,
+                                                   error_message  )
+
+    IF ( NOT error_occured ) THEN
+
+        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+            message_fetch ( "TABLE_SAVER_WRITE_FILE" , mess_ptr )
+
+            message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+            display_wait_message
+                         ( wait_window                       ,
+                               message_get_text ( mess_ptr , 1 ) ,
+                               "$TABLE_SAVER_WRITE_CSV"          )
+        ENDIF
+
+        FILE CREATE file_name , error_message
+
+        IF ( error_message <> EMPTY ) THEN
+
+            error_occured = TRUE
+        ENDIF
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        error_occured = output_headers ( file_name          ,
+                                         name_of_table      ,
+                                         list_of_fields     ,
+                                         selection_criteria ,
+                                         no_of_records      ,
+                                         error_message      )
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+            set_up_install_window_class ( )
+        ENDIF
+
+        error_occured = output_data ( file_name          ,
+                                      name_of_table      ,
+                                      no_of_records      ,
+                                      list_of_fields     ,
+                                      selection_criteria ,
+                                      error_message      )
+    ENDIF
+
+    IF ( error_occured ) THEN
+
+        send_message ( error_message , TABLE_SAVER , TRUE )
+        return_message = error_message
+    ENDIF
+
+    IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) AND
+       ( GLOBAL ( "TERMTYPE" ) <> "GUI" )    THEN
+        UNPASTE TEXT WINDOW wait_window
+    ENDIF
+
+    FILE CLOSE file_name , error_message
+
+    IF ( error_message <> EMPTY ) THEN
+
+        error_occured = TRUE
+        send_message ( error_message , TABLE_SAVER , TRUE )
+        return_message = error_message
+
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        message_fetch ( "TABLE_SAVER_WRITE_SUCCESS" , mess_ptr )
+
+        message_add_parameter ( mess_ptr                          ,
+                                STRIP ( TRUNC ( no_of_records ) ) )
+
+        IF flash_status THEN
+            send_message ( message_get_text ( mess_ptr , 1 ) ,
+                       TABLE_SAVER                       ,
+                       FALSE                             )
+        ENDIF
+
+        return_message = message_get_text ( mess_ptr , 1 )
+
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+    SET FORMAT original_date_format
+
+    RETURN ( NOT error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE verify_table_and_field_names ( name_of_table  ,
+                                           list_of_fields ,
+                                           error_message  )
+
+{
+*   Verify the given table and field names
+*
+*******************************************************************************}
+
+    DECLARE error_occured , count , mess_ptr
+
+    name_of_table = TOUPPER ( name_of_table )
+
+    error_occured = ( NOT valid_table ( name_of_table ) )
+
+    IF ( error_occured ) THEN
+
+        message_fetch ( "TABLE_SAVER_ILL_FLD_NAME" , mess_ptr )
+        message_add_parameter ( mess_ptr , name_of_table )
+        error_message = message_get_text ( mess_ptr, 1 )
+    ELSE
+        count = size_of_array ( list_of_fields )
+
+        WHILE ( count > 0 ) AND ( NOT error_occured ) DO
+
+            IF ( NOT valid_field
+                           ( name_of_table            ,
+                             list_of_fields [ count ] ) ) THEN
+
+                error_occured = TRUE
+
+                message_fetch ( "TABLE_SAVER_ILL_FLD_NAME" ,
+                                mess_ptr                   )
+
+                message_add_parameter
+                                ( mess_ptr                 ,
+                                  list_of_fields [ count ] )
+
+                error_message = message_get_text ( mess_ptr, 1 )
+            ELSE
+                count = count - 1
+            ENDIF
+
+        ENDWHILE
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE output_headers ( VALUE file_name          ,
+                             VALUE name_of_table      ,
+                                   list_of_fields     ,
+                                   selection_criteria ,
+                                   no_of_records      ,
+                                   error_message      )
+
+{
+*       Output the headers to the CSV file:
+*                                       1 - table name
+*                                       2 - field names (not delimited)
+*                                       3 - field sizes (not delimited)
+*                                       4 - number of records found
+*
+*******************************************************************************}
+
+    DECLARE field_sizes , error_occured
+
+    ARRAY field_sizes ARRAYSIZE ( 0 )
+
+    get_field_sizes ( name_of_table , list_of_fields , field_sizes )
+
+    FILE WRITE file_name , name_of_table , error_message
+
+    error_occured = ( error_message <> EMPTY )
+
+    IF ( NOT error_occured ) THEN
+
+        error_occured = write_array_to_csv_file ( file_name      ,
+                                                  list_of_fields ,
+                                                  FALSE          ,
+                                                  TRUE           ,
+                                                  error_message  )
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        error_occured = write_array_to_csv_file ( file_name     ,
+                                                  field_sizes   ,
+                                                  FALSE         ,
+                                                  TRUE          ,
+                                                  error_message )
+    ENDIF
+
+    no_of_records = TRUNC ( array_select_count ( name_of_table      ,
+                                                 selection_criteria ) )
+
+    FILE WRITE file_name , no_of_records , error_message
+
+    error_occured = ( error_message <> EMPTY )
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE output_data ( VALUE file_name          ,
+                          VALUE name_of_table      ,
+                          VALUE no_of_records      ,
+                                list_of_fields     ,
+                                selection_criteria ,
+                                error_message      )
+
+{
+*       Output delimited data to the CSV file
+*
+*******************************************************************************}
+
+    DECLARE no_of_fields , field_count , error_occured , value_array ,
+            bar_counter , mess_ptr
+
+    IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+        CREATE OBJECT INSTALL_WINDOW_CLASS , bar_counter
+
+        message_fetch ( "TABLE_SAVER_BAR_HEADER" , mess_ptr )
+
+        message_add_parameter ( mess_ptr                          ,
+                                STRIP ( TRUNC ( no_of_records ) ) )
+        message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+        bar_counter . header      = message_get_text ( mess_ptr , 1 )
+        bar_counter . footer      =
+            GET_USER_MESSAGE ( "TABLE_SAVER_BAR_FOOTER" , 1 )
+        bar_counter . row         = 15
+        bar_counter . start_value = 0
+        bar_counter . end_value   = no_of_records
+
+        bar_counter . start_install ( )
+    ENDIF
+
+    no_of_fields = size_of_array ( list_of_fields )
+
+    ARRAY value_array ARRAYSIZE ( no_of_fields )
+
+    array_select ( name_of_table , FALSE , selection_criteria )
+
+    message_fetch ( "TABLE_SAVER_READ_TRAN" , mess_ptr )
+    message_add_parameter ( mess_ptr , name_of_table )
+
+    START READ TRANSACTION message_get_text ( mess_ptr , 1 )
+
+    value_array [ 1 ] = SELECT 'name_of_table' . 'list_of_fields [ 1 ]'
+
+    error_occured = FALSE
+
+    WHILE ( value_array [ 1 ] <> EMPTY ) AND ( NOT error_occured ) DO
+
+        field_count = 1
+
+        WHILE ( field_count < no_of_fields ) DO
+
+            field_count = field_count + 1
+
+            value_array [ field_count ] = SUBSTITUTE(
+                                          SUBSTITUTE( 
+                                            SELECT 'name_of_table'.'list_of_fields [ field_count ]'
+                                            , ASCII(10), " ")
+                                            , ASCII(13), " ")
+            
+        ENDWHILE
+
+        error_occured = write_array_to_csv_file ( file_name      ,
+                                                  value_array    ,
+                                                  TRUE           ,
+                                                  TRUE           ,
+                                                  error_message  )
+
+        IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+            bar_counter . increase_one ( )
+        ENDIF
+
+        NEXT 'name_of_table'
+
+        value_array [ 1 ] =
+            SELECT 'name_of_table' . 'list_of_fields [ 1 ]'
+    ENDWHILE
+
+    IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+        bar_counter . end_install ( )
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE write_array_to_csv_file ( VALUE file_name       ,
+                                            array_to_write  ,
+                                      VALUE delimit         ,
+                                      VALUE space_pad_dates ,
+                                            error_message   )
+
+{
+*       Write a one-dimensional array to specified CSV file.  Data items will   
+*   be delimited by double-quotes ( " ) if delimit is TRUE.  If an error
+*   occurs, the routine returns TRUE, placing an error message in
+*   "error_message".
+*   
+*   Setting space_pad_dates will mean that Excel will date fields as text
+*   only.
+*
+*******************************************************************************}
+
+    DECLARE line_to_write , count , max_arr_elem , var_type
+
+    line_to_write = ""
+    max_arr_elem = size_of_array ( array_to_write )
+
+    count = 0
+
+    WHILE ( count < max_arr_elem ) DO
+
+        IF ( count > 0 ) THEN
+
+            line_to_write = line_to_write : ","
+        ENDIF
+
+        count = count + 1
+
+        IF ( array_to_write [ count ] = NULL ) THEN
+
+            line_to_write = line_to_write : null_value
+
+        ELSE
+
+            var_type = variable_get_type ( array_to_write [ count ] )
+
+            IF ( var_type = "Date" ) AND ( space_pad_dates ) THEN
+
+                array_to_write [ count ] = " " : array_to_write [ count ]
+
+            ELSEIF ( var_type = "Text" ) AND
+                   ( LEFTSTRING ( array_to_write[ count ], 1 ) = " " ) THEN
+
+                array_to_write [ count ] = LEFTSTRING ( array_to_write [ count ],
+                                                    LENGTH( array_to_write [ count ] ))
+
+            ELSE
+
+                array_to_write[ count ]  = STRIP( array_to_write[ count ] )
+
+            ENDIF
+
+            array_to_write[ count ] = delimitter_to_double ( array_to_write [ count ] )
+
+            IF ( delimit ) AND NOT BLANK ( array_to_write [ count ]) THEN
+                line_to_write = line_to_write : delimit_char : array_to_write [ count ] : delimit_char
+            ELSE
+                line_to_write = line_to_write : array_to_write [ count ]
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    FILE WRITE file_name , line_to_write , error_message
+
+    RETURN ( error_message <> EMPTY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE delimitter_to_double ( VALUE st_val )
+
+{
+*       Given a text string, replace instances of the delimter character with
+*   two delimiting characters, e.g. the string  : a"bc"d
+*                                       becomes : a""bc""d
+*
+*******************************************************************************}
+
+    DECLARE copy , part , result , delim_idx
+
+    copy = st_val
+
+    result = ""
+
+    delim_idx = INDEX ( copy , delimit_char )
+
+    WHILE ( delim_idx > 0 ) DO
+
+        part = LEFTSTRING ( copy , delim_idx )
+
+        result = result : part : delimit_char
+
+        copy = copy # part
+
+        delim_idx = INDEX ( copy , delimit_char )
+
+    ENDWHILE
+
+    result = result : copy
+
+    RETURN ( result )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE input_csv_file ( VALUE file_name         ,
+                             VALUE overwrite_mode    ,
+                             VALUE allowed_to_prompt ,
+                             VALUE transaction_size  ,
+                             VALUE flash_status      )
+
+{
+*       The routine which reads in the CSV file
+*
+*******************************************************************************}
+
+    DECLARE wait_window , error_message , error_occured , no_of_records ,
+            mess_ptr , name_of_table , list_of_fields , extra_rec_info ,
+        key0_fields , other_fields , key0_sizes , err_ptr , proceed ,
+        error_string , no_of_errors , line_of_file , eof_dummy ,
+        validation_failed , return_message , original_date_format ,
+        dummy_params
+
+    original_date_format = GLOBAL ( "FORMAT_TEXT" )
+
+    SET FORMAT real_format
+
+    SET DATE FORMAT date_format
+
+    return_message = ""
+
+    validation_failed = validate_load_params ( file_name        ,
+                                               overwrite_mode   ,
+                                               transaction_size ,
+                                               error_message    )
+
+    error_occured = validation_failed
+
+    IF ( NOT error_occured ) THEN
+
+        dummy_params = EMPTY
+        extra_rec_info = 0
+        no_of_errors = 0
+        line_of_file = 0
+
+        FILE OPEN file_name , error_message
+
+        error_occured = ( error_message <> EMPTY )
+
+    ENDIF
+
+    IF ( error_occured ) THEN
+
+        file_send_message ( file_name, error_message , TABLE_LOADER , TRUE )
+    ELSE
+        ARRAY list_of_fields ARRAYSIZE ( 0 )
+        ARRAY key0_fields ARRAYSIZE ( 0 )
+        ARRAY other_fields ARRAYSIZE ( 0 )
+        ARRAY key0_sizes ARRAYSIZE ( 0 )
+
+        error_occured = input_headers ( file_name         ,
+                                        FALSE             ,
+                                        allowed_to_prompt ,
+                                        name_of_table     ,
+                                        list_of_fields    ,
+                                        key0_fields       ,
+                                        other_fields      ,
+                                        key0_sizes        ,
+                                        line_of_file      ,
+                                        no_of_records     ,
+                                        eof_dummy         ,
+                                        error_message     )
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        message_fetch ( "TABLE_LOADER_LOAD_DATA" , mess_ptr )
+        message_add_parameter ( mess_ptr , name_of_table )
+
+        proceed = do_we_go_on ( message_get_text ( mess_ptr , 1 ) ,
+                                allowed_to_prompt                 )
+
+        IF ( proceed ) THEN
+
+            message_fetch ( "TABLE_LOADER_READ_FILE" , mess_ptr )
+
+            message_add_parameter ( mess_ptr                ,
+                                    STRIP ( name_of_table ) )
+
+            IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+                display_wait_message
+                         ( wait_window                       ,
+                               message_get_text ( mess_ptr , 1 ) ,
+                               "$TABLE_LOADER_READ_CSV"          )
+
+                set_up_install_window_class ( )
+
+            ENDIF
+
+            error_occured = input_data ( file_name         ,
+                                         name_of_table     ,
+                                         line_of_file      ,
+                                         no_of_records     ,
+                                         list_of_fields    ,
+                                         key0_fields       ,
+                                         other_fields      ,
+                                         key0_sizes        ,
+                                         overwrite_mode    ,
+                                         transaction_size  ,
+                                         allowed_to_prompt ,
+                                         extra_rec_info    ,
+                                         no_of_errors      ,
+                                         error_message     ,
+                                         dummy_params      ,
+                                         SINGLE_TABLE_CSV  )
+
+            IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) AND
+               ( GLOBAL ( "TERMTYPE" ) <> "GUI" )    THEN
+                UNPASTE TEXT WINDOW wait_window
+            ENDIF
+
+            IF ( error_occured ) THEN
+
+                file_send_message ( file_name     ,
+                                    error_message ,
+                                    TABLE_LOADER  ,
+                                    TRUE          )
+            ENDIF
+        ENDIF
+
+        IF ( NOT error_occured ) AND ( proceed ) THEN
+
+            IF ( overwrite_mode = OVERWRITE_TABLE ) THEN
+
+                message_fetch ( "TABLE_LOADER_WRITE_SUCC_OVR" ,
+                                 mess_ptr                     )
+
+            ELSEIF ( overwrite_mode = IGNORE_FILE )
+
+                message_fetch ( "TABLE_LOADER_WRITE_SUCC_IGN" ,
+                                 mess_ptr                     )
+
+                no_of_records = no_of_records - extra_rec_info
+            ELSE
+
+                message_fetch ( "TABLE_LOADER_WRITE_SUCCESS" ,
+                                 mess_ptr                    )
+            ENDIF
+
+            message_add_parameter
+                ( mess_ptr                                         ,
+                  STRIP ( TRUNC ( no_of_records - no_of_errors ) ) )
+
+            IF ( overwrite_mode = OVERWRITE_TABLE ) OR
+               ( overwrite_mode = IGNORE_FILE ) THEN
+
+                message_add_parameter
+                         ( mess_ptr                           ,
+                           STRIP ( TRUNC ( extra_rec_info ) ) )
+            ENDIF
+
+            IF ( no_of_errors = 0 ) THEN
+
+                error_string = GET_USER_MESSAGE
+                                   ( "TABLE_LOADER_NO_ERR" , 1 )
+            ELSE
+                message_fetch ( "TABLE_LOADER_ERRORS", err_ptr )
+                message_add_parameter
+                            ( err_ptr                          ,
+                              STRIP ( TRUNC ( no_of_errors ) ) )
+                error_string = message_get_text ( err_ptr , 1 )
+            ENDIF
+
+            message_add_parameter ( mess_ptr , error_string )
+
+            IF flash_status THEN
+                file_send_message ( file_name                       ,
+                                    message_get_text ( mess_ptr,1 ) ,
+                                    TABLE_LOADER                    ,
+                                    FALSE                           )
+            ENDIF
+
+            return_message = message_get_text ( mess_ptr , 1 )
+        ENDIF
+    ELSE
+
+        IF NOT variable_is_assigned ( name_of_table ) THEN
+
+            name_of_table = GET_USER_MESSAGE ( "TABLE_LOADER_UNKNOWN_TABLE", 1 )
+
+        ENDIF
+
+        message_fetch ( "TABLE_LOADER_BAR_HEADER" , mess_ptr )
+        message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+        initialise_setup_logfile ( STRIP ( name_of_table )           ,
+                                   message_get_text ( mess_ptr , 1 ) )
+
+    ENDIF
+
+    IF ( error_occured ) THEN
+
+        write_end_setup_logfile ( FALSE               ,
+                                  STRIP ( name_of_table ) ,
+                                  error_message           )
+
+    ENDIF
+
+    IF ( validation_failed ) THEN
+
+        file_send_message ( file_name                     ,
+                            "TABLE_LOADER_VALIDATE_ABORT" ,
+                            TABLE_LOADER                  ,
+                            TRUE                          )
+    ELSE
+
+        FILE CLOSE file_name , error_message
+
+        IF ( error_message <> EMPTY ) THEN
+            file_send_message ( file_name     ,
+                                error_message ,
+                                TABLE_LOADER  ,
+                                TRUE          )
+        ENDIF
+
+        end_error_log ( no_of_errors )
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+    SET FORMAT original_date_format 
+
+    RETURN ( return_message )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE input_mcsv_file ( VALUE file_name         ,
+                              VALUE overwrite_mode    ,
+                              VALUE allowed_to_prompt ,
+                              VALUE transaction_size  ,
+                              VALUE flash_status      )
+
+{
+*       The routine which reads in the Multiple CSV file
+*
+*******************************************************************************}
+
+    DECLARE wait_window , error_message , error_occured , no_of_records ,
+            mess_ptr , name_of_table , list_of_fields , extra_rec_info ,
+        key0_fields , other_fields , key0_sizes ,
+        no_of_errors , line_of_file , file_may_end , end_of_file ,
+        validation_failed  , original_date_format , params_collection
+
+    original_date_format = GLOBAL ( "FORMAT_TEXT" )
+
+    SET FORMAT real_format
+
+    SET DATE FORMAT date_format
+
+    name_of_table = ""
+
+    validation_failed = validate_load_params ( file_name        ,
+                                               overwrite_mode   ,
+                                               transaction_size ,
+                                               error_message    )
+
+    error_occured = validation_failed
+    file_may_end  = FALSE
+    end_of_file   = FALSE
+
+    IF NOT error_occured THEN
+
+        extra_rec_info = 0
+        no_of_errors = 0
+        line_of_file = 0
+
+        FILE OPEN file_name , error_message
+
+        error_occured = ( error_message <> EMPTY )
+
+    ENDIF
+
+    IF NOT error_occured THEN
+
+        params_collection = table_load_save_params_new ( )
+
+        error_occured = input_parameters_section ( params_collection ,
+                                                   file_name         ,
+                                                   line_of_file      ,
+                                                   error_message     ,
+                                                   end_of_file       )
+
+    ENDIF
+
+    WHILE ( NOT error_occured ) AND ( NOT end_of_file ) DO
+
+        ARRAY list_of_fields ARRAYSIZE ( 0 )
+        ARRAY key0_fields ARRAYSIZE ( 0 )
+        ARRAY other_fields ARRAYSIZE ( 0 )
+        ARRAY key0_sizes ARRAYSIZE ( 0 )
+
+        error_occured = input_headers ( file_name         ,
+                        file_may_end      ,
+                        allowed_to_prompt ,
+                        name_of_table     ,
+                        list_of_fields    ,
+                        key0_fields       ,
+                        other_fields      ,
+                        key0_sizes        ,
+                        line_of_file      ,
+                        no_of_records     ,
+                        end_of_file       ,
+                        error_message     )
+
+        IF ( NOT error_occured ) AND ( NOT end_of_file ) THEN
+
+            message_fetch ( "TABLE_LOADER_READ_FILE" , mess_ptr )
+
+            message_add_parameter ( mess_ptr                ,
+                        STRIP ( name_of_table ) )
+
+            IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+                display_wait_message
+                         ( wait_window                       ,
+                           message_get_text ( mess_ptr , 1 ) ,
+                           "$TABLE_LOADER_READ_CSV"          )
+
+                set_up_install_window_class ( )
+
+            ENDIF
+
+            error_occured = input_data ( file_name         ,
+                             name_of_table     ,
+                             line_of_file      ,
+                             no_of_records     ,
+                             list_of_fields    ,
+                             key0_fields       ,
+                             other_fields      ,
+                             key0_sizes        ,
+                             overwrite_mode    ,
+                             transaction_size  ,
+                             allowed_to_prompt ,
+                             extra_rec_info    ,
+                             no_of_errors      ,
+                             error_message     ,
+                             params_collection ,
+                             MULTI_TABLE_CSV   )
+
+            IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) AND
+               ( GLOBAL ( "TERMTYPE" ) <> "GUI" )    THEN
+                UNPASTE TEXT WINDOW wait_window
+            ENDIF
+
+        ENDIF
+
+        file_may_end = TRUE
+
+    ENDWHILE
+
+    IF ( validation_failed ) THEN
+
+        file_send_message ( file_name                     ,
+                            "TABLE_LOADER_VALIDATE_ABORT" ,
+                            TABLE_LOADER                  ,
+                            TRUE                          )
+
+    ELSE
+
+        IF error_occured THEN
+
+            file_send_message ( file_name     ,
+                        error_message ,
+                        TABLE_LOADER  ,
+                        TRUE          )
+
+            write_end_setup_logfile ( FALSE                   ,
+                                      STRIP ( name_of_table ) ,
+                                      error_message           )
+
+        ENDIF
+
+        FILE CLOSE file_name , error_message
+
+        IF error_message <> EMPTY THEN
+
+            file_send_message ( file_name     ,
+                                error_message ,
+                                TABLE_LOADER  ,
+                                TRUE          )
+
+        ENDIF
+
+        end_error_log ( no_of_errors )
+
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+    SET FORMAT original_date_format
+
+    RETURN ( NOT error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+        GLOBAL
+
+        ROUTINE input_csv_file_with_log ( VALUE file_name         ,
+                                          VALUE overwrite_mode    ,
+                                          VALUE allowed_to_prompt ,
+                                          VALUE transaction_size  ,
+                                          VALUE flash_status      ,
+                                          VALUE logfile_name      )
+
+{
+*       The routine which reads in the CSV file and creates a logfile
+*
+*******************************************************************************}
+
+DECLARE return_message
+
+    setup_logfile_name = logfile_name
+
+    return_message = input_csv_file ( file_name         ,
+                                      overwrite_mode    ,
+                                      allowed_to_prompt ,
+                                      transaction_size  ,
+                                      flash_status      )
+
+    RETURN ( return_message )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE input_parameters_section (       params_collection ,
+                                       VALUE file_name         ,
+                                             line_of_file      ,
+                                             error_message     ,
+                                             end_of_file       )
+
+{
+*
+*       Process the parameters section of a multiple CSV file
+*
+*******************************************************************************}
+
+    DECLARE error_occured ,
+            field_no_check ,
+            one_element_array ,
+            mess_ptr
+
+    ARRAY one_element_array ARRAYSIZE ( 0 )
+
+    error_occured = table_load_save_lib_array_from_csv
+                                             ( file_name         ,
+                                               FALSE             ,
+                                               line_of_file      ,
+                                               one_element_array ,
+                                               field_no_check    ,
+                                               end_of_file       ,
+                                               error_message     )
+
+    IF NOT error_occured THEN
+
+        IF one_element_array [1] <> parameter_value_start THEN
+
+            error_message = "TABLE_LOADER_NOT_MCSV_FILE"
+            error_occured = TRUE
+
+        ENDIF
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND ( NOT end_of_file ) THEN
+
+        REPEAT
+
+            ARRAY one_element_array ARRAYSIZE ( 0 )
+
+            error_occured = table_load_save_lib_array_from_csv
+                                                     ( file_name         ,
+                                                       FALSE             ,
+                                                       line_of_file      ,
+                                                       one_element_array ,
+                                                       field_no_check    ,
+                                                       end_of_file       ,
+                                                       error_message     )
+
+            IF error_occured OR end_of_file THEN
+
+            ELSEIF ( one_element_array [1] = parameter_value ) THEN
+
+                IF NOT params_collection .
+                         add_param_from_array ( one_element_array ) THEN
+
+                    error_occured = TRUE
+
+                    message_fetch ( "TABLE_LOADER_MCSV_PARAM_ERROR" , mess_ptr )
+                    message_add_parameter ( mess_ptr , STRIP ( line_of_file ))
+
+                    error_message = message_get_text ( mess_ptr , 1 )
+
+                ENDIF
+
+            ENDIF
+
+        UNTIL ( one_element_array [1] = parameter_value_end ) OR
+              ( error_occured ) OR
+              ( end_of_file )
+
+    ENDIF
+
+    IF error_occured THEN
+
+        message_fetch ( error_message , mess_ptr )
+
+        IF mess_ptr <> EMPTY THEN
+
+            message_add_parameter ( mess_ptr , file_name )
+
+            error_message = message_get_text ( mess_ptr , 1 )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE input_headers ( VALUE file_name          ,
+                            VALUE file_may_end       ,
+                            VALUE are_able_to_prompt ,
+                                  name_of_table      ,
+                                  list_of_fields     ,
+                                  key0_fields        ,
+                                  other_fields       ,
+                                  key0_sizes         ,
+                                  line_of_file       ,
+                                  no_of_records      ,
+                                  end_of_file        ,
+                                  error_message      )
+
+{
+*       Input the headers from the CSV file:
+*                                       1 - table name
+*                                       2 - field names
+*                                       3 - field sizes in the file
+*                                       4 - number of records found
+*
+*******************************************************************************}
+
+    DECLARE error_occured , field_no_check , one_element_array ,
+        no_of_fields , field_sizes_1 , mess_ptr , proceed ,
+        field_sizes_2
+
+    ARRAY one_element_array ARRAYSIZE ( 0 )
+
+    proceed = TRUE
+
+    error_occured = table_load_save_lib_array_from_csv
+                                             ( file_name         ,
+                                               file_may_end      ,
+                                               line_of_file      ,
+                                               one_element_array ,
+                                               field_no_check    ,
+                                               end_of_file       ,
+                                               error_message     )
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) THEN
+
+        IF ( field_no_check = 0 ) THEN
+
+            error_message = csv_header_is_corrupt ( line_of_file )
+            error_occured = TRUE
+        ELSE
+            name_of_table = one_element_array [ 1 ]
+
+            IF NOT ( valid_table ( name_of_table ) ) THEN
+
+                message_fetch ( "TABLE_LOADER_ILL_TBL_NAME" , mess_ptr )
+                message_add_parameter ( mess_ptr , name_of_table )
+
+                error_message = message_get_text ( mess_ptr , 1 )
+                error_occured = TRUE
+            ENDIF
+        ENDIF
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) THEN
+
+        error_occured = table_load_save_lib_array_from_csv
+                                                 ( file_name      ,
+                                                   FALSE          ,
+                                                   line_of_file   ,
+                                                   list_of_fields ,
+                                                   no_of_fields   ,
+                                                   end_of_file    ,
+                                                   error_message  )
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) THEN
+
+        proceed = verify_list_of_fields ( name_of_table      ,
+                                          list_of_fields     ,
+                                          error_message      ,
+                                          are_able_to_prompt )
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        ARRAY field_sizes_1 ARRAYSIZE ( 0 )
+
+        error_occured = table_load_save_lib_array_from_csv
+                                                 ( file_name      ,
+                                                   FALSE          ,
+                                                       line_of_file   ,
+                                                   field_sizes_1  ,
+                                                   field_no_check ,
+                                                   end_of_file    ,
+                                                   error_message  )
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        IF ( field_no_check <> no_of_fields ) THEN
+
+            error_message = csv_header_is_corrupt ( line_of_file )
+            error_occured = TRUE
+
+        ENDIF
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        ARRAY field_sizes_2 ARRAYSIZE ( 0 )
+
+        get_field_sizes ( name_of_table , list_of_fields , field_sizes_2 )
+
+        proceed = verify_field_sizes ( field_sizes_1      ,
+                                       field_sizes_2      ,
+                                       are_able_to_prompt )
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        error_occured = table_load_save_lib_array_from_csv
+                                                 ( file_name         ,
+                                                   FALSE             ,
+                                                   line_of_file      ,
+                                                   one_element_array ,
+                                                   field_no_check    ,
+                                                   end_of_file       ,
+                                                   error_message     )
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        IF ( field_no_check = 0 ) THEN
+
+            error_message = csv_header_is_corrupt ( line_of_file )
+            error_occured = TRUE
+
+        ELSEIF NOT ( NUMTEXT ( one_element_array [ 1 ] ) ) THEN
+
+            error_message = csv_header_is_corrupt ( line_of_file )
+            error_occured = TRUE
+
+        ELSE
+
+            no_of_records = TRUNC ( NUMERIC
+                                     ( one_element_array [ 1 ] ) )
+
+        ENDIF
+
+    ENDIF
+
+    IF ( NOT error_occured ) AND
+       ( NOT end_of_file   ) AND
+       ( proceed )           THEN
+
+        error_occured = check_key0_fields ( name_of_table  ,
+                                            list_of_fields ,
+                                            key0_fields    ,
+                                            other_fields   ,
+                                            error_message  )
+
+    ENDIF
+
+    IF end_of_file THEN
+
+        { Will be handled by calling routine }
+
+    ELSEIF ( error_occured ) THEN
+
+        send_message ( error_message , TABLE_LOADER , TRUE )
+
+    ELSEIF ( proceed ) THEN
+
+        get_field_sizes ( name_of_table ,
+                          key0_fields   ,
+                          key0_sizes    )
+
+    ELSE
+
+        error_occured = TRUE  { No error to print, but should halt }
+
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE input_data ( VALUE file_name         ,
+                         VALUE name_of_table     ,
+                               line_of_file      ,
+                               no_of_records     ,
+                               list_of_fields    ,
+                               key0_fields       ,
+                               other_fields      ,
+                               key0_sizes        ,
+                         VALUE overwrite_mode    ,
+                         VALUE transaction_size  ,
+                         VALUE allowed_to_prompt ,
+                               ignore_or_overs   ,
+                               no_of_errors      ,
+                               error_message     ,
+                               params_collection ,
+                         VALUE is_multi_table    )
+
+{
+*       Input data from the CSV file
+*
+*******************************************************************************}
+
+    DECLARE no_of_fields , error_occured , value_array , bar_counter ,
+            mess_ptr , field_no_check , end_of_file , estimated_rec ,
+        write_tran_text , load_aborted
+
+    estimated_rec = no_of_records
+
+    message_fetch ( "TABLE_LOADER_BAR_HEADER" , mess_ptr )
+    message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+    initialise_setup_logfile ( STRIP ( name_of_table )           ,
+                               message_get_text ( mess_ptr , 1 ) )
+    write_setup_logfile ( STRIP ( name_of_table ) , no_of_records )
+
+    IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+        CREATE OBJECT INSTALL_WINDOW_CLASS , bar_counter
+
+        bar_counter . header      = message_get_text ( mess_ptr , 1 )
+        bar_counter . footer      =
+            GET_USER_MESSAGE ( "TABLE_LOADER_BAR_FOOTER" , 1 )
+        bar_counter . row         = 15
+        bar_counter . start_value = 0
+        bar_counter . end_value   = no_of_records
+
+        bar_counter . start_install ( )
+
+    ENDIF
+
+    ARRAY value_array ARRAYSIZE ( 0 )
+
+    no_of_fields = size_of_array ( list_of_fields )
+
+    SET NOTPROTECTED
+
+    SET PRINTERCODES TRUE
+
+    end_of_file = FALSE
+    error_occured = FALSE
+    load_aborted = FALSE
+    no_of_records = 0
+
+    message_fetch ( "TABLE_LOADER_WRITE_TRAN" , mess_ptr )
+    message_add_parameter ( mess_ptr , name_of_table )
+    write_tran_text = message_get_text ( mess_ptr , 1 )
+
+    START WRITE TRANSACTION write_tran_text
+
+    load_aborted = lockup_the_table ( name_of_table     ,
+                                      allowed_to_prompt ,
+                                      error_message     )
+
+    IF ( NOT load_aborted ) THEN
+
+        IF ( ( ( overwrite_mode = WIPE_TABLE ) AND
+               ( transaction_size > 0        ) )
+           OR ( overwrite_mode = UNCHECKED_WITH_WIPE ) ) THEN
+
+            kill_the_table ( name_of_table )
+
+        ELSEIF ( overwrite_mode = WIPE_TABLE ) THEN
+
+            error_occured = trash_the_table ( name_of_table        ,
+                                              list_of_fields [ 1 ] ,
+                                              error_message        )
+        ENDIF
+    ENDIF
+
+    IF ( NOT error_occured ) AND ( transaction_size > 0 ) AND
+       ( NOT load_aborted ) THEN
+
+        COMMIT
+        START WRITE TRANSACTION write_tran_text
+
+        load_aborted = lockup_the_table ( name_of_table     ,
+                                          allowed_to_prompt ,
+                                          error_message     )
+    ENDIF
+
+    IF ( NOT error_occured ) AND ( NOT load_aborted ) THEN
+
+        error_occured = table_load_save_lib_array_from_csv
+                                                 ( file_name      ,
+                                                   TRUE           ,
+                                                       line_of_file   ,
+                                                   value_array    ,
+                                                   field_no_check ,
+                                                   end_of_file    ,
+                                                   error_message  )
+    ENDIF
+
+    WHILE ( NOT error_occured ) AND ( NOT end_of_file ) AND
+          ( NOT load_aborted ) DO
+
+        IF ( field_no_check <> no_of_fields ) THEN
+
+            error_message = csv_data_is_corrupt ( line_of_file )
+            error_occured = TRUE
+
+        ELSE
+
+            write_setup_logfile ( STRIP ( name_of_table ) ,
+                                  "Loading record " :
+                                  value_array[1]          )
+
+            IF ( is_multi_table AND ( params_collection <> EMPTY )) THEN
+
+                params_collection . substitute_values ( value_array )
+
+            ENDIF
+
+            write_one_record ( name_of_table    ,
+                               file_name        ,
+                               overwrite_mode   ,
+                               transaction_size ,
+                               line_of_file     ,
+                               key0_fields      ,
+                               key0_sizes       ,
+                               other_fields     ,
+                               list_of_fields   ,
+                               value_array      ,
+                               ignore_or_overs  ,
+                               no_of_errors     )
+
+            error_occured = table_load_save_lib_array_from_csv
+                                             ( file_name      ,
+                                               TRUE           ,
+                                               line_of_file   ,
+                                               value_array    ,
+                                               field_no_check ,
+                                               end_of_file    ,
+                                               error_message  )
+
+        ENDIF
+
+        IF NOT error_occured THEN
+
+            no_of_records = no_of_records + 1
+
+            IF ( transaction_size > 0 ) AND ( NOT error_occured ) THEN
+
+                IF ( ( no_of_records MOD transaction_size ) = 0 ) THEN
+
+                    COMMIT
+                    START WRITE TRANSACTION write_tran_text
+
+                    load_aborted = lockup_the_table
+                                               ( name_of_table     ,
+                                                 allowed_to_prompt ,
+                                                 error_message     )
+
+                ENDIF
+            ENDIF
+
+            IF ( is_multi_table                  ) AND
+               ( value_array [1] = name_of_table ) AND
+               ( no_of_records = estimated_rec   ) THEN
+
+                end_of_file = TRUE
+                error_occured = FALSE
+
+            ENDIF
+
+            IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+                bar_counter . increase_one ( )
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( error_occured ) THEN
+
+        ROLLBACK
+
+        write_end_setup_logfile ( FALSE                   ,
+                                  STRIP ( name_of_table ) ,
+                                  error_message           )
+
+    ELSEIF ( load_aborted ) THEN
+
+        ROLLBACK
+
+        file_send_message ( file_name, error_message , TABLE_LOADER , FALSE )
+
+        write_end_setup_logfile ( FALSE                   ,
+                                  STRIP ( name_of_table ) ,
+                                  error_message           )
+
+    ELSE
+
+        COMMIT
+
+        write_end_setup_logfile ( TRUE                         ,
+                                  STRIP ( name_of_table )      ,
+                                  STRIP ( no_of_records ) :
+                                  " records written"           )
+
+        IF ( no_of_records <> estimated_rec ) THEN
+
+            message_fetch ( "TABLE_LOADER_RECORD_NUM" , mess_ptr )
+
+            message_add_parameter
+                        ( mess_ptr                          ,
+                          STRIP ( TRUNC ( estimated_rec ) ) )
+
+            message_add_parameter
+                        ( mess_ptr                          ,
+                          STRIP ( TRUNC ( no_of_records ) ) )
+
+            file_send_message ( file_name                         ,
+                                message_get_text ( mess_ptr , 1 ) ,
+                                TABLE_LOADER                      ,
+                                FALSE                             )
+        ENDIF
+
+    ENDIF
+
+    IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+        bar_counter . end_install ( )
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE kill_the_table ( VALUE name_of_table )
+
+{
+*       Delete the given database table in a rather nasty way.
+*
+*******************************************************************************}
+
+    DECLARE sql_command
+
+    sql_command = "DELETE FROM " : name_of_table
+
+    execute_sql ( sql_command )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE trash_the_table ( VALUE name_of_table ,
+                              VALUE a_field       ,
+                                    error_message )
+
+{
+*       Delete the database table in a more pleasant way
+*
+*******************************************************************************}
+
+    DECLARE select_all , test , db_error , error_occured
+
+    ARRAY select_all
+
+    array_select ( name_of_table , TRUE , select_all )
+
+    test = SELECT 'name_of_table' . 'a_field'
+
+    db_error = EMPTY
+
+    WHILE ( test <> EMPTY ) AND ( db_error = EMPTY ) DO
+
+        DELETE 'name_of_table' , db_error
+
+        NEXT 'name_of_table'
+
+        test = SELECT 'name_of_table' . 'a_field'
+
+    ENDWHILE
+
+    error_occured = ( db_error <> EMPTY )
+
+    IF ( error_occured ) THEN
+
+        error_message = "TABLE_LOADER_CANT_DEL"
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE write_one_record ( VALUE name_of_table    ,
+                               VALUE file_name        ,
+                               VALUE overwrite_mode   ,
+                               VALUE transaction_size ,
+                               VALUE line_in_file     ,
+                                     key0_fields      ,
+                                     key0_sizes       ,
+                                     other_fields     ,
+                                     list_of_fields   ,
+                                     value_array      ,
+                                     ignore_or_overs  ,
+                                     no_of_errors     )
+
+{
+*       Write one record to the database, taking the current overwrite mode
+*   into account
+*
+*******************************************************************************}
+
+    DECLARE key0_field , skip , selection_array , dbase_error , lock_check
+
+    key0_field = get_key0_for_reserve ( name_of_table  ,
+                                        list_of_fields ,
+                                        value_array    ,
+                                        key0_fields    ,
+                                        key0_sizes     )
+
+    skip = FALSE
+
+    IF ( ( overwrite_mode = UNCHECKED_WITHOUT_WIPE ) OR
+         ( overwrite_mode = UNCHECKED_WITH_WIPE ) ) THEN
+
+        RESERVE ENTRY NO_CHECK 'name_of_table' , key0_field , dbase_error
+    ELSE
+
+        RESERVE ENTRY 'name_of_table' , key0_field , dbase_error
+    ENDIF
+
+    IF ( dbase_error <> EMPTY ) THEN
+
+        IF ( overwrite_mode = OVERWRITE_TABLE ) AND
+           ( dbase_error = GET_USER_MESSAGE( "DB_ID_EXISTS" , 1 ) ) THEN
+
+            ARRAY selection_array
+
+            get_selection_array ( name_of_table   ,
+                                  list_of_fields  ,
+                                  value_array     ,
+                                  key0_fields     ,
+                                  selection_array )
+
+            array_select ( name_of_table   ,
+                           TRUE            ,
+                           selection_array )
+
+            lock_check = SELECT 'name_of_table' .
+                                'key0_fields [ 1 ]' FOR UPDATE
+
+            IF ( lock_check <> EMPTY ) AND
+               ( lock_check <> LOCKED ) THEN
+
+                ignore_or_overs = ignore_or_overs + 1
+            ELSE
+                skip = TRUE
+
+                log_error_message
+                    ( "TABLE_LOADER_CANT_OVER"             ,
+                       GET_USER_MESSAGE ( "DB_LOCKED", 1 ) ,
+                       key0_field                          ,
+                               line_in_file                        ,
+                       name_of_table                       ,
+                       file_name                           ,
+                       no_of_errors                        )
+            ENDIF
+
+        ELSEIF ( overwrite_mode = OVERWRITE_TABLE ) THEN
+
+            log_error_message ( "TABLE_LOADER_CANT_OVER" ,
+                                dbase_error              ,
+                                key0_field               ,
+                                line_in_file             ,
+                                name_of_table            ,
+                                file_name                ,
+                                no_of_errors             )
+
+        ELSEIF ( overwrite_mode = IGNORE_FILE ) THEN
+
+            skip = TRUE
+
+            IF ( dbase_error = GET_USER_MESSAGE
+                                    ( "DB_ID_EXISTS" , 1 ) ) THEN
+
+                ignore_or_overs = ignore_or_overs + 1
+            ELSE
+                log_error_message
+                    ( "TABLE_LOADER_CANT_WRITE" ,
+                          dbase_error               ,
+                      key0_field                ,
+                              line_in_file              ,
+                      name_of_table             ,
+                      file_name                 ,
+                      no_of_errors              )
+            ENDIF
+
+        ELSE { overwrite_mode = WIPE_TABLE or UNCHECKED... }
+
+            log_error_message ( "TABLE_LOADER_CANT_WRITE" ,
+                                dbase_error               ,
+                                key0_field                ,
+                                line_in_file              ,
+                                name_of_table             ,
+                                file_name                 ,
+                                no_of_errors              )
+
+            skip = TRUE
+        ENDIF
+    ENDIF
+
+    IF ( NOT skip ) THEN
+
+        assign_other_fields ( name_of_table  ,
+                              list_of_fields ,
+                              value_array    ,
+                              other_fields   )
+
+        UPDATE 'name_of_table'
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE get_selection_array ( VALUE name_of_table   ,
+                                        list_of_fields  ,
+                                        value_array     ,
+                                        key0_fields     ,
+                                        selection_array )
+
+{
+*       Build a selection criteria for a particular record, given a list of
+*   key0 fields, etc.
+*
+*******************************************************************************}
+
+    DECLARE key0_loop , key0_field , field_loop
+
+    key0_loop = 0
+
+    WHILE ( key0_loop < size_of_array ( key0_fields ) )
+
+        IF ( key0_loop > 0 ) THEN
+
+            array_select_add ( selection_array  ,
+                               ARRAY_SELECT_AND ,
+                               EMPTY            ,
+                               EMPTY            )
+        ENDIF
+
+        key0_loop = key0_loop + 1
+
+        key0_field = key0_fields [ key0_loop ]
+
+        field_loop = 0
+
+        REPEAT
+            field_loop = field_loop + 1
+
+        UNTIL list_of_fields [ field_loop ] = key0_field
+
+        array_select_add ( selection_array            ,
+                           ARRAY_SELECT_EQ            ,
+                           key0_field                 ,
+                           value_array [ field_loop ] )
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE assign_other_fields ( VALUE name_of_table  ,
+                                        list_of_fields ,
+                                        value_array    ,
+                                        other_fields   )
+
+{
+*       Assign non-key0 fields in the currently reserved row
+*
+*******************************************************************************}
+
+    DECLARE other_loop , other_field , field_loop, field_type
+
+    other_loop = size_of_array ( other_fields )
+
+    WHILE ( other_loop > 0 ) DO
+
+        other_field = other_fields [ other_loop ]
+
+        IF ( NOT BLANK ( other_field ) ) THEN
+
+            field_loop = 0
+
+            REPEAT
+                field_loop = field_loop + 1
+
+            UNTIL other_field = list_of_fields [ field_loop ]
+
+            GET_FIELD_DETAILS 'name_of_table' . 'other_field', "DATA_TYPE", field_type
+
+                IF ( "Date" = field_type ) THEN
+                value_array [ field_loop ] = STRIP ( value_array [ field_loop ])
+            ENDIF
+
+            ASSIGN 'name_of_table' . 'other_field' =
+                                         value_array [ field_loop ]
+        ENDIF
+
+        other_loop = other_loop - 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE get_key0_for_reserve ( VALUE name_of_table  ,
+                                         list_of_fields ,
+                                         value_array    ,
+                                         key0_fields    ,
+                                         key0_sizes     )
+
+{
+*       Construct the key0 field for use with RESERVE ENTRY
+*
+*******************************************************************************}
+
+    DECLARE key0_loop ,
+            key0_field ,
+            field_loop ,
+            temp_str ,
+            answer ,
+            phrase_type
+
+    answer = ""
+
+    key0_loop = 0
+
+    WHILE ( key0_loop < size_of_array ( key0_fields ) )
+
+        key0_loop = key0_loop + 1
+
+        key0_field = key0_fields [ key0_loop ]
+
+        field_loop = 0
+
+        REPEAT
+
+            field_loop = field_loop + 1
+
+        UNTIL list_of_fields [ field_loop ] = key0_field
+
+        GET_FIELD_DETAILS 'name_of_table' . 'key0_field', "PHRASE_TYPE", phrase_type
+
+        IF ( phrase_type = EMPTY ) THEN
+            FORMAT temp_str FROM value_array [ field_loop ]
+                   USING 'name_of_table' . 'key0_field'
+        ELSE
+            temp_str = value_array [ field_loop ]
+        ENDIF
+
+        answer = answer : PAD ( temp_str                   ,
+                                " "                        ,
+                                key0_sizes [ key0_loop ]   )
+
+    ENDWHILE
+
+    RETURN ( answer )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE table_load_save_lib_scan_for_cr ( VALUE the_line )
+
+{
+*       Scan the line for Carriage Return and matching quotes
+*
+*******************************************************************************}
+
+    DECLARE needs_scan ,
+            pos ,
+            searching ,
+            ch ,
+            in_quote ,
+            the_line_length
+
+    in_quote = FALSE
+    needs_scan = INDEX ( the_line, ASCII ( 34 ))
+    
+    IF ( needs_scan > 0 ) THEN
+    
+        pos = 0
+        searching = TRUE
+        the_line_length = STRINGLENGTH ( the_line )
+        
+        WHILE searching DO
+
+            pos = pos + 1
+
+            IF pos > the_line_length THEN
+
+                searching = FALSE
+
+            ELSE
+
+                ch = SUBSTRING ( the_line, pos, 1 )
+        
+                IF ch = ASCII (34) THEN
+                
+                    in_quote = NOT in_quote
+        
+                ENDIF
+
+            ENDIF
+    
+        ENDWHILE    
+    
+    ENDIF
+
+    RETURN ( in_quote )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE table_load_save_lib_array_from_csv ( VALUE file_name         ,
+                                                 VALUE file_may_end      ,
+                                                       line_of_file      ,
+                                                       array_to_read     ,
+                                                       no_of_fields_read ,
+                                                       end_of_file       ,
+                                                       error_message     )
+
+{
+*   Read a one-dimensional array from the specified CSV file.  If an error
+*   occurs, the routine returns TRUE, placing an error message in
+*   "error_message".
+*
+*******************************************************************************}
+
+    DECLARE line_remaining ,
+        line_element   ,
+        error_occured  ,
+        line_read      ,
+        needs_more
+
+    error_occured = FALSE
+    end_of_file = FALSE
+    no_of_fields_read = 0
+
+    line_read = ""
+    line_remaining = ""
+    needs_more = FALSE
+
+    REPEAT
+
+        FILE READ file_name , line_read , error_message
+        line_of_file = line_of_file + 1
+
+        IF error_message = EMPTY THEN
+
+            line_remaining = line_remaining : line_read
+            needs_more = table_load_save_lib_scan_for_cr ( line_remaining )
+
+            IF needs_more THEN
+                line_remaining = line_remaining : ASCII ( 13 ) : ASCII ( 10 )
+            ENDIF
+
+        ENDIF
+
+    UNTIL ( NOT BLANK ( line_remaining ) AND NOT needs_more) OR ( error_message <> EMPTY )
+
+    IF ( error_message = EMPTY ) THEN
+
+        WHILE ( ( NOT BLANK ( line_remaining ) ) AND
+                ( NOT error_occured            ) ) DO
+
+            error_occured = get_delim_data ( line_of_file   ,
+                                             line_remaining ,
+                                             line_element   ,
+                                             error_message  )
+
+            no_of_fields_read = no_of_fields_read + 1
+
+            IF ( line_element = null_value ) THEN
+                array_to_read [ no_of_fields_read ] = NULL
+            ELSE
+                array_to_read [ no_of_fields_read ] =
+                                               line_element
+            ENDIF
+
+        ENDWHILE
+
+    ELSEIF ( error_message = GET_USER_MESSAGE ( "RPC_K_EOFTXTFIL", 1 )) THEN
+
+        IF file_may_end THEN
+            end_of_file = TRUE
+        ELSE
+            error_message = "TABLE_LOADER_UNEXP_EOF"
+            error_occured = TRUE
+        ENDIF
+
+    ELSE
+
+        error_occured = TRUE
+
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE get_delim_data ( VALUE line_of_file  ,
+                                   st_val        ,
+                                   part          ,
+                                   error_message )
+
+{
+*       Extract next field from part of line of the CSV file
+*
+*******************************************************************************}
+
+    DECLARE del_idx , error_occured , exit_now , add_part
+
+    st_val = STRIP ( st_val )
+
+    error_occured = FALSE
+
+    IF ( LEFTSTRING ( st_val , 1 ) = "," ) THEN
+
+        st_val = STRIP ( st_val # "," )
+
+    ENDIF
+
+    IF ( LEFTSTRING ( st_val , 1 ) = delimit_char ) THEN
+
+        st_val = st_val # delimit_char
+
+        del_idx = INDEX ( st_val , delimit_char )
+
+        IF ( del_idx = 0 ) THEN
+
+            error_message = csv_data_is_corrupt ( line_of_file )
+            error_occured = TRUE
+        ELSE
+            part     = ""
+            exit_now = FALSE
+
+            WHILE ( NOT exit_now ) DO
+
+                add_part = LEFTSTRING ( st_val , del_idx - 1 )
+                part = part : add_part
+
+                st_val = STRIP
+                     ( st_val # ( add_part : delimit_char ) )
+
+                IF BLANK ( st_val ) THEN
+
+                    exit_now = TRUE
+
+                ELSEIF ( LEFTSTRING ( st_val, 1 ) = "," ) THEN
+
+                    exit_now = TRUE
+
+                ELSEIF ( LEFTSTRING ( st_val , 1 ) =
+                                         delimit_char ) THEN
+
+                    part   = part   : delimit_char
+                    st_val = st_val # delimit_char
+
+                ELSE
+
+                    error_message = csv_data_is_corrupt ( line_of_file )
+                    error_occured = TRUE
+                    exit_now = TRUE
+
+                ENDIF
+
+                IF ( NOT exit_now ) THEN
+
+                    del_idx = INDEX ( st_val       ,
+                                      delimit_char )
+
+                    IF ( del_idx = 0 ) THEN
+
+                        error_message =
+                             csv_data_is_corrupt
+                                       ( line_of_file )
+                        error_occured = TRUE
+                        exit_now = TRUE
+                    ENDIF
+                ENDIF
+
+            ENDWHILE
+        ENDIF
+    ELSE
+
+        del_idx = INDEX ( st_val , "," )
+
+        IF ( del_idx > 0 ) THEN
+            part   = LEFTSTRING ( st_val , del_idx - 1 )
+                st_val = st_val # part
+        ELSE
+            part   = STRIP ( st_val )
+            st_val = ""
+        ENDIF
+
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE log_error_message ( VALUE error_message ,
+                                VALUE reason_text   ,
+                                VALUE key0_field    ,
+                                VALUE line_in_file  ,
+                                VALUE name_of_tbl   ,
+                                VALUE file_name     ,
+                                      no_of_errors  )
+
+{
+*       Sends a database error to the log file (LITERAL output)
+*
+*******************************************************************************}
+
+    DECLARE header_txt , tab_txt , fil_txt , pad_len , errs_txt , err_txt ,
+        prob_txt , reas_txt , key0_txt , line_txt , problem
+
+    IF ( no_of_errors = 0 ) THEN
+
+        header_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_HEAD" , 1 )
+        header_txt = centre_text ( header_txt , 80 )
+
+        tab_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_TAB" , 1 )
+        fil_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_FIL" , 1 )
+
+        pad_len = find_max_number ( LENGTH ( tab_txt ) ,
+                                    LENGTH ( fil_txt ) )
+
+        tab_txt = PAD ( tab_txt , " " , pad_len ) : " : " : name_of_tbl
+        fil_txt = PAD ( fil_txt , " " , pad_len ) : " : " : file_name
+
+        errs_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERRS_HEAD", 1 )
+
+        lit_headers ( header_txt , tab_txt , fil_txt , errs_txt )
+
+    ENDIF
+
+    problem = GET_USER_MESSAGE ( error_message , 1 )
+
+    IF ( problem = ERROR ) THEN
+
+        problem = error_message
+    ENDIF
+
+    no_of_errors = no_of_errors + 1
+
+    err_txt  = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_ERR" , 1 )
+    prob_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_PROB" , 1 )
+    reas_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_REAS" , 1 )
+    key0_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_KEY0" , 1 )
+    line_txt = GET_USER_MESSAGE ( "TABLE_LOADER_ERR_LINE" , 1 )
+
+    pad_len = find_max_number ( LENGTH ( err_txt ) , LENGTH ( prob_txt ) )
+
+    pad_len = find_max_number ( pad_len , LENGTH ( reas_txt ) )
+    pad_len = find_max_number ( pad_len , LENGTH ( key0_txt ) )
+    pad_len = find_max_number ( pad_len , LENGTH ( line_txt ) )
+
+    err_txt = PAD ( err_txt , " " , pad_len ) : " : " :
+                                    STRIP ( TRUNC ( no_of_errors ) )
+
+    prob_txt = PAD ( prob_txt , " " , pad_len ) : " : " : problem
+    reas_txt = PAD ( reas_txt , " " , pad_len ) : " : " : reason_text
+    key0_txt = PAD ( key0_txt , " " , pad_len ) : " : " : key0_field
+    line_txt = PAD ( line_txt , " " , pad_len ) : " : " :
+                                    STRIP ( TRUNC ( line_in_file ) )
+
+    lit_one_error ( err_txt , prob_txt , reas_txt , key0_txt , line_txt )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE end_error_log ( no_of_errors )
+
+{
+*       Writes the footer of the error log
+*
+*******************************************************************************}
+
+    DECLARE mess_ptr , end_txt
+
+    IF ( no_of_errors > 0 ) THEN
+
+        message_fetch ( "TABLE_LOADER_LOGEND_ERR" , mess_ptr )
+
+        message_add_parameter ( mess_ptr                         ,
+                                STRIP ( TRUNC ( no_of_errors ) ) )
+
+        end_txt = GET_USER_MESSAGE ( "TABLE_LOADER_LOGEND_TXT" , 1 )
+
+        lit_footers ( message_get_text ( mess_ptr , 1 ) , end_txt )
+
+        FLUSH_LITERAL
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE verify_list_of_fields ( VALUE name_of_table  ,
+                                          list_of_fields ,
+                                          error_message  ,
+                                    VALUE can_prompt     )
+
+{
+*       Verifies that all of the given fields are valid for that table
+*
+*******************************************************************************}
+
+    DECLARE count , proceed , mess_ptr
+
+    proceed = TRUE
+    count = size_of_array ( list_of_fields )
+
+    WHILE ( count > 0 ) AND ( proceed ) DO
+
+        IF NOT ( valid_field ( name_of_table            ,
+                               list_of_fields [ count ] ) )
+
+            message_fetch ( "TABLE_LOADER_ILL_FLD_NAME" , mess_ptr )
+
+            message_add_parameter ( mess_ptr                 ,
+                                    list_of_fields [ count ] )
+
+            message_add_parameter ( mess_ptr      ,
+                                    name_of_table )
+
+            proceed = do_we_go_on ( message_get_text
+                                              ( mess_ptr , 1 ) ,
+                                    can_prompt                 )
+
+            IF ( proceed ) THEN
+
+                list_of_fields [ count ] = ""
+            ENDIF
+        ELSE
+
+            get_real_field_name ( name_of_table            ,
+                                              list_of_fields [ count ] ,
+                                              list_of_fields [ count ] )
+
+        ENDIF
+
+        count = count - 1
+
+    ENDWHILE
+
+    RETURN ( proceed )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+    ROUTINE verify_field_sizes ( file_array ,
+                                 db_array   ,
+                                 can_prompt )
+
+{
+*       Check field sizes in file against field sizes in database
+*
+*******************************************************************************}
+
+    DECLARE count , proceed , exit_anyway
+
+    proceed = TRUE
+    exit_anyway = FALSE
+    count = size_of_array ( file_array )
+
+    WHILE ( count > 0 ) AND ( NOT exit_anyway ) DO
+
+        IF   ( db_array [ count ] > 0 ) { if 0 then field not in table }
+         AND ( db_array [ count ] < file_array [ count ] ) THEN
+
+            proceed = do_we_go_on ( "TABLE_LOADER_FILE_BIGGER" ,
+                                    can_prompt                 )
+
+            exit_anyway = TRUE
+        ENDIF
+
+        count = count - 1
+
+    ENDWHILE
+
+    RETURN ( proceed )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE check_key0_fields ( VALUE name_of_table  ,
+                                      list_of_fields ,
+                                      key0_fields    ,
+                                      other_fields   ,
+                                      error_message  )
+
+{
+*       Checks that all key0 fields are present in the file's list of fields
+*
+*******************************************************************************}
+
+    DECLARE key0_count , list_count , error_occured , found , mess_ptr ,
+        key0_fld
+
+    array_copy ( other_fields , list_of_fields )
+
+    GET_TABLE_DETAILS 'name_of_table' , "KEY0_FIELD" , key0_fields
+
+    error_occured = FALSE
+
+    key0_count = size_of_array ( key0_fields )
+
+    WHILE ( key0_count > 0 ) AND ( NOT error_occured ) DO
+
+        found = FALSE
+
+        key0_fld = key0_fields [ key0_count ]
+
+        list_count = size_of_array ( other_fields )
+
+        WHILE ( list_count > 0 ) AND ( NOT found ) DO
+
+            IF key0_fld = other_fields [ list_count ] THEN
+
+                found = TRUE
+
+                array_remove_slice ( other_fields ,
+                                     1            ,
+                                     list_count   )
+            ELSE
+                list_count = list_count - 1
+            ENDIF
+
+        ENDWHILE
+
+        error_occured = ( NOT found )
+
+        key0_count = key0_count - 1
+
+    ENDWHILE
+
+    IF error_occured THEN
+
+        message_fetch ( "TABLE_LOADER_MISS_KEY0" , mess_ptr )
+
+        message_add_parameter ( mess_ptr , key0_fld )
+
+        error_message = message_get_text ( mess_ptr , 1 )
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE do_we_go_on ( VALUE mess       ,
+                          VALUE can_prompt )
+
+{
+*       Prompts for a continue (if allowed to prompt) with the given warning.
+*   In batch mode, a warning message is written to the calling process.
+*
+*******************************************************************************}
+
+    DECLARE wind , choice , query , text , qlen , tlen , head , foot ,
+        wind_width , mess_ptr
+
+    text = GET_USER_MESSAGE ( mess , 1 )
+
+    IF ( text = ERROR ) THEN
+
+        text = mess
+    ENDIF
+
+    IF ( ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) AND can_prompt ) THEN
+
+        query = GET_USER_MESSAGE ( "TABLE_LOADER_PROCEED" , 1 )
+
+        IF global ( "TERMTYPE" ) = "GUI" THEN
+
+            choice = confirm_with_text ( text )
+
+        ELSE
+
+            head = GET_USER_MESSAGE ( "TABLE_LOADER_FORM_HEADER" , 1 )
+            foot = GET_USER_MESSAGE ( "TABLE_LOADER_PROC_FOOTER" , 1 )
+
+            qlen = LENGTH ( query ) + 4
+            tlen = LENGTH ( text )
+
+            wind_width = find_max_number ( qlen , tlen )
+            wind_width = find_max_number ( wind_width , LENGTH ( head ) )
+            wind_width = 4 + find_max_number ( wind_width , LENGTH ( foot ) )
+
+            CREATE TEXT WINDOW wind
+                HEIGHT 7 WIDTH wind_width
+                BORDER
+                HEADER = head
+                FOOTER = foot
+                HELP CONTEXT = "$TABLE_LOADER_PROCEED"
+
+            DISPLAY text AT 1 + ( ( wind_width - tlen ) DIV 2 ) , 3 IN WINDOW wind
+
+            PASTE TEXT WINDOW wind
+                AT 1 + ( ( GLOBAL ( "SCREEN_WIDTH" ) - wind_width ) DIV 2 ) , 10
+
+            REPEAT
+                PROMPT FOR choice
+                    AT 1 + ( ( wind_width - qlen ) DIV 2 ) , 5 IN WINDOW wind
+                    USING query
+                    BROWSE ON BOOLEAN
+
+            UNTIL ( ( LASTKEY = "RETURN" ) OR ( LASTKEY = "DO" ) )
+
+            UNPASTE TEXT WINDOW wind
+
+        ENDIF
+
+        ELSEIF ( GLOBAL ( "MODE" ) <> "INTERACTIVE" )
+
+        message_fetch ( "TABLE_LOADER_BATCH_WARN" , mess_ptr )
+        message_add_parameter ( mess_ptr , text )
+
+        send_message ( message_get_text ( mess_ptr , 1 ) ,
+                       TABLE_LOADER                      ,
+                       FALSE                             )
+
+        choice = TRUE
+    ELSE
+        choice = TRUE
+    ENDIF
+
+    RETURN ( choice )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE lockup_the_table ( VALUE name_of_table     ,
+                               VALUE allowed_to_prompt ,
+                                     error_message     )
+
+{
+*       Try to lock the given table.  If the table is locked, the user will be
+*   prompted if this is permitted.  In batch mode, the program will sleep
+*   and retry, according to the defined constants.
+*
+*******************************************************************************}
+
+    DECLARE table_array , table_has_locked , load_aborted , can_exit ,
+        user_instruction , retry_count , mess_ptr
+
+    ARRAY table_array ARRAYSIZE ( 1 )
+
+    table_array [ 1 ] = name_of_table
+
+    table_has_locked = lock_tables ( table_array )
+
+    IF ( table_has_locked ) THEN
+
+        load_aborted = FALSE
+
+    ELSEIF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+        can_exit = FALSE
+
+        REPEAT
+            user_instruction = get_retry_abort_lock
+                                             ( name_of_table     ,
+                                               allowed_to_prompt )
+
+            IF ( user_instruction = loader_proceed ) THEN
+
+                load_aborted = FALSE
+                can_exit = TRUE
+
+            ELSEIF ( user_instruction = loader_abort ) THEN
+
+                message_fetch ( "TABLE_LOADER_TABLE_IN_USE" ,
+                                mess_ptr                    )
+
+                message_add_parameter ( mess_ptr              ,
+                                        STRIP ( name_of_table ))
+                load_aborted = TRUE
+                error_message = message_get_text ( mess_ptr, 1 )
+                can_exit = TRUE
+
+            ELSE { user_instruction = loader_retry }
+
+                table_has_locked = lock_tables ( table_array )
+
+                IF table_has_locked THEN
+
+                    load_aborted = FALSE
+                    can_exit = TRUE
+                ENDIF
+            ENDIF
+
+        UNTIL can_exit
+    ELSE
+        retry_count = 0
+
+        WHILE ( NOT table_has_locked ) AND
+              ( retry_count < loader_batch_no_of_retries ) DO
+
+            message_fetch ( "TABLE_LOADER_RETRY_SLEEP" , mess_ptr )
+            message_add_parameter ( mess_ptr , name_of_table )
+
+            send_message ( message_get_text ( mess_ptr , 1 ) ,
+                           TABLE_LOADER                      ,
+                           FALSE                             )
+
+            SLEEP FOR loader_batch_retry_interval
+
+            table_has_locked = lock_tables ( table_array )
+
+            retry_count = retry_count + 1
+
+        ENDWHILE
+
+        IF ( table_has_locked ) THEN
+
+            load_aborted = FALSE
+        ELSE
+            message_fetch ( "TABLE_LOADER_CANT_LOCK" , mess_ptr )
+            message_add_parameter ( mess_ptr , name_of_table )
+
+            load_aborted = TRUE
+            error_message = message_get_text ( mess_ptr , 1 )
+        ENDIF
+    ENDIF
+
+    RETURN ( load_aborted )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE get_retry_abort_lock ( VALUE name_of_table     ,
+                                   VALUE allowed_to_prompt )
+
+{
+*       Ask user for retry / abort / proceed when unable to lock table
+*
+*******************************************************************************}
+
+    DECLARE option , opt_window , opt_prompt , opt_header , opt_footer ,
+        wind_width , prompt_len , opt_array , mess_ptr
+
+    IF ( NOT allowed_to_prompt ) THEN
+
+        option = loader_abort
+    ELSE
+
+        ARRAY opt_array ARRAYSIZE ( 3 , 2 )
+
+        opt_array [ 1 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_RETRY_OPT" , 1 )
+        opt_array [ 1 , 2 ] = loader_retry
+
+        opt_array [ 2 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_ABORT_OPT" , 1 )
+        opt_array [ 2 , 2 ] = loader_abort
+
+        opt_array [ 3 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_PROCEED_OPT" , 1 )
+        opt_array [ 3 , 2 ] = loader_proceed
+
+        prompt_len = find_max_number ( LENGTH ( opt_array [ 1 , 1 ] ) ,
+                                       LENGTH ( opt_array [ 2 , 1 ] ) )
+
+        prompt_len = find_max_number ( prompt_len                     ,
+                                       LENGTH ( opt_array [ 3 , 1 ] ) )
+
+        message_fetch ( "TABLE_LOADER_LOCKED_PROMPT" , mess_ptr )
+        message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+        opt_prompt = message_get_text ( mess_ptr , 1 )
+        opt_header = GET_USER_MESSAGE ( "TABLE_LOADER_LOCKED_HEADER" , 1 )
+        opt_footer = GET_USER_MESSAGE ( "TABLE_LOADER_PROC_FOOTER" , 1 )
+
+        prompt_len = prompt_len + LENGTH ( opt_prompt )
+
+        wind_width = find_max_number ( LENGTH ( opt_header ) ,
+                                       LENGTH ( opt_footer ) )
+
+        wind_width = 10 + find_max_number ( wind_width , prompt_len )
+
+        CREATE TEXT WINDOW opt_window
+            HEIGHT 5 WIDTH wind_width
+            BORDER
+            HEADER = opt_header
+            FOOTER = opt_footer
+            HELP CONTEXT = "$TABLE_LOADER_LOCKED_OPTION"
+
+        PASTE TEXT WINDOW opt_window
+            AT 1 + ( GLOBAL ( "SCREEN_WIDTH" ) - wind_width ) DIV 2 ,
+               ( GLOBAL ( "SCREEN_HEIGHT" ) - 5 ) DIV 2
+
+        REPEAT
+            PROMPT FOR option IN WINDOW opt_window
+                AT 1 + ( wind_width - prompt_len ) DIV 2 , 3
+                USING opt_prompt
+                CHOOSE OUTOF opt_array
+
+        UNTIL ( ( LASTKEY = "DO" ) OR ( LASTKEY = "RETURN" ) )
+
+        UNPASTE TEXT WINDOW opt_window
+    ENDIF
+
+    RETURN ( option )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE file_send_message ( VALUE file_name       ,
+                                VALUE message         ,
+                                VALUE loader_or_saver ,
+                                VALUE pause_flag      )
+
+{
+*       Send a message to the user - using flash_message or logmessage
+*
+*******************************************************************************}
+
+    DECLARE mess_ptr , text
+
+    text = GET_USER_MESSAGE ( message , 1 )
+
+    IF ( text = ERROR ) THEN
+        text = message
+    ENDIF
+
+    IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+        flash_message ( file_name : " : " : message , pause_flag )
+    ELSE
+
+        IF ( loader_or_saver = TABLE_LOADER ) THEN
+
+            message_fetch ( "TABLE_LOADER_BATCH" , mess_ptr )
+        ELSE
+            message_fetch ( "TABLE_SAVER_BATCH" , mess_ptr )
+        ENDIF
+
+        message_add_parameter ( mess_ptr , text )
+
+        logmessage "LOGFILE" , message_get_text ( mess_ptr , 1 )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE send_message ( VALUE message         ,
+                           VALUE loader_or_saver ,
+                           VALUE pause_flag      )
+
+{
+*       Send a message to the user - using flash_message or logmessage
+*
+*******************************************************************************}
+
+    DECLARE mess_ptr , text
+
+    IF GLOBAL ( "MODE" ) = "INTERACTIVE" THEN
+
+        flash_message ( message , pause_flag )
+    ELSE
+        text = GET_USER_MESSAGE ( message , 1 )
+
+        IF ( text = ERROR ) THEN
+
+            text = message
+        ENDIF
+
+        IF ( loader_or_saver = TABLE_LOADER ) THEN
+
+            message_fetch ( "TABLE_LOADER_BATCH" , mess_ptr )
+        ELSE
+            message_fetch ( "TABLE_SAVER_BATCH" , mess_ptr )
+        ENDIF
+
+        message_add_parameter ( mess_ptr , text )
+
+        logmessage "LOGFILE" , message_get_text ( mess_ptr , 1 )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE validate_load_params ( VALUE file_name        ,
+                                   VALUE overwrite_mode   ,
+                                         transaction_size ,
+                                         error_message    )
+
+{
+*   Routine to validatate the given filename, overwrite mode and
+*   transaction size.  The transaction size is also converted to a
+*   positive integer.
+*
+*******************************************************************************}
+
+    DECLARE error_occured , mess_ptr
+
+    error_occured = FALSE
+
+    IF NUMTEXT ( transaction_size ) THEN
+
+        transaction_size = TRUNC ( NUMERIC ( transaction_size ) )
+
+        IF ( transaction_size < 0 ) THEN
+
+            transaction_size = 0
+        ENDIF
+    ELSE
+        error_occured = TRUE
+        error_message = "TABLE_LOADER_INV_TRANS"
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        IF ( NOT valid_overwrite_mode ( overwrite_mode ) ) THEN
+
+            message_fetch ( "TABLE_LOADER_INV_MODE" , mess_ptr )
+            message_add_parameter ( mess_ptr , overwrite_mode )
+
+            error_occured = TRUE
+            error_message = message_get_text ( mess_ptr , 1 )
+        ENDIF
+    ENDIF
+
+    IF ( NOT error_occured ) THEN
+
+        IF ( NOT ( FILE EXISTS ( file_name ) ) ) THEN
+
+            message_fetch ( "TABLE_LOADER_INV_FILE" , mess_ptr )
+            message_add_parameter ( mess_ptr , file_name )
+
+            error_occured = TRUE
+            error_message = message_get_text ( mess_ptr , 1 )
+        ENDIF
+    ENDIF
+
+    RETURN ( error_occured )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE really_same ( VALUE string_1 ,
+                          VALUE string_2 )
+
+{
+*   Remove underscores and make strings uppercase - then compare
+*
+*******************************************************************************}
+
+    DECLARE compare_1 , compare_2
+
+    compare_1 = SUBSTITUTE ( string_1 , "_" , "" )
+    compare_2 = SUBSTITUTE ( string_2 , "_" , "" )
+
+    compare_1 = TOUPPER ( compare_1 )
+    compare_2 = TOUPPER ( compare_2 )
+
+    RETURN ( compare_1 = compare_2 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE valid_overwrite_mode ( VALUE overwrite_mode )
+
+{
+*   Routine to validatate overwrite mode
+*
+*******************************************************************************}
+
+    RETURN ( really_same ( overwrite_mode , IGNORE_FILE            ) OR
+             really_same ( overwrite_mode , OVERWRITE_TABLE        ) OR
+             really_same ( overwrite_mode , WIPE_TABLE             ) OR
+             really_same ( overwrite_mode , UNCHECKED_WITH_WIPE    ) OR
+             really_same ( overwrite_mode , UNCHECKED_WITHOUT_WIPE ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE csv_header_is_corrupt ( VALUE line_of_file )
+
+{
+*   Return error message for CSV file header, with given line number
+*
+*******************************************************************************}
+
+    DECLARE mess_ptr
+
+    message_fetch ( "TABLE_LOADER_HEADER_CORR" , mess_ptr )
+    message_add_parameter ( mess_ptr , STRIP ( TRUNC ( line_of_file ) ) )
+
+    RETURN ( message_get_text ( mess_ptr , 1 ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE csv_data_is_corrupt ( VALUE line_of_file )
+
+{
+*   Return error message for CSV file data, with given line number
+*
+*******************************************************************************}
+
+    DECLARE mess_ptr
+
+    message_fetch ( "TABLE_LOADER_DATA_CORR" , mess_ptr )
+    message_add_parameter ( mess_ptr , STRIP ( TRUNC ( line_of_file ) ) )
+
+    RETURN ( message_get_text ( mess_ptr , 1 ) )
+
+ENDROUTINE
+
+
+{* LITERAL OUTPUT ROUTINES ****************************************************}
+
+{******************************************************************************}
+
+    ROUTINE lit_headers ( VALUE cent   ,
+                          VALUE table  ,
+                          VALUE filenm ,
+                          VALUE errors )
+
+{
+*       Output header for error log
+*
+*******************************************************************************}
+
+LITERAL
+
+$cent___________________________________________________________________________
+
+$table__________________________________________________________________________
+$filenm_________________________________________________________________________
+
+$errors______________________________________________________________________
+$ENDLITERAL
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE lit_one_error ( VALUE line1 ,
+                            VALUE line2 ,
+                            VALUE line3 ,
+                            VALUE line4 ,
+                            VALUE line5 )
+
+{
+*       Output error to log
+*
+*******************************************************************************}
+
+TEST PAGE 6
+
+LITERAL
+
+$line1__________________________________________________________________________
+$line2__________________________________________________________________________
+$line3__________________________________________________________________________
+$line4__________________________________________________________________________
+$line5__________________________________________________________________________
+$ENDLITERAL
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE lit_footers ( VALUE line1 ,
+                          VALUE line2 )
+
+{
+*       Output footers to error log
+*
+*******************************************************************************}
+
+TEST PAGE 5
+
+LITERAL
+
+
+$line1__________________________________________________________________________
+
+$line2__________________________________________________________________________
+$ENDLITERAL
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE load_mode_array ( mode_array )
+
+{
+*       Define and load the table loader modes into the array
+*
+*******************************************************************************}
+
+    ARRAY mode_array ARRAYSIZE ( 5 , 2 )
+
+    mode_array [ 1 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_MODE_IGN" , 1 )
+    mode_array [ 1 , 2 ] = IGNORE_FILE
+
+    mode_array [ 2 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_MODE_OVER" , 1 )
+    mode_array [ 2 , 2 ] = OVERWRITE_TABLE
+
+    mode_array [ 3 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_MODE_WIPE" , 1 )
+    mode_array [ 3 , 2 ] = WIPE_TABLE
+
+    mode_array [ 4 , 1 ] = GET_USER_MESSAGE
+                       ( "TABLE_LOADER_MODE_WIPE_UNCH" , 1 )
+    mode_array [ 4 , 2 ] = UNCHECKED_WITH_WIPE
+
+    mode_array [ 5 , 1 ] = GET_USER_MESSAGE ( "TABLE_LOADER_MODE_UNCH" , 1 )
+    mode_array [ 5 , 2 ] = UNCHECKED_WITHOUT_WIPE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE load_trans_true_false ( trans_true , trans_false )
+
+{
+*       Define the trueword and falseword strings for transaction modes
+*
+*******************************************************************************}
+
+    trans_true  = GET_USER_MESSAGE ( "TABLE_LOADER_MULTI_PR"  , 1 )
+    trans_false = GET_USER_MESSAGE ( "TABLE_LOADER_SINGLE_PR" , 1 )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+    ROUTINE initialise_setup_logfile ( VALUE tabl_name  ,
+                                       VALUE the_string )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE filename ,
+        status
+
+    IF ( variable_is_assigned ( setup_logfile_name ) ) THEN
+
+        filename = setup_logfile_name
+
+        FILE CREATE filename , status
+
+        FILE WRITE filename the_string , status
+        FILE WRITE filename NOW        , status
+
+        FILE CLOSE filename , status
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE write_setup_logfile ( VALUE tabl_name  ,
+                                  VALUE the_string )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE filename ,
+        status
+
+    IF ( variable_is_assigned ( setup_logfile_name ) ) THEN
+
+        filename = setup_logfile_name
+
+        REPEAT
+            FILE EXTEND filename , status
+        UNTIL ( status = EMPTY )
+
+        FILE WRITE filename the_string , status
+
+        FILE CLOSE filename , status
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    ROUTINE write_end_setup_logfile ( VALUE success    ,
+                                      VALUE tabl_name  ,
+                                      VALUE the_string )
+
+{
+*
+*
+*******************************************************************************}
+
+DECLARE sf_string
+
+    IF ( success ) THEN
+        sf_string = SETUP_SUCC_STRING
+    ELSE
+        sf_string = SETUP_FAIL_STRING
+    ENDIF
+
+    write_setup_logfile ( tabl_name , sf_string : " - " : the_string )
+    write_setup_logfile ( tabl_name , SETUP_EOFMARK )
+
+ENDROUTINE
+
+{******************************************************************************}
+

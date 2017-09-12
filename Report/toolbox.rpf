@@ -1,0 +1,3334 @@
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DISPLAY"
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_UTILS
+
+GLOBAL CONSTANT result_name_pos  = 1
+GLOBAL CONSTANT result_type_pos  = 2
+GLOBAL CONSTANT result_unit_pos  = 3
+GLOBAL CONSTANT result_cont_pos  = 4
+GLOBAL CONSTANT result_text_pos  = 5
+GLOBAL CONSTANT result_valu_pos  = 6
+GLOBAL CONSTANT result_oorf_pos  = 7
+GLOBAL CONSTANT result_calc_pos  = 8
+GLOBAL CONSTANT result_sfro_pos  = 9
+GLOBAL CONSTANT result_sfno_pos  = 10
+GLOBAL CONSTANT result_minm_pos  = 11
+GLOBAL CONSTANT result_maxm_pos  = 12
+GLOBAL CONSTANT result_plac_pos  = 13
+GLOBAL CONSTANT result_odno_pos  = 14
+GLOBAL CONSTANT result_sffi_pos  = 15
+
+GLOBAL CONSTANT button_width      = 10
+GLOBAL CONSTANT GUI_HEIGHT_DIFF   = 4
+GLOBAL CONSTANT GUI_WIDTH_DIFF    = button_width + 3
+GLOBAL CONSTANT BUTTON_FROM_FRAME = button_width
+
+DECLARE  last_key_used
+
+{ *** Section for tetsing *** }
+DECLARE parm_array, n_sets, err_mess
+ARRAY   parm_array
+
+n_sets      = EMPTY
+err_mess    = EMPTY
+
+{mlp_analysis_parameters ( "M", "INOC_MPS","2","501517","30", parm_array, n_sets, err_mess)}
+mlp_analysis_parameters ( "A", "CUT_DETECT","2","PARAMTERT","6", parm_array, n_sets, err_mess)
+
+IF n_sets > 0 THEN
+    fm(GetArray(parm_array):ASCII(10):
+       "n_sets:     ":n_sets:ASCII(10):
+       "err_mess:   ":err_mess)
+ENDIF
+
+RETURN
+{ *** Section for tetsing *** }
+
+{  -------------------- LOAD_PHRASE ----------------------------------- }
+{  Loads content of a Phrase List into an array to use for CHOOSE list  }
+{  Input : The name of the Phrase List                                  }
+{  Output: Array holding the content of the phrase list                 }
+{          Number of rows in the array                                  }
+{  Return: TRUE if the list were loaded - FALSE if not                  }
+
+GLOBAL ROUTINE  load_phrase ( VALUE ph_type, phrase_array )
+
+DECLARE  ac_id
+
+   ac_id = select phrase . phrase_id
+           where  phrase_type = ph_type
+           order  on order_num
+   WHILE ac_id <> EMPTY DO
+        phrase_array[ size_of_array(phrase_array) + 1, 1 ] = ac_id
+        phrase_array[ size_of_array(phrase_array)    , 2 ] = select phrase . phrase_text
+      NEXT phrase
+      ac_id = select phrase . phrase_id
+   ENDWHILE
+
+    IF   size_of_array(phrase_array) > 0 THEN 
+        RETURN ( TRUE )
+   ELSE flash_message("Warning: No Phrase Elements for " : ph_type,TRUE)
+        RETURN ( FALSE )
+   ENDIF
+
+ENDROUTINE  { Load Phrase }
+
+{  -------------------- LOAD_PHRASE TEXT ------------------------------ }
+{  Loads content of a Phrase List into an array to use for CHOOSE list  }
+{  Input : The name of the Phrase List                                  }
+{  Output: Array holding the content of the phrase list                 }
+{          Number of rows in the array                                  }
+{  Return: TRUE if the list were loaded - FALSE if not                  }
+
+GLOBAL ROUTINE  load_phrase_text ( VALUE ph_type, phrase_array )
+
+DECLARE  ac_id
+
+    ac_id = select phrase . phrase_text
+            where  phrase_type = ph_type
+            order  on order_num
+    WHILE ac_id <> EMPTY DO
+        phrase_array[ size_of_array(phrase_array) + 1, 1 ] = ac_id
+        phrase_array[ size_of_array(phrase_array)    , 2 ] = select phrase . phrase_text
+    NEXT phrase
+        ac_id = select phrase . phrase_text
+    ENDWHILE
+
+    IF   size_of_array(phrase_array) > 0 THEN 
+        RETURN ( TRUE )
+    ELSE flash_message("Warning: No Phrase Elements for " : ph_type,TRUE)
+        RETURN ( FALSE )
+    ENDIF
+
+ENDROUTINE  { Load Phrase Text }
+
+{  -------------------- SHOW_STATUS ----------------------------------- }
+{  Displays some message as the executing program continues             }
+{  Input : The Message to display                                       }
+{          The Mode F:First R:Redisplay D:Delete                        }
+
+GLOBAL ROUTINE  show_status ( VALUE display_text, VALUE the_mode )
+
+   IF the_mode = "D" THEN
+      the_prompt . end_prompt()
+      return
+   ELSEIF the_mode = "F"
+   THEN
+
+      CREATE OBJECT PROMPT_CLASS_FORM, the_prompt
+
+      pr_line = 3
+      pr_col  = 3
+
+      the_prompt . height   =  5
+      the_prompt . width    =  60
+      the_prompt . row      =  10
+      the_prompt . column   =  10
+      the_prompt . border   =  TRUE
+      the_prompt . header   =  "System Status"
+{     the_prompt . footer   =  "Press DO to accept / Exit to quit" }
+{     the_prompt . button_style = FORM_BUTTON_OK }
+      the_prompt . add_frame ( "", 1, 1, the_prompt.height, the_prompt.width)
+
+   ENDIF
+
+   clear_text = PAD(""," ",the_prompt.width-pr_col)
+   the_prompt . add_display (clear_text,pr_col,pr_line,PROMPT_RENDITION_BOLD)
+   disp_text = strip(display_text)
+   IF   (display_text <> EMPTY) AND (NOT BLANK(disp_text))
+   THEN  display_len = length(disp_text) + 1
+         the_prompt . add_display ( disp_text,
+                                    pr_col,
+                                    pr_line,
+                                    PROMPT_RENDITION_BOLD)
+   ENDIF
+
+   the_prompt . start_prompt()
+
+ENDROUTINE
+
+{  -------------------- FIRST_PHRASE_VALUE ---------------------------- }
+{  Finds the first Phrase List value in Phrase Limits having som        }
+{  given Pass/Fail (comparison) result                                  }
+{  Input : The Phrase List to search in                                 }
+{          The comparison value to search for                           }
+{  Output: The first Phrase Limit value having the comparison           }
+{          Some error text giving reason for returning FALSE            }
+{  Return: TRUE if a value is found - FALSE if not                      }
+
+GLOBAL ROUTINE  first_phrase_value (VALUE phrase_id, VALUE i_comp,
+                                          ret_val, err )
+
+   DECLARE  the_id, found, val, comp
+
+   err     = EMPTY
+   ret_val = EMPTY
+
+   IF    (phrase_id = EMPTY) OR (BLANK(phrase_id))
+   THEN   err = "No phrase list entered"
+   ELSEIF (i_comp = EMPTY) OR (BLANK(i_comp))
+   THEN   err = "No Phrase Limit comparison entered to search for"
+   ELSE
+          the_id = select limit_phrase_header . identity
+                   where  identity = phrase_id
+          IF   (the_id = EMPTY) OR (BLANK(the_id))
+          THEN err = "The option list:":phrase_id:
+                     " is not a Limit Phrase"
+          ELSE IF   (select limit_phrase_header.removeflag)
+               THEN flash_message("Warning: The Limit Phrase:":phrase_id:
+                                  " has been removed. Used anyway",TRUE)
+               ENDIF
+
+               val = select limit_phrase_entry.result_value
+                     where  limit_phrase = phrase_id
+                     order  on order_number
+               found = FALSE
+
+               WHILE (val <> EMPTY) AND (NOT found) DO
+                  comp = select limit_phrase_entry.comparison
+                  IF   comp  = i_comp
+                  THEN found = TRUE
+                  ELSE NEXT limit_phrase_entry
+                       val = select limit_phrase_entry.result_value
+                  ENDIF
+               ENDWHILE
+
+               IF   (NOT found)
+               THEN err = "Error: No ":i_comp:" options found"
+               ELSE ret_val = val
+                    return ( TRUE )
+               ENDIF
+          ENDIF
+   ENDIF
+
+   return ( FALSE )
+
+ENDROUTINE  {  First Phrase Value   }
+
+{  -------------------- CUT_DECIMALS ---------------------------------- }
+{  Cutting decimals in some string value - looking for '.' in text      }
+{  Input : The value to cut in - This also is output                    }
+{          If only zeroes are supposed to be cut (TRUE) or not (FALSE)  }
+{  Return: TRUE if some cutting were done - FALSE if not                }
+
+GLOBAL ROUTINE  cut_decimals ( val, VALUE only_zeroes )
+
+   DECLARE  str, pos, found, p
+
+   pos = LENGTH( val )
+   found = FALSE
+   WHILE (pos > 0) AND (NOT found) DO
+      pos = pos-1
+      IF SUBSTRING( val, pos, 1 ) = "." THEN
+         found = TRUE
+      ENDIF
+   ENDWHILE
+
+   IF (found) AND (only_zeroes) THEN
+      p = LENGTH( val ) + 1
+      last_zero = FALSE
+      WHILE (p > pos) AND (NOT last_zero) DO
+         p = p-1
+         IF SUBSTRING( val, p, 1 ) <> "0" THEN
+            last_zero = TRUE
+            IF     p = LENGTH( val )
+            THEN   found = FALSE
+            ELSEIF p > pos
+            THEN   pos = p+1
+            ENDIF
+         ENDIF
+      ENDWHILE
+   ENDIF
+
+   IF   found
+   THEN val = SUBSTRING( val, 1, pos-1 )
+        return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+
+{  -------------------- GET_CALC_PROGRAM_ROW -------------------------- }
+{  Starting with some row finds the reversed first occurrence of        }
+{  a given calculation program.                                         }
+{  Input : The row to start backward search in                          }
+{          The name of the calculation program to search for            }
+{          Array according to FIND_RESULTS routine                      }
+{  Output: The first row holding the found program                      }
+{  Return: TRUE if the row was found - FALSE if not                     }
+
+GLOBAL ROUTINE  get_calc_program_row ( VALUE comp_row,
+                                       VALUE calc_name,
+                                             res_arr,
+                                             calc_row )
+   DECLARE  row
+
+   row = comp_row
+   calc_row = EMPTY
+   WHILE (row > 0) AND (calc_row = EMPTY) DO
+      row = row - 1
+{**M1451 HBe 27-2-203: Also check that result type is "K"!}
+      IF (res_arr[row,result_calc_pos] = calc_name) AND (res_arr[row,result_type_pos] = "K") THEN
+         calc_row = row
+      ENDIF
+   ENDWHILE
+
+   IF   calc_row = EMPTY
+   THEN return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE  { Get Calc Program Row }
+
+
+{  -------------------- GET_CALC_NUM ---------------------------------- }
+{  Only relevant for calculated components. Returns the occurrence      }
+{  of the calculation program the component holds.                      }
+{  Input : The row holding the calculated component                     }
+{          Array according to FIND_RESULTS routine                      }
+{  Output: The occurence                                                }
+{  Return: TRUE if the number where found - FALSE if not                }
+
+GLOBAL ROUTINE  get_calc_num ( VALUE comp_row, res_arr, parm_no )
+
+   prog_name = res_arr[comp_row,result_calc_pos]
+   parm_no = 1
+
+   IF (prog_name = EMPTY) OR (BLANK(prog_name)) THEN
+      flash_message("Error: This component is not a calculated one",TRUE)
+      return ( FALSE )
+   ENDIF
+
+   row = comp_row
+   WHILE row > 1 DO
+      row = row - 1
+{**M1451 HBe 27-2-2003: Ensure that the result type is "K"
+      IF   res_arr[row,result_calc_pos] = prog_name
+}
+      IF  (res_arr[row,result_calc_pos] = prog_name) AND (res_arr[row,result_type_pos] = "K")
+{**ME1451}
+      THEN parm_no = parm_no + 1
+      ENDIF
+   ENDWHILE
+
+   return ( TRUE )
+
+ENDROUTINE  { Get Calc Num }
+
+
+{  -------------------- ALL_NUMERIC ----------------------------------- }
+{  Checks if content of array is non blank and numeric                  }
+{  Input : Array                                                        }
+{          Number of Rows    to check                                   }
+{          Number of Columns to check                                   }
+{  Return: TRUE if all array cells are numeric and not empty -          }
+{          FALSE if not                                                 }
+
+GLOBAL ROUTINE all_numeric  (       the_array,
+                              VALUE rows,
+                              VALUE columns )
+   ok = TRUE
+
+   row = 0
+   WHILE (row < rows) AND (ok) DO
+      row = row + 1
+      col = 0
+      WHILE (col < columns) AND (ok) DO
+         col = col + 1
+         cell = strip(the_array[row,col])
+         IF (BLANK(cell)) OR
+            (cell = EMPTY) OR
+            (NOT NUMTEXT(cell))
+         THEN ok = FALSE
+         ENDIF
+      ENDWHILE
+   ENDWHILE
+
+   return ( ok )
+
+ENDROUTINE { All Numeric }
+
+
+ROUTINE  add_arrays ( VALUE source_col, source_arr, out_arr )
+
+   out_row = size_of_array( out_arr )
+   rows = size_of_array( source_arr )
+   p = 0
+   WHILE p<rows DO
+      p = p + 1
+      out_row = out_row + 1
+      out_arr[out_row] = source_arr[p,source_col]
+   ENDWHILE
+
+ENDROUTINE
+
+
+{  -------------------- HANDLE_GRAPH ---------------------------------- }
+{  Shows a graph - line and points                                      }
+{  Input : Title                                                        }
+{          Array of points  Col 1:x  2:y  3:Character to plot           }
+{          Array of lines   Col 1:x1 2:y1 3:x2 4:y2                     }
+{          Array of text    Col 1:x  2:y  3:Text where x and y are in % }
+
+GLOBAL ROUTINE handle_graph ( VALUE title,
+                                    point_array,
+                                    line_array,
+                                    text_array )
+   ARRAY ax
+   ARRAY ay
+
+   create graphics window graph_window
+      height 20
+      width  60
+      border
+      header = title
+      footer = "Press any key to Quit"
+
+   paste graphics window graph_window at 10,1
+
+{  Axis setup  }
+   add_arrays( 1, point_array, ax )
+   add_arrays( 2, point_array, ay )
+   add_arrays( 1, line_array , ax )
+   add_arrays( 2, line_array , ay )
+   add_arrays( 3, line_array , ax )
+   add_arrays( 4, line_array , ay )
+
+   axis_points = size_of_array( ax )
+
+   IF   axis_points > 0
+   THEN
+
+{     Widen out plot area  }
+      p = 1
+      xmin = ax[1]
+      xmax = ax[1]
+      ymin = ay[1]
+      ymax = ay[1]
+      WHILE p < axis_points DO
+         p = p + 1
+         IF     ax[p] < xmin
+         THEN   xmin = ax[p]
+         ELSEIF ax[p] > xmax
+         THEN   xmax = ax[p]
+         ENDIF
+         IF     ay[p] < ymin
+         THEN   ymin = ay[p]
+         ELSEIF ay[p] > ymax
+         THEN   ymax = ay[p]
+         ENDIF
+      ENDWHILE
+      xdif = xmax - xmin
+      ydif = ymax - ymin
+      xmin = xmin - (xdif * 0.1)
+      xmax = xmax + (xdif * 0.1)
+      ymin = ymin - (ydif * 0.1)
+      ymax = ymax + (ydif * 0.1)
+
+      set graph p_graph, X_AXIS.INPUT = ax
+      set graph p_graph, Y_AXIS.INPUT = ay
+      set graph p_graph, GRAPH.STYLE  = 0
+
+      set graph p_graph, X_AXIS.START_POSITION = xmin
+      set graph p_graph, X_AXIS.END_POSITION   = xmax
+      set graph p_graph, Y_AXIS.START_POSITION = ymin
+      set graph p_graph, Y_AXIS.END_POSITION   = ymax
+      set graph p_graph, POINTS.CHARACTER = " "
+
+      draw graph p_graph in window graph_window
+
+   ENDIF
+
+{  Draw Points }
+   points = size_of_array ( point_array )
+   p = 0
+   WHILE p < points DO
+      p = p + 1
+      set graph p_graph, POINTS.CHARACTER = point_array[ p, 3 ]
+      plot point p_graph AT point_array[p,1], point_array[p,2]
+   ENDWHILE
+
+{  Draw Lines  }
+   lines = size_of_array( line_array )
+   l = 0
+   WHILE l < lines DO
+      l = l + 1
+      plot line p_graph
+           FROM line_array[l,1], line_array[l,2]
+           TO   line_array[l,3], line_array[l,4]
+           AXIS_UNITS
+   ENDWHILE
+
+{  Draw Text  }
+   texts = size_of_array( text_array )
+   t = 0
+   WHILE t < texts DO
+      t = t + 1
+      PLOT TEXT p_graph IN WINDOW graph_window
+           AT text_array[t,1], text_array[t,2] PERCENT USING text_array[t,3]
+   ENDWHILE
+
+
+   IF axis_points > 0 THEN
+
+      cont = GETKEY
+
+   ENDIF
+
+   unpaste graphics window graph_window
+
+ENDROUTINE  { Handle Graph }
+
+
+{  -------------------- REGRES_ANALYSIS_ON_TEST ----------------------- }
+{  Performs a regres analysis on results on a test.                     }
+{  The regression is performed in the REGRES_ANALYSIS routine.          }
+{  Input : Test number                                                  }
+{          Present Graph or not (TRUE/FALSE)                            }
+{          Evt. calculation type on x-axis values (i.e. LOG)            }
+{          Evt. sample point array to plot Col 1:x 2:y                  }
+{  Output: a : Parameter in regression line                             }
+{          b : Parameter in regression line (slope)                     }
+{          r2: Koefficint of Determination                              }
+{  Return: TRUE if the analysis were performed - FALSE if not           }
+
+GLOBAL ROUTINE regres_analysis_on_test ( VALUE test_no,
+                                         VALUE show_graph,
+                                         VALUE calc_type,
+                                               smp_points,
+                                               a,
+                                               b,
+                                               r2)
+ARRAY result_arr
+ARRAY group_arr
+ARRAY x_points
+ARRAY y_points
+ARRAY point_arr
+ARRAY line_arr
+ARRAY text_arr
+
+rows = 0
+cols = 0
+
+group_prefix = "REG"
+
+IF   find_results( test_no , result_arr, n_res ) AND
+     all_results_entered( result_arr[n_res,result_name_pos],
+                          result_arr, n_res )    AND
+     result_data_group( group_prefix, "B", EMPTY, result_arr, n_res,
+                        group_arr, rows, cols )
+THEN IF cols <> 2 THEN
+        flash_message("Error: Number of column group cells is:":
+                      strip(cols):", must be 2",TRUE)
+        return( false )
+     ENDIF
+
+     IF rows < 3 THEN
+        flash_message("Error: To few analysis setup points:":strip(rows):
+                      " to make regression analysis upon",TRUE)
+        return ( FALSE )
+     ENDIF
+
+     xmin = EMPTY
+     xmax = EMPTY
+     points = 0
+     row = 0
+     WHILE row < rows DO
+        row = row + 1
+        col = 0
+        skip = FALSE
+        WHILE (col < cols) and (NOT skip)  DO
+           col = col + 1
+           IF   group_arr[row,col] = "+0"
+           THEN skip = TRUE
+           ELSE IF   col = 1
+                THEN x = group_arr[row,col]
+                     IF     calc_type = "LOG"
+                     THEN   x = log(x)
+                     ELSEIF calc_type <> EMPTY
+                     THEN   flash_message("Error: Calc type:":calc_type:
+                                          " not known",TRUE)
+                            return ( false )
+                     ENDIF
+                ELSE y = group_arr[row,col]
+                     points = points + 1
+                     x_points[ points    ] = x
+                     y_points[ points, 1 ] = y
+                     IF   (xmin = EMPTY) OR (x < xmin)
+                     THEN  xmin = x
+                     ENDIF
+                     IF   (xmax = EMPTY) OR (x > xmax)
+                     THEN  xmax = x
+                     ENDIF
+                ENDIF
+           ENDIF
+        ENDWHILE
+     ENDWHILE
+
+     IF points < 3 THEN
+        flash_message("Error: Cannot do regression analysis on less than ":
+                      " 3 points",TRUE)
+        return( FALSE )
+     ENDIF
+
+     IF   regres_analysis( points, x_points, y_points, a, b, r2, err_mess )
+     THEN IF show_graph THEN
+             p = 0
+             WHILE p<points DO
+               p = p + 1
+               point_arr[p,1] = x_points[p  ]
+               point_arr[p,2] = y_points[p,1]
+               point_arr[p,3] = "+"
+             ENDWHILE
+             extra_points = size_of_array( smp_points )
+             e = 0
+             WHILE e<extra_points DO
+               e = e + 1
+               IF (smp_points[e,1] <> "+0") AND
+                  (smp_points[e,2] <> "+0") THEN
+                  x = smp_points[e,1]
+                  IF    calc_type = "LOG"
+                  THEN  x = log(x)
+                  ENDIF
+                  p = p + 1
+                  point_arr[p,1] = x
+                  point_arr[p,2] = smp_points[e,2]
+                  point_arr[p,3] = "s"
+               ENDIF
+             ENDWHILE
+             IF (xmin <> EMPTY) AND (xmax <> EMPTY) THEN
+                line_arr[1,1] = xmin
+                line_arr[1,3] = xmax
+                line_arr[1,2] = a + (b*xmin)
+                line_arr[1,4] = a + (b*xmax)
+             ENDIF
+
+             text_arr[1,1] = 80
+             text_arr[1,2] = 17
+             text_arr[1,3] = "-log(IP)"
+
+             text_arr[2,1] = 12
+             text_arr[2,2] = 95
+             text_arr[2,3] = "PH"
+
+             text_arr[3,1] = 80
+             text_arr[3,2] = 80
+             text_arr[3,3] = "R²=":strip(r2)
+
+             handle_graph("Regression Analysis",
+                           point_arr, line_arr, text_arr )
+          ENDIF
+          return ( TRUE )
+     ELSE flash_message("Error:":err_mess,TRUE)
+          return ( FALSE )
+     ENDIF
+
+ENDIF
+
+return ( FALSE )
+
+ENDROUTINE  { Regres Analysis On Test }
+
+
+{  -------------------- REGRES_ANALYSIS ------------------------------- }
+{  Performs a regres analysis on a given set of points (x and y)        }
+{  The regression line is expressed as : y = a + b*x                    }
+{  Input : Number of points                                             }
+{          Array of x-points (one dimensional)                          }
+{          Array of y-points (two dimensional)                          }
+{  Output: a : Parameter in regression line                             }
+{          b : Parameter in regression line (slope)                     }
+{          r2: Koefficint of Determination                              }
+{          Error message if any                                         }
+{  Return: TRUE if the analysis were performed - FALSE if not           }
+
+GLOBAL ROUTINE regres_analysis ( VALUE number_of_points,
+                                       x_points,
+                                       y_points,
+                                       a,
+                                       b,
+                                       r2,
+                                       err_mess)
+   DECLARE hold_format
+
+   ARRAY local_y
+
+   err_mess = EMPTY
+   a = EMPTY
+   b = EMPTY
+   r2= EMPTY
+
+   IF number_of_points < 3 THEN
+      err_mess = "ERROR: Can not make regress analysis on less than 3 points"
+      return ( FALSE )
+   ENDIF
+
+   rows = size_of_array( x_points )
+   IF rows < number_of_points THEN
+      err_mess = "ERROR: To few x coordinates"
+      return ( FALSE )
+   ENDIF
+   rows = size_of_array( y_points )
+   IF rows < number_of_points THEN
+      err_mess = "ERROR: To few y coordinates"
+      return ( FALSE )
+   ENDIF
+
+   hold_format = GLOBAL("FORMAT_TEXT")
+   SET FORMAT "9999999999.999999"
+
+   mean_x = 0
+   mean_y = 0
+   row = 0
+   WHILE row < number_of_points DO
+      row = row + 1
+      IF (x_points[row] = EMPTY) OR (y_points[row,1] = EMPTY) OR
+         (BLANK(x_points[row]))  OR (BLANK(y_points[row,1])) THEN
+         err_mess = "ERROR: Point:":strip(row):" is not defined"
+         SET FORMAT hold_format
+         return ( FALSE )
+      ELSEIF (NOT(NUMTEXT(x_points[row]))) OR
+             (NOT(NUMTEXT(x_points[row]))) THEN
+         err_mess = "ERROR: Point:":strip(row):" is not numeric"
+         SET FORMAT hold_format
+         return ( FALSE )
+      ELSE mean_x = mean_x + x_points[row]
+
+           y1  = y_points[row,1]
+           col = 2
+           WHILE ((y_points[row,col] <> EMPTY) AND
+                  (NOT BLANK(y_points[row,col]))) DO
+              IF (NOT(NUMTEXT(y_points[row,col]))) THEN
+                 err_mess = "ERROR: Point:":strip(row):" is not numeric"
+                 SET FORMAT hold_format
+                 return ( FALSE )
+              ENDIF
+              y1 = y1 + y_points[row,col]
+              col = col + 1
+           ENDWHILE
+           local_y[row,1] = col-1
+           local_y[row,2] = y1 / (col-1)
+
+           mean_y = mean_y + (y1/(col-1))
+      ENDIF
+   ENDWHILE
+   mean_x = mean_x / number_of_points
+   mean_y = mean_y / number_of_points
+
+   SAKx  = 0
+   SAPxy = 0
+
+   row = 0
+   WHILE row < number_of_points DO
+      row = row + 1
+      x_dif = x_points[row]  -mean_x
+      y_dif = local_y[row,2] -mean_y
+      SAKx  = SAKx  + ( x_dif * x_dif )*local_y[row,1]
+      SAPxy = SAPxy + ( x_dif * y_dif )*local_y[row,1]
+   ENDWHILE
+
+   IF SAKx = 0 THEN
+      err_mess = "WARNING: All x points are the same. No analysis performed"
+      SET FORMAT hold_format
+      return ( FALSE )
+   ENDIF
+
+   b = SAPxy / SAKx
+   a = mean_y - ( b * mean_x )
+
+   SAKrg = 0
+   SAKrs = 0
+
+   row = 0
+   WHILE row < number_of_points DO
+      row = row + 1
+      x_dif = x_points[row]  -mean_x
+      y_dif = local_y[row,2] -mean_y
+      SAKrg = SAKrg + ( y_dif * y_dif * local_y[row,1] )
+      tmp   = y_dif - ( b * x_dif )
+      SAKrs = SAKrs + ( tmp * tmp * local_y[row,1] )
+   ENDWHILE
+
+   IF   SAKrg = 0
+   THEN r2 = 0
+   ELSE r2 = SAKrg / ( SAKrg + SAKrs )
+   ENDIF
+
+   SET FORMAT hold_format
+   return ( TRUE )
+
+ENDROUTINE  { Regres Analysis }
+
+
+{  -------------------- GET_SOLUTION_PARAMETERS ----------------------- }
+{  Splits out the solution parameters from a string.                    }
+{  String expected to be on format: .... NxQml -S (eg. 5x1ml -2)        }
+{  Input : String to find parameters in                                 }
+{  Output: N : Number of containers (glasses)     (eg.   5)             }
+{          Q : Basic sample quantity              (eg.   1)             }
+{          S : Solution level                     (eg. 100)             }
+{          Error message if any                                         }
+{  Return: TRUE if found - FALSE if not                                 }
+
+GLOBAL ROUTINE get_solution_parameters ( VALUE parameter_string,
+                                               containers,
+                                               container_qty,
+                                               solution_level,
+                                               err_mess)
+   parm_string = STRIP(parameter_string)
+   parm_length = length(parameter_string)
+   containers     = 0
+   container_qty  = 0
+   solution_level = 0
+   err_mess = EMPTY
+
+   IF parm_length = 0 THEN
+      err_mess = "Input string is empty"
+      return ( FALSE )
+   ENDIF
+
+   x_pos = 0
+   x_pos_temp = INDEX( parm_string, "x" )
+   WHILE x_pos_temp <> 0 DO
+      x_pos = x_pos_temp
+      x_pos_temp = INDEX( substring(parm_string,x_pos+1,parm_length-x_pos),
+                         "x" )
+      IF x_pos_temp > 0 THEN
+         x_pos_temp = x_pos_temp + x_pos
+      ENDIF
+   ENDWHILE
+
+   IF   x_pos = 0
+   THEN err_mess = "Wrong format of string. No x found"
+        return ( FALSE )
+   ENDIF
+
+   front_string = strip(substring( parm_string, 1, x_pos-1 ))
+   pos = length ( front_string )
+   not_found  = TRUE
+   WHILE (pos>1) AND (not_found) DO
+      pos = pos - 1
+      IF substring( parm_string, pos, 1 ) = " " THEN
+         not_found = FALSE
+         parm_string = substring( parm_string, pos+1, parm_length-pos )
+         parm_length = length( parm_string )
+         x_pos = x_pos - pos
+      ENDIF
+   ENDWHILE
+
+   containers = strip(substring( parm_string, 1, x_pos-1 ))
+   IF   numtext ( containers )
+   THEN containers = numeric( containers )
+   ELSE err_mess = "Wrong format of string. No numeric before x-sign"
+        return ( FALSE )
+   ENDIF
+
+   parm_string = strip(substring( parm_string, x_pos+1, parm_length-x_pos ))
+   parm_length = length( parm_string )
+   ml_pos = INDEX ( parm_string, "ml" )
+   IF   ml_pos = 0
+   THEN err_mess = "Wrong format of string. No ml found"
+        return ( FALSE )
+   ELSE container_qty = strip(substring( parm_string, 1, ml_pos-1 ))
+        IF   numtext ( container_qty )
+        THEN container_qty = numeric( container_qty )
+        ELSE err_mess = "Wrong format of string. No numeric before ml-sign"
+             return ( FALSE )
+        ENDIF
+   ENDIF
+
+   solution_level = strip(substring(parm_string,ml_pos+2,parm_length-ml_pos))
+   IF   numtext ( solution_level )
+   THEN solution_level = 10^ABS(numeric( solution_level ))
+   ELSE err_mess = "Wrong format of string. No numeric solution level"
+        return ( FALSE )
+   ENDIF
+
+   return (TRUE)
+
+ENDROUTINE  { Get Solution Parameters }
+
+{  -------------------- GET_CELL_CONTENT_ROW -------------------------- }
+{  Finds the row in an array having a specific content in a             }
+{  specified column                                                     }
+{  Input : Array to search in                                           }
+{          Number of rows in array                                      }
+{          Cell content to search for                                   }
+{          Column to search in                                          }
+{          Instance number to search for                                }
+{  Output: Row in array - 0 if none                                     }
+{  Return: TRUE if found - FALSE if not                                 }
+
+GLOBAL ROUTINE get_cell_content_row ( the_array,
+                                      VALUE n_rows,
+                                      VALUE cell_content,
+                                      VALUE the_column,
+                                      VALUE instance_no,
+                                            row_found )
+   row_found = 0
+
+   IF NOT ( no_input( n_rows, "Get Cell Content Row - Rows in array" ) OR
+            no_input( cell_content, "Get Cell Content Row - Cell Content" ) OR
+            no_input( the_column, "Get Cell Content Row - The Column" ) )
+   THEN IF the_column <= 0 THEN
+           flash_message("ERROR in Get Cell Content Row. ":
+                         "Illegal Search column: ": strip(the_column),TRUE)
+           RETURN (FALSE )
+        ELSEIF n_rows <= 0 THEN
+           flash_message("ERROR in Get Cell Content Row. ":
+                         "Illegal number of rows: ": strip(n_rows),TRUE)
+           RETURN (FALSE )
+        ENDIF
+        r = 0
+        inst_no = 0
+        WHILE r < n_rows DO
+           r = r + 1
+           IF STRIP(the_array[r,the_column]) = STRIP(cell_content) THEN
+              row_found = r
+              inst_no = inst_no + 1
+              IF inst_no = instance_no THEN
+                 RETURN ( TRUE )
+              ENDIF
+           ENDIF
+        ENDWHILE
+   ENDIF
+
+   RETURN ( FALSE )
+
+ENDROUTINE     { Get Cell Content Row }
+
+
+{  -------------------- DATE_HANDLER ---------------------------------- }
+{  Function to utilize Oracle date functionality within Lims            }
+{  Input : Action to perform e.g. FORMAT                                }
+{          Operator corresponding to the action e.g. date format string }
+{          Parameter to be transformed                                  }
+{  Output: Result                                                       }
+{          Error message                                                }
+{  Return: TRUE if result - FALSE if error message                      }
+
+GLOBAL ROUTINE date_handler ( VALUE action,
+                              VALUE oper,
+                              VALUE parameter,
+                                    output,
+                                    err)
+   CONSTANT key_length = 10
+
+   output = EMPTY
+   err    = EMPTY
+
+   next_id = STRIP( INCREMENT("DATE_HANDLING","INCREMENT_NO") )
+   the_id  = PAD ( "","0",key_length-LENGTH(next_id) ) : next_id
+
+    {WriteToLog("GLOBAL ROUTINE date_handler":ASCII(10):
+                "action    ":action:ASCII(10):
+                "oper      ":oper:ASCII(10):
+                "parameter ":parameter:ASCII(10):
+                "output    ":output:ASCII(10):
+                "err       ":err)}
+
+   SET NOTPROTECTED
+   START READ TRANSACTION "Date handling"
+   WriteToLog("RESERVE ENTRY ":date_handling:", ":the_id)
+   RESERVE ENTRY date_handling, the_id, rc
+   IF   rc <> EMPTY
+   THEN err = rc
+   ELSE ASSIGN date_handling.action_code  = action
+        ASSIGN date_handling.the_operator = oper
+        ASSIGN date_handling.input_parameter = parameter
+        START WRITE TRANSACTION "Date handling"
+        UPDATE date_handling
+        COMMIT
+
+        START READ TRANSACTION "Delete date handling"
+        output = SELECT date_handling.trigger_result FOR UPDATE
+                 WHERE  increment_no = the_id
+        IF   output = LOCKED
+        THEN err = "ERROR: Date Handling record is locked"
+        ELSE err = SELECT date_handling.error_code
+             START WRITE TRANSACTION "Delete date handling"
+             DELETE date_handling
+             COMMIT
+        ENDIF
+
+   ENDIF
+
+   IF   BLANK(err)
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE     { Date Handler }
+
+
+{  -------------------- GET_COMPONENT_ROW ----------------------------- }
+{  Finds the row for a specific component in a result array             }
+{  Input : Component name                                               }
+{          Result array                                                 }
+{          Number of results                                            }
+{  Output: Row in which component is located                            }
+{  Return: TRUE if component where located - FALSE if not               }
+
+GLOBAL ROUTINE get_component_row ( VALUE i_comp_name, result_array, VALUE no_of_results, comp_row)
+
+   comp_row = 0
+
+IF NOT ( no_input( i_comp_name, "Get Component Row - Component Name" ) OR
+         no_input( no_of_results, "Get Component Row - Results" ) ) THEN 
+    IF   no_of_results <= 0 THEN 
+        flash_message("Number of results must be 1 or more", TRUE )
+    ELSE row = 0
+        WHILE (row < no_of_results) AND (comp_row = 0) DO
+            row = row + 1
+            IF   result_array[ row, result_name_pos ] = i_comp_name THEN 
+                comp_row = row
+            ENDIF
+        ENDWHILE
+    ENDIF
+ENDIF
+
+IF   comp_row > 0 THEN 
+    RETURN( TRUE )
+ELSE 
+    flash_message("Component:":i_comp_name:" not found in result array", TRUE )
+    RETURN( FALSE )
+ENDIF
+
+ENDROUTINE     { Get Component Row }
+
+
+{  -------------------- GET_ENDSTRING_PARAMETERS ---------------------- }
+{  Creates an array of parameters from the end of a text string         }
+{  Input : Text string                                                  }
+{          Number of parameters to find                                 }
+{          TRUE/FALSE flag to check if all parameters are numeric       }
+{          TRUE/FALSE flag if error messages is wanted or not           }
+{  Output: Array of parameters (se STRING_TO_PARAMETERS routine)        }
+{  Return: TRUE if parameters where found - FALSE if not                }
+
+GLOBAL ROUTINE get_endstring_parameters( VALUE i_string,
+                                         VALUE no_of_parms,
+                                         VALUE num_check,
+                                         VALUE display_messages,
+                                               parm_arr)
+the_string = STRIP(i_string)
+IF     no_input( the_string, "Get Endstring Parameters - String" ) OR
+       no_input( no_of_parms,"Get Endstring Parameters - Parameters" )
+THEN   return( FALSE )
+ELSEIF no_of_parms <= 0
+THEN   flash_message("Number of parameters to search for must be 1 or more",
+                      TRUE)
+       return( FALSE )
+ELSE   pos = LENGTH( the_string )
+       setup_error = FALSE
+       IF no_of_parms > 1 THEN
+          commas_found = 0
+          WHILE (commas_found < (no_of_parms-1)) AND (pos > 0) DO
+             IF   SUBSTRING( the_string, pos, 1 ) = ","
+             THEN commas_found = commas_found + 1
+             ENDIF
+             pos = pos - 1
+          ENDWHILE
+
+          IF   (commas_found <> no_of_parms-1)
+          THEN setup_error = TRUE
+          ENDIF
+
+       ENDIF
+
+       IF   NOT setup_error
+       THEN stop_flag = FALSE
+            first_non_blank_found = FALSE
+            WHILE (pos > 0) AND (NOT stop_flag) DO
+              IF   SUBSTRING( the_string, pos, 1 ) = " "
+              THEN IF   first_non_blank_found
+                   THEN stop_flag = TRUE
+                   ENDIF
+              ELSE first_non_blank_found = TRUE
+              ENDIF
+              pos = pos - 1
+            ENDWHILE
+            IF string_to_parameters(
+               SUBSTRING( the_string, pos+1, LENGTH(the_string)-pos ),
+               no_of_parms, parm_arr, no_sets )
+            THEN IF   no_sets = 1
+                 THEN IF num_check THEN
+                      parm = 0
+                      WHILE (parm < no_of_parms) AND (NOT setup_error) DO
+                        parm = parm + 1
+                        IF   (NOT NUMTEXT( parm_arr[1,parm] ))
+                        THEN setup_error = TRUE
+                        ENDIF
+                      ENDWHILE
+                      ENDIF
+                 ELSE setup_error = TRUE
+                 ENDIF
+            ELSE setup_error = TRUE
+            ENDIF
+       ENDIF
+
+       IF   setup_error
+       THEN IF display_messages THEN
+            flash_message("ERROR. Wrong setup of parameter string. ":
+                          "Must be on form <text> number,number,...",TRUE)
+            ENDIF
+       ELSE return ( TRUE )
+       ENDIF
+
+ENDIF
+
+RETURN ( FALSE )
+
+ENDROUTINE     { Get Endstring Parameters }
+
+{  -------------------- DO_NEWTEST ------------------------------------ }
+{  Creates a new test if not already created                            }
+{  Input : Test number                                                  }
+{          Component name                                               }
+{          Text entered as result                                       }
+{          Reason code                                                  }
+{  Return: TRUE if a new test has been created by this call or elsewhere}
+{          FALSE if not due to error                                    }
+
+GLOBAL ROUTINE do_newtest ( VALUE i_test_number,
+                            VALUE i_comp_name,
+                            VALUE i_text,
+                            VALUE i_reason_code )
+
+IF   no_input( i_test_number, "Do Newtest" )
+THEN return( FALSE )
+ELSE rep_test = SELECT test.replicate_test
+                WHERE  test_number = i_test_number
+     IF     (rep_test=EMPTY) OR (BLANK(rep_test))
+     THEN   flash_message("Test number:":i_test_number:" not found.",TRUE)
+            return( FALSE )
+     ELSEIF rep_test = TRUE
+     THEN   create_reason ( i_test_number, i_comp_name,
+                            i_text, i_reason_code, EMPTY )
+            return( TRUE  )
+     ELSE   samp_id = SELECT test.sample
+            anal_id = SELECT test.analysis
+            IF     (samp_id=EMPTY) OR (BLANK(samp_id))
+            THEN   flash_message("No sample for test number:":
+                                  i_test_number,TRUE)
+                   return( FALSE )
+            ELSEIF (anal_id=EMPTY) OR (BLANK(anal_id))
+            THEN   flash_message("No analysis for test number:":
+                                  i_test_number,TRUE)
+                   return( FALSE )
+            ENDIF
+
+{**AS1370 HBe 26-11-01}
+
+version = SELECT MAX versioned_analysis.analysis_version
+          WHERE identity = anal_id
+
+anal_ver = JUSTIFY(PAD(anal_id," ",10),"LEFT"):JUSTIFY(PAD(version," ",10),"RIGHT")
+
+{**AE1370}
+
+            SET NOTPROTECTED
+{**MS1370
+            new_test_no = NEWTEST( strip(samp_id), strip(anal_id) )
+}
+            new_test_no = NEWTEST( strip(samp_id), strip(anal_ver) )
+{**ME1370}
+
+            IF   new_test_no = ERROR
+            THEN flash_message("New test NOT created due to error",TRUE)
+                 return( FALSE )
+            ELSE flash_message("Created new test number:":new_test_no, TRUE)
+                 create_reason ( i_test_number, i_comp_name,
+                                 i_text, i_reason_code, new_test_no )
+                 return( TRUE )
+            ENDIF
+     ENDIF
+ENDIF
+
+ENDROUTINE     { Do Newtest }
+
+GLOBAL ROUTINE create_reason ( VALUE test_number,
+                               VALUE comp_name,
+                               VALUE text,
+                               VALUE reason_code,
+                               VALUE new_test_no )
+
+   IF (reason_code = EMPTY) OR (BLANK(reason_code)) THEN
+      return ( TRUE )
+   ENDIF
+
+   order_no = select phrase.order_num
+              where  phrase_type = "REASONS"
+              and    phrase_id   = reason_code
+   IF order_no = EMPTY THEN
+      id = select phrase_header.identity
+           where  identity = "REASONS"
+      IF   id = EMPTY
+      THEN flash_message("Warning: Phrase list REASONS is not created",TRUE)
+      ELSE flash_message("Warning: Phrase ":reason_code:
+                         " is not entered in phrase list REASONS",TRUE)
+      ENDIF
+   ENDIF
+
+   SET NOTPROTECTED
+
+   next_id = INCREMENT ( "NEW_TEST_REASONS", "IDENTITY" )
+
+   RESERVE ENTRY new_test_reasons, next_id, rc
+   IF rc <> EMPTY THEN
+      flash_message("Error in creating reason. ":rc,TRUE)
+      return ( FALSE )
+   ENDIF
+
+   ASSIGN new_test_reasons . triggering_test_no   = test_number
+   ASSIGN new_test_reasons . triggering_component = comp_name
+   ASSIGN new_test_reasons . reason_code          = reason_code
+
+   IF text <> EMPTY THEN
+      ASSIGN new_test_reasons . triggering_text   = text
+   ENDIF
+
+   IF new_test_no <> EMPTY THEN
+      ASSIGN new_test_reasons . new_test_no       = new_test_no
+   ENDIF
+
+   START WRITE TRANSACTION "New Reason"
+
+   UPDATE new_test_reasons
+
+   COMMIT
+
+{  Handle Sample Comment no longer in $LIB_CSMLP .......
+   samp_id = select test.sample
+             where  test_number = test_number
+
+   CALL_ROUTINE "handle_sample_comment" USING samp_id IN LIBRARY "$LIB_CSMLP"
+.........}
+
+   RETURN ( TRUE )
+
+ENDROUTINE  { Create Reason }
+
+
+{  -------------------- GET_PARAMETERS -------------------------------- }
+{  Creates an array of parameter values from Comment field              }
+{  Input : Where to get parameter A:Analysis M:MLP                      }
+{          Parameter text string to search for                          }
+{          Number of parameters in a parameter set                      }
+{          Test number                                                  }
+{  Output: Array of parameters as specified in the STRING_TO_PARAMETERS }
+{          Number of parameter sets - 0 if none (empty string)          }
+{  Return: TRUE if all sets are complete - FALSE if not                 }
+
+GLOBAL ROUTINE get_parameters ( VALUE search_area,
+                                VALUE parm_id,
+                                VALUE parms_in_set,
+                                VALUE test_no,
+                                      parm_array,
+                                      n_sets)
+ARRAY test_fields
+
+n_sets = 0
+sets_complete = FALSE
+mess = EMPTY
+
+IF NOT(
+   no_input( parm_id, "Get Parameters - Analysis or MLP flag" ) OR
+   no_input( parms_in_set, "Get Parameters - Number of Parameters in set" ) OR
+   no_input( test_no, "Get Parameters - Test number" ))
+THEN
+   samp_id = SELECT test.sample
+             WHERE  test_number = test_no
+
+   IF   samp_id = EMPTY
+   THEN flash_message("ERROR: Test number:":test_no:" does not exist",TRUE)
+        return( FALSE )
+   ENDIF
+
+   IF   (search_area = "M") OR (search_area = "S")
+   THEN mlp_id    = SELECT sample.product
+                    WHERE  id_numeric = samp_id
+        ver       = SELECT sample.product_version
+        id        = SELECT mlp_header.identity
+                    WHERE  identity = mlp_id
+   ELSEIF search_area = "A"
+   THEN id    = SELECT test.analysis
+
+{       Handle difference between SMp 3.1 and 3.2 - Analysis Versions  }
+         ver = select test.analysis_version
+{       The following should be removed - even when doing versioned parameter setup on Analysis .........
+        get_field_names("TEST",test_fields)
+        tf = size_of_array(test_fields)
+        f = 0
+        found = FALSE
+        WHILE (f<tf) AND (NOT found) DO
+           f=f+1
+           IF test_fields[f,1] = "ANALYSIS_VERSION" THEN
+              found = TRUE
+           ENDIF
+        ENDWHILE
+        IF found
+        THEN ver = select test.analysis_version
+        ELSE ver = EMPTY
+        ENDIF
+........................   }
+{
+        id        = SELECT analysis.identity
+                    WHERE  identity = ana_id    }
+   ELSE flash_message("Wrong parameter search area:":search_area,TRUE)
+        return ( FALSE )
+   ENDIF
+ENDIF
+
+flag = mlp_analysis_parameters( search_area,
+                                parm_id,
+                                parms_in_set,
+                                id, ver,
+                                parm_array,
+                                n_sets,
+                                mess )
+
+IF   mess <> EMPTY
+THEN {**M1620 HBe 10-8-2005: Missing parameters is normally acceptable!}
+     IF GLOBAL ( "SHOW_ERRORS" )
+     THEN
+        flash_message("ERROR: Wrong parameter setup. ":mess,TRUE)
+     ENDIF
+     return ( FALSE )
+ELSE return ( TRUE  )
+ENDIF
+
+ENDROUTINE     { Get Parameters }
+
+
+{  -------------------- MLP_ANALYSIS_PARAMETERS ----------------------- }
+{  Gets parameters from MLP/Analysis Comment field                      }
+{  Input : Where to get parameter A:Analysis M:MLP                      }
+{          Parameter text string to search for                          }
+{          Number of parameters in a parameter set                      }
+{          ID (MLP or Analysis)                                         }
+{          Version number (only relevant for standard versions)         }
+{  Output: Array of parameters as specified in the STRING_TO_PARAMETERS }
+{          Number of parameter sets - 0 if none (empty string)          }
+{          Text string - EMPTY if all was OK                            }
+{  Return: TRUE if all sets are complete - FALSE if not                 }
+
+GLOBAL ROUTINE mlp_analysis_parameters ( VALUE search_area,
+                                         VALUE parm_id,
+                                         VALUE parms_in_set,
+                                         VALUE id,
+                                         VALUE ver,
+                                               parm_array,
+                                               n_sets,
+                                               err_mess)
+   DECLARE  keys, p_id, parameter
+   ARRAY    key_values
+
+   n_sets   = 0
+   err_mess = EMPTY
+
+   IF   BLANK(parm_id) OR (parm_id=EMPTY)
+   THEN err_mess = "ERROR: No parameter specified to search for"
+        return ( FALSE )
+   ENDIF
+
+   IF   id = EMPTY THEN
+        IF   search_area = "M" THEN
+            err_mess = "MLP ID "
+        ELSEIF search_area = "S" THEN
+            err_mess = "Standard ID "
+        ELSE
+            err_mess = "Analysis ID "
+        ENDIF
+        err_mess = err_mess : id :" not found when looking for parameters"
+        return( FALSE )
+   ENDIF
+
+   key_values[1] = id
+   IF     (search_area = "S") OR (search_area = "M") OR (search_area = "A")
+   THEN   IF   ver = EMPTY
+          THEN err_mess = "No version available"
+               return ( FALSE )
+          ELSE key_values[2] = ver
+               keys = 2
+          ENDIF
+   ELSE   keys = 1
+   ENDIF
+{WriteToLog("get_parm_id ( ":search_area:", ":keys:", 'key_values'', 'parm_setup_id') = ": get_parm_id ( search_area, keys, key_values, parm_setup_id ))}
+
+   {IF     TRUE get_parm_id ( search_area, keys, key_values, parm_setup_id ) THEN
+      p_id = select parm_setup_values . parm_id
+                 where  identity = parm_setup_id
+             order  on order_num}
+
+{WriteToLog("Search for parameters for: ":parm_id)}
+
+    p_id = select parm_setup . parm_id
+               where  identity = id
+                 and  identity_version = ver
+                 order  on order_num
+    IF p_id <> EMPTY THEN
+          parameter = p_id
+          WHILE p_id <> EMPTY DO
+{WriteToLog("Found p_id: ":p_id)}
+             IF p_id = parm_id THEN
+                n_sets = n_sets + 1
+                n = 0
+                WHILE n < parms_in_set DO
+                   n = n + 1
+                   val_str = "VAL":strip(n)
+                parm_array[n_sets,n] = select parm_setup.'val_str'
+                ENDWHILE
+             ENDIF
+        NEXT parm_setup
+        p_id = select parm_setup . parm_id
+          ENDWHILE
+{WriteToLog(ASCII(10):ASCII(10):search_area:": ":STRIP(id):"/":STRIP(ver):"(":STRIP(parameter):")":
+           ASCII(10):"Parm Array: ":GetArray(parm_array):ASCII(10))}
+        IF   (err_mess = EMPTY) AND (n_sets>0) THEN
+            return ( TRUE  )
+        ELSE
+            return ( FALSE )
+         ENDIF
+
+   ELSE   err_mess = "No setup for this identifier"
+          return ( FALSE )
+   ENDIF
+
+ENDROUTINE     { MLP Analysis Parameters }
+
+{  -------------------- STRING_TO_PARAMETERS -------------------------- }
+{  Transforms a string of text to an array of parameters. The string is }
+{  assumed to be of the form: p1,p2,p3....                              }
+{  Input : String of parameters                                         }
+{          Number of parameters in a parameter set                      }
+{  Output: Array of parameters.                                         }
+{          - Row: Number of parameter set                               }
+{          - Columns: Parameter values                                  }
+{          Number of parameter sets - 0 if none (empty string)          }
+{  Return: TRUE if parameter sets are complete - False if not           }
+
+GLOBAL ROUTINE STRING_TO_PARAMETERS ( VALUE i_string,
+                                      VALUE parms_in_set,
+                                            p_array,
+                                            parm_sets)
+parm_sets = 0
+
+IF   parms_in_set <= 0
+THEN flash_message("ERROR: Wrong number of parameters in set:":parms_in_set,TRUE)
+     return( FALSE )
+ENDIF
+
+p_string = STRIP(i_string)
+pos = INDEX( p_string, "," )
+n_parms   = 0
+
+WHILE (pos <> 0) DO
+   parm = STRIP(SUBSTRING( p_string, 1, pos-1 ))
+   IF   (parm_sets=0) OR (n_parms = parms_in_set)
+   THEN n_parms = 0
+        parm_sets = parm_sets + 1
+   ENDIF
+   n_parms = n_parms + 1
+   p_array[parm_sets,n_parms] = parm
+   p_string = STRIP(SUBSTRING(p_string,pos+1,LENGTH(p_string)-pos))
+   pos = INDEX( p_string, "," )
+ENDWHILE
+
+IF   LENGTH( p_string ) > 0
+THEN IF   (n_parms=0) OR (n_parms=parms_in_set)
+     THEN parm_sets = parm_sets + 1
+          n_parms = 0
+     ENDIF
+     n_parms = n_parms +1
+     p_array[parm_sets,n_parms] = p_string
+ENDIF
+
+IF   (parm_sets > 0) AND (n_parms = parms_in_set)
+THEN return( TRUE )
+ELSE return( FALSE )
+ENDIF
+
+ENDROUTINE     { String To Parameters }
+
+
+{  -------------------- GET_DEFAULTS ---------------------------------- }
+{  Fills result array up with default values from standards             }
+{  Input : Test number                                                  }
+{          Array of results                                             }
+{              Columns: According to array description in FIND_RESULTS  }
+{          Number of results in array                                   }
+
+GLOBAL ROUTINE get_defaults ( VALUE test_number,
+                                    result_array,
+                                    number_of_res)
+ARRAY defaults
+ARRAY std_array
+ARRAY std_results
+
+IF   is_standard( test_number )
+THEN return
+ENDIF
+
+{  Find number of defaults }
+number_of_defaults = 0
+nres = 0
+WHILE (nres < number_of_res) DO
+   nres = nres + 1
+   IF    (result_array[nres,result_cont_pos]="DEF") AND
+         (BLANK(result_array[nres,result_text_pos]) OR
+               (result_array[nres,result_text_pos] = EMPTY))
+   THEN  number_of_defaults = number_of_defaults + 1
+         defaults[number_of_defaults,1] = nres
+         defaults[number_of_defaults,2] = EMPTY
+         defaults[number_of_defaults,3] = EMPTY
+   ENDIF
+ENDWHILE
+
+IF    number_of_defaults = 0
+THEN  flash_message(
+        "WARNING: Search for defaults activated but no defaults missing",
+         TRUE)
+      return
+ELSE  ws_id = ws_for_test( test_number )
+      IF   ws_id != 0
+      THEN number_of_std = standards_on_ws( ws_id, std_array )
+       IF   number_of_std > 0
+       THEN nstd = 0
+            number_def_found = 0
+            WHILE (nstd < number_of_std) AND
+                  (number_def_found < number_of_defaults) DO
+               nstd = nstd + 1
+               std_test_num = std_array[nstd,1]
+               IF   find_results( std_test_num, std_results, nstd_res )
+               THEN ndef = 0
+                    WHILE ndef < number_of_defaults DO
+                       ndef = ndef + 1
+                       std_res_count = 0
+                       comp_not_found = TRUE
+                       WHILE (std_res_count < nstd_res) AND
+                             (defaults[ndef,2] = EMPTY) AND
+                             (comp_not_found) DO
+                          std_res_count = std_res_count + 1
+                          IF   (std_results[std_res_count,result_name_pos] =
+                                result_array[defaults[ndef,1],result_name_pos])
+                          THEN comp_not_found = FALSE
+                               IF NOT(BLANK(
+                                  std_results[std_res_count,result_text_pos]))
+                               THEN
+                                 defaults[ndef,2] =
+                                 std_results[std_res_count,result_text_pos]
+                                 defaults[ndef,3] =
+                                 std_results[std_res_count,result_valu_pos]
+                                 number_def_found = number_def_found + 1
+                               ENDIF
+                          ENDIF
+                       ENDWHILE
+                    ENDWHILE
+               ELSE flash_message("WARNING: Missing results on standard",TRUE)
+               ENDIF
+            ENDWHILE
+       ENDIF
+      ELSE flash_message(
+         "WARNING: Search for defaults activated but no worksheet on test",
+         TRUE)
+      ENDIF
+ENDIF
+
+ndef = 0
+WHILE ndef < number_of_defaults DO
+   ndef = ndef + 1
+   IF   defaults[ndef,2] <> EMPTY
+   THEN result_array[defaults[ndef,1],result_text_pos] = defaults[ndef,2]
+        result_array[defaults[ndef,1],result_valu_pos] = defaults[ndef,3]
+   ENDIF
+ENDWHILE
+
+ENDROUTINE     { Get Defaults }
+
+
+{  -------------------- IS_STANDARD ----------------------------------- }
+{  Checks if the current test is a standard or not                      }
+{  Input : Test number                                                  }
+{  Return: TRUE if standard - False if not                              }
+
+GLOBAL ROUTINE is_standard( VALUE i_test_number )
+
+   standard = FALSE
+
+   IF    NOT(no_input( i_test_number, "Is Standard" ))
+   THEN  sample_id = SELECT test.sample
+                     WHERE  test_number = i_test_number
+         IF    sample_id = EMPTY
+         THEN  flash_message("Sample not found for test number:":
+                              i_test_number, TRUE)
+         ELSE
+            standard  = SELECT sample.standard
+                        WHERE  id_numeric = sample_id
+
+            IF    standard = EMPTY
+            THEN  standard = FALSE
+                  flash_message("Standard flag not found for sample:":
+                                 sample_id, TRUE)
+            ENDIF
+         ENDIF
+   ENDIF
+
+   return ( standard )
+
+ENDROUTINE     { Is Standard }
+
+
+{  -------------------- CALC_STD -------------------------------------- }
+{  Calculates the standard deviation in percent of mean value           }
+{  for an array of numbers                                              }
+{  Input : Array of numbers to calculate STD for                        }
+{          Number of rows in the array                                  }
+{          Deviation % result is supposed to be less than               }
+{  Output: Standard Deviation in percent                                }
+{          Mean Value                                                   }
+{  Return: TRUE if calc std is  less than deviation % - FALSE if not    }
+
+GLOBAL ROUTINE calc_std (       number_array,
+                          VALUE number_of_rows,
+                          VALUE dev_percent,
+                                std,
+                                mean_value )
+   DECLARE accept_val
+   std = EMPTY
+   mean_value = EMPTY
+
+   IF   number_of_rows <= 1
+   THEN flash_message("Not enough numbers. Cannot calculate standard deviation",TRUE)
+        return( FALSE )
+   ENDIF
+
+   mean_value = calc_mean_value( number_array, number_of_rows )
+   std = 0
+   row = 0
+   accept_val = 0
+   WHILE row < number_of_rows DO
+      row  = row + 1
+
+{**MS1591 HBe 29-11-04, **MS1602 HBe 17-12-04}
+      IF (INDEX(number_array[ row ], "<") = 0) AND (INDEX(number_array[ row ], ">") = 0) AND (number_array[ row ] <> "+0") THEN
+         accept_val = accept_val + 1
+         diff = number_array[ row ] - mean_value
+         std  = std + (diff*diff)
+      ENDIF
+   ENDWHILE
+
+   IF accept_val < 2 THEN
+      FLASH_MESSAGE("Less than 2 accepted results available, calculation not possible", TRUE)
+      RETURN(FALSE)
+   ENDIF
+{ME1591/1602}
+
+   std = std / (accept_val - 1)
+   std = sqrt( std )
+   IF   mean_value = 0
+   THEN flash_message("Warning: Mean value zero. No % standard deviation",TRUE)
+   ELSE std = 100 * std / mean_value
+   ENDIF
+
+   IF   std > dev_percent
+   THEN flash_message("WARNING: Calculated standard deviation %:":STRIP(std):
+                      " greater than:":STRIP(dev_percent),TRUE)
+        return( FALSE )
+   ELSE return( TRUE  )
+   ENDIF
+
+ENDROUTINE     { Calc Std }
+
+{**AS1591 HBe 18-11-04 /**MS1602 HBe 17-12-04}
+{  -------------------- CALC_ABS_STD -------------------------------------- }
+{  Calculates the standard deviation for an array of numbers                }
+{  as an absolute number                                                    }
+{  Input : Array of numbers to calculate STD for                            }
+{          Number of rows in the array                                      }
+{  Output: Standard Deviation as absolute value                             }
+{          Mean Value                                                       }
+
+GLOBAL ROUTINE calc_abs_std (       number_array,
+                              VALUE number_of_rows,
+                                    std_abs,
+                                    mean_value )
+   mean_value = EMPTY
+
+   IF   number_of_rows <= 1
+   THEN flash_message("Not enough numbers. Cannot calculate standard deviation",TRUE)
+        return( FALSE )
+   ENDIF
+
+   mean_value = calc_mean_value( number_array, number_of_rows )
+   std_abs = 0
+   row = 0
+   accept_val = 0
+   WHILE row < number_of_rows DO
+      row  = row + 1
+
+      IF (INDEX(number_array[ row ], "<") = 0) AND (INDEX(number_array[ row ], ">") = 0) AND (number_array[ row ] <> "+0") THEN
+         accept_val = accept_val + 1
+         diff = number_array[ row ] - mean_value
+         std_abs  = std_abs + (diff*diff)
+      ENDIF
+   ENDWHILE
+   IF accept_val < 2 THEN
+      FLASH_MESSAGE("Less than 2 accepted results available, calculation not possible", TRUE)
+      RETURN(FALSE)
+   ENDIF
+
+   std_abs = std_abs / (accept_val - 1)
+   std_abs = sqrt( std_abs )
+
+   return( TRUE  )
+
+
+ENDROUTINE     { Calc Abs Std }
+{**AE1591 / **ME1602}
+
+{  -------------------- CALC_MEAN_VALUE ------------------------------- }
+{  Calculates the mean value of an array of numbers                     }
+{  Input : Array of numbers to calculate on                             }
+{          Number of rows in the array                                  }
+{  Return: Mean value                                                   }
+
+GLOBAL ROUTINE calc_mean_value (       number_array,
+                                 VALUE number_of_rows)
+
+{**MS1591 HBe 25-11-04 / **MS1602 HBe 17-12-04: Excluding result components with <, >, +0 from calculation of mean value}
+
+DECLARE accept_val
+DECLARE row
+   row = 0
+   mean_value = 0
+   accept_val = 0
+   WHILE row < number_of_rows DO
+      row = row + 1
+      IF (INDEX(number_array[ row ], "<") = 0) AND (INDEX(number_array[ row ], ">") = 0)
+      AND (number_array[ row ] <> "+0") THEN
+         accept_val = accept_val + 1
+         mean_value = mean_value + number_array[ row ]
+      ENDIF
+   ENDWHILE
+
+   IF accept_val = 0 THEN
+      FLASH_MESSAGE("No accepted results available, calculation not possible", TRUE)
+      RETURN("Error")
+   ENDIF
+   mean_value = mean_value/accept_val
+   return ( mean_value )
+
+ENDROUTINE     { Calc Mean Value }
+
+{**ME1591/1602}
+
+{  -------------------- CALC_SOLUTION --------------------------------- }
+{  Calculates a solution factor for an array                            }
+{  Input : Array of results. Each column represents a solution          }
+{              Each row is:                                             }
+{              1: Sample Quantity                                       }
+{              2: Water  Quantity                                       }
+{               ..... and so forth                                      }
+{          Number of rows in array                                      }
+{          Number of columns in the array (number of solutions)         }
+{  Output: Array of calculated solutions                                }
+{          Message if returning FALSE                                   }
+{  Return: TRUE or FALSE if all solutions where calculated              }
+
+GLOBAL ROUTINE calc_solution (       solution_array,
+                               VALUE number_of_rows,
+                               VALUE number_of_solutions,
+                                     calc_array,
+                                     mess)
+   mess = EMPTY
+
+{  Check if number of rows are to be devided by 2 }
+   IF   TRUNC(number_of_rows/2)*2 <> number_of_rows
+   THEN mess = "ERROR: Number of solution parameters:":STRIP(number_of_rows):
+               " is not eaven (to be devided by 2)"
+        return(FALSE)
+   ENDIF
+
+   no_sol = 0
+
+   WHILE no_sol < number_of_solutions DO
+
+      no_sol = no_sol + 1
+      calc_array[ no_sol ] = 1
+
+      row = 0
+
+      WHILE (row < number_of_rows) DO
+
+         row = row + 2
+         q = solution_array[ row-1, no_sol ]    { Quantity      }
+         v = solution_array[ row  , no_sol ]    { Volume Water  }
+         IF   q = 0
+         THEN q = 1
+             flash_message("WARNING: Solution Quantity ":row:" is zero", TRUE)
+         ENDIF
+         IF   (q < 0) OR (v < 0)
+         THEN flash_message("WARNING: Negative numbers entered in solution",TRUE)
+         ENDIF
+
+         calc_array[ no_sol ] = calc_array[ no_sol ] * v / q
+
+      ENDWHILE
+   ENDWHILE
+
+   RETURN( TRUE )
+
+ENDROUTINE     { Calc Solution }
+
+
+{  -------------------- RESULT_DATA_GROUP ----------------------------- }
+{  In result array find components with a certain prefix and group the  }
+{  data according to the suffix on these result component names. All    }
+{  results with this prefix must be build up like:                      }
+{                                                                       }
+{  <prefix>..meaningfull_text..-<row>-<col>                             }
+{                                                                       }
+{  where <row> is the row in the output array and <col> the column      }
+{  Input : Prefix to search for                                         }
+{          Prefix location - F:Front B:Back (suffix)                    }
+{          Component name - look for components from top to this one    }
+{          Array of results                                             }
+{              Columns: According to array description in FIND_RESULTS  }
+{          Number of results in array                                   }
+{  Output: Array of results according to the component names            }
+{          Number of rows in the array                                  }
+{          Number of columns in the array                               }
+{  Return: TRUE if the array is complete (no EMPTY cells in the array)  }
+{          False if any holes                                           }
+
+GLOBAL ROUTINE result_data_group ( VALUE comp_prefix,
+                                   VALUE prefix_loc,
+                                   VALUE end_comp_name,
+                                         result_array,
+                                         number_of_res,
+                                         data_group_array,
+                                         data_group_rows,
+                                         data_group_columns)
+   data_group_rows    = 0
+   data_group_columns = 0
+   array_elements     = 0
+
+   IF   (end_comp_name = EMPTY) OR
+        (NOT get_component_row ( end_comp_name,
+                                 result_array,
+                                 number_of_res,
+                                 last_row))
+   THEN last_row = number_of_res
+   ENDIF
+
+   IF   comp_prefix = EMPTY
+   THEN comp_prefix = ""
+   ENDIF
+
+   comp_prefix   = STRIP(comp_prefix)
+   prefix_length = LENGTH(comp_prefix)
+
+   result_count = 0
+   WHILE result_count < last_row
+      result_count = result_count + 1
+      res_comp = STRIP(result_array[result_count,result_name_pos])
+      IF  (((LEFTSTRING( res_comp, prefix_length ) = comp_prefix) AND
+            (prefix_loc = "F"))  OR
+           ((RIGHTSTRING ( res_comp, prefix_length ) = comp_prefix) AND
+            (prefix_loc = "B"))) AND
+            (NOT(BLANK(result_array[result_count,result_text_pos])))
+
+      THEN  { Find row and column from comp name suffix -'s }
+            cell_found = FALSE
+            comp_len = LENGTH( res_comp )
+            IF prefix_loc = "B" THEN
+               comp_len = comp_len - prefix_length
+            ENDIF
+            str_pos = comp_len
+            end_pos = comp_len
+            col = EMPTY
+            row = EMPTY
+            WHILE (((str_pos > prefix_length+1) AND (prefix_loc = "F")) OR
+                   ((str_pos > 1)               AND (prefix_loc = "B"))) AND
+                  (row = EMPTY) DO
+               str_pos = str_pos - 1
+               IF   SUBSTRING( res_comp, str_pos, 1) = "-"
+               THEN
+                    IF   col = EMPTY
+                    THEN col = SUBSTRING(res_comp,str_pos+1,end_pos-str_pos)
+                         end_pos = str_pos - 1
+                    ELSE row = SUBSTRING(res_comp,str_pos+1,end_pos-str_pos)
+                    ENDIF
+               ENDIF
+            ENDWHILE
+
+{           Check if correct cell numbers               }
+            IF    row <> EMPTY
+            THEN  IF    numtext(row) AND numtext(col)
+                  THEN  row_num = NUMERIC( row )
+                        col_num = NUMERIC( col )
+                        IF (trunc(row_num) = row_num) AND
+                           (trunc(col_num) = col_num)
+                        THEN
+
+                           data_group_array[ row_num, col_num ] =
+                                 result_array[ result_count, result_text_pos ]
+                           array_elements = array_elements + 1
+
+                           IF    data_group_rows    < row_num
+                           THEN  data_group_rows    = row_num
+                           ENDIF
+
+                           IF    data_group_columns < col_num
+                           THEN  data_group_columns = col_num
+                           ENDIF
+
+                        ENDIF
+                  ENDIF
+            ENDIF
+      ENDIF
+   ENDWHILE
+
+{  Check if all cells in the array are entered                         }
+   IF   (array_elements < data_group_rows*data_group_columns)
+   THEN all_cells_entered = FALSE
+   ELSE all_cells_entered = TRUE
+   ENDIF
+
+   return( all_cells_entered )
+
+ENDROUTINE
+
+
+{  -------------------- CHECK_ON_STANDARDS ---------------------------- }
+{  Check results for all standards on a worksheet for a given test      }
+{  number. All calculated results must be different from NEWTEST and    }
+{  the out_of_range indicator must be FALSE                             }
+{  Input : The test number                                              }
+{  Return: 0: Standard check was OK                                     }
+{             All calculated results on all standards on the            }
+{             worksheet for the input test number are OK.               }
+{          1: Could not perform a test on standard because:             }
+{             a.The input test number is not on a worksheet             }
+{             b.No standards are on the worksheet                       }
+{             c.No results are entered for one of the standards         }
+{             d.No components exists on the standard analysis           }
+{             e.Mismatch in result/component setup                      }
+{             g.Not all results entered for one of the standards        }
+{          2: One standard has NEWTEST as result or Out Of Range        }
+
+GLOBAL ROUTINE check_on_standards ( VALUE i_test_number )
+
+   ARRAY result_array
+   ARRAY comp_array
+   ARRAY std_array
+
+   GLOBAL CONSTANT standard_is_ok  = 0
+   GLOBAL CONSTANT standard_error  = 1
+   GLOBAL CONSTANT standard_not_ok = 2
+
+   IF    is_standard( i_test_number )
+   THEN  return( standard_is_ok )
+   ENDIF
+
+   ws_id = ws_for_test( i_test_number )
+   IF    ws_id = 0
+   THEN  flash_message(
+         "This test is not on a Worksheet. Cannot check on standard", TRUE)
+         return( standard_error )
+   ELSE
+     number_of_standards = standards_on_ws( ws_id, std_array )
+     IF    number_of_standards = 0
+     THEN  flash_message(
+           "This Worksheet does not include a standard", TRUE)
+           return( standard_error )
+     ELSE
+
+{      Check results for all standards one by one                       }
+       std_count = 0
+       WHILE std_count < number_of_standards
+         std_count = std_count + 1
+         IF    NOT(  find_results(
+                     std_array[std_count,1], result_array, number_of_res ))
+         THEN  flash_message("No results entered for standard", TRUE)
+               return( standard_error )
+         ELSE
+             IF NOT( all_results_entered (
+                   "", result_array, number_of_res))
+             THEN  flash_message("Result on Standard missing", TRUE)
+                   return( standard_error )
+             ELSE
+
+{                Do the check on standard results                       }
+                 start_row = 0
+                 standard_ok = TRUE
+                 WHILE (standard_ok) AND
+                       (start_row<number_of_res) DO
+                   start_row = start_row + 1
+
+                   IF   (result_array[start_row,result_text_pos] =
+                            "NEWTEST") OR
+                        (result_array[start_row,result_oorf_pos])
+                   THEN standard_ok = FALSE
+                        flash_message("WARNING: Standard Out of Range",TRUE)
+                   ENDIF
+
+                 ENDWHILE
+
+                 IF   NOT(standard_ok)
+                 THEN return( standard_not_ok )
+                 ENDIF
+
+             ENDIF
+         ENDIF
+       ENDWHILE
+       return ( standard_is_ok )
+
+     ENDIF
+   ENDIF
+
+ENDROUTINE     { Check On Standards }
+
+{  -------------------- GET_CALC_ROW ---------------------------------- }
+{  Get the first calculated result                                      }
+{  Input : Array of results                                             }
+{              Columns: According to array description in FIND_RESULTS  }
+{          Number of results in array                                   }
+{          Row to start search in the array                             }
+{  Return: Number in array for first calculated result - 0 if none      }
+
+GLOBAL ROUTINE get_calc_row (       result_array,
+                              VALUE number_of_results,
+                                    start_row)
+calc_row  = 0
+row_count = start_row
+WHILE (row_count < number_of_results) AND (calc_row=0) DO
+   row_count = row_count + 1
+   IF    result_array[ row_count, result_type_pos ] = "K"
+   THEN  calc_row = row_count
+   ENDIF
+ENDWHILE
+
+return ( calc_row )
+
+ENDROUTINE     { Get Calc Row }
+
+
+{  -------------------- ALL_RESULTS_ENTERED --------------------------- }
+{  Check if all results before the present component is entered for the }
+{  analysis.                                                            }
+{  Input : The actual component which is not checked for                }
+{          Array of results                                             }
+{              Columns: According to array description in FIND_RESULTS  }
+{          Number of results in array                                   }
+{  Return: TRUE is returned if all results are entered                  }
+
+GLOBAL ROUTINE all_results_entered ( VALUE present_component,
+                                           result_array,
+                                     VALUE number_of_results)
+   all_entered = TRUE
+
+   res_count = 0
+   dont_stop = TRUE
+
+   WHILE (res_count < number_of_results) AND
+         (all_entered) AND
+         (dont_stop)   DO
+         res_count = res_count + 1
+         IF    result_array[ res_count, result_name_pos ] <>
+               present_component
+         THEN  IF   BLANK(result_array[ res_count, result_text_pos ]) OR
+                   (result_array[ res_count, result_valu_pos ] = EMPTY)
+               THEN all_entered = FALSE
+                    flash_message("WARNING: Missing result for component:":
+                              result_array[ res_count, result_name_pos ], TRUE)
+               ENDIF
+         ELSE  dont_stop = FALSE
+         ENDIF
+   ENDWHILE
+
+   return ( all_entered )
+
+ENDROUTINE     { All Results Entered }
+
+
+{  -------------------- GET_COMPONENTS -------------------------------- }
+{  Get components for test analysis                                     }
+{  Input : Test number for test to be found components for              }
+{  Output: Array of analysis components - one row for each component    }
+{              Columns: 1. Component Name                               }
+{                       2. Result Type                                  }
+{                       3. Units                                        }
+{                       4. Replicate Control Flags                      }
+{                       8. Calculation program                          }
+{          Number of components                                         }
+{  Return: TRUE is returned if success - else FALSE                     }
+
+GLOBAL ROUTINE get_components ( VALUE  i_test_number, comp_array, number_of_comp)
+
+    DECLARE complist
+
+    IF no_input( i_test_number, "Get Components" ) THEN 
+        RETURN( FALSE )
+    ELSE 
+        anal_id = SELECT test.analysis
+                  WHERE test_number = i_test_number
+        IF no_input( anal_id, "Get Components Analysis" ) THEN 
+            RETURN( FALSE )
+        ELSE
+            ver = SELECT test.analysis_version
+            complist = SELECT test.component_list
+            IF (complist <> "" )THEN
+                comp_name = SELECT versioned_c_l_entry.name
+                            WHERE analysis = anal_id
+                            AND analysis_version = ver
+                            AND comp_list = complist
+                            ORDER ON order_number
+                WHILE comp_name <> EMPTY DO
+                    comp_array[size_of_array(comp_array) + 1,result_name_pos] = comp_name
+                NEXT versioned_c_l_entry
+                    comp_name = SELECT versioned_c_l_entry.name
+                ENDWHILE
+            ELSE 
+                comp_name = SELECT versioned_component.name
+                            WHERE analysis_id = anal_id
+                            AND analysis_version = ver
+                            ORDER ON order_number
+                WHILE comp_name <> EMPTY DO
+                    comp_array[size_of_array(comp_array) + 1,result_name_pos] = comp_name
+                NEXT versioned_component
+                    comp_name = SELECT versioned_component.name
+                ENDWHILE
+            ENDIF
+
+            number_of_comp = 0
+            WHILE number_of_comp < size_of_array(comp_array) DO
+                number_of_comp = number_of_comp + 1
+                comp_name = SELECT versioned_component.name
+                            WHERE analysis_id = anal_id
+                            AND analysis_version = ver
+                            AND name = comp_array[number_of_comp,result_name_pos]
+                comp_array[number_of_comp,result_type_pos] = SELECT versioned_component.result_type
+                comp_array[number_of_comp,result_unit_pos] = SELECT versioned_component.units
+                comp_array[number_of_comp,result_cont_pos] = SELECT versioned_component.rep_control
+                comp_array[number_of_comp,result_sfno_pos] = SELECT versioned_component.sig_figs_number
+                comp_array[number_of_comp,result_minm_pos] = SELECT versioned_component.minimum
+                comp_array[number_of_comp,result_maxm_pos] = SELECT versioned_component.maximum
+                comp_array[number_of_comp,result_plac_pos] = SELECT versioned_component.places
+                comp_array[number_of_comp,result_odno_pos] = SELECT versioned_component.order_number
+                comp_array[number_of_comp,result_sffi_pos] = SELECT versioned_component.sig_figs_filter
+                {**M1451 HBe 27-2-03: Type "L" included below}
+                IF (comp_array[number_of_comp,result_type_pos] = "K") OR
+                    (comp_array[number_of_comp,result_type_pos] = "O") OR
+                    (comp_array[number_of_comp,result_type_pos] = "L") THEN 
+                    comp_array[number_of_comp,result_calc_pos] = SELECT versioned_component.calculation
+                ELSE 
+                    comp_array[number_of_comp,result_calc_pos] = EMPTY
+                ENDIF
+                comp_array[number_of_comp,result_sfro_pos] = SELECT versioned_component.sig_figs_rounding
+            NEXT versioned_component
+                comp_name = SELECT versioned_component.name
+            ENDWHILE
+
+            IF number_of_comp > 0 THEN 
+                RETURN ( TRUE )
+            ELSE 
+                RETURN ( FALSE )
+            ENDIF
+        ENDIF
+    ENDIF
+
+ENDROUTINE     { Get Components }
+
+{  -------------------- FIND_RESULTS --------------------------------------------------------------}
+{  Get results for test                                                                            }
+{  Input : Test_number for test to be found results for                                            }
+{  Output: Array of results - one  row for each result                                             }
+{              Columns: 1. Component name                                                          }
+{                       2. Result Type                                                             }
+{                       3. Units                                                                   }
+{                       4. Replicate Control Flags                                                 }
+{                       5. Text                                                                    }
+{                       6. Value                                                                   }
+{                       7. Out of Range flag                                                       }
+{                       8. Calculation (from versioned_analysis, no change with modification 1451) }
+{          Number of results                                                                       }
+{  Return: TRUE is returned if any results conforming to actual                                    }
+{          analysis component setup was entered                                                    }
+
+GLOBAL ROUTINE find_results( VALUE   i_test_number, result_array, number_of_results)
+
+    number_of_results = 0
+    any_results = FALSE
+
+    IF    no_input( i_test_number, "Get Results" ) THEN  
+        return( FALSE )
+    ELSE  
+        IF  get_components( i_test_number, result_array, number_of_results) THEN
+            {          Initialize            }
+            row = 0
+            WHILE (row < number_of_results) DO
+                row = row + 1
+                result_array[row,result_text_pos] = EMPTY
+                result_array[row,result_valu_pos] = EMPTY
+                result_array[row,result_oorf_pos] = EMPTY
+            ENDWHILE
+            res_name = SELECT result.component_name
+                       WHERE test_number = i_test_number
+                       ORDER ON order_number
+            WHILE (res_name <> EMPTY) DO
+                IF NOT BLANK(strip(select result.text)) THEN
+                    row = 0
+                    not_found = TRUE
+                    WHILE (row < number_of_results) AND (not_found) DO
+                        row = row + 1
+                        IF   result_array[row,result_name_pos] = res_name THEN 
+                            not_found = FALSE
+                        ENDIF
+                    ENDWHILE
+                    IF   not_found THEN
+                        {**DS1795 HBe 2-8-2007: Message has no meaning, and causes irritation in the laboratory for ad-hoc results
+                        flash_message(
+                        "WARNING: Result/Analysis component mismatch for result:":
+                        res_name:". Result ignored.",TRUE)
+                        **AE1795}
+                    ELSE
+                        res_type = select result.result_type
+                        res_unit = select result.units
+                        IF (res_type <> result_array[row,result_type_pos]) OR
+                        (res_unit <> result_array[row,result_unit_pos]) THEN
+                        flash_message("WARNING: Type/Unit mismatch for component":
+                        res_name:". Component setup used.",TRUE)
+                        ENDIF
+                        any_results = TRUE
+                        result_array[row,result_text_pos] = select result.text
+                        result_array[row,result_valu_pos] = select result.value
+                        result_array[row,result_oorf_pos] = select result.out_of_range
+                        result_array[row,result_sfro_pos] = select result.sig_figs_rounding
+                        result_array[row,result_cont_pos] = select result.rep_control
+                    ENDIF
+                ENDIF
+            NEXT result
+                res_name = select result.component_name
+            ENDWHILE
+        ELSE 
+            number_of_results = 0
+        ENDIF
+        RETURN ( any_results )
+    ENDIF
+
+ENDROUTINE     { Get Results }
+
+
+{  -------------------- STANDARDS_ON_WS ------------------------------- }
+{  Find standards on worksheet                                          }
+{  Input : Worksheet Id                                                 }
+{  Output: Array of test numbers for standards on the worksheet.        }
+{  Return: Number of standards found.                                   }
+
+GLOBAL ROUTINE standards_on_ws ( VALUE i_worksheet_id, standard_array )
+
+   std_count = 0
+   IF    NOT ( no_input( i_worksheet_id, "standards_on_ws" ) )
+   THEN  sam_id = select   test.sample
+                  where    worksheet_id = i_worksheet_id
+                  order    on test_number
+
+         WHILE    (sam_id <> EMPTY) DO
+                  standard =  SELECT sample.standard
+                              WHERE  id_numeric = sam_id
+                  IF    standard
+                  THEN  std_count = std_count + 1
+                        standard_array[std_count,1] = select test.test_number
+                  ENDIF
+                  NEXT  test
+                  sam_id = SELECT test.sample
+         ENDWHILE
+
+   ENDIF
+   return( std_count )
+
+ENDROUTINE     { Standards On Ws }
+
+
+{  -------------------- WS_FOR_TEST ----------------------------------- }
+{  Check if the test is on a worksheet or not.                          }
+{  Input : Test_number (test_id) for test to check                      }
+{  Return: Worksheet id for test. 0 if no WS found                      }
+
+GLOBAL ROUTINE  ws_for_test( VALUE i_test_number )
+
+   IF    no_input( i_test_number, "ws_for_test" )
+   THEN  return( 0 )
+   ELSE
+         ws_id  = SELECT   test.worksheet_id
+                  WHERE    test_number = i_test_number
+
+         IF    ws_id = EMPTY
+         THEN  flash_message(
+               "This test number:":i_test_number:" does not exist",TRUE)
+               return( 0 )
+         ELSE  return( ws_id )
+         ENDIF
+
+   ENDIF
+
+ENDROUTINE     { WS_FOR_TEST }
+
+
+{  -------------------- PROMPT_USER ----------------------------------- }
+{  Prompt the user for a value                                          }
+{  Input : Prompt type ie. Table to browse on or to format by           }
+{          Prompt title                                                 }
+{          Field name to format by - not mandatory                      }
+{          TRUE/FALSE indicator if browse or not                        }
+{          Select Array to put in WITH statement if browse              }
+{          Text to display in front of prompt field                     }
+{  Output: The value entered by the user                                }
+{          The key if entered - INSERT, REMOVE or SELECT                }
+{  Return: TRUE or FALSE if the user ended by DO or EXIT                }
+
+GLOBAL
+ROUTINE  prompt_user ( VALUE prompt_type , VALUE prompt_title, VALUE fld_name,
+                       VALUE do_browse   , VALUE display_text,
+                             select_array, prompt_val, last_key_used )
+   DECLARE  rc, do_switch
+
+   CREATE OBJECT PROMPT_CLASS_FORM, the_prompt
+
+   pr_line = 3
+   pr_col  = 3
+
+   the_prompt . height   =  5
+   the_prompt . width    =  60
+   the_prompt . row      =  10
+   the_prompt . column   =  10
+   the_prompt . border   =  TRUE
+   the_prompt . header   =  prompt_title
+   the_prompt . footer   =  "Press DO to accept / Exit to quit"
+{  the_prompt . button_style = FORM_BUTTON_OK }
+
+   disp_text = strip(display_text)
+   IF   (display_text <> EMPTY) AND (NOT BLANK(disp_text))
+   THEN  display_len = length(disp_text) + 1
+         the_prompt . add_display ( disp_text,
+                                    pr_col,
+                                    pr_line,
+                                    PROMPT_RENDITION_BOLD)
+   ELSE  display_len = 0
+   ENDIF
+
+   do_switch = FALSE
+
+   IF   do_browse
+   THEN
+      IF (prompt_type <> EMPTY) AND (NOT BLANK(prompt_type))
+      THEN
+         IF (fld_name = EMPTY) OR (BLANK(fld_name))
+         THEN
+            PROMPT   OBJECT  get_object
+                     BROWSE  ON 'prompt_type'
+                     ON LINE pr_line
+                     FROM    pr_col + display_len
+                     IN      WINDOW the_prompt . window
+                     WITH   (select_array = select_array,
+                             insert_routine = "last_key_insert",
+                             select_routine = "last_key_select",
+                             remove_routine = "last_key_remove")
+         ELSE
+            PROMPT   OBJECT  get_object
+                     BROWSE  ON 'prompt_type'.'fld_name'
+                     ON LINE pr_line
+                     FROM    pr_col + display_len
+                     IN      WINDOW the_prompt . window
+                     WITH   (select_array = select_array,
+                             insert_routine = "last_key_insert",
+                             select_routine = "last_key_select",
+                             remove_routine = "last_key_remove")
+         ENDIF
+      ELSE
+{...     browse_on_array( 20, prompt_val, select_array )
+         IF   (prompt_val <> EMPTY) AND (NOT BLANK(prompt_val))
+         THEN return ( TRUE )
+         ELSE return ( FALSE)
+         ENDIF       ....}
+
+         do_switch = TRUE
+
+
+         PROMPT   OBJECT  get_object
+                  ON LINE pr_line
+                  FROM    pr_col + display_len
+                  IN      WINDOW the_prompt . window
+                  CHOOSE  OUTOF select_array
+                  WITH   (insert_routine = "last_key_insert",
+                          select_routine = "last_key_select",
+                          remove_routine = "last_key_remove")
+      ENDIF
+   ELSE
+      IF (BLANK(fld_name) OR (fld_name=EMPTY))
+      THEN
+         PROMPT   OBJECT  get_object
+                  ON LINE pr_line
+                  FROM    pr_col + display_len
+                  FORMAT  'prompt_type'
+                  WITH   (insert_routine = "last_key_insert",
+                          select_routine = "last_key_select",
+                          remove_routine = "last_key_remove")
+      ELSE
+         PROMPT   OBJECT  get_object
+                  ON LINE pr_line
+                  FROM    pr_col + display_len
+                  FORMAT  'prompt_type'.'fld_name'
+                  WITH   (insert_routine = "last_key_insert",
+                          select_routine = "last_key_select",
+                          remove_routine = "last_key_remove")
+      ENDIF
+   ENDIF
+
+   the_prompt . add_prompt ( get_object )
+
+   get_object . value = prompt_val
+
+   IF do_switch THEN
+      option_switch ( EMPTY, select_array, 1, 2, get_object . value )
+   ENDIF
+
+   the_prompt . add_frame ( "" , 1 , 1 , the_prompt.height , the_prompt.width )
+
+   the_prompt . start_prompt()
+
+   last_key_used = EMPTY
+
+   REPEAT
+
+      the_prompt . wait_prompt()
+
+   UNTIL ( ( the_prompt . get_lastkey () = "EXIT" ) OR
+           ( the_prompt . get_lastkey () = "DO"   ) OR
+           ( last_key_used <> EMPTY) )
+
+   IF   the_prompt . get_lastkey() = "DO"
+   THEN prompt_val = get_object . value
+        IF do_switch THEN
+           option_switch ( EMPTY, select_array, 2, 1, prompt_val )
+        ENDIF
+        rc = TRUE
+   ELSE rc = FALSE
+   ENDIF
+
+   the_prompt . end_prompt()
+
+   return ( rc )
+
+ENDROUTINE     { Prompt User }
+
+{  -------------------- PROMPT_USER_MSG --------------------------------- }
+{  Prompt the user for a value                                          }
+{  Input : Prompt title                                                 }
+{          msg_array: arrray (or string) to diplay before prompt        }
+{          Text to display in front of prompt field                     }
+{          Prompt type ie. Table to browse on or to format by           }
+{          Field name to format by - not mandatory                      }
+{          TRUE/FALSE indicator if browse or not                        }
+{          Select Array to put in WITH statement if browse              }
+{  Output: The value entered by the user                                }
+{          The key if entered - INSERT, REMOVE or SELECT                }
+{  Return: TRUE or FALSE if the user ended by DO or EXIT                }
+
+GLOBAL ROUTINE prompt_user_msg (VALUE prompt_title, msg_array, VALUE display_text,
+                                VALUE prompt_type , VALUE fld_name, VALUE do_browse, 
+                                select_array, prompt_val, last_key_used )
+
+    DECLARE  rc, do_switch, index_array
+    ARRAY index_array
+
+    index_array[1] = 1 {row}
+    index_array[2] = 1 {column}
+    IF NOT(array_element_exists(msg_array, index_array)) THEN
+    ELSEIF NOT(BLANK(msg_array))
+        tmp = msg_array
+        ARRAY msg_array
+        msg_array[1] = tmp 
+    ELSE
+        ARRAY msg_array
+    ENDIF
+
+    CREATE OBJECT PROMPT_CLASS_FORM, the_prompt
+
+    pr_line = 1
+    pr_col  = 3
+
+    the_prompt.height   =  1 + size_of_array(msg_array)
+    the_prompt.width    =  35
+    the_prompt.row      =  10
+    the_prompt.column   =  10
+    the_prompt.border   =  TRUE
+    the_prompt.header   =  prompt_title
+    the_prompt.footer   =  "Press DO to accept / Exit to quit"
+    {  the_prompt.button_style = FORM_BUTTON_OK }
+
+    disp_text = strip(display_text)
+    IF (display_text <> EMPTY) AND (NOT BLANK(disp_text)) THEN  
+       display_len = LENGTH(disp_text) + 1
+    ELSE  
+        display_len = 0
+    ENDIF
+
+    i = 1
+    WHILE i <= size_of_array(msg_array)
+        the_prompt.add_display(msg_array[i], pr_col, pr_line, PROMPT_RENDITION_BOLD)
+        i = i + 1
+        pr_line = pr_line + 1
+    ENDWHILE
+    
+    {pr_line = pr_line + 1 }
+    
+    IF (display_text <> EMPTY) AND (NOT BLANK(disp_text)) THEN  
+       the_prompt.add_display(disp_text, pr_col, pr_line, PROMPT_RENDITION_BOLD)
+    ENDIF
+
+    do_switch = FALSE
+
+    IF do_browse THEN
+        IF (prompt_type <> EMPTY) AND (NOT BLANK(prompt_type)) THEN
+            IF (fld_name = EMPTY) OR (BLANK(fld_name)) THEN
+            PROMPT   OBJECT  get_object
+                BROWSE ON 'prompt_type'
+                    ON LINE pr_line
+                    FROM    pr_col + display_len
+                    IN      WINDOW the_prompt.window
+                    WITH (select_array = select_array,
+                          insert_routine = "last_key_insert",
+                          select_routine = "last_key_select",
+                          remove_routine = "last_key_remove")
+            ELSE
+                PROMPT OBJECT get_object
+                BROWSE ON 'prompt_type'.'fld_name'
+                    ON LINE pr_line
+                    FROM    pr_col + display_len
+                    IN      WINDOW the_prompt.window
+                    WITH (select_array = select_array,
+                          insert_routine = "last_key_insert",
+                          select_routine = "last_key_select",
+                          remove_routine = "last_key_remove")
+            ENDIF
+        ELSE
+
+{...     browse_on_array( 20, prompt_val, select_array )
+         IF   (prompt_val <> EMPTY) AND (NOT BLANK(prompt_val))
+         THEN return(TRUE )
+         ELSE return(FALSE)
+         ENDIF       ....}
+
+            do_switch = TRUE
+
+            PROMPT OBJECT get_object
+                 ON LINE pr_line
+                 FROM    pr_col + display_len
+                 IN      WINDOW the_prompt.window
+                 CHOOSE  OUTOF select_array
+                 WITH (insert_routine = "last_key_insert",
+                       select_routine = "last_key_select",
+                       remove_routine = "last_key_remove")
+       ENDIF
+   ELSE
+       IF (BLANK(fld_name) OR (fld_name=EMPTY)) THEN
+           PROMPT OBJECT  get_object
+              ON LINE pr_line
+              FROM    pr_col + display_len
+              FORMAT  'prompt_type'
+              WITH   (insert_routine = "last_key_insert",
+                      select_routine = "last_key_select",
+                      remove_routine = "last_key_remove")
+       ELSE
+           PROMPT OBJECT get_object
+               ON LINE pr_line
+               FROM    pr_col + display_len
+               FORMAT  'prompt_type'.'fld_name'
+               WITH   (insert_routine = "last_key_insert",
+                       select_routine = "last_key_select",
+                       remove_routine = "last_key_remove")
+       ENDIF
+   ENDIF
+
+   the_prompt.add_prompt(get_object )
+   get_object.value = prompt_val
+
+   IF do_switch THEN
+       option_switch(EMPTY, select_array, 1, 2, get_object.value )
+   ENDIF
+
+    the_prompt.add_frame("" , 1 , 1 , the_prompt.height , the_prompt.width )
+    the_prompt.start_prompt()
+    last_key_used = EMPTY
+    REPEAT
+        the_prompt.wait_prompt()
+    UNTIL ((the_prompt.get_lastkey () = "EXIT" ) OR
+           (the_prompt.get_lastkey () = "DO"   ) OR
+           (last_key_used <> EMPTY) )
+
+    IF the_prompt.get_lastkey() = "DO" THEN prompt_val = get_object.value
+        IF do_switch THEN
+            option_switch(EMPTY, select_array, 2, 1, prompt_val )
+        ENDIF
+        rc = TRUE
+    ELSE 
+        rc = FALSE
+    ENDIF
+    the_prompt.end_prompt()
+
+    RETURN(rc )
+
+ENDROUTINE    { Prompt User Msg }
+
+
+{  -------------------- BLOCK_INIT ------------------------------------ }
+{  Initiate block for use of arrays                                     }
+{  Input : Block Name                                                   }
+{          Table Name                                                   }
+{  Return: TRUE or FALSE if success or not                              }
+
+GLOBAL
+ROUTINE  block_init ( block_name, VALUE tab_name )
+
+   DECLARE  rc
+
+   rc = block_row_initialise ( block_name, tab_name )
+   IF   rc <> EMPTY
+   THEN flash_message("Error in block initialisation - ":rc,TRUE)
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE
+
+
+
+{  -------------------- DELETE_BLOCK ---------------------------------- }
+{  Delete records in a block                                            }
+{  Input : Block Name                                                   }
+{          Select array to find records to delete                       }
+
+GLOBAL
+ROUTINE  delete_block ( bl_name, sel_arr )
+
+   DECLARE  rows, row, rc
+
+   rc = block_row_select ( bl_name, sel_arr, TRUE )
+   rc = block_row_last   ( bl_name )
+   rows = block_row_size ( bl_name )
+   row = 0
+   WHILE (row < rows) DO
+      row = row + 1
+      rc = block_row_delete ( bl_name )
+   ENDWHILE
+
+ENDROUTINE
+
+
+{  -------------------- OPTION_SWITCH --------------------------------- }
+{  Search in array for value and return other value in found row        }
+{  Input : Number of rows in array                                      }
+{          Array to search in                                           }
+{          Column in array to search in                                 }
+{          Column in array to return value from                         }
+{          Value to search for                                          }
+{  Output: Value from switch column in found row.                       }
+{                If not found the value is unchanged                    }
+
+GLOBAL
+ROUTINE  option_switch ( VALUE options, option_list, VALUE col_from, VALUE col_to, option )
+
+    DECLARE  n, not_found
+
+    IF options = EMPTY THEN
+        options = size_of_array ( option_list )
+    ENDIF
+
+    n = 0
+    not_found = TRUE
+    WHILE (n < options) AND (not_found) DO
+        n = n + 1
+        IF   option_list [ n, col_from ] = option THEN 
+            option = option_list [ n, col_to ]
+            not_found = FALSE
+        ENDIF
+    ENDWHILE
+
+ENDROUTINE
+
+
+{  -------------------- GET_PARM_ID ----------------------------------- }
+{  Search in Generalised Parameter Setup to find parameter id matching  }
+{  certain key field values                                             }
+{  Input : Parameter Type to search for                                 }
+{          Number of keys to search for                                 }
+{          Array holding the key values - One dimensional               }
+{  Output: Parameter Id matching the key values                         }
+{  Return: TRUE if found - False if not                                 }
+
+GLOBAL
+ROUTINE  get_parm_id ( VALUE parm_type, VALUE keys, key_values, parm_id )
+
+   ARRAY    select_arr
+   DECLARE  k, not_found, p_id, rc, rows, no_mismatch, field, parm_fld
+
+   parm_id = EMPTY
+
+   IF   keys <= 0
+   THEN flash_message("Error: Number of keys ":strip(keys):
+                      " must be 1 or more",TRUE)
+        return ( FALSE )
+   ELSE k = 0
+        WHILE k < keys DO
+           k = k + 1
+           IF (key_values[k] = EMPTY) OR (BLANK(key_values[k])) THEN
+{**M1620 HBe 11-8-2005:No parameters may not be an error", TRUE     }
+               IF GLOBAL ( "SHOW_ERRORS" )
+               THEN
+                  flash_message("Error: Key value ":strip(k):" is blank",TRUE)
+               ENDIF
+               return ( FALSE )
+           ENDIF
+         key_values[k] = strip(key_values[k])
+        ENDWHILE
+   ENDIF
+
+{
+   DisplayArray(key_values)
+
+   fm("p_id = select parm_setup_link_fields . identity":ASCII(10):
+      "       where  parm_type = ":parm_type:ASCII(10):
+      "       and    field_name = ":key_values[1]:ASCII(10):
+      "       order  on identity")
+}
+   p_id = select parm_setup_link_fields . identity
+          where  parm_type = parm_type
+          and    field_name = key_values[1]
+          order  on identity
+
+   not_found = TRUE
+   WHILE (p_id <> EMPTY) AND (not_found) DO
+
+      block_select = "Fields Select"
+      block_init ( block_select, "PARM_SETUP_LINK_FIELDS" )
+
+      select_arr[1,1] = ARRAY_SELECT_EQ
+      select_arr[1,2] = "IDENTITY"
+      select_arr[1,3] = p_id
+      select_arr[2,1] = ARRAY_SELECT_EQ
+      select_arr[2,2] = "PARM_TYPE"
+      select_arr[2,3] = parm_type
+      select_arr[3,1] = ARRAY_SELECT_ORDER
+      select_arr[3,2] = "ORDER_NUM"
+
+      rc = block_row_select ( block_select, select_arr, FALSE )
+      rows = block_row_size ( block_select )
+
+      IF   rows <> keys
+      THEN no_mismatch = FALSE
+      ELSE no_mismatch = TRUE
+
+         rc = block_row_first ( block_select )
+
+         field = 0
+
+         REPEAT
+
+           field = field + 1
+           parm_fld = block_row_field_select ( block_select, "field_name" )
+
+           IF (key_values[field] <> parm_fld) THEN
+               no_mismatch = FALSE
+           ENDIF
+
+         UNTIL ( ( NOT ( block_row_next ( block_select ) ) ) OR
+                 ( NOT ( no_mismatch ) ) )
+
+      ENDIF
+
+      rc = block_row_release ( block_select )
+
+      IF no_mismatch THEN
+         not_found = FALSE
+      ENDIF
+
+      IF not_found THEN
+         NEXT parm_setup_link_fields
+         p_id = select parm_setup_link_fields . identity
+      ENDIF
+
+   ENDWHILE
+
+   IF   not_found
+   THEN return ( FALSE )
+   ELSE parm_id = p_id
+        return ( TRUE  )
+   ENDIF
+
+ENDROUTINE  { Get Parm Id }
+
+
+{  -------------------- GUI_ADJUSTMENTS ------------------------------- }
+{  Sets up standard DO and EXIT buttons and adjusts window size         }
+{  Input : self Object holder                                           }
+{          Number of buttons this object will hold all in all           }
+GLOBAL
+ROUTINE  gui_adjustments ( self, VALUE buttons )
+   self . button_style = FORM_BUTTON_NONE
+   self . width  = self . width  + GUI_WIDTH_DIFF
+   add_button ( self, "DO"  , 1, buttons, EMPTY, EMPTY, "OK" )
+   add_button ( self, "EXIT", 2, buttons, EMPTY, EMPTY, "Exit" )
+ENDROUTINE  { Gui Adjustments }
+
+
+{  -------------------- ADD_BUTTON ------------------------------------ }
+{  Adds a button to an object                                           }
+{  Input : Object to which the button must relate                       }
+{          Action relating to the button                                }
+{          Number of the button                                         }
+{          Number of buttons in the object all in all                   }
+{          Routine to call when the button is pressed                   }
+{          Name of VGL Library where routine_to_call is placed          }
+{          Label on the button                                          }
+GLOBAL
+ROUTINE  add_button ( self, VALUE action,
+                            VALUE button_no, VALUE buttons,
+                            VALUE routine_to_call,
+                            VALUE vgl_lib,
+                            VALUE button_text )
+   from_top = 1
+   button_space = trunc((self.height-from_top)/buttons)
+   IF   button_space = 0
+   THEN button_space = 1
+   ENDIF
+   pos = (button_space * (button_no-1)) + from_top
+
+   IF   routine_to_call <> EMPTY
+   THEN PROMPT OBJECT get_tab_button
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE pos
+            FROM self . width - BUTTON_FROM_FRAME
+            TO   self . width - BUTTON_FROM_FRAME+button_width
+            WITH ( caption = button_text,
+                   enabled = TRUE,
+                   mouse_click_routine = routine_to_call,
+                   vgl_library = vgl_lib )
+   ELSE PROMPT OBJECT get_tab_button
+            CLASS PROMPT_CLASS_BUTTON
+            WITH ( caption = button_text,
+                   row     = pos,
+                   column  = self . width - BUTTON_FROM_FRAME,
+                   width   = button_width,
+                   enabled = TRUE,
+                   send_lastkey = action)
+   ENDIF
+
+   self . add_prompt ( get_tab_button )
+
+ENDROUTINE  { Add Button }
+
+
+{**AS1267 HBe 22-8-00}
+{  -------------------- LABEL_DETAILS --------------------------------- }
+{  Prompts user for details regarding label format                      }
+{  Output : Label details label_spaces, label_lines,                    }
+{           count_labels_down, sheet_defined                            }
+{**M1436        06-12-02 HBe    Leading blanks included for all label formats  }
+
+GLOBAL
+ROUTINE LABEL_DETAILS (label_spaces, label_lines, count_labels_down, leading_blanks, sheet_defined)
+
+         {label_arr column 1= Identifier}
+         {label_arr column 2= Description}
+         {label_arr column 3= Spaces between columns}
+         {label_arr column 4= Lines per label}
+         {label_arr column 5= Horisontal label count per sheet}
+         {label_arr column 6= Leading blanks}
+
+              ARRAY label_arr
+                 label_arr[1,1] = "Europe -AVERY L7159 "
+                 label_arr[1,2] = "AVERY L7159 8x3 A4 format labels"
+                 label_arr[1,3] = 4
+                 label_arr[1,4] = 8
+                 label_arr[1,5] = 8
+                 label_arr[1,6] = 1
+                 label_arr[2,1] = "USA - AVERY 5160 "
+                 label_arr[2,2] = "AVERY 5160 10x3 LETTER format labels"
+                 label_arr[2,3] = 5
+                 label_arr[2,4] = 6
+                 label_arr[2,5] = 10
+                 label_arr[2,6] = 1
+
+
+              IF SUBSTRING(OPERATOR,1,2) = "M-"
+              THEN
+                 label_format = "USA - AVERY 5160 "
+              ELSE
+                 Label_format = "Europe -AVERY L7159 "
+              ENDIF
+
+              The_key = "Error"
+              WHILE the_key <> EMPTY
+                 prompt_user(EMPTY, "Label Format", EMPTY,
+                            TRUE, "Select Label Format:", label_arr,
+                            Label_format, the_key)
+              ENDWHILE
+
+              found = FALSE
+              arr_counter = 0
+              label_arr_size = SIZE_OF_ARRAY(label_arr)
+              WHILE (found <> TRUE) AND (arr_counter < label_arr_size)
+                 arr_counter = arr_counter + 1
+                 IF strip(label_arr[arr_counter,1]) = strip ( label_format)
+                 THEN
+                    found = TRUE
+                    label_spaces      = label_arr[arr_counter,3]
+                    label_lines       = label_arr[arr_counter,4]
+                    count_labels_down = label_arr[arr_counter,5]
+                    leading_blanks    = label_arr[arr_counter,6]
+                    sheet_defined = TRUE
+                 ENDIF
+              ENDWHILE
+
+{**AE 1267}
+ENDROUTINE
+
+{**AS1620 HBe 9-8-2005}
+{  ----------------------------------------- GET_MANUAL_VALUE ----------------------------------------------------- }
+{  Descr:  Used to prompt for ingoing values or final results in calculations, that normally require                }
+{          a parameter setup on the MLP to be present, for the calculation to function.                             }
+{  Input:  Details from calculation format:                                                                         }
+{          current_sample,                                                                                          }
+{          current test_number,                                                                                     }
+{          current_component_name                                                                                   }
+{          Missing information text - Text on prompt screen informing user, what is missing.                        }
+{          Enter information text - Text on prompt screen telling user what to enter.                               }
+{          Suggest Existing Result - Boolean, TRUE if the return_value is the final value,                          }
+{                                             FALSE if the return_value is used for calculations                    }
+{          Default Value - Value to suggest, if the field is blank and if nothing was found on the user constant.   }
+{          Variable identity - often the component name or the parameter name for analysis specific parameters.     }
+{          The type of prompt - REAL, INTEGER, DATE, BOOLEAN etc.                                                   }
+{  Output: A value that is either entered directly by the user                                                      }
+{          or is found as a global user variable saved previously in                                                }
+{          the same session. The global_cluster is the users login ID                                               }
+{          The user_global is the job-name followed by the component name.                                          }
+{                                                                                                                   }
+{  Modifications:                                                                                                   }
+{          M1659: HBe 16-11-2005:                                                                                   }
+{          If activated in background mode, the program will 'hang' the background program. Mode check included.    }
+{                                                                                                                   }
+
+GLOBAL
+ROUTINE get_manual_value (VALUE current_sample, VALUE current_test_number, VALUE current_component_name, VALUE missing_txt,
+                          VALUE enter_txt, VALUE sug_existing, VALUE default_val, VALUE vari_id, VALUE prompt_type, return_value)
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+
+DECLARE product_name, cluster, user_global, sample_context, result_context, form, value_prompt, lk, source
+
+IF GLOBAL ( "MODE" ) <> "INTERACTIVE" THEN
+   return_value = EMPTY
+   RETURN(FALSE)
+ENDIF
+
+
+PUSH_FILE_DESCRIPTOR ("SAMPLE", sample_context)
+   product_name = SELECT sample.product_name WHERE id_numeric = current_sample
+POP_FILE_DESCRIPTOR (sample_context)
+
+PUSH_FILE_DESCRIPTOR ("RESULT", result_context)
+   return_value = SELECT result.text WHERE ((test_number = current_test_number) AND (name = current_component_name))
+POP_FILE_DESCRIPTOR (result_context)
+
+IF ((product_name = EMPTY) OR BLANK(product_name)) THEN
+   product_name = "ADHOC12321"
+ENDIF
+
+cluster = OPERATOR
+user_global = STRIP(product_name) : STRIP(vari_id)
+
+
+IF ((return_value <> EMPTY) AND (NOT BLANK(return_value)) AND (sug_existing)) THEN
+       source = "Suggesting Existing Result Value"
+       return_value = return_value
+ELSEIF  user_global_exists ( cluster, user_global ) THEN
+   source = "Suggesting Previously Typed Value"
+   return_value = read_user_global ( cluster, user_global )
+ELSEIF (default_val <> EMPTY) THEN
+   source = "Suggesting Default Value"
+   return_value = default_val
+ELSE
+   source = "No Suggested Value Was Detected"
+   return_value = EMPTY
+ENDIF
+
+
+IF NOT user_cluster_exists ( cluster ) THEN
+   add_global_cluster ( cluster )
+ENDIF
+
+IF NOT user_global_exists ( cluster, user_global) THEN
+   add_user_global ( cluster, user_global )
+ENDIF
+
+
+CREATE OBJECT "STD_FORM", form
+
+form . height = 9
+form . width  = 70
+form . header = "WARNING: Missing Static Data / Master Data"
+form . row = 6
+form . column = 40
+
+form . add_display ( "Missing " :     STRIP(missing_txt)               , 14 , 2 , PROMPT_RENDITION_BOLD )
+form . add_display ( "Please Enter ": STRIP(enter_txt) : " Manually: " , 14 , 3 , PROMPT_RENDITION_BOLD )
+form . add_display ( STRIP(source)                                     , 30 , 6 , PROMPT_RENDITION_BOLD )
+form . add_display ( "Press Cancel to Leave Calculated Value Empty." , 14 , 8 , PROMPT_RENDITION_BOLD )
+
+PROMPT OBJECT value_prompt
+
+ON LINE 5 FROM 30
+
+BROWSE ON 'prompt_type'
+
+WITH ( lowered = TRUE )
+
+form . add_prompt ( value_prompt )
+
+IF variable_is_assigned ( return_value ) THEN
+   value_prompt . value = return_value
+ENDIF
+
+form . start_prompt ()
+form . wait_prompt ()
+form . end_prompt ()
+
+lk = form . get_lastkey ()
+
+IF lk = "EXIT" THEN
+   return_value = EMPTY
+   RETURN(FALSE)
+ELSEIF ((lk = "ENTER") OR (lk = "DO")) THEN
+   assign_user_global ( cluster, user_global, value_prompt . text  )
+   return_value = value_prompt.text
+   RETURN(TRUE)
+ELSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk),TRUE)
+   return_value = EMPTY
+   RETURN(FALSE)
+ENDIF
+
+
+ENDROUTINE
+{**AE1620}
+
+{**AS1591 HBE 19-11-04}
+{  ------------------- STRIP_LEADING_0 -------------------------------- }
+{  Strip leading 0's and any leading/trailing blanks off a text string  }
+{  Input : Text string                                                  }
+{  Output: Text string stripped off any leading 0's                     }
+{                If not found the value is unchanged                    }
+
+GLOBAL
+ROUTINE  STRIP_LEADING_0 ( text_string )
+
+DECLARE n, n_max
+   n = 1
+   n_max  = LENGTH (text_string)
+   text_string = STRIP(text_string)
+
+   WHILE (n < n_max ) AND (SUBSTRING(text_string,1,1) = "0")
+      text_string = SUBSTRING(text_string,2,LENGTH(text_string) - 1)
+      n = n + 1
+   ENDWHILE
+
+ENDROUTINE {strip_leading_0}
+
+{**AE1591}
+
+
+{  -------------------- STRIP_STRING ------------------------------------             }
+{  Strips the input string "in_string" for any occourance of any of the signs         }
+{  in the string cutout. The cleaned string is returned in "out_string"               }
+{  Input : String to have the characters removed.                                     }
+{          String of characters to be removed                                         }
+{  Output: String without the signs indicated above                                   }
+{  Return: TRUE if any signs were removed, FALSE if no signs were removed             }
+
+GLOBAL ROUTINE  strip_string ( VALUE in_string, VALUE cutout, out_string )
+
+DECLARE  cutout_length, strip_count, strip_char
+
+cutout_length = LENGTH(cutout)
+strip_count = 0
+out_string = in_string
+
+WHILE cutout_length > strip_count
+   strip_count = strip_count + 1
+   strip_char = SUBSTRING(cutout,strip_count,1)
+   IF INDEX(out_string, strip_char) <> 0 THEN
+      out_string = SUBSTITUTE(out_string, strip_char, "")
+   ENDIF
+ENDWHILE
+
+IF in_string <> out_string THEN
+   RETURN(TRUE)
+ELSE
+   RETURN (FALSE)
+ENDIF
+
+ENDROUTINE  { strip string }
+
+
+{**A1658 HBe 15-11-2005}
+{  -------------------- REDUCE_STRING_LEFT ------------------------------------       }
+{  Strips leading characters from the input string "in_string".                       }
+{  The input string is stripped for for the exact occourance of the contents          }
+{  of the string cutout. The cleaned string is returned in "out_string"               }
+{  (Works much like the SUBSTITURE command, except that case diffrences are ignored.) }
+{  Case differences between "in_string" and "out_string" are ignored.                 }
+{  Input : String to have the leading characters removed.                             }
+{          String to be removed                                                       }
+{  Output: String without the leading characters indicated above                      }
+{  Return: TRUE if any signs were removed, FALSE if no signs were removed             }
+
+GLOBAL ROUTINE  reduce_string_left ( VALUE in_string, VALUE cutout, out_string )
+
+DECLARE  cutout_length
+
+cutout_length = LENGTH(cutout)
+out_string = in_string
+
+IF INDEX (TOUPPER (out_string), TOUPPER(cutout)) = 1 THEN
+   out_string = SUBSTRING(in_string, cutout_length + 1, length(in_string) - cutout_length)
+ENDIF
+
+IF in_string <> out_string THEN
+   RETURN(TRUE)
+ELSE
+   RETURN (FALSE)
+ENDIF
+
+ENDROUTINE  { reduce string left }
+
+
+{**A1669 HBe 12-12-2005}
+{  --------------------- NEWTEST_COMP_LIST ------------------------------------         }
+{  Creates a new test on a specific sample - using a component list.                    }
+{  Works much like the NEWTEST command, except that a component list can be specified.  }
+{  Input : SampleID, analysis, component list.                                          }
+{  Return: A test number if a test was created, ERROR if no test was created.           }
+
+GLOBAL ROUTINE NEWTEST_COMP_LIST (VALUE samp_id, VALUE analysis, VALUE comp_list)
+
+
+        JOIN LIBRARY $COMP_LIST
+
+        DECLARE test_num, get_test, test_rec, comp_name,
+                context, anal_vers, test_database, order_num
+
+        IF (comp_list <> EMPTY) THEN
+           context = "versioned_analysis"
+           PUSH_FILE_DESCRIPTOR ("VERSIONED_ANALYSIS", context)
+           anal_vers = SELECT MAX versioned_analysis.analysis_version
+                       WHERE identity = analysis
+                       AND approval_status = "A"
+           POP_FILE_DESCRIPTOR (context)
+
+           IF ((anal_vers = EMPTY) OR (BLANK(anal_vers))) THEN
+              FLASH_MESSAGE("ERROR, Invalid analysis specified", TRUE)
+              RETURN (ERROR)
+           ENDIF
+
+           context = "component_check"
+           PUSH_FILE_DESCRIPTOR ("versioned_c_l_entry", context)
+           comp_name = SELECT  versioned_c_l_entry.name
+                   WHERE   analysis = analysis
+                   AND     analysis_version = anal_vers
+                   AND     comp_list = comp_list
+           POP_FILE_DESCRIPTOR (context)
+
+           IF ((comp_name = EMPTY) OR (BLANK(comp_name))) THEN
+              FLASH_MESSAGE(analysis:anal_vers:comp_list:"ERROR, Invalid component list specified", TRUE)
+              RETURN (ERROR)
+           ENDIF
+        ENDIF
+
+
+        {Create the new test record,  at this point a component list has not been added}
+
+        test_num = NEWTEST ( samp_id, analysis)
+
+        IF test_num = ERROR THEN
+           flash_message("ERROR creating new test", TRUE)
+           RETURN (ERROR)
+        ENDIF
+
+
+        IF (comp_list <> EMPTY) THEN
+
+           {Create an object database which contains a list of test you wish to add a comp list to.}
+           {In this example this will be a single test}
+
+           CREATE OBJECT "STD_OBJECT_DATABASE" , test_database
+
+           test_database . initialise  ("test")
+
+           ARRAY get_test
+
+           {Find the test created with the new test command}
+
+           array_select_add (      get_test ,
+                                   ARRAY_SELECT_EQ,
+                                   "TEST_NUMBER",
+                                   test_num)
+
+           {get the test rec for which we want to add comp list to.}
+
+           test_database . select_for_update ( get_test )
+
+           test_rec = test_database . get_by_number ( 1)
+
+
+           START WRITE TRANSACTION "Add comp list"
+
+           order_num = 1
+
+           comp_list_assign_initialise ()
+           comp_list_assign ( comp_list , order_num  , test_rec    )
+           test_database . INVOKE_ALL ("UPDATE")
+           COMMIT
+        ENDIF
+        RETURN (test_num)
+
+ENDROUTINE {NEWTEST_COMP_LIST}
+
+{**AE1669}
+
+
+{  ----------------------- }
+{  START OF LOCAL ROUTINES }
+{  ----------------------- }
+
+{  --------------------- NO INPUT ------------------------------------- }
+{  Check if some input parameter is blank or EMPTY                      }
+{  Input : Parameter to check                                           }
+{          Variable part of Message to give in case of error            }
+{  Return: TRUE if the parameter is blank or EMPTY - FALSE otherwise    }
+
+ROUTINE no_input( VALUE var, VALUE mess )
+
+   IF    ( var = EMPTY ) OR BLANK( var )
+   THEN  flash_message( "No variable passed to " : mess, TRUE)
+         return( TRUE )
+   ELSE  return( FALSE )
+   ENDIF
+ENDROUTINE     { No Input }
+
+ROUTINE  last_key_insert ( self )
+   last_key_used = "INSERT"
+ENDROUTINE
+ROUTINE  last_key_select ( self )
+   last_key_used = "SELECT"
+ENDROUTINE
+ROUTINE  last_key_remove ( self )
+   last_key_used = "REMOVE"
+ENDROUTINE
+
+GLOBAL ROUTINE DateIdealCompleted(Sample)
+{*************************************************************************
+* Purpose      : Calculate Ideal Date for Sample
+* Parameters   : Sample ID
+* Return Value : DateIdealComplete
+**************************************************************************}
+DECLARE test, test_number, i, recd_date, IdealTime, SampleIdealCompleted, TestIdealCompleted, Analysis, Version, ExpTime
+ARRAY test ARRAY_SIZE (0,2)
+
+IF sample = EMPTY THEN
+    recd_date = NOW
+ELSE
+    recd_date = SELECT sample . recd_date WHERE id_numeric = sample
+ENDIF
+
+i = 0
+test_number = SELECT test . test_number WHERE sample = sample
+
+WHILE test_number <> EMPTY DO
+    i = i + 1
+    test[i,1] = test_number
+NEXT test
+    test_number = SELECT test . test_number
+ENDWHILE
+
+recd_date = SELECT sample . recd_date WHERE id_numeric = sample
+
+IF (recd_date = EMPTY) THEN
+    IdealTime = NOW
+ELSEIF (recd_date < DATE("1-JAN-1900")) THEN
+        IdealTime = NOW
+ELSE
+    IdealTime = recd_date
+ENDIF
+
+SampleIdealCompleted = IdealTime
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(test) DO
+    Analysis = SELECT test . analysis where test_number = test[i,1]
+    Version  = SELECT test . analysis_version
+    ExpTime  = SELECT versioned_analysis . expected_time WHERE identity = Analysis AND analysis_version = Version
+    TestIdealCompleted = SampleIdealCompleted + INTERVAL (ExpTime)
+    IF (STRIP(ExpTime) = "") OR (ExpTime = NULL) THEN
+        ExpTime = "   0 00:00:00.00"
+    ENDIF
+    IF TestIdealCompleted > IdealTime THEN
+        WriteToLog(sample:"  ":analysis:" ":ExpTime:" ":TestIdealCompleted:" -> ":IdealTime)
+        IdealTime = TestIdealCompleted
+    ELSE
+        WriteToLog(sample:"  ":analysis:" ":ExpTime:" ":TestIdealCompleted:"    ":IdealTime)
+    ENDIF
+    i = i + 1
+ENDWHILE
+
+SampleIdealCompleted = IdealTime
+
+RETURN(SampleIdealCompleted)
+
+ENDROUTINE
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*****************************************************************************}
+GLOBAL ROUTINE DisplayArray(input)
+{
+* Purpose      : Shows popup to user
+* Parameters   : Msg - what to show
+* Return Value : N/A
+**************************************************************************}
+
+    fm(GetArray(input))
+
+ENDROUTINE

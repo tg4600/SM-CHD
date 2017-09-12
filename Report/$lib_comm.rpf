@@ -1,0 +1,3160 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIB_COMM.RPF
+*
+* Purpose       : Implements sample manager options CMS and CRP
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+{
+$LIB_COMM
+
+This report implements Sample Manager options for committing and deconsigning.
+
+The report has five main global routines for processing samples and jobs.
+
+    commit_sample
+    commit_job
+    commit_job_background
+    deconsign_sample
+    deconsign_job
+
+These prompt the user for a record ID and then call a routine
+in $COMMIT to determine the destination table set for the record. Once a table
+has been specified the report performs a hierarchical commit operation,
+consigning each sample, test and result to the appropriate table for the
+given table set.
+
+Where the variable 'source' is used, this is the text name of the tableset to
+commit from. Any invalid tableset name specifies the active tableset (e.g. "" ).
+
+Note that commit_job_background prompts the user for a job_id, and commits
+the job the foreground.  It is only the sample, test and
+result information that is directed to a background Sample Manager process.
+
+The report also has four example destination selection routines to be called
+from the $COMMIT report. The default routines simply return the
+DEFAULT_TABLE_SET, which corresponds to c_sample, c_result etc, whereas the
+interactive routines allow the user to examine the record before deciding
+on the table set.
+
+------------------------------------------------------------------------------}
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $BSMP_LIB
+
+ENABLE WINDOWS
+
+SET NOTPROTECTED
+
+SET NAME "DISPLAY\"
+
+SET COMPILE_OPTION DECLARE
+
+test_menu ()
+EXIT
+
+{------------------------------------------------------------------------------}
+
+ROUTINE setup_form_display_ptrs (       form,
+                  VALUE sample_id_fld,
+                  VALUE sample_text_fld,
+                  VALUE test_number_fld,
+                  VALUE analysis_fld,
+                  VALUE component_fld,
+                  VALUE result_fld,
+                  VALUE status_msg_fld )
+
+    ARRAY form . user_info
+
+    CONSTANT FORM_SAMPLE_ID_PTR   = 1
+    CONSTANT FORM_SAMPLE_TEXT_PTR = 2
+    CONSTANT FORM_TEST_NUMBER_PTR = 3
+    CONSTANT FORM_ANALYSIS_PTR    = 4
+    CONSTANT FORM_COMPONENT_PTR   = 5
+    CONSTANT FORM_RESULT_PTR      = 6
+    CONSTANT FORM_STATUS_PTR      = 7
+
+    form . user_info [ FORM_SAMPLE_ID_PTR   ] = sample_id_fld
+    form . user_info [ FORM_SAMPLE_TEXT_PTR ] = sample_text_fld
+    form . user_info [ FORM_TEST_NUMBER_PTR ] = test_number_fld
+    form . user_info [ FORM_ANALYSIS_PTR    ] = analysis_fld
+    form . user_info [ FORM_COMPONENT_PTR   ] = component_fld
+    form . user_info [ FORM_RESULT_PTR      ] = result_fld
+    form . user_info [ FORM_STATUS_PTR      ] = status_msg_fld
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_sample ( option_number )
+
+    { Prompt for a sample id, then commit the tests and results for
+      that sample. }
+
+    DECLARE destination, sample_id, status, form
+
+    initialise_sample_form ( form,
+                 "LIB_COMM_SAMPLE_HEADER",
+                 "SAMPLE",
+                 "ARX",
+                 "LIB_COMM_SAMPLE_ID" )
+
+    form . start_prompt ()
+
+    REPEAT
+
+        sample_id = prompt_on_form ( form )
+
+        IF ( form . get_lastkey () = "DO" ) THEN
+
+            { Do the committing on sample, test, results }
+
+            IF  ( is_child_sample ( sample_id, "" ) ) THEN
+
+                status = GET_USER_MESSAGE (
+                        "LIB_COMM_CHILD_SAMPLE" ,1 )
+
+            ELSEIF ( all_child_samples_authorised( form , sample_id ,"" ) ) THEN
+
+            IF ( get_sample_for_update ( "SAMPLE",
+                             sample_id,
+                             status ) ) THEN
+
+                destination = " "
+
+                CALL_ROUTINE "SAMPLE_DESTINATION"
+                    USING destination
+                    RETURNING status
+                    IN LIBRARY "$COMMIT"
+
+                IF status THEN
+
+                    status = EMPTY
+
+                    START WRITE TRANSACTION "commit sample"
+
+                    commit_selected_sample ( form,
+                                 sample_id,
+                                 destination,
+                                 status ,
+                                 "" )
+
+                ELSE
+
+                    status = " "
+
+                ENDIF
+
+            ENDIF
+
+
+            ELSE
+                status = GET_USER_MESSAGE (
+                        "LIB_COMM_SAMPLES_UNAUTHORISED" ,1 )
+
+            ENDIF
+
+            { Display the outcome of the committing }
+
+            process_end_status ( form,
+                         sample_id,
+                         status,
+                         "LIB_COMM_SAMPLE_OK",
+                         "LIB_COMM_SAMP_FAIL" )
+
+{BLOCK added by CONSULT-02 to make sure shows correct}
+            IF status = EMPTY THEN
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND SUBJECT_FIELD = ": sample_id :"")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND SUBJECT_FIELD = ": sample_id :"")
+                execute_sql ( "COMMIT")
+            ENDIF
+{END BLOCK}
+
+        ENDIF
+
+    UNTIL ( form . get_lastkey () = "EXIT" )
+
+    form . end_prompt ()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE initialise_sample_form (       form,
+                 VALUE header_msg,
+                 VALUE browse_table,
+                 VALUE browse_status,
+                 VALUE prompt_msg )
+
+    { Create the form for sample committing, and deconsigning
+      and put all the text and stuff on it }
+
+    DECLARE form_width, form_height, form_column, form_row,
+        footer_msg, display_row, display_text, prompt_col,
+        id_prompt, display_width, display_prompt, display_col,
+        display_len
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+        form_row    = 7
+        form_width  = 50
+        form_height = 9
+    ELSE
+        form_row    = 8
+        form_width  = 50
+        form_height = 8
+    ENDIF
+
+    form_column = ( GLOBAL ( "SCREEN_WIDTH" ) - form_width ) DIV 2
+
+    header_msg = GET_USER_MESSAGE ( header_msg, 1 )
+    footer_msg = GET_USER_MESSAGE ( "LIB_COMM_SAMPLE_FOOTER", 1 )
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH  ( column           = form_column,
+            row              = form_row,
+            height           = form_height,
+            width            = form_width,
+            border           = TRUE,
+            proportional     = TRUE,
+                    help_context     = "$LIB_COMM_SAMPLE",
+            header           = header_msg,
+            footer           = footer_msg ,
+            return_behaviour = FORM_RETURN_WRAP )
+
+    CONSTANT SAMPLE_TEST_TXT      = 1
+    CONSTANT SAMPLE_ANALYSIS_TXT  = 2
+    CONSTANT SAMPLE_COMPONENT_TXT = 3
+    CONSTANT SAMPLE_RESULT_TXT    = 4
+    CONSTANT SAMPLE_ID_TXT        = 5
+    CONSTANT SAMPLE_INFO_TXT      = 5
+
+    setup_form_display_ptrs ( form,
+                  0,
+                  0,
+                  SAMPLE_TEST_TXT,
+                  SAMPLE_ANALYSIS_TXT,
+                  SAMPLE_COMPONENT_TXT,
+                  SAMPLE_RESULT_TXT,
+                  SAMPLE_INFO_TXT )
+    ARRAY display_text
+
+    display_text [ SAMPLE_TEST_TXT      ] = "LIB_COMM_TEST"
+    display_text [ SAMPLE_ANALYSIS_TXT  ] = "LIB_COMM_ANALYSIS"
+    display_text [ SAMPLE_COMPONENT_TXT ] = "LIB_COMM_COMPONENT"
+    display_text [ SAMPLE_RESULT_TXT    ] = "LIB_COMM_RESULT"
+
+    display_text [ SAMPLE_ID_TXT        ] = "LIB_COMM_SAMPLE_ID"
+
+    ARRAY display_row
+
+    display_row [ SAMPLE_TEST_TXT      ] = 3
+    display_row [ SAMPLE_ANALYSIS_TXT  ] = 4
+    display_row [ SAMPLE_COMPONENT_TXT ] = 5
+    display_row [ SAMPLE_RESULT_TXT    ] = 6
+    display_row [ SAMPLE_ID_TXT        ] = 1
+
+    ARRAY display_width
+
+    display_width [ SAMPLE_TEST_TXT      ] = 10
+    display_width [ SAMPLE_ANALYSIS_TXT  ] = 10
+    display_width [ SAMPLE_COMPONENT_TXT ] = 20
+    display_width [ SAMPLE_RESULT_TXT    ] = 20
+
+    display_text_objects ( form,
+                   display_text,
+                   display_row,
+                   display_width,
+                   display_col,
+                   display_len,
+                   prompt_col )
+
+    { Now add the sample prompt }
+
+    PROMPT OBJECT id_prompt
+        ON LINE display_row [ SAMPLE_ID_TXT ] FROM prompt_col
+        BROWSE ON 'browse_table'
+        WITH ( status_set = browse_status,
+               vgl_library = GLOBAL ( "CURRENT_LIBRARY" ),
+               enter_prompt_routine = "ENTER_ID_PROMPT" )
+
+    form . add_prompt ( id_prompt )
+
+    { Add the status bar at the bottom }
+
+    PROMPT OBJECT display_prompt
+        FORMAT TEXT
+        ON LINE form . height
+        FROM display_col
+        TO ( form . width - 2 )
+        WITH ( lowered = TRUE )
+
+    form . add_display ( display_prompt )
+
+    add_form_frames ( form )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE enter_id_prompt ( self )
+
+    { Routine called when the ID prompt is entered.
+      Blank all the display fields when in here }
+
+    DECLARE form, fld
+
+    form = self . parent_prompt
+
+    fld = 1
+    WHILE ( form . display_objects [ fld + 1 ] <> EMPTY )
+
+        form . display_objects [ fld ] . set_text ( " " )
+
+        fld = fld + 1
+
+    ENDWHILE
+
+    self . repaste ()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE display_text_objects ( form,
+                   display_text,
+                   display_row,
+                   display_width,
+                   display_col,
+                   display_len,
+                   prompt_col )
+
+    DECLARE line_no, display_prompt, separator
+
+    { Put the fixed text and display objects on the form.
+      Take the data from the display_ arrays given }
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+        display_col = 2
+        separator = " "
+    ELSE
+        display_col = 1
+        separator = " :"
+    ENDIF
+
+    { Find the maximum size of the prompts }
+
+    line_no = 1
+    display_len = 0
+
+    WHILE ( display_text [ line_no ] <> EMPTY ) DO
+
+        display_text [ line_no ] = GET_USER_MESSAGE (
+                           display_text [ line_no ], 1 )
+
+        display_len = find_max_number( LENGTH ( display_text[line_no] ),
+                            display_len )
+        line_no = line_no + 1
+    ENDWHILE
+
+    prompt_col = display_col + display_len + STRINGLENGTH ( separator ) + 1
+
+    line_no = 1
+
+    { Add the fixed text, and prompt objects if required }
+
+    WHILE ( display_text [ line_no ] <> EMPTY ) DO
+
+        display_text [ line_no ] = PAD ( display_text [ line_no ],
+                        " ", display_len ) : separator
+
+        form . add_display ( display_text [ line_no ],
+                     display_col,
+                     display_row [ line_no ],
+                         PROMPT_RENDITION_RAISED +
+                            PROMPT_RENDITION_BOLD )
+
+        IF ( display_width [ line_no ] <> EMPTY ) THEN
+
+            PROMPT OBJECT display_prompt
+                FORMAT TEXT
+                ON LINE display_row [ line_no ]
+                FROM prompt_col
+                TO prompt_col + display_width [ line_no ]
+                WITH ( lowered = TRUE )
+
+            form . add_display ( display_prompt )
+
+        ENDIF
+
+        line_no = line_no + 1
+
+    ENDWHILE
+
+    display_len = display_len + STRINGLENGTH ( separator )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_job ( option_number )
+
+    { Commit a job and all associated dynamic data in the foreground }
+
+    DECLARE use_background_flag
+
+    use_background_flag = FALSE
+
+    do_commit_job ( use_background_flag )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE commit_job_background ( option_number )
+
+    { Commit a job in the foreground.  Push sample, test and
+      result committing into the background }
+
+    DECLARE use_background_flag
+
+    use_background_flag = TRUE
+
+    do_commit_job ( use_background_flag )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE do_commit_job ( VALUE use_background_flag )
+
+    DECLARE destination, job_id, status, form
+
+    { Prompt for a job_id. }
+
+    initialise_job_form ( form,
+                  "LIB_COMM_JOB_HEADER",
+                  "JOB_HEADER",
+                  "ARX",
+                  "LIB_COMM_JOB_ID",
+                  use_background_flag )
+
+    form . start_prompt ()
+
+    REPEAT
+        job_id = prompt_on_form ( form )
+
+        IF ( form . get_lastkey () <> "EXIT" ) THEN
+
+            IF ( get_job_for_update ( "JOB_HEADER",
+                           job_id, status ) ) THEN
+
+                destination = " "
+
+                CALL_ROUTINE "JOB_DESTINATION"
+                    USING destination
+                    RETURNING status
+                    IN LIBRARY "$COMMIT"
+
+                IF status THEN
+
+                    status = EMPTY
+
+                    commit_selected_job ( form,
+                                  job_id,
+                                  destination,
+                                use_background_flag,
+                                      status ,
+                                  "")
+
+                ELSE
+
+                    status = " "
+
+                ENDIF
+
+            ENDIF
+
+            process_end_status ( form,
+                         job_id,
+                         status,
+                         "LIB_COMM_JOB_OK",
+                         "LIB_COMM_JOB_FAIL" )
+
+{BLOCK added by CONSULT-02 to make sure shows correct}
+            IF status = EMPTY THEN
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_JOB_HEADER' WHERE SUBJECT_TABLE = 'JOB_HEADER' AND SUBJECT_FIELD = '": STRIP(job_id) :"'")
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND job_name = '": STRIP(job_id) :"'")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_JOB_HEADER' WHERE SUBJECT_TABLE = 'JOB_HEADER' AND SUBJECT_FIELD = '": STRIP(job_id) :"'")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND job_name = '": STRIP(job_id) :"'")
+                execute_sql ( "COMMIT")
+            ENDIF
+{END BLOCK}
+        ENDIF
+
+    UNTIL ( form . get_lastkey () = "EXIT" )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE initialise_job_form ( form,
+                  VALUE header_msg,
+                  VALUE browse_table,
+                  VALUE browse_status,
+                  VALUE prompt_msg,
+                  VALUE use_background_flag )
+
+    { Create the form for job committing, and deconsigning }
+
+    DECLARE form_width, form_height, form_column, form_row,
+        footer_msg, display_row, display_text, prompt_col,
+        id_prompt, display_width, display_prompt, display_col,
+        display_len, job_status_msg_fld
+
+    IF ( use_background_flag ) THEN
+        form_height = 6
+    ELSE
+        form_height = 10
+    ENDIF
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+        form_row    = 7
+        form_width  = 50
+        form_height = form_height + 1
+    ELSE
+        form_row    = 8
+        form_width  = 50
+    ENDIF
+
+    form_column = ( GLOBAL ( "SCREEN_WIDTH" ) - form_width ) DIV 2
+
+    header_msg = GET_USER_MESSAGE ( header_msg, 1 )
+    footer_msg = GET_USER_MESSAGE ( "LIB_COMM_JOB_FOOTER", 1 )
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH  ( column           = form_column,
+            row              = form_row,
+            height           = form_height,
+            width            = form_width,
+            border           = TRUE,
+            proportional     = TRUE,
+                    help_context     = "$LIB_COMM_JOB",
+            header           = header_msg,
+            footer           = footer_msg,
+            return_behaviour = FORM_RETURN_WRAP )
+
+    CONSTANT JOB_SAMPLE_ID_TXT   = 1
+    CONSTANT JOB_SAMPLE_TEXT_TXT = 2
+    CONSTANT JOB_TEST_TXT        = 3
+    CONSTANT JOB_ANALYSIS_TXT    = 4
+    CONSTANT JOB_COMPONENT_TXT   = 5
+    CONSTANT JOB_RESULT_TXT      = 6
+
+    CONSTANT JOB_ID_TXT          = 7
+         job_status_msg_fld  = 7
+
+    CONSTANT JOB_ID_BACK_TXT     = 3
+
+    ARRAY display_text
+
+    display_text [ JOB_SAMPLE_ID_TXT   ] = "LIB_COMM_JOB_SAMPLE_ID"
+    display_text [ JOB_SAMPLE_TEXT_TXT ] = "LIB_COMM_JOB_SAMPLE_TEXT"
+    display_text [ JOB_TEST_TXT        ] = "LIB_COMM_TEST"
+    display_text [ JOB_ANALYSIS_TXT    ] = "LIB_COMM_ANALYSIS"
+    display_text [ JOB_COMPONENT_TXT   ] = "LIB_COMM_COMPONENT"
+    display_text [ JOB_RESULT_TXT      ] = "LIB_COMM_RESULT"
+
+    display_text [ JOB_ID_TXT      ] = prompt_msg
+
+    ARRAY display_row
+
+    display_row [ JOB_SAMPLE_ID_TXT   ] = 3
+    display_row [ JOB_SAMPLE_TEXT_TXT ] = 4
+    display_row [ JOB_TEST_TXT        ] = 5
+    display_row [ JOB_ANALYSIS_TXT    ] = 6
+    display_row [ JOB_COMPONENT_TXT   ] = 7
+    display_row [ JOB_RESULT_TXT      ] = 8
+    display_row [ JOB_ID_TXT      ] = 1
+
+    ARRAY display_width
+
+    display_width [ JOB_SAMPLE_ID_TXT   ] = 10
+    display_width [ JOB_SAMPLE_TEXT_TXT ] = 30
+    display_width [ JOB_TEST_TXT        ] = 10
+    display_width [ JOB_ANALYSIS_TXT    ] = 10
+    display_width [ JOB_COMPONENT_TXT   ] = 20
+    display_width [ JOB_RESULT_TXT      ] = 20
+
+    IF ( use_background_flag ) THEN
+
+        { The tests and results will be done in the background,
+          do take out the display fields for these }
+
+        display_row   [ JOB_ID_BACK_TXT ] = display_row [ JOB_ID_TXT ]
+        display_text  [ JOB_ID_BACK_TXT ] = display_text [ JOB_ID_TXT ]
+        display_width [ JOB_ID_BACK_TXT ] = display_width [ JOB_ID_TXT ]
+
+        display_row   [ JOB_ID_BACK_TXT + 1 ] = EMPTY
+        display_text  [ JOB_ID_BACK_TXT + 1 ] = EMPTY
+        display_width [ JOB_ID_BACK_TXT + 1 ] = EMPTY
+
+        job_status_msg_fld = 3
+        setup_form_display_ptrs ( form,
+                      JOB_SAMPLE_ID_TXT,
+                      JOB_SAMPLE_TEXT_TXT,
+                      0,
+                      0,
+                      0,
+                      0,
+                      job_status_msg_fld )
+
+    ELSE
+        setup_form_display_ptrs ( form,
+                      JOB_SAMPLE_ID_TXT,
+                      JOB_SAMPLE_TEXT_TXT,
+                      JOB_TEST_TXT,
+                      JOB_ANALYSIS_TXT,
+                      JOB_COMPONENT_TXT,
+                      JOB_RESULT_TXT,
+                      job_status_msg_fld )
+
+    ENDIF
+
+    display_text_objects ( form,
+                   display_text,
+                   display_row,
+                   display_width,
+                   display_col,
+                   display_len,
+                   prompt_col )
+
+    { Now add the job prompt }
+
+    PROMPT OBJECT id_prompt
+        ON LINE display_row [ JOB_ID_TXT ] FROM prompt_col
+        BROWSE ON 'browse_table'
+        WITH ( status_set = browse_status,
+               vgl_library = GLOBAL ( "CURRENT_LIBRARY" ),
+               enter_prompt_routine = "ENTER_ID_PROMPT" )
+
+    form . add_prompt ( id_prompt )
+
+    { Add the status bar at the bottom }
+
+    PROMPT OBJECT display_prompt
+        FORMAT TEXT
+        ON LINE form . height
+        FROM display_col
+        WITH ( lowered = TRUE )
+        TO ( form . width - 2 )
+
+    form . add_display ( display_prompt )
+
+    add_form_frames ( form )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE add_form_frames ( form )
+
+    DECLARE status_fld, start_display_row, end_display_row
+
+    { Add a frame round the identity prompt }
+
+    form . add_frame ( "",
+               1,
+               form . prompt_objects [ 1 ] . row,
+               1,
+               form . width - 1 )
+
+    { Add a frame round the display fields.
+      This relies on the status field being the last one on the form. }
+
+    status_fld = form . user_info [ FORM_STATUS_PTR ]
+
+    start_display_row = form . display_objects [ 1 ] . row
+    end_display_row   = form . display_objects [ status_fld - 1 ] . row
+
+    form . add_frame ( "",
+               1,
+               start_display_row,
+               end_display_row - start_display_row + 1,
+               form . width - 1)
+
+    { Add a frame round the status display }
+
+    form . add_frame ( GET_USER_MESSAGE ( "LIB_COMM_STATUS_HEADER", 1 ),
+               1,
+               form . display_objects [ status_fld ] . row,
+               1,
+               form . width - 1 )
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Routines called from commit_sample and do_commit_job.                       }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_job (       form,
+                  VALUE job_id,
+                  VALUE destination,
+                  VALUE use_background_flag,
+                                    status,
+                  VALUE source )
+
+    DECLARE sample_id , sample_table , job_table
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_CHECK_SAMPLES" )
+
+    status = get_committed_table ( "JOB_HEADER" , source , job_table )
+    IF status != EMPTY THEN
+        job_table = "JOB_HEADER"
+    ENDIF
+    status = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF status != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    status = EMPTY
+
+    IF all_samples_authorised ( form , job_id , source ) THEN
+
+        START WRITE TRANSACTION "commit job"
+
+        IF ( use_background_flag ) THEN
+
+            update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_TIMER_Q" )
+
+            add_job_to_timer_queue ( form,
+                         job_id,
+                         destination ,
+                         source)
+
+        ELSE { commit the samples here in the foreground }
+
+            sample_id = SELECT 'sample_table' . id_numeric
+                        FOR UPDATE
+                    WHERE ( job_name = job_id ) AND
+                              ( is_split = FALSE )
+
+            WHILE ( ( sample_id <> EMPTY ) AND
+                    ( status    =  EMPTY ) ) DO
+
+                IF ( sample_id = LOCKED ) THEN
+
+                    status = GET_USER_MESSAGE (
+                        "LIB_COMM_SAMPLE_LOCKED" ,1 )
+
+                ELSE
+
+                    commit_selected_sample ( form,
+                                 sample_id,
+                                     destination,
+                                     status,
+                                 source )
+                ENDIF
+
+                NEXT 'sample_table'
+                sample_id = SELECT 'sample_table' . id_numeric
+
+            ENDWHILE
+
+        ENDIF
+
+        IF ( status = EMPTY ) THEN
+
+            commit_audit_records ( form         ,
+                           job_table    ,
+                           job_id       ,
+                           destination  ,
+                           status       ,
+                           source       )
+
+            IF ( status = EMPTY ) THEN
+
+                update_form_txt ( form, FORM_STATUS_PTR,
+                          "LIB_COMM_COMMITTING_JOB")
+
+                CONSIGN 'job_table' TO destination, status
+
+            ENDIF
+
+        ENDIF
+
+        { Check the final status }
+
+        IF ( status = EMPTY ) THEN
+
+            update_form_txt ( form, FORM_STATUS_PTR,
+                      "LIB_COMM_JOB_COMMITTED" )
+
+            COMMIT
+
+            IF ( use_background_flag ) THEN
+                    wake_background ()
+            ENDIF
+
+        ELSE
+            ROLLBACK
+        ENDIF
+
+    ELSE
+        status= GET_USER_MESSAGE ( "LIB_COMM_DISPLAY_8", 1 )
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+
+ROUTINE is_child_sample ( VALUE sample_id,
+              VALUE source )
+
+    DECLARE ok, child_sample, sample_formulation_table
+
+
+    ok = get_committed_table ( "SAMPLE_FORMULATION" , source , sample_formulation_table )
+    IF ok != EMPTY THEN
+        sample_formulation_table = "SAMPLE_FORMULATION"
+    ENDIF
+
+    child_sample = SELECT 'sample_formulation_table' . parent_sample
+                FOR UPDATE
+                WHERE ( child_sample = sample_id )
+
+    IF child_sample != EMPTY THEN
+
+        RETURN ( TRUE )
+
+    ELSE
+        RETURN ( FALSE )
+
+    ENDIF
+
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_child_sample (       form     ,
+                       VALUE sample_table ,
+                       VALUE sample_id    ,
+                       VALUE destination  ,
+                             status       ,
+                       VALUE source       )
+
+    DECLARE ok, child_sample, formulation_table, formulation,
+         formulation_context
+
+
+    formulation = EMPTY
+
+    ok = get_committed_table ( "SAMPLE_FORMULATION",
+                               source,
+                               formulation_table )
+
+    IF ok != EMPTY THEN
+        formulation_table = "SAMPLE_FORMULATION"
+    ENDIF
+
+    IF sample_id != EMPTY THEN
+
+        formulation = SELECT 'formulation_table' . child_sample
+                FOR UPDATE
+                WHERE ( parent_sample = sample_id )
+
+    ENDIF
+
+    WHILE ( ( formulation <> EMPTY ) AND
+        ( status = EMPTY       ) ) DO
+
+        { select the child sample for processing }
+
+        child_sample = SELECT 'sample_table' . id_numeric
+                FOR UPDATE
+                WHERE id_numeric = formulation
+
+        IF ( child_sample = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE (
+                "LIB_COMM_SAMPLE_LOCKED" , 1 )
+
+        ELSE
+
+
+            push_file_descriptor ( formulation_table,
+                                   formulation_context )
+
+            commit_selected_sample ( form,
+                         child_sample,
+                         destination,
+                         status,
+                         source )
+
+            pop_file_descriptor ( formulation_context )
+        ENDIF
+
+
+        IF ( status = EMPTY ) THEN
+
+            commit_audit_records ( form,
+                           formulation_table,
+                           formulation,
+                           destination,
+                           status,
+                           source)
+
+            IF ( status = EMPTY ) THEN
+
+                update_form_txt ( form,
+                          FORM_STATUS_PTR,
+                          "LIB_COMM_DISPLAY_12" )
+
+                CONSIGN 'formulation_table' TO destination, status
+
+                IF ( status = EMPTY ) THEN
+
+                    update_form_txt ( form, FORM_STATUS_PTR,
+                              "LIB_COMM_SAMPLE_COMMITTED" )
+
+                ENDIF
+
+            ENDIF
+
+        ENDIF
+
+        NEXT 'formulation_table'
+        formulation = SELECT 'formulation_table' . child_sample
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_sample (       form,
+                 VALUE sample_id,
+                 VALUE destination,
+                       status ,
+                 VALUE source )
+
+    { Commit the tests for this sample, and then the sample itself }
+
+    DECLARE test_number , analysis , ok , test_table , sample_table ,
+        sample_context
+
+    test_number = EMPTY
+
+    ok = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF ok != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    ok = get_committed_table ( "TEST" , source , test_table )
+    IF ok != EMPTY THEN
+        test_table = "TEST"
+    ENDIF
+    IF ( sample_id != EMPTY ) THEN
+
+        push_file_descriptor ( sample_table , sample_context )
+
+        commit_selected_child_sample ( form,
+                       sample_table,
+                       sample_id,
+                       destination,
+                       status,
+                       source )
+
+        pop_file_descriptor ( sample_context )
+
+
+
+    test_number = SELECT 'test_table' . test_number
+                FOR UPDATE
+                WHERE ( sample = sample_id )
+
+    WHILE ( ( test_number <> EMPTY ) AND
+        ( status = EMPTY       ) ) DO
+
+
+        IF ( test_number = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_1" ,1 )
+
+                ELSE
+            analysis = SELECT 'test_table' . analysis
+
+            commit_selected_test ( form,
+                           test_number,
+                           analysis,
+                           destination,
+                           status,
+                           source )
+            NEXT 'test_table'
+            test_number = SELECT 'test_table'.test_number
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( status = EMPTY ) THEN
+
+        commit_audit_records ( form         ,
+                       sample_table ,
+                       sample_id    ,
+                       destination  ,
+                       status       ,
+                       source       )
+
+        IF ( status = EMPTY ) THEN
+
+            update_form_txt ( form                  ,
+                      FORM_STATUS_PTR       ,
+                      "LIB_COMM_DISPLAY_12" )
+
+            CONSIGN 'sample_table' TO destination, status
+
+            IF ( status = EMPTY ) THEN
+
+                update_form_txt ( form, FORM_STATUS_PTR,
+                          "LIB_COMM_SAMPLE_COMMITTED" )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_test (       form,
+                   VALUE test_number,
+                   VALUE analysis,
+                   VALUE destination,
+                     status,
+                   VALUE source )
+
+    { Commit the results for this test, and then the test itself }
+
+    DECLARE result_name, result_text , result_table , test_table , ok
+
+    result_name = EMPTY
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DISPLAY_13" )
+
+    update_form_txt ( form, FORM_TEST_NUMBER_PTR, test_number )
+    update_form_txt ( form, FORM_ANALYSIS_PTR,    analysis )
+
+    ok = get_committed_table ( "TEST" , source , test_table )
+    IF ok != EMPTY THEN
+        test_table = "TEST"
+    ENDIF
+    ok = get_committed_table ( "RESULT" , source , result_table )
+    IF ok != EMPTY THEN
+        result_table = "RESULT"
+    ENDIF
+
+    IF ( test_number != null ) THEN
+
+    result_name = SELECT 'result_table'.component_name
+            FOR UPDATE
+                WHERE ( test_number = test_number )
+
+    ENDIF
+
+    WHILE ( ( result_name <> EMPTY) AND
+        ( status = EMPTY      ) ) DO
+
+        IF ( result_name = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+
+        ELSE
+
+            result_text = SELECT 'result_table' . text
+
+            commit_selected_result ( form,
+                         test_number : result_name,
+                         result_text,
+                         destination,
+                         status,
+                         source )
+
+            NEXT 'result_table'
+            result_name = SELECT 'result_table'.component_name
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( status = EMPTY ) THEN
+
+        commit_audit_records ( form         ,
+                       test_table   ,
+                       test_number  ,
+                       destination  ,
+                       status       ,
+                       source       )
+
+        update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DISPLAY_13" )
+
+        CONSIGN 'test_table' TO destination, status
+
+        IF status = EMPTY THEN
+
+            update_form_txt ( form, FORM_STATUS_PTR,
+                      "LIB_COMM_TEST_COMMITTED" )
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE commit_selected_result (       form        ,
+                 VALUE result_name ,
+                 VALUE result_text ,
+                 VALUE destination ,
+                       status      ,
+                 VALUE source      )
+
+    DECLARE ok , result_table
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DISPLAY_14" )
+
+    update_form_txt ( form, FORM_COMPONENT_PTR, result_name )
+    update_form_txt ( form, FORM_RESULT_PTR,    result_text )
+
+    ok = get_committed_table ( "RESULT" , source , result_table )
+    IF ok != EMPTY THEN
+        result_table = "RESULT"
+    ENDIF
+
+    commit_audit_records ( form         ,
+                   result_table ,
+                   result_name  ,
+                   destination  ,
+                   status       ,
+                   source       )
+
+    IF status = EMPTY THEN
+
+        CONSIGN 'result_table' TO destination, status
+
+        IF status = EMPTY THEN
+
+            update_form_txt ( form, FORM_STATUS_PTR,
+                      "LIB_COMM_RESULT_COMMITTED" )
+        ENDIF
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+{ Audit Handling routines                                                      }
+{******************************************************************************}
+
+GLOBAL ROUTINE commit_audit_records (       form         ,
+                          VALUE source_table ,
+                          VALUE record_id    ,
+                          VALUE destination  ,
+                            status       ,
+                          VALUE source       )
+
+    DECLARE ok , a_e_table , event_id , this_table , parent_table
+
+    { By default, this code only looks for audits which apply to the      }
+    { active table, since committed records should never be updated. If   }
+    { custom code can modify committed records, the commented-out WHILE   }
+    { loop in this routine should be uncommented. This may have an effect }
+    { on the performance of the code, and so should only be used if the   }
+    { additional functionality is required.                               }
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_AUDIT_COMMITTING" )
+
+    this_table = source_table
+    GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    WHILE parent_table != "" DO
+        this_table = parent_table
+        GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    ENDWHILE
+
+    ok = get_committed_table ( "AUDIT_EVENT" , source , a_e_table )
+    IF ok != EMPTY THEN
+        a_e_table = "AUDIT_EVENT"
+    ENDIF
+
+    { Commented out - see comment above}
+    WHILE this_table != "" DO
+
+
+        event_id = SELECT 'a_e_table' . event
+               FOR UPDATE
+               WHERE ( table_name = this_table ) AND
+                 ( record_key0 = record_id )
+
+        WHILE ( ( event_id <> EMPTY ) AND
+            ( status = EMPTY    ) ) DO
+
+            IF ( event_id = LOCKED ) THEN
+
+                status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,
+                                1)
+
+            ELSE
+
+                commit_selected_audit_event ( form        ,
+                                  a_e_table   ,
+                                  event_id    ,
+                                  destination ,
+                                  status      ,
+                                  source      )
+
+                NEXT 'a_e_table'
+                event_id = SELECT 'a_e_table'.event
+
+            ENDIF
+
+        ENDWHILE
+
+    { Commented out - see comment above}
+        GET_TABLE_DETAILS 'this_table', "CHILD", this_table
+
+    ENDWHILE
+
+
+    IF status = EMPTY THEN
+
+        update_form_txt ( form, FORM_STATUS_PTR,
+                  "LIB_COMM_AUDIT_COMMITTED" )
+
+        commit_esig_records ( form         ,
+                              source_table ,
+                              record_id    ,
+                              destination  ,
+                              status       ,
+                              source       )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE commit_selected_audit_event (       form        ,
+                      VALUE a_e_table   ,
+                      VALUE event_id    ,
+                      VALUE destination ,
+                            status      ,
+                      VALUE source      )
+
+    DECLARE ok , a_t_table , a_d_table , data_id , trans_id
+
+    ok = get_committed_table ( "AUDIT_TRANSACTION" , source , a_t_table )
+    IF ok != EMPTY THEN
+        a_t_table = "AUDIT_TRANSACTION"
+    ENDIF
+    ok = get_committed_table ( "AUDIT_DATA" , source , a_d_table )
+    IF ok != EMPTY THEN
+        a_d_table = "AUDIT_DATA"
+    ENDIF
+
+    data_id = SELECT 'a_d_table' . data
+          FOR UPDATE
+          WHERE event = event_id
+
+    WHILE ( ( data_id <> EMPTY ) AND
+        ( status = EMPTY   ) ) DO
+
+        IF ( data_id = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+
+        ELSE
+
+            CONSIGN 'a_d_table' TO destination, status
+            check_audit_status ( "AUDIT_DATA" ,
+                         destination  ,
+                         status       )
+            NEXT 'a_d_table'
+            data_id = SELECT 'a_d_table' . data
+
+        ENDIF
+
+    ENDWHILE
+
+    trans_id = SELECT 'a_t_table' . transaction
+           FOR UPDATE
+           WHERE transaction = ( SELECT 'a_e_table' . transaction )
+
+    IF ( ( trans_id <> EMPTY ) AND
+         ( status = EMPTY    ) ) THEN
+
+        IF ( trans_id = LOCKED ) THEN
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+        ELSE
+            CONSIGN 'a_t_table' TO destination, status
+            check_audit_status ( "AUDIT_TRANSACTION" ,
+                         destination         ,
+                         status              )
+        ENDIF
+
+    ENDIF
+
+    IF ( status = EMPTY ) THEN
+        CONSIGN 'a_e_table' TO destination, status
+        check_audit_status ( "AUDIT_EVENT" ,
+                     destination   ,
+                     status        )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE decon_audit_records (       form         ,
+                              VALUE source_table ,
+                              VALUE record_id    ,
+                                    status       )
+
+{
+*
+*   Look for associated Audit records that need deconsigning
+*
+*******************************************************************************}
+
+    DECLARE a_e_table , event_id , this_table , parent_table, table_set
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_AUDIT_DECON" )
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "AUDIT_EVENT" , table_set , a_e_table )
+
+    this_table = source_table
+    GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    WHILE parent_table != "" DO
+        this_table = parent_table
+        GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    ENDWHILE
+
+    event_id = SELECT 'a_e_table' . event
+                      FOR UPDATE
+                      WHERE ( table_name  = this_table ) AND
+                            ( record_key0 = record_id  )
+
+    WHILE (( event_id <> EMPTY ) AND
+           ( status   =  EMPTY )) DO
+
+        IF ( event_id = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2", 1 )
+
+        ELSE
+
+            decon_selected_audit_event ( form        ,
+                                         a_e_table   ,
+                                         event_id    ,
+                                         status      ,
+                                         table_set   )
+
+            NEXT 'a_e_table'
+            event_id = SELECT 'a_e_table'.event
+
+        ENDIF
+
+    ENDWHILE
+
+    IF status = EMPTY THEN
+
+        update_form_txt ( form,
+                          FORM_STATUS_PTR,
+                          "LIB_COMM_AUDIT_DECON_DONE" )
+
+        decon_esig_records ( form         ,
+                             this_table   ,
+                             record_id    ,
+                             status       ,
+                             table_set    )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE decon_selected_audit_event (       form        ,
+                                     VALUE a_e_table   ,
+                                     VALUE event_id    ,
+                                           status      ,
+                                     VALUE table_set   )
+
+{
+*
+*   Deconsign specified event
+*
+*******************************************************************************}
+
+    DECLARE ok , a_t_table , a_d_table , data_id , trans_id
+
+    ok = get_committed_table ( "AUDIT_TRANSACTION" , table_set , a_t_table )
+    IF ok != EMPTY THEN
+        a_t_table = "AUDIT_TRANSACTION"
+    ENDIF
+    ok = get_committed_table ( "AUDIT_DATA" , table_set , a_d_table )
+    IF ok != EMPTY THEN
+        a_d_table = "AUDIT_DATA"
+    ENDIF
+
+    data_id = SELECT 'a_d_table' . data
+          FOR UPDATE
+          WHERE event = event_id
+
+    WHILE ( ( data_id <> EMPTY ) AND
+        ( status = EMPTY   ) ) DO
+
+        IF ( data_id = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+
+        ELSE
+
+            DECONSIGN 'a_d_table', status
+
+            NEXT 'a_d_table'
+            data_id = SELECT 'a_d_table' . data
+
+        ENDIF
+
+    ENDWHILE
+
+    trans_id = SELECT 'a_t_table' . transaction
+           FOR UPDATE
+           WHERE transaction = ( SELECT 'a_e_table' . transaction )
+
+    IF ( ( trans_id <> EMPTY ) AND
+         ( status = EMPTY    ) ) THEN
+
+        IF ( trans_id = LOCKED ) THEN
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+        ELSE
+            DECONSIGN 'a_t_table', status
+        ENDIF
+
+    ENDIF
+
+    IF ( status = EMPTY ) THEN
+        DECONSIGN 'a_e_table', status
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE check_audit_status ( VALUE table       ,
+                 VALUE destination ,
+                   status      )
+
+    IF status = EMPTY THEN
+        { Do nothing }
+    ELSEIF status = GET_USER_MESSAGE ( "RPC_K_INVTABSET" , 1 ) :
+                " " : destination THEN
+        { Add table name to message }
+        status = status :
+             GET_USER_MESSAGE ( "LIB_COMM_FOR_TABLE" , 1 ) :
+             table
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{ Esig Handling routines                                                       }
+{******************************************************************************}
+
+GLOBAL ROUTINE commit_esig_records (       form         ,
+                                     VALUE source_table ,
+                                     VALUE record_id    ,
+                                     VALUE destination  ,
+                                           status       ,
+                                     VALUE source       )
+
+{
+*
+*   Commit all Esig records associated with the record being committed
+*
+*******************************************************************************}
+
+    DECLARE ok ,
+            data_table ,
+            event_id ,
+            this_table ,
+            parent_table
+
+    { Tell the user whats happening }
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_ESIG_COMMITTING" )
+
+    { Find the 'real' table for the record being committed }
+
+    this_table = source_table
+    GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    WHILE parent_table != "" DO
+        this_table = parent_table
+        GET_TABLE_DETAILS 'this_table', "PARENT", parent_table
+    ENDWHILE
+
+    { Find the appropriate esig_data table }
+
+    ok = get_committed_table ( "ESIG_DATA" , source , data_table )
+    IF ok != EMPTY THEN
+        data_table = "ESIG_DATA"
+    ENDIF
+
+    { Select the appropriate esig_data }
+
+    event_id = SELECT 'data_table' . esig_event_id
+                      FOR UPDATE
+                      WHERE ( table_name  = this_table ) AND
+                            ( record_key0 = record_id  )
+
+    WHILE (( event_id <> EMPTY ) AND
+           ( status   =  EMPTY )) DO
+
+        IF ( event_id = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_ESIG_DATA_LOCKED", 1 )
+
+        ELSE
+
+            CONSIGN 'data_table' TO destination, status
+
+            check_audit_status ( "ESIG_DATA" ,
+                         destination ,
+                         status      )
+
+            commit_selected_esig_event ( form        ,
+                                         data_table  ,
+                                         event_id    ,
+                                         destination ,
+                                         status      ,
+                                         source      )
+
+            NEXT 'data_table'
+            event_id = SELECT 'data_table' . esig_event_id
+
+        ENDIF
+
+    ENDWHILE
+
+    IF status = EMPTY THEN
+        update_form_txt ( form                      ,
+                          FORM_STATUS_PTR           ,
+                          "LIB_COMM_ESIG_COMMITTED" )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE commit_selected_esig_event (       form        ,
+                                     VALUE data_table  ,
+                                     VALUE event_id    ,
+                                     VALUE destination ,
+                                           status      ,
+                                     VALUE source      )
+
+{
+*
+*   Commit the Esig event associated with the selected esig_data
+*
+*******************************************************************************}
+
+    DECLARE ok          ,
+            event_table ,
+            check_id
+
+    { Find the appropriate esig_event table }
+
+    ok = get_committed_table ( "ESIG_EVENT" , source , event_table )
+    IF ok != EMPTY THEN
+        event_table = "ESIG_EVENT"
+    ENDIF
+
+    check_id = SELECT 'event_table' . esig_event_id
+                      FOR UPDATE
+                      WHERE esig_event_id = event_id
+
+    IF (( check_id <> EMPTY ) AND
+        ( status  =   EMPTY )) THEN
+
+        IF ( check_id = LOCKED ) THEN
+            status = GET_USER_MESSAGE ( "LIB_COMM_ESIG_EVENT_LOCKED" ,1)
+        ELSE
+            CONSIGN 'event_table' TO destination, status
+            check_audit_status ( "ESIG_EVENT" ,
+                                 destination  ,
+                                 status       )
+        ENDIF
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE decon_esig_records (       form         ,
+                             VALUE this_table   ,
+                             VALUE record_id    ,
+                                   status       ,
+                             VALUE table_set    )
+
+{
+*
+*   Deconsign all Esig records associated with the record
+*
+*******************************************************************************}
+
+    DECLARE ok ,
+            data_table ,
+            event_id
+
+    { Tell the user whats happening }
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_ESIG_DECON" )
+
+    { Find the appropriate esig_data table }
+
+    ok = get_committed_table ( "ESIG_DATA" , table_set , data_table )
+    IF ok != EMPTY THEN
+        data_table = "ESIG_DATA"
+    ENDIF
+
+    { Select the appropriate esig_data }
+
+    event_id = SELECT 'data_table' . esig_event_id
+                      FOR UPDATE
+                      WHERE ( table_name  = this_table ) AND
+                            ( record_key0 = record_id  )
+
+    WHILE (( event_id <> EMPTY ) AND
+           ( status   =  EMPTY )) DO
+
+        IF ( event_id = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_ESIG_DATA_LOCKED", 1 )
+
+        ELSE
+
+            DECONSIGN 'data_table', status
+
+            decon_selected_esig_event ( form        ,
+                                        data_table  ,
+                                        event_id    ,
+                                        status      ,
+                                        table_set    )
+
+            NEXT 'data_table'
+            event_id = SELECT 'data_table' . esig_event_id
+
+        ENDIF
+
+    ENDWHILE
+
+    IF status = EMPTY THEN
+        update_form_txt ( form                       ,
+                          FORM_STATUS_PTR            ,
+                          "LIB_COMM_ESIG_DECON_DONE" )
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE decon_selected_esig_event (       form        ,
+                                    VALUE data_table  ,
+                                    VALUE event_id    ,
+                                          status      ,
+                                    VALUE table_set   )
+
+{
+*
+*   Deconsign the Esig event associated with the selected esig_data
+*
+*******************************************************************************}
+
+    DECLARE ok          ,
+            event_table ,
+            check_id
+
+    { Find the appropriate esig_event table }
+
+    ok = get_committed_table ( "ESIG_EVENT" , table_set , event_table )
+    IF ok != EMPTY THEN
+        event_table = "ESIG_EVENT"
+    ENDIF
+
+    check_id = SELECT 'event_table' . esig_event_id
+                      FOR UPDATE
+                      WHERE esig_event_id = event_id
+
+    IF (( check_id <> EMPTY ) AND
+        ( status  =   EMPTY )) THEN
+
+        IF ( check_id = LOCKED ) THEN
+            status = GET_USER_MESSAGE ( "LIB_COMM_ESIG_EVENT_LOCKED" ,1)
+        ELSE
+            DECONSIGN 'event_table', status
+        ENDIF
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE all_samples_authorised (       form   ,
+                 VALUE job_id ,
+                 VALUE source )
+
+    DECLARE sample_id, ok, {sample_stat, }sample_text , sample_table, sample_context
+
+    ok = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF ok != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    ok = TRUE
+    sample_id = SELECT 'sample_table'.id_numeric
+             WHERE job_name = job_id AND
+                   ( is_split = FALSE )
+
+    WHILE ( sample_id <> EMPTY ) AND ok DO
+
+        {sample_stat = SELECT 'sample_table' . status}
+        sample_text = SELECT 'sample_table' . id_text
+
+        push_file_descriptor ( sample_table ,
+                       sample_context )
+
+        ok = all_child_samples_authorised( form ,
+                           sample_id ,
+                           source )
+
+        pop_file_descriptor( sample_context )
+
+        update_form_txt ( form, FORM_SAMPLE_ID_PTR,   sample_id )
+        update_form_txt ( form, FORM_SAMPLE_TEXT_PTR, sample_text )
+
+        NEXT 'sample_table'
+        sample_id = SELECT 'sample_table'.id_numeric
+
+    ENDWHILE
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE all_child_samples_authorised (       form   ,
+                       VALUE sample_id ,
+                       VALUE source )
+
+    DECLARE ok, sample_table, sample_formulation_table, is_authorised
+
+    is_authorised = TRUE
+
+    ok = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF ok != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    ok = get_committed_table ( "SAMPLE_FORMULATION" , source , sample_formulation_table )
+    IF ok != EMPTY THEN
+        sample_formulation_table = "SAMPLE_FORMULATION"
+    ENDIF
+
+    is_authorised = child_sample_authorised (  form ,
+                    sample_id ,
+                    source ,
+                    sample_table ,
+                    sample_formulation_table )
+
+    RETURN ( is_authorised )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE child_sample_authorised (      form   ,
+                       VALUE sample_id ,
+                       VALUE source ,
+                       VALUE sample_table,
+                       VALUE sample_formulation_table)
+
+    DECLARE child_sample, ok, formulation_context
+
+    ok = TRUE
+
+    ok = sample_authorised ( sample_id, sample_table )
+
+    IF ( ok ) THEN
+
+        ok = TRUE
+
+        child_sample = SELECT 'sample_formulation_table'. child_sample
+                    WHERE parent_sample = sample_id
+
+        WHILE ( child_sample <> EMPTY ) AND ok DO
+
+            ok = sample_authorised ( child_sample, sample_table )
+
+            IF ( ok ) THEN
+
+                push_file_descriptor ( sample_formulation_table ,
+                                       formulation_context )
+
+
+                ok = child_sample_authorised (  form ,
+                                child_sample ,
+                                source ,
+                                sample_table ,
+                                sample_formulation_table )
+
+                pop_file_descriptor( formulation_context )
+
+            ENDIF
+
+            NEXT 'sample_formulation_table'
+            child_sample = SELECT 'sample_formulation_table'.child_sample
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE sample_authorised ( VALUE sample_id ,
+                    VALUE sample_table )
+
+
+    DECLARE is_authorised, status_check
+
+    is_authorised = TRUE
+
+    status_check = SELECT 'sample_table' . status
+             WHERE id_numeric = sample_id
+
+    IF ( status_check <> EMPTY ) THEN
+
+        is_authorised = ( status_check = "A" ) OR
+                    ( status_check = "R" ) OR
+                    ( status_check = "X" )
+
+    ENDIF
+
+    RETURN ( is_authorised )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE add_job_to_timer_queue (       form,
+                 VALUE job_id,
+                 VALUE destination,
+                 VALUE source )
+
+
+    DECLARE sample_id, sample_text , status , sample_table
+
+    status = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF status != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    sample_id = SELECT 'sample_table'.id_numeric
+             WHERE job_name = job_id
+
+    WHILE ( sample_id <> EMPTY ) DO
+
+        sample_text = SELECT 'sample_table' . id_text
+
+        update_form_txt ( form, FORM_SAMPLE_ID_PTR,   sample_id )
+        update_form_txt ( form, FORM_SAMPLE_TEXT_PTR, sample_text )
+
+        add_sample_to_timer_queue ( sample_id , destination , source )
+
+        NEXT 'sample_table'
+
+        sample_id = SELECT 'sample_table' . id_numeric
+
+    ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE add_sample_to_timer_queue ( VALUE sample_id   ,
+                    VALUE destination ,
+                    VALUE source      )
+
+    { Put an entry for this sample id into the timer queue table }
+
+    get_next_timer_number ( "COMMIT", sample_id )
+
+    ASSIGN timerqueue . run_time        =  NOW
+    ASSIGN timerqueue . report_name     = "$LIB_COMM"
+    ASSIGN timerqueue . routine_name    = "BACKGROUND_SAMPLE"
+    ASSIGN timerqueue . repeat_interval =  INTERVAL("0")
+    ASSIGN timerqueue . param_string    = chr(34) : sample_id : chr(34) :
+                          "," :
+                              chr(34) : destination : chr(34) :
+                          "," :
+                              chr(34) : source : chr(34)
+
+        IF GLOBAL ( "TIMERQUEUE_USER_ENABLED" ) THEN
+            ASSIGN timerqueue.user_name = OPERATOR
+        ENDIF
+
+    UPDATE timerqueue
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The foreground routine is called from $INTCOMM and $WKS_MAINT. It commits    }
+{ silently to a specific destination.                                          }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE silent_sample ( VALUE sample_id   ,
+                               VALUE destination ,
+                   VALUE source      )
+
+    DECLARE status, form , sample_table ,
+        in_write
+
+    in_write = transaction_is_write ()
+
+    status = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF status != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    status = EMPTY
+
+    IF NOT in_write THEN
+
+        START READ TRANSACTION "silent foreground commit sample"
+
+    ENDIF
+
+    IF ( get_sample_for_update ( sample_table , sample_id, status ) ) THEN
+
+        form   = EMPTY
+
+        IF NOT in_write THEN
+
+            START WRITE TRANSACTION "silent foreground commit sample"
+
+        ENDIF
+
+        commit_selected_sample ( form,
+                     sample_id,
+                     destination,
+                     status,
+                     source )
+
+        IF NOT in_write THEN
+
+            IF ( status = EMPTY ) THEN
+                COMMIT
+            ELSE
+                ROLLBACK
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The foreground routine is called from $INTCOMM and $WKS_MAINT. It commits    }
+{ silently to a specific destination.                                          }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE silent_job ( VALUE job_id      ,
+                            VALUE destination ,
+                VALUE source      )
+
+    DECLARE status, form , job_table
+
+    form   = EMPTY
+
+    START READ TRANSACTION "silent foreground commit job"
+
+    status = get_committed_table ( "JOB_HEADER" , source , job_table )
+    IF status != EMPTY THEN
+        job_table = "JOB_HEADER"
+    ENDIF
+
+    IF ( get_job_for_update ( job_table , job_id, status ) ) THEN
+
+        commit_selected_job ( form,
+                      job_id,
+                      destination,
+                      FALSE, { Don't use the background }
+                      status ,
+                      source )
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The background routine is called by $BACKCOMM ONLY and commits a specified   }
+{ sample to a user defined destination. It should not be run in the foreground }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE background ( VALUE sample_id  ,
+                            VALUE fixed_dest ,
+                VALUE source     )
+
+    DECLARE destination, status, ok, mess_ptr, form , sample_table
+
+    status = get_committed_table ( "SAMPLE" , source , sample_table )
+    IF status != EMPTY THEN
+        sample_table = "SAMPLE"
+    ENDIF
+
+    IF ( fixed_dest = EMPTY ) THEN
+
+        destination = " "
+
+        CALL_ROUTINE "SAMPLE_DESTINATION"
+            USING destination
+            RETURNING ok
+            IN LIBRARY "$COMMIT"
+
+    ELSE
+        destination = fixed_dest
+        ok = TRUE
+    ENDIF
+
+    IF ok THEN
+
+        START READ TRANSACTION "background commit sample"
+
+        IF ( get_sample_for_update ( sample_table ,
+                         sample_id    ,
+                         status       ) ) THEN
+
+            form = EMPTY
+
+            START WRITE TRANSACTION "background commit sample"
+
+            commit_selected_sample ( form,
+                         sample_id,
+                         destination,
+                         status ,
+                         source )
+
+            IF status = EMPTY THEN
+                COMMIT
+            ELSE
+                ROLLBACK
+            ENDIF
+
+        ENDIF
+
+        IF ( status != EMPTY ) THEN
+
+            message_fetch ( "LIB_COMM_SAMPLE_FAILED" , mess_ptr )
+            message_add_parameter ( mess_ptr , STRIP ( sample_id ) )
+
+            LOGMESSAGE "LOGFILE" , message_get_text ( mess_ptr , 1 )
+
+            message_fetch ( "LIB_COMM_SAMPLE_ERROR" , mess_ptr )
+            message_add_parameter ( mess_ptr , STRIP ( status ) )
+
+            LOGMESSAGE "LOGFILE" , message_get_text ( mess_ptr , 1 )
+
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The background routine commits a specific job to a user-defined destination. }
+{ It should not be run in the foreground.                                      }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE background_job ( VALUE job_id     ,
+                                VALUE fixed_dest )
+
+    DECLARE destination, status, ok, mess_ptr, form
+
+    IF ( fixed_dest = EMPTY ) THEN
+
+        destination = " "
+
+        CALL_ROUTINE "JOB_DESTINATION"
+            USING destination
+            RETURNING ok
+            IN LIBRARY "$COMMIT"
+
+    ELSE
+        destination = fixed_dest
+        ok = TRUE
+    ENDIF
+
+    IF ok THEN
+
+        START READ TRANSACTION "background commit job"
+
+        IF ( get_job_for_update ( "JOB_HEADER", job_id, status ) ) THEN
+
+            form = EMPTY
+
+            commit_selected_job ( form,
+                          job_id,
+                          destination,
+                          FALSE, { Don't put in background }
+                          status ,
+                          "")
+        ENDIF
+
+        IF ( status != EMPTY ) THEN
+
+            message_fetch ( "LIB_COMM_JOB_FAILED" , mess_ptr )
+            message_add_parameter ( mess_ptr , STRIP ( job_id ) )
+
+            LOGMESSAGE "LOGFILE" , message_get_text ( mess_ptr , 1 )
+
+            message_fetch ( "LIB_COMM_SAMPLE_ERROR" , mess_ptr )
+            message_add_parameter ( mess_ptr , STRIP ( status ) )
+
+            LOGMESSAGE "LOGFILE" , message_get_text ( mess_ptr , 1 )
+
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{ The background routine is called via the timer queue ONLY to commit a sample }
+{ to a pre-defined destination, as part of a job. It should not be run in the  }
+{ foreground.                                                                  }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE background_sample ( dummy )
+
+    DECLARE sample_id , destination , source
+
+    PROMPT FOR sample_id
+    PROMPT FOR destination
+    PROMPT FOR source
+
+    background ( sample_id , destination , source )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Four example destination routines to be called from $COMMIT                 }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE default_sample_destination ( destination )
+
+    destination = GLOBAL ( "COMMITTED_TABLE_SET" )
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE default_job_destination (destination )
+
+    destination = GLOBAL ( "COMMITTED_TABLE_SET" )
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE default_batch_destination (destination )
+
+    destination = GLOBAL ( "COMMITTED_TABLE_SET" )
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE interactive_sample_destination ( destination )
+
+    DECLARE ok
+
+    ok = interactive_table_destination (
+                destination,
+                                "SAMPLE" ,
+                                GET_USER_MESSAGE ( "LIB_COMM_OK_2", 1 ),
+                                GET_USER_MESSAGE ("LIB_COMM_SAMPLE_ID", 1 ),
+                SELECT sample.id_text,
+                GET_USER_MESSAGE ( "LIB_COMM_OK_3", 1 ),
+                                GET_USER_MESSAGE ( "LIB_COMM_OK_4", 1 ),
+                                "VIEW_SAMPLE" )
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE interactive_job_destination ( destination )
+
+    DECLARE ok
+
+    ok = interactive_table_destination(
+                destination,
+                "JOB_HEADER",
+                GET_USER_MESSAGE ( "LIB_COMM_OK_6", 1 ),
+                GET_USER_MESSAGE ( "LIB_COMM_JOB_ID", 1 ),
+                SELECT job_header.job_name,
+                GET_USER_MESSAGE ( "LIB_COMM_OK_7", 1 ),
+                GET_USER_MESSAGE ( "LIB_COMM_OK_8", 1 ),
+                "VIEW_JOB" )
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE interactive_batch_destination ( destination )
+
+    DECLARE ok
+
+    ok = interactive_table_destination(
+                destination,
+                "BATCH_HEADER",
+                GET_USER_MESSAGE ( "LIB_COMM_OK_9",     1 ),
+                GET_USER_MESSAGE ( "LIB_COMM_BATCH_ID", 1 ),
+                SELECT batch_header . identity,
+                GET_USER_MESSAGE ( "LIB_COMM_OK_10", 1 ),
+                GET_USER_MESSAGE ( "LIB_COMM_OK_11", 1 ),
+                "VIEW_BATCH" )
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+{                                                                              }
+{  Routines called by the two interactive destination routines above.          }
+{                                                                              }
+{------------------------------------------------------------------------------}
+
+ROUTINE interactive_table_destination(        destination,
+                    VALUE table,
+                    VALUE top_line,
+                    VALUE info_prompt,
+                    VALUE info_id,
+                    VALUE bottom_line,
+                    VALUE destination_prompt,
+                    VALUE view_routine)
+
+    DECLARE tablesets, form, return_value
+    DECLARE display_len, separator, display_col, prompt_col, dest_prompt
+    DECLARE button_list, button_count, dest_prompt_number
+
+    display_len = find_max_number ( LENGTH ( info_prompt ),
+                        LENGTH ( destination_prompt ) )
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH  ( column           = 15,
+            row              = 10,
+            height           = 2,
+            width            = display_len + 33,
+            border           = TRUE,
+            proportional     = TRUE,
+                    help_context     = "$LIB_COMM_INTERACT",
+            header           = top_line,
+            footer           = bottom_line )
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+        separator = ""
+    ELSE
+        separator = " :"
+    ENDIF
+
+    info_prompt        = PAD ( info_prompt, " ", display_len ) : separator
+    destination_prompt = PAD ( destination_prompt, " ", display_len ) :
+                                  separator
+
+    display_col = 2
+    prompt_col = display_col + display_len + STRINGLENGTH ( separator ) + 1
+
+    form . add_display ( info_prompt,
+                 display_col,
+                 1,
+                 PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+
+    form . add_display ( info_id    ,
+                 prompt_col,
+                 1,
+                 PROMPT_RENDITION_LOWERED )
+
+    form . add_display ( destination_prompt,
+                 display_col,
+                 2,
+                 PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD )
+
+    find_table_sets ( table, tablesets )
+
+    PROMPT OBJECT dest_prompt
+        ON LINE 2 FROM prompt_col TO prompt_col + 20
+        CHOOSE OUTOF tablesets
+        WITH ( user_info      = info_id,
+               vgl_library    = GLOBAL ( "CURRENT_LIBRARY" ),
+               select_routine = view_routine )
+
+    dest_prompt_number = form . add_prompt ( dest_prompt )
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+        lib_grid_initialise ( )
+
+        form . height = form . height + 3
+
+        ARRAY button_list
+        button_count = 1
+
+        lib_grid_lastkey_button ( button_list    ,
+                      button_count   ,
+                      "DO"           ,
+                      EMPTY          )
+        lib_grid_lastkey_button ( button_list    ,
+                      button_count   ,
+                      "SELECT"       ,
+                      EMPTY          )
+        lib_grid_lastkey_button ( button_list    ,
+                      button_count   ,
+                      "HELP"         ,
+                      EMPTY          )
+        lib_grid_lastkey_button ( button_list    ,
+                      button_count   ,
+                      "EXIT"         ,
+                      EMPTY          )
+
+        lib_form_add_control_buttons ( form        ,
+                           button_list )
+
+    ENDIF
+
+    form . start_prompt ()
+    form . wait_prompt ()
+    form . end_prompt ()
+
+    destination = form . prompt_objects [ dest_prompt_number ] . text
+
+    return_value = ( form . get_lastkey () <> "EXIT" )
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_sample ( self )
+
+    DECLARE menu_array, option, sample_id
+
+    ARRAY menu_array ARRAYSIZE(3,3)
+
+    menu_array[1,1] = "*"
+    menu_array[1,2] = GET_USER_MESSAGE ( "LIB_COMM_MENU_1" ,1)
+    menu_array[1,3] = "$LIB_COMM_MENU_ARRAY"
+
+    menu_array[2,1] = " "
+    menu_array[2,2] = GET_USER_MESSAGE ( "LIB_COMM_MENU_2" ,1)
+    menu_array[2,3] = 1
+
+    menu_array[3,1] = " "
+    menu_array[3,2] = GET_USER_MESSAGE ( "LIB_COMM_MENU_3" ,1)
+    menu_array[3,3] = 2
+
+    CHOOSE option OUTOF menu_array AT 30, 14
+
+    IF ( LASTKEY <> "EXIT" ) THEN
+
+        sample_id = self . user_info
+
+        IF ( option = 1 ) THEN
+
+            { Call $DFS }
+
+            MENUPROC 10007, sample_id : ", $EXIT"
+
+        ELSEIF ( option = 2 ) THEN
+
+            { Call $DSR }
+
+            MENUPROC 249, sample_id : ", $EXIT"
+
+        ENDIF
+    ENDIF
+
+    self . repaste ()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_job ( self )
+
+    DECLARE job_id
+
+    job_id = self . user_info
+
+    { Call $DJS }
+
+    MENUPROC 259, CHR ( 34 ) :job_id :CHR ( 34 ) :", $EXIT"
+
+    self . repaste ()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE view_batch ( self )
+
+    DECLARE batch
+
+    batch = self . user_info
+
+    { Call $BDP }
+
+    MENUPROC 813, CHR ( 34 ) : batch : CHR ( 34 ) :", $EXIT"
+
+    self . repaste ()
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE find_table_sets ( VALUE table,
+                          table_set_array )
+
+    DECLARE current_table, done, next_table, count, new_table_set
+
+    ARRAY table_set_array
+
+    count = 0
+    done = FALSE
+    current_table = table
+
+    REPEAT
+        GET_TABLE_DETAILS 'current_table',
+                  "CHILD",
+                  next_table
+
+        IF blank ( next_table ) THEN
+
+            done = TRUE
+
+        ELSE
+            current_table = next_table
+
+            GET_TABLE_DETAILS 'current_table',
+                      "TABLESET",
+                      new_table_set
+
+            count = count + 1
+
+            table_set_array [ count,1 ] = new_table_set
+            table_set_array [ count,2 ] = new_table_set
+
+        ENDIF
+
+    UNTIL done
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE deconsign_job ( option )
+
+    DECLARE form, table_set, tab_name, job_id, status
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "JOB_HEADER" , table_set , tab_name )
+
+    IF ( status != EMPTY ) THEN
+
+        flash_message ( GET_USER_MESSAGE ( "LIB_COMM_UNEXPECTED" , 1 )
+                        : " : " : status, FALSE )
+
+        EXIT
+    ENDIF
+
+    initialise_job_form ( form,
+                  "LIB_COMM_DECON_JOB_HEAD",
+                  tab_name,
+                  "",
+                  "LIB_COMM_DECON_JOB_PROMPT",
+                  FALSE )
+
+    form . start_prompt ( )
+
+    REPEAT
+
+        job_id = prompt_on_form ( form )
+
+        IF ( form . get_lastkey ( ) = "DO" ) THEN
+
+            START WRITE TRANSACTION "deconsign job"
+
+            IF ( get_job_for_update ( tab_name, job_id,
+                          status ) ) THEN
+
+                status = decon_job ( form,
+                             job_id,
+                                     tab_name )
+            ENDIF
+
+            process_end_status ( form,
+                         job_id,
+                             status,
+                         "LIB_COMM_DECON_JOB_OK",
+                         "LIB_COMM_DECON_JOB_FAIL" )
+
+{BLOCK added by CONSULT-02 to make sure shows correct}
+            IF status = EMPTY THEN
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'JOB_HEADER' WHERE SUBJECT_TABLE = 'C_JOB_HEADER' AND SUBJECT_FIELD = '": STRIP(job_id) :"'")
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'SAMPLE' WHERE SUBJECT_TABLE = 'C_SAMPLE' AND job_name = '": STRIP(job_id) :"'")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'JOB_HEADER' WHERE SUBJECT_TABLE = 'C_JOB_HEADER' AND SUBJECT_FIELD = '": STRIP(job_id) :"'")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'SAMPLE' WHERE SUBJECT_TABLE = 'C_SAMPLE' AND job_name = '": STRIP(job_id) :"'")
+                execute_sql ( "COMMIT")
+            ENDIF
+{END BLOCK}
+        ENDIF
+
+    UNTIL ( form . get_lastkey () = "EXIT" )
+
+    form . end_prompt   ( )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE deconsign_sample ( option )
+
+    DECLARE table_set, tab_name, status, sample_id, form, samp_len
+
+    GET_FIELD_DETAILS sample . id_text , "FIELD_SIZE" , samp_len
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "SAMPLE" , table_set , tab_name )
+
+    IF ( status != EMPTY ) THEN
+
+        flash_message ( GET_USER_MESSAGE ( "LIB_COMM_UNEXPECTED" , 1 )
+                        : " : " : status, TRUE )
+
+        EXIT
+    ENDIF
+
+    initialise_sample_form ( form,
+                 "LIB_COMM_DECON_SAMP_HEAD",
+                         tab_name,
+                 "",
+                 "LIB_COMM_DECON_SAMP_PROMPT" )
+
+    form . start_prompt ( )
+
+    REPEAT
+
+        sample_id = prompt_on_form ( form )
+
+        IF ( form . get_lastkey ( ) = "DO" ) THEN
+
+            START WRITE TRANSACTION "deconsign sample"
+
+            IF ( get_sample_for_update ( tab_name, sample_id,
+                               status ) ) THEN
+                status = decon_sample ( form,
+                            sample_id,
+                                        tab_name )
+            ENDIF
+
+
+            process_end_status ( form,
+                         sample_id,
+                         status,
+                         "LIB_COMM_DECON_SAMP_OK",
+                         "LIB_COMM_DECON_SAMP_FAIL" )
+{BLOCK added by CONSULT-02 to make sure shows correct}
+            IF status = EMPTY THEN
+                execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'SAMPLE' WHERE SUBJECT_TABLE = 'C_SAMPLE' AND SUBJECT_FIELD = ": sample_id :"")
+                WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'SAMPLE' WHERE SUBJECT_TABLE = 'C_SAMPLE' AND SUBJECT_FIELD = ": sample_id :"")
+                execute_sql ( "COMMIT")
+            ENDIF
+{END BLOCK}
+        ENDIF
+
+    UNTIL ( form . get_lastkey () = "EXIT" )
+
+    form . end_prompt ( )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE decon_job (       form,
+            VALUE job_id,
+                    VALUE job_tab )
+
+    DECLARE status , samp_id , samp_text , samp_tab , table_set
+
+    status = EMPTY
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "SAMPLE" , table_set , samp_tab )
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DECON_JOBNAME" )
+
+    samp_id = SELECT 'samp_tab' . id_numeric
+            FOR UPDATE
+                   WHERE job_name = job_id
+
+    WHILE ( samp_id <> EMPTY ) AND ( status = EMPTY ) DO
+
+        IF samp_id = LOCKED THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_1" , 1 )
+                ELSE
+
+            update_form_txt ( form, FORM_STATUS_PTR,
+                      "LIB_COMM_DECON_SAMPNO" )
+
+            samp_text = SELECT 'samp_tab' . id_text
+
+            update_form_txt ( form, FORM_SAMPLE_ID_PTR,   samp_id )
+            update_form_txt ( form, FORM_SAMPLE_TEXT_PTR, samp_text )
+
+            status = decon_sample ( form,
+                        samp_id,
+                                    samp_tab )
+
+            NEXT 'samp_tab'
+
+            samp_id = SELECT 'samp_tab' . id_numeric
+        ENDIF
+
+    ENDWHILE
+
+    IF ( status = EMPTY ) THEN
+
+        DECONSIGN 'job_tab' , status
+
+        decon_audit_records ( form    ,
+                              job_tab ,
+                              job_id  ,
+                              status  )
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE decon_sample (       form,
+               VALUE samp_id,
+                       VALUE samp_tab )
+
+    DECLARE status, test_number, test_tab, table_set, analysis
+
+    status = EMPTY
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "TEST" , table_set , test_tab )
+
+    test_number = SELECT 'test_tab' . test_number
+            FOR UPDATE
+               WHERE sample_id = samp_id
+
+    WHILE ( test_number <> EMPTY ) AND ( status = EMPTY ) DO
+
+        IF test_number = LOCKED THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_1" , 1 )
+                ELSE
+
+            analysis = SELECT 'test_tab' . analysis
+
+            status = decon_test ( form,
+                          test_number,
+                          analysis,
+                                  test_tab    )
+
+            NEXT 'test_tab'
+
+            test_number = SELECT 'test_tab' . test_number
+        ENDIF
+
+    ENDWHILE
+
+    IF ( status = EMPTY ) THEN
+
+        DECONSIGN 'samp_tab' , status
+
+        decon_audit_records ( form     ,
+                              samp_tab ,
+                              samp_id  ,
+                              status   )
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE decon_test (       form,
+             VALUE test_number,
+                     VALUE analysis,
+                     VALUE test_tab )
+
+    DECLARE status, result_name, resl_tab, table_set, result_text
+
+    status = EMPTY
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DECON_RESULTS" )
+
+    table_set = GLOBAL ( "COMMITTED_TABLE_SET" )
+
+    status = get_committed_table ( "RESULT" , table_set , resl_tab )
+
+    result_name = SELECT 'resl_tab' . component_name
+            FOR UPDATE
+               WHERE test_number = test_number
+
+    WHILE ( ( result_name <> EMPTY ) AND
+        ( status = EMPTY       ) ) DO
+
+        result_text = SELECT 'resl_tab' . text
+
+        update_form_txt ( form, FORM_COMPONENT_PTR, result_name )
+        update_form_txt ( form, FORM_RESULT_PTR,    result_text )
+
+        IF ( result_name = LOCKED ) THEN
+
+            status = GET_USER_MESSAGE ( "LIB_COMM_STAT_2" ,1)
+        ELSE
+
+            DECONSIGN 'resl_tab' , status
+
+            decon_audit_records ( form     ,
+                                  resl_tab ,
+                                  SELECT 'resl_tab' . test_number :
+                                    SELECT 'resl_tab' . component_name ,
+                                  status   )
+
+            NEXT 'resl_tab'
+            result_name = SELECT 'resl_tab' . component_name
+
+        ENDIF
+
+    ENDWHILE
+
+    update_form_txt ( form, FORM_STATUS_PTR, "LIB_COMM_DECON_TESTNO" )
+
+    update_form_txt ( form, FORM_TEST_NUMBER_PTR, test_number )
+    update_form_txt ( form, FORM_ANALYSIS_PTR,    analysis )
+
+    IF ( status = EMPTY ) THEN
+
+        DECONSIGN 'test_tab' , status
+
+        decon_audit_records ( form        ,
+                              test_tab    ,
+                              test_number ,
+                              status      )
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_sample_for_update ( VALUE table_id,
+                VALUE id_numeric,
+                status )
+
+    { Try to select a sample for update, returning a status message
+      and a TRUE or FALSE }
+
+    DECLARE check_id
+
+    status = EMPTY
+
+    check_id = SELECT 'table_id' . id_numeric
+            FOR UPDATE
+            WHERE id_numeric = id_numeric
+
+    IF ( check_id = LOCKED ) THEN
+
+        status = GET_USER_MESSAGE ( "LIB_COMM_SAMPLE_LOCKED", 1 )
+
+    ELSEIF ( check_id = EMPTY ) THEN
+
+        status = GET_USER_MESSAGE ( "LIB_COMM_CANT_FIND_SAMPLE", 1 )
+
+    ENDIF
+
+    RETURN ( status = EMPTY )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_job_for_update ( VALUE table_id,
+                 VALUE job_id,
+                   status )
+
+    { Try to select a job for update, returning a status message
+      and a TRUE or FALSE }
+
+    DECLARE check_id
+
+    status = EMPTY
+
+    check_id = SELECT 'table_id' . job_name
+            FOR UPDATE
+            WHERE job_name = job_id
+
+    IF ( check_id = LOCKED ) THEN
+
+        status = GET_USER_MESSAGE ( "LIB_COMM_JOB_LOCKED", 1 )
+
+    ELSEIF ( check_id = EMPTY ) THEN
+
+        status = GET_USER_MESSAGE ( "LIB_COMM_CANT_FIND_JOB", 1 )
+
+    ENDIF
+
+    RETURN ( status = EMPTY )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE prompt_on_form ( form )
+
+    { Prompt on a form that has alreay built up.
+      Require a confirm on DO but not on EXIT and not on GUI }
+
+    DECLARE continue
+
+    { Clear any previous data on the prompt first }
+
+    form . prompt_objects [ 1 ] . set_text ( "" )
+    form . prompt_objects [ 1 ] . clear_line ()
+
+    REPEAT
+        form . wait_prompt ()
+
+        continue = TRUE
+
+        IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+            continue = TRUE
+
+        ELSEIF ( form . get_lastkey () <> "EXIT" ) THEN
+
+            IF ( form . prompt_objects [ 1 ] . text = "" ) THEN
+
+                continue = FALSE
+
+            ELSE
+
+                continue = confirm ()
+
+            ENDIF
+
+        ENDIF
+
+    UNTIL ( continue = TRUE )
+
+    { Clear the status box, whatever has been entered }
+
+    update_form_txt ( form, FORM_STATUS_PTR, "" )
+
+    { Return the identity entered }
+
+    RETURN ( form . prompt_objects [ 1 ] . text )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE process_end_status ( form,
+                 VALUE identity,
+                 VALUE status,
+                 VALUE success_msg,
+                 VALUE failure_msg )
+
+    { Display the status and message on the form }
+
+    DECLARE msg_to_display, mess_ptr
+
+    IF ( status = EMPTY ) THEN
+
+        COMMIT
+
+        message_fetch ( success_msg, mess_ptr )
+
+        message_add_parameter ( mess_ptr, STRIP ( identity ) )
+
+        msg_to_display = message_get_text ( mess_ptr, 1 )
+
+    ELSE
+        ROLLBACK
+
+        message_fetch ( failure_msg, mess_ptr )
+
+        message_add_parameter ( mess_ptr, STRIP ( identity ) )
+        message_add_parameter ( mess_ptr, STRIP ( status ) )
+
+        msg_to_display = message_get_text ( mess_ptr, 1 )
+
+    ENDIF
+
+    update_form_txt ( form, FORM_STATUS_PTR, msg_to_display )
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+        IF ( status <> EMPTY ) THEN
+            flash_message ( msg_to_display, TRUE )
+        ENDIF
+
+    ELSE
+        pause ()
+        update_form_txt ( form, FORM_STATUS_PTR, "" )
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE update_form_txt ( form, VALUE fld_num, VALUE fld_text )
+
+    DECLARE display_obj, pointer
+
+    IF ( form <> EMPTY ) THEN
+
+        pointer = form . user_info [ fld_num ]
+
+        IF ( pointer <> EMPTY ) AND ( pointer <> 0 ) THEN
+
+            display_obj = form . display_objects [ pointer ]
+
+            IF ( display_obj <> EMPTY ) THEN
+
+                IF ( GET_USER_MESSAGE ( fld_text, 1 ) <> ERROR ) THEN
+
+                    fld_text = GET_USER_MESSAGE ( fld_text, 1 )
+
+                ENDIF
+
+                display_obj . set_text ( fld_text )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE test_menu
+
+    DECLARE options, option, n, routine_option,
+        destination, sample_id, job_id
+
+    ARRAY options
+
+    IF GLOBAL ("PARAM_ACTIVE") THEN
+
+        PROMPT FOR option
+
+    ELSE
+
+        n = 1
+        options [ n,1 ] = "*"
+        options [ n,2 ] = "$LIB_COMM menu"
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "1 Commit Sample"
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "2 Commit Job"
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "3 Commit Job in background "
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "4 Silent Commit Sample"
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "5 Silent Commit Job"
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "6 Deconsign Sample"
+        options [ n,3 ] = n - 1
+
+        n = n + 1
+        options [ n,1 ] = STRIP ( n - 1 )
+        options [ n,2 ] = "7 Deconsign Job"
+        options [ n,3 ] = n - 1
+
+        CHOOSE option OUTOF options AT 45,7
+
+        IF ( LASTKEY = "EXIT" ) THEN
+            option = 0
+        ENDIF
+
+    ENDIF
+
+    routine_option = "TEST"
+
+    IF ( option = 1 ) THEN
+
+        commit_sample ( routine_option )
+
+    ELSEIF ( option = 2 ) THEN
+
+        commit_job ( routine_option )
+
+    ELSEIF ( option = 3 ) THEN
+
+        commit_job_background ( routine_option )
+
+    ELSEIF ( option = 4 ) THEN
+
+        get_identity ( sample_id, "Enter sample to commit :",
+                    "Testing silent_sample routine",
+                    "SAMPLE", "" )
+
+        IF ( LASTKEY = "EXIT" ) THEN EXIT ENDIF
+
+        IF ( interactive_sample_destination ( destination ) ) THEN
+
+            silent_sample ( sample_id , destination , "" )
+        ENDIF
+
+    ELSEIF ( option = 5 ) THEN
+
+        get_identity ( job_id, "Enter job to commit :",
+                    "Testing silent_job routine",
+                    "JOB_HEADER", "" )
+
+        IF ( LASTKEY = "EXIT" ) THEN EXIT ENDIF
+
+        IF ( interactive_job_destination ( destination ) ) THEN
+
+            silent_job ( job_id , destination , "" )
+        ENDIF
+
+    ELSEIF ( option = 6 ) THEN
+
+        deconsign_sample ( routine_option )
+
+    ELSEIF ( option = 7 ) THEN
+
+        deconsign_job ( routine_option )
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

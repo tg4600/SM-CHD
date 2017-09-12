@@ -1,0 +1,656 @@
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+
+{************************ COMMON ROUTINES ******************}
+
+GLOBAL
+ROUTINE find_results_and_row ( VALUE test_no, VALUE comp_name,
+                                     res_arr, n_res, comp_row )
+
+
+JOIN LIBRARY TOOLBOX 
+JOIN LIBRARY $LIB_UTILS
+
+
+   DECLARE err_mes
+   ARRAY res_arr
+
+   err_mes = EMPTY
+
+   IF     (NOT find_results( test_no, res_arr, n_res ) )
+   THEN   err_mes = "No results entered"
+   ELSEIF (NOT get_component_row( comp_name, res_arr, n_res, comp_row ) )
+   THEN   err_mes = "Could not find component row"
+   ENDIF
+
+   IF   err_mes <> EMPTY
+   THEN flash_message( err_mes, TRUE )
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+
+ENDROUTINE
+
+
+
+{***********************************************************}
+
+GLOBAL
+ROUTINE get_product  ( VALUE sample, product, product_version )
+
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+
+
+product         = SELECT sample.product WHERE id_numeric = sample
+product_version = SELECT sample.product_version
+
+IF (strip(product) = EMPTY) OR (BLANK(product)) OR (strip(product_version) = EMPTY) OR (BLANK(product_version)) 
+THEN
+   FLASH_MESSAGE("Product not found", TRUE)
+   RETURN (FALSE)
+ELSE
+   RETURN(TRUE)
+ENDIF
+
+
+ENDROUTINE
+
+
+{************************ CUTOFF BY MLP PARAMETERS ******************}
+
+GLOBAL
+ROUTINE  cutoff_by_parm ( VALUE ignore_parm_err, VALUE product, VALUE product_version, VALUE sample, VALUE test_no , VALUE comp_name,
+                          VALUE comp_row, VALUE n_res, res_arr, result )
+
+JOIN LIBRARY TOOLBOX 
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_CSMLP
+
+DECLARE err_mes, missing_parms
+DECLARE occour_on_res, counter, match, numeric_cutoff, org_parm_array, parm_array
+DECLARE no_sets, calc_name, counterpart, n, ill_comb, anal_name, org_res_type
+
+ARRAY org_parm_array
+ARRAY parm_array
+
+
+   IF NOT MLP_ANALYSIS_PARAMETERS ("M", "CUTOFF", 3, product, product_version, org_parm_array, no_sets, err_mes ) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("No parameter found for product " : STRIP(product) : " version " :
+         STRIP(product_version) :", not applying any parameter cutoff value", TRUE)
+      ENDIF
+      missing_parms = TRUE
+   ELSE
+      missing_parms = FALSE
+   ENDIF
+
+
+   {(display_text <> EMPTY) AND (NOT BLANK(disp_text))}
+
+   IF NOT ((err_mes = EMPTY) OR (BLANK(err_mes))) THEN
+      FLASH_MESSAGE("Fatal parameter error: " : STRIP(err_mes) : ", now exiting.", TRUE)
+      EXIT
+   ENDIF
+
+
+   {Check for illegal combination of CUT_BY_PAR and CUTOFF on analysis}
+
+   calc_name = res_arr[comp_row,8]
+   IF calc_name = "CUTOFF" THEN 
+      counterpart = "CUT_BY_PAR"
+   ELSEIF calc_name = "CUT_BY_PAR" THEN 
+      counterpart = "CUTOFF"
+   ENDIF
+
+   n=1   
+   ill_comb = FALSE
+   WHILE (n <= n_res) AND (NOT ill_comb)
+      IF res_arr[n,8] = counterpart THEN
+         ill_comb = TRUE
+      ENDIF
+      n=n+1
+   ENDWHILE
+
+   IF ill_comb THEN
+      FLASH_MESSAGE("Illegal combination of CUTOFF and CUT_BY_PAR on same analysis, exiting!", TRUE)
+      EXIT
+   ENDIF
+
+   {**Finding calculation occourance}
+   IF NOT GET_CALC_NUM(comp_row, res_arr, occour_on_res) THEN
+      FLASH_MESSAGE("Fatal problem finding the occourance of the calculated component.", TRUE)
+      EXIT
+   ENDIF
+   {**End calc. occour}
+
+
+
+   {**Identifying relevant rows from parameter array}
+   anal_name = SELECT test.analysis WHERE test_number = test_no
+   IF ((anal_name = EMPTY) OR (BLANK(anal_name))) THEN
+      FLASH_MESSAGE("Fatal problem identifying analysis name, leaving calculation format.", TRUE)
+      EXIT
+   ENDIF
+
+   counter = 0
+   match = 0
+   WHILE counter < no_sets
+   counter = counter + 1
+      IF STRIP(org_parm_array [counter, 1]) = anal_name THEN
+         match = match + 1
+         parm_array[match,1] = org_parm_array[counter,1]
+         parm_array[match,2] = org_parm_array[counter,2]
+         parm_array[match,3] = org_parm_array[counter,3]
+      ENDIF
+   ENDWHILE
+   IF (match < 1) AND (missing_parms = FALSE) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("Parameter setup does not exist for analysis ":anal_name : ".",TRUE)
+      ENDIF
+      missing_parms = TRUE
+   ELSEIF (match < occour_on_res) AND (missing_parms = FALSE) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("No Parameter setup for CUTOFF occourance no. " : STRIP(occour_on_res) 
+         : " on analysis " : anal_name : " for product " : STRIP(product) : " ver. " : STRIP(product_version) 
+         : ".",TRUE)   
+      ENDIF
+      missing_parms = TRUE
+   ENDIF
+   {**End of array manipulation}
+
+
+   {Check if result type is acceptable}
+   org_res_type  = res_arr[comp_row - 1, 2]
+   IF (org_res_type <> "N") and (org_res_type <> "K") THEN
+      FLASH_MESSAGE("Wrong result type in component above, is: '" : org_res_type : "' must be 'N' or 'K'. Transferring result directly!", TRUE)
+      result = res_arr[comp_row - 1, 5]
+      RETURN (TRUE)
+   ENDIF
+
+
+   {**FORMATTING}
+      IF NUMTEXT(res_arr[comp_row-1,6]) THEN
+         IF NUMERIC(res_arr[comp_row-1,6]) > 10000 
+         THEN
+            SET FORMAT "99.9E+99"
+         ELSEIF NUMERIC(res_arr[comp_row-1,6]) < 10000 THEN
+            SET FORMAT "999999"
+         ELSE
+            {Default format}
+         ENDIF
+      ENDIF
+   {**END FORMAT}
+
+   {**Check if cutoff value is numeric}
+   numeric_cutoff = FALSE
+   IF NUMTEXT(parm_array[occour_on_res,3]) THEN
+      numeric_cutoff = TRUE
+   ELSE
+      IF NOT missing_parms THEN
+         FLASH_MESSAGE("Cutoff value on parameter is not numeric", TRUE)
+      ENDIF
+   ENDIF
+   {**End check}
+
+   {**Genereating results}
+   IF missing_parms THEN
+      result = STRIP(res_arr[comp_row-1,5])
+      RETURN (FALSE)
+   ELSE
+      IF parm_array[occour_on_res,2] = "UPPER" THEN
+         IF (res_arr[comp_row-1,6] > parm_array[occour_on_res,3]) AND (numeric_cutoff) THEN
+            result = ">":STRIP(NUMERIC(parm_array[occour_on_res,3]))
+            RETURN(TRUE)
+         ELSE   
+            result = STRIP(NUMERIC(res_arr[comp_row-1,5]))
+            RETURN(TRUE)
+         ENDIF
+
+      ELSEIF
+         parm_array[occour_on_res,2] = "LOWER" THEN
+         IF (res_arr[comp_row-1,6] < parm_array[occour_on_res,3]) AND (numeric_cutoff) THEN
+            result = "<":STRIP(NUMERIC(parm_array[occour_on_res,3]))
+            RETURN(TRUE)
+         ELSE   
+            result = STRIP(NUMERIC(res_arr[comp_row-1,5]))
+            RETURN(TRUE)
+         ENDIF
+      ELSE
+         FLASH_MESSAGE("Error on parameter value 2 on parameter!", TRUE)
+         RETURN(FALSE)
+      ENDIF
+   ENDIF
+
+   {**END of result Genereation}
+
+ENDROUTINE
+
+{************************ CUTOFF BY EXTERNAL MLP LEVEL******************}
+
+GLOBAL
+ROUTINE  cutoff_by_MLP  ( VALUE product, VALUE product_version, VALUE sample, VALUE test_no , 
+                          VALUE comp_name, VALUE comp_row, VALUE n_res, res_arr, result )
+
+
+JOIN LIBRARY TOOLBOX 
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_CSMLP
+
+DECLARE entry_code, entry_code_lim, int_exists, ext_exists
+DECLARE org_res_text, org_res_value, org_res_type, anal_id, min_str, max_str
+
+
+   {Get the result values}
+
+   org_res_text  = res_arr[comp_row - 1, 5]
+   org_res_value = res_arr[comp_row - 1, 6]
+
+   {Checking the text result for contents, type and if it is numeric}
+   IF (BLANK(org_res_text)) OR (org_res_text = EMPTY) OR (BLANK(org_res_value)) or (org_res_value = EMPTY) THEN
+      FLASH_MESSAGE("No result available!", TRUE)
+      EXIT
+   ENDIF
+
+   org_res_type  = res_arr[comp_row - 1, 2]
+   IF (org_res_type <> "N") and (org_res_type <> "K") THEN
+      FLASH_MESSAGE("Wrong result type in component above, is: '" : org_res_type : "' must be 'N' or 'K'. Transferring result directly!", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+
+
+
+
+   IF NOT NUMTEXT(org_res_text) THEN
+      FLASH_MESSAGE("Result is not numeric, transferring value directly.", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+
+
+
+
+   entry_code = SELECT mlp_header.entry_code
+   WHERE identity = product
+{**AS 2003R1}
+   AND product_version = product_version
+{**AE 2003R1}
+
+   IF (strip(entry_code) = EMPTY) OR (BLANK(entry_code)) THEN
+      FLASH_MESSAGE("No specification levels defined, transferring result directly", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+
+{**MS1580 HBe 29-9-2004: Accept INTERNAL specifiation for cutoff, if no EXTERNAL specification exists}
+   IF (select mlp_values.level_id
+      WHERE entry_code = entry_code
+      AND level_id = "EXTERNAL") = "EXTERNAL" 
+   THEN 
+      ext_exists = TRUE
+   ELSE
+      ext_exists = FALSE
+   ENDIF
+
+   IF (select mlp_values.level_id
+      WHERE entry_code = entry_code
+      AND level_id = "INTERNAL") = "INTERNAL" 
+   THEN 
+      int_exists = TRUE
+   ELSE
+      int_exists = FALSE
+   ENDIF      
+   
+   IF (NOT int_exists) AND (NOT ext_exists) THEN
+      FLASH_MESSAGE("No INTERNAL or EXTERNAL level defined for MLP ": STRIP(product) : ". Transfering result directly.", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+{**ME1580}
+
+   {Find analysis name}
+
+   anal_id = SELECT test.analysis
+      WHERE test_number = test_no
+
+
+   {Find entry code for MLP limits}
+
+   entry_code_lim = SELECT mlp_components . entry_code
+      WHERE ( ( product_id      = product  ) 
+      AND ( product_version = product_version ) 
+      AND ( analysis_id     = anal_id ) 
+      AND ( component_name  = comp_name ) 
+      AND ( component_type  = "N") )
+
+
+   IF (entry_code_lim = EMPTY) OR BLANK(entry_code_lim) THEN
+      FLASH_MESSAGE("No numeric specification seems to exist for this component on this product, transferring result directly.", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+
+
+   {Find the MLP limits}
+
+   min_str = SELECT mlp_values.min_limit
+   WHERE  ( entry_code = entry_code_lim ) 
+      AND ( level_id = "EXTERNAL" )
+   max_str = SELECT mlp_values.max_limit
+
+{**AS1580 HBe 29-9-2004: If no EXTERNAL limits are found, attempt to find INTERNAL limits instead}
+   IF ((min_str = EMPTY) OR BLANK(min_str)) AND ((max_str = EMPTY) OR BLANK(max_str)) THEN
+      min_str = SELECT mlp_values.min_limit
+      WHERE  ( entry_code = entry_code_lim ) 
+         AND ( level_id = "INTERNAL" )
+      max_str = SELECT mlp_values.max_limit
+   ENDIF      
+{**AE1580}
+
+
+  {Checking the limit usability}
+
+   IF ((min_str = EMPTY) OR BLANK(min_str)) AND ((max_str = EMPTY) OR BLANK(max_str)) THEN
+      FLASH_MESSAGE("Neither EXTERNAL nor INTERNAL specification seems to exist on the component, transferring result directly.", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+
+   ELSEIF NOT (NUMTEXT(min_str) OR NUMTEXT(max_str)) THEN
+      FLASH_MESSAGE("Neither of the upper(lower specifications are numeric, transferring result directly!", TRUE)
+      result = org_res_text
+      RETURN (TRUE)
+   ENDIF
+
+
+
+  {Handle open-ended lower-type limits}
+
+   IF ((substring(min_str,1,1) = "<") AND (substring(min_str,2,1) <> "=")) THEN
+
+      IF org_res_value < min_str THEN
+         result = min_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+
+   ELSEIF substring(min_str,1,2) = "<="  THEN
+
+      IF org_res_value <= min_str THEN
+         result = min_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+   
+
+  {Handle open-ended upper-type limits}
+
+   ELSEIF ((substring(min_str,1,1) = ">") AND (substring(min_str,2,1) <> "=")) THEN
+
+      IF org_res_value > min_str THEN
+         result = min_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+
+   ELSEIF substring(min_str,1,2) = ">="  THEN
+
+      IF org_res_value >= min_str THEN
+         result = min_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+
+
+  {Handle pure lower-limits}
+
+   ELSEIF ((substring(min_str,1,1) <> ">") AND (substring(min_str,1,1) <> "<")
+           AND (LENGTH(STRIP(min_str)) > 0) AND (LENGTH(STRIP(max_str)) = 0)) THEN
+
+      IF org_res_value >= min_str THEN
+         result = ">=":min_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+
+  {Handle pure upper-limits}
+
+   ELSEIF ((LENGTH(STRIP(min_str)) = 0) AND (LENGTH(STRIP(max_str)) > 0)) THEN
+
+      IF org_res_value <= max_str THEN
+         result = "<=":max_str
+      ELSE 
+         result = org_res_text
+      ENDIF
+
+  {Handle upper-and-lower limits}
+
+   ELSEIF ((LENGTH(STRIP(min_str)) > 0) AND (LENGTH(STRIP(max_str)) > 0)) THEN
+
+      IF (org_res_value >= min_str) AND (org_res_value <= max_str) THEN
+         result = org_res_text
+      ELSE
+         result = org_res_text
+      ENDIF
+
+  {Handle unexpected situations}
+
+   ELSE
+      FLASH_MESSAGE("Unexpected situation - passing on result from component above.", TRUE)
+      result = org_res_text
+   ENDIF
+
+
+   IF (result <> EMPTY) AND (NOT BLANK(result)) THEN
+      RETURN (TRUE)
+   ELSE
+      RETURN (FALSE)
+   ENDIF
+
+ENDROUTINE
+
+
+{**************************************** GET ANALYSIS **********************************}
+GLOBAL
+ROUTINE  get_analysis  ( VALUE current_test_number, analysis, analysis_version )
+
+analysis         = SELECT test.analysis WHERE test_number = current_test_number
+analysis_version = SELECT test.analysis_version
+
+IF (analysis <> EMPTY) AND NOT BLANK(analysis) AND (analysis_version <> EMPTY) AND NOT BLANK(analysis_version)
+THEN
+   RETURN(TRUE)
+ELSE
+   RETURN (FALSE)
+ENDIF
+
+ENDROUTINE {get_analysis}
+
+
+{****************************** CUTOFF BY LOCAL ANALYSIS DETECTION LIMIT**************************}
+
+GLOBAL
+ROUTINE  cutoff_by_detection  ( VALUE ignore_parm_err, VALUE analysis, VALUE analysis_version, VALUE test_number, 
+                                VALUE comp_name, VALUE comp_row, VALUE n_res, res_arr, result )
+
+
+JOIN LIBRARY TOOLBOX 
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_CSMLP
+
+DECLARE no_sets, err_mes, missing_parms
+DECLARE oper_location, occour_on_res, counter, match, numeric_cutoff, org_parm_array, parm_array, org_res_type
+ARRAY org_parm_array
+ARRAY parm_array
+
+result = EMPTY
+
+
+   IF NOT MLP_ANALYSIS_PARAMETERS ("A", "CUT_DETECT", 2, analysis, analysis_version, org_parm_array, no_sets, err_mes ) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("No parameter found for analysis " : STRIP(analysis) : " version " :
+         STRIP(analysis_version) :", not applying any Detection Limit cutoff value", TRUE)
+      ENDIF
+      missing_parms = TRUE
+   ELSE
+      missing_parms = FALSE
+   ENDIF
+
+
+   {(display_text <> EMPTY) AND (NOT BLANK(disp_text))}
+
+   IF NOT ((err_mes = EMPTY) OR (BLANK(err_mes))) THEN
+      FLASH_MESSAGE("Fatal parameter error: " : STRIP(err_mes) : ", now exiting.", TRUE)
+      EXIT
+   ENDIF
+
+   {Find operators default location}
+
+   oper_location = SELECT personnel . location_id
+                   WHERE  identity = OPERATOR
+
+   {DECLARE sample, location
+   sample = SELECT test.sample WHERE test_number = test_number
+   location = SELECT sample.location_id WHERE id_numeric = sample
+   
+   fm("Sample   Location: ":location:ASCII(10):
+   	  "Operator Location: ":oper_location)}
+ 
+   IF (oper_location = EMPTY ) OR BLANK(oper_location)
+   THEN
+      RETURN(FALSE)
+   ENDIF
+
+
+   {**Finding calculation occourance}
+   IF NOT GET_CALC_NUM(comp_row, res_arr, occour_on_res) THEN
+      FLASH_MESSAGE("Fatal problem finding the occourance of the calculated component.", TRUE)
+      EXIT
+   ENDIF
+   {**End calc. occour}
+
+
+
+   {**Identifying relevant rows from parameter array}
+
+   counter = 0
+   match = 0
+   WHILE counter < no_sets
+   counter = counter + 1
+      IF STRIP(org_parm_array [counter, 1]) = oper_location THEN
+         match = match + 1
+         parm_array[match,1] = org_parm_array[counter,1]
+         parm_array[match,2] = org_parm_array[counter,2]
+      ENDIF
+   ENDWHILE
+   IF (match < 1) AND (missing_parms = FALSE) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("Parameter setup does not exist for analysis " : STRIP(analysis) : " for location " : STRIP(oper_location) : " version " : STRIP(analysis_version) : ".",TRUE)
+      ENDIF
+      missing_parms = TRUE
+   ELSEIF (match < occour_on_res) AND (missing_parms = FALSE) THEN
+      IF NOT ignore_parm_err THEN
+         FLASH_MESSAGE("No Parameter setup for CUT_DETECT occourance no. " : STRIP(occour_on_res) : " on analysis " : analysis : ".",TRUE)   
+      ENDIF
+      missing_parms = TRUE
+   ENDIF
+   {**End of array manipulation}
+
+
+   {Check if result type is acceptable}
+   org_res_type  = res_arr[comp_row - 1, 2]
+   IF (org_res_type <> "N") and (org_res_type <> "K") THEN
+      FLASH_MESSAGE("Wrong result type in component above, is: '" : org_res_type : "' must be 'N' or 'K'. Transferring result directly!", TRUE)
+      result = res_arr[comp_row - 1, 5]
+      RETURN (TRUE)
+   ENDIF
+
+{fm("1: ":(res_arr[comp_row-1,1]):ASCII(10):
+   "2: ":(res_arr[comp_row-1,2]):ASCII(10):
+   "3: ":(res_arr[comp_row-1,3]):ASCII(10):
+   "4: ":(res_arr[comp_row-1,4]):ASCII(10):
+   "5: ":(res_arr[comp_row-1,5]):ASCII(10):
+   "6: ":(res_arr[comp_row-1,6]):ASCII(10):
+   "7: ":(res_arr[comp_row-1,7]):ASCII(10):
+   "8: ":(res_arr[comp_row-1,8]):ASCII(10):
+   "9: ":(res_arr[comp_row-1,9]):ASCII(10):
+   "10: ":(res_arr[comp_row-1,10]):ASCII(10):
+   "11: ":(res_arr[comp_row-1,11]):ASCII(10):
+   "12: ":(res_arr[comp_row-1,12]):ASCII(10):
+   "13: ":(res_arr[comp_row-1,13]):ASCII(10):
+   "14: ":(res_arr[comp_row-1,14]):ASCII(10):
+   "15: ":(res_arr[comp_row-1,15]):ASCII(10):
+   "16: ":(res_arr[comp_row-1,16]):ASCII(10):
+   "17: ":(res_arr[comp_row-1,17]):ASCII(10):
+   "18: ":(res_arr[comp_row-1,18]):ASCII(10):
+   "19: ":(res_arr[comp_row-1,19]):ASCII(10):
+   "20: ":(res_arr[comp_row-1,20]):ASCII(10):
+   "")}
+
+   {**FORMATTING}
+      IF NUMTEXT(res_arr[comp_row-1,6]) THEN
+      	 {fm("Input: ":NUMERIC(res_arr[comp_row-1,6]))}
+      	 
+         IF NUMERIC(res_arr[comp_row-1,6]) >= 10000 
+         THEN
+            SET FORMAT "99.9E+99"
+         ELSEIF NUMERIC(res_arr[comp_row-1,6]) < 1 THEN
+            SET FORMAT "9.999999" {Default format}
+         ELSEIF NUMERIC(res_arr[comp_row-1,6]) < 10000 THEN
+            SET FORMAT "99999"
+         ELSE
+            {Default format}
+         ENDIF
+         {fm("Input: ":NUMERIC(res_arr[comp_row-1,6]):" (formatted)")}
+      ENDIF
+   {**END FORMAT}
+
+   {**Check if cutoff value is numeric}
+
+   numeric_cutoff = FALSE
+   IF NUMTEXT(parm_array[occour_on_res,2]) THEN
+   	  {fm("Cut_off value: ":parm_array[occour_on_res,2])}
+      numeric_cutoff = TRUE
+   ELSE
+      IF NOT missing_parms THEN
+         FLASH_MESSAGE("Detection Limit value on parameter is not numeric", TRUE)
+      ENDIF
+   ENDIF
+   {**End check}
+
+   {**Genereating results}
+   IF missing_parms THEN
+      result = STRING(STRIP(res_arr[comp_row-1,6]))
+      RETURN (FALSE)
+   ELSE
+      IF NUMTEXT(res_arr[comp_row-1,6]) THEN
+         IF (NUMERIC(res_arr[comp_row-1,6]) < NUMERIC(parm_array[occour_on_res,2])) AND (numeric_cutoff) THEN
+         	{fm("IF (":NUMERIC(res_arr[comp_row-1,6]):" < ":NUMERIC(parm_array[occour_on_res,2]):") AND (":numeric_cutoff:") THEN")}
+         	result = "<":STRIP(NUMERIC(parm_array[occour_on_res,2]))
+            RETURN(TRUE)
+         ELSE
+            {fm("ELSE result = ":STRIP(NUMERIC(res_arr[comp_row-1,5]))*1000)}
+            result = STRIP(NUMERIC(res_arr[comp_row-1,5]))
+            RETURN(TRUE)
+         ENDIF
+      ELSE   
+         result = res_arr[comp_row-1,5]
+         RETURN(TRUE)
+      ENDIF
+   ENDIF
+
+   {**END of result Genereation}
+
+ENDROUTINE {cutoff_by_detection}
+
+
+
+

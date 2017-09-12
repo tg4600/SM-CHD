@@ -1,0 +1,497 @@
+
+{ SMP$REPORTS:ROSCOM_JOB.RPF }
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0026        140694  LPE     Find all Authorised Jobs, where difference     }
+{                               between Authorisedate and commitdate is bigger }
+{                               than 59 dayes. Job found is passed to routine  }
+{                               commit_job in library ROSCOM_LIB - menuproc    }
+{                               MENUNUMBER("CJO") is used.                     }
+{                               Find all authorised or cancled standard. Autho-}
+{                               rised standards where diff. between authorise- }
+{                               date is bigger than 59 dayes and all cancled   }
+{                               samples i passed to the routine commit_sample  }
+{                               in library ROSCOM_LIB - Menuproc MENUNUMBER    }
+{                               ("CSA") is used.                               }
+{                               Jobs and Samples commited is written to        }
+{                               SMP$LOGFILES:ROSCOMMIT.LOG.                    }
+{------------------------------------------------------------------------------}
+{
+}
+{**MIG          170895  JT     Migration changes
+}
+{
+}
+{------------------------------------------------------------------------------}
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY ROSCOM_LIB
+
+SET NOTPROTECTED
+
+SET NAME "NL:"
+
+DECLARE job_array, job, i
+
+ARRAY job_array
+
+i = 1
+job = SELECT job_to_cancel.job_name WHERE job_name like "%"
+
+WHILE (job <> EMPTY) DO
+    job_array[i,1] = job
+    i = i + 1
+NEXT job_to_cancel
+job = SELECT job_to_cancel.job_name
+ENDWHILE
+
+job = SELECT job_header.job_name WHERE job_status = "C"
+                                   AND old_status = " "
+                                   AND template_id = "P-BULK-ROS"
+
+WHILE (job <> EMPTY) DO
+    job_array[i,1] = job
+    i = i + 1
+NEXT job_header
+job = SELECT job_header.job_name
+ENDWHILE
+
+
+i = 1
+WHILE i <= SIZE_OF_ARRAY(job_array) DO
+    job = SELECT job_header.job_name FOR UPDATE WHERE job_name = job_array[i,1]
+    IF NOT ( TRANSACTION_IS_WRITE() ) THEN
+         START WRITE TRANSACTION ( "Cancel Empty Job" )
+    ENDIF
+    CHANGE JOB STATUS TO "X"
+    i = i + 1
+    UPDATE job_header
+    COMMIT
+    WriteToLog(job:" cancelled")
+ENDWHILE
+
+setup_cons()
+
+{CONSTANT diff_dayes = " 60 00:00:00.00"}  { **MIG Must add an interval }
+
+CONSTANT diff_dayes = "20 00:00:00.00"
+
+
+create_log_file (new_file_name)
+
+number_of_cancled_samples = find_cancled_samples()
+commit_found_samples (number_of_cancled_samples , can_sample )
+
+number_of_std_samples = find_std_samples()
+commit_found_samples (number_of_std_samples , std_sample)
+
+
+number_of_jobs = find_the_jobs ()
+commit_the_jobs (number_of_jobs)
+
+
+IF ( (number_of_std_samples = 0) AND
+     (number_of_cancled_samples = 0) AND
+     (number_of_jobs = 0) )THEN
+
+   file_msg = "NO samples or Jobs committed"
+   FILE EXTEND file_name,status
+   FILE WRITE file_name, file_msg,status
+   FILE CLOSE file_name,status
+ENDIF
+
+{---------------------------- find_cancled_samples ----------------------------}
+
+ROUTINE find_cancled_samples
+
+declare  n_cancled ,
+         smpid
+
+n_cancled = 0
+
+smpid = SELECT sample.id_numeric
+        WHERE ( (status = "X") AND
+                (id_text LIKE "STD-%") )
+
+WHILE smpid <> EMPTY DO
+
+   n_cancled = n_cancled + 1
+   can_sample [n_cancled] = smpid
+   NEXT sample
+   smpid = SELECT sample.id_numeric
+ENDWHILE
+
+RETURN(n_cancled)
+
+ENDROUTINE   {find_cancled_samples}
+
+{------------------------------ find_std_samples ------------------------------}
+
+ROUTINE find_std_samples
+
+declare n_aut_std
+
+smpid = SELECT sample.id_numeric
+        WHERE ( (status = "A") AND
+                (id_text LIKE "STD-%") )
+
+n_aut_std = 0
+
+WHILE smpid <> EMPTY
+
+   stdaut_date = DATE(SUBSTRING(SELECT sample.authorise_date,1,11))
+   before_date = DATE ( stdaut_date ) + INTERVAL ( diff_dayes ) {**MIG}
+
+   IF before_date <= date_to_day THEN
+      n_aut_std = n_aut_std + 1
+      std_sample[ n_aut_std ] = smpid
+   ENDIF
+
+   NEXT sample
+   smpid = SELECT sample.id_numeric
+
+ENDWHILE
+
+RETURN( n_aut_std )
+
+ENDROUTINE   {find_std_samples}
+
+{---------------------------- commit_found_samples ----------------------------}
+
+ROUTINE commit_found_samples ( num_of , act_sample)
+
+   declare count
+   count = 1
+
+   WHILE count <= num_of DO
+      ch_commit_sample (act_sample [count] )
+      count = count + 1
+   ENDWHILE
+
+ENDROUTINE   {commit_found_samples}
+
+
+{------------------------------- ch_commit_sample -------------------------------}
+
+ROUTINE ch_commit_sample (      sample_id             )
+
+   SET NAME "NL:"
+
+    DECLARE destination,done,sample_window,lk,ok,check_id
+
+    START READ TRANSACTION "commit sample"
+
+    done = FALSE
+
+        SET SAMPLE_STATUS "AX"
+
+       check_id = SELECT sample.id_numeric
+                    FOR UPDATE
+                    WHERE id_numeric = sample_id
+
+        IF check_id = sample_id THEN
+            destination = " "
+            CALL_ROUTINE "SAMPLE_DESTINATION"
+               USING destination
+               RETURNING ok
+               IN LIBRARY "$COMMIT"
+            IF ok THEN
+                status = EMPTY
+                START WRITE TRANSACTION "commit sample"
+                ch_commit_selected_sample(  sample_id,destination, status)
+               IF status = EMPTY THEN
+                    COMMIT
+                    {Added by CONSULT-02 to update incidents table after }
+                    execute_sql ( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND SUBJECT_FIELD = '": sample_id :"'")
+                    WriteToLog( "UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND SUBJECT_FIELD = '": sample_id :"'")
+                    execute_sql ( "COMMIT")
+                ELSE
+                    ROLLBACK
+                ENDIF
+            ENDIF
+        ELSE
+            file_msg = GET_USER_MESSAGE("LIB_COMM_NOLOCSAMP",1):STRIP(sample_id)
+         file_name = GLOBAL("USER_1")
+         FILE EXTEND file_name,status
+         FILE WRITE file_name, file_msg,status
+         FILE CLOSE file_name,status
+        ENDIF
+
+ENDROUTINE   {ch_commit_sample}
+
+
+{---------------------------- ch_commit_selected_sample ----------------------------}
+
+ROUTINE ch_commit_selected_sample ( VALUE sample_id            ,
+                                    VALUE destination          ,
+                                    status                )
+    DECLARE test_number,info_window
+
+   SET NAME "NL:"
+
+   sample_id_text = SELECT sample.id_text
+
+    test_number = SELECT test.test_number
+            FOR UPDATE
+           WHERE sample_id = sample_id
+
+    WHILE (test_number <> EMPTY) AND
+        (status = EMPTY) DO
+        IF test_number = LOCKED THEN
+            status = GET_USER_MESSAGE("LIB_COMM_STAT_1" ,1)
+      ELSE
+            commit_selected_test(test_number,destination,status)
+            NEXT test
+            test_number = SELECT test.test_number
+        ENDIF
+    ENDWHILE
+
+    IF status = EMPTY THEN
+
+        CONSIGN sample TO destination, status
+
+        IF status <> EMPTY THEN
+         file_msg = GET_USER_MESSAGE("LIB_COMM_DISPLAY_7" ,1): status:
+                    " for Sample : ":sample_id
+        ELSE
+         file_msg = "Sample ID : ":sample_id_text:"   ":STRIP(sample_id)
+    ENDIF
+
+   ELSE
+      file_msg = status
+    ENDIF
+
+   file_name = GLOBAL("USER_1")
+   FILE EXTEND file_name,status
+   FILE WRITE file_name, file_msg,status
+   FILE CLOSE file_name,status
+
+ENDROUTINE   {ch_commit_selected_sample}
+
+{------------------------------- find_the_jobs -------------------------------}
+ROUTINE find_the_jobs
+
+DECLARE committed_job
+
+   job_id = SELECT job_header.job_name
+{** 1059 JDy 31/10/97  Also included jobs with status X }
+{           WHERE status = "A" }
+            WHERE ((status = "A") OR (status = "X"))
+
+
+   number_of_jobs = 0
+
+   WHILE job_id <> EMPTY
+{**MS1819 HBe 7/12-2007}
+      committed_job = SELECT c_job_header.job_name WHERE job_name = job_id
+      jobaut_date = DATE(SUBSTRING(SELECT job_header.authorise_date,1,11))
+      before_date = DATE ( jobaut_date ) + INTERVAL ( diff_dayes ) {**MIG}
+      IF (before_date < date_to_day) AND (committed_job = EMPTY) THEN
+{**ME1819 }
+         number_of_jobs = number_of_jobs + 1
+         act_job [number_of_jobs] = job_id
+
+      ENDIF
+      NEXT job_header
+      job_id = SELECT job_header.job_name
+   ENDWHILE
+
+RETURN (number_of_jobs)
+
+ENDROUTINE   {find_the_jobs}
+
+{---------------------------- commit_the_jobs ----------------------------}
+
+ROUTINE commit_the_jobs ( num_of )
+
+   declare count
+   count = 1
+
+   WHILE count <= num_of DO
+      ch_commit_job (act_job  [count] )
+      count = count + 1
+   ENDWHILE
+
+ENDROUTINE   {commit_the_jobs}
+
+
+{--------------------------------- ch_commit_job ---------------------------------}
+ROUTINE ch_commit_job (      job_id                )
+
+   SET NAME "NL:"
+
+    DECLARE destination,done,job_window,lk,ok,check_id
+
+    START READ TRANSACTION "commit job"
+
+   SET JOB_STATUS "AX"
+
+    check_id = SELECT job_header.job_name
+                    FOR UPDATE
+                WHERE job_name = job_id
+
+    IF check_id = job_id THEN
+        destination = " "
+        CALL_ROUTINE "JOB_DESTINATION"
+           USING destination
+           RETURNING ok
+           IN LIBRARY "$COMMIT"
+
+        IF ok THEN
+            ch_commit_selected_job( job_id, destination)
+       ENDIF
+   ELSE
+      file_msg = "Unable to locate Job Id : ":job_id
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+   ENDIF
+
+ENDROUTINE   {ch_commit_job}
+
+{---------------------------- ch_commit_selected_job ----------------------------}
+
+ROUTINE ch_commit_selected_job (VALUE job_id               ,
+                             VALUE destination           )
+    DECLARE status,job_info_window
+
+   pr_job_id = STRIP(job_id)
+
+    IF all_samples_authorised(job_id) THEN
+
+        START WRITE TRANSACTION "commit job"
+
+      commit_samples_in_job (job_id,destination)
+
+        CONSIGN job_header TO destination, status
+        IF status = EMPTY THEN
+            COMMIT
+            job_id = STRIP(job_id)
+            execute_sql("UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_JOB_HEADER' WHERE SUBJECT_TABLE = 'JOB_HEADER' AND SUBJECT_FIELD = '": job_id :"'")
+            WriteToLog("UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_JOB_HEADER' WHERE SUBJECT_TABLE = 'JOB_HEADER' AND SUBJECT_FIELD = '": job_id :"'")
+            execute_sql("UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND JOB_NAME ='": job_id :"'")
+            WriteToLog("UPDATE INCIDENTS SET SUBJECT_TABLE = 'C_SAMPLE' WHERE SUBJECT_TABLE = 'SAMPLE' AND JOB_NAME ='": job_id :"'")
+            execute_sql ( "COMMIT")
+         file_msg = "Job  Id   : ":pr_job_id
+      ELSE
+           ROLLBACK
+         file_msg = "Consign error : ":status:" for Job Id ":pr_job_id
+        ENDIF
+
+    ELSE
+      file_msg = "Job Id    : ":pr_job_id:" has unauthorised samples"
+    ENDIF
+
+   file_name = GLOBAL("USER_1")
+   FILE EXTEND file_name,status
+   FILE WRITE file_name, file_msg,status
+   FILE CLOSE file_name,status
+
+ENDROUTINE   {ch_commit_selected_job}
+
+
+{---------------------------- commit_samples_in_job ----------------------------}
+
+ROUTINE commit_samples_in_job (     job_id               ,
+                                    destination           )
+   ARRAY current_sample
+
+   DECLARE sample_id,check_id , sample_count , count
+
+   sample_count = 0
+
+   sample_id = SELECT sample.id_numeric
+               WHERE job_name = job_id
+
+   IF sample_id <> EMPTY THEN
+
+      WHILE sample_id <> EMPTY DO
+
+{**E0026-1S}
+
+         sample_count = sample_count + 1
+         current_sample [sample_count] = sample_id
+
+{**E0026-1E}
+
+         NEXT sample
+         sample_id = SELECT sample.id_numeric
+      ENDWHILE
+
+{**E0026-1S}
+
+      count = 1
+
+      WHILE count <= sample_count DO
+
+         cur_sample = SELECT sample.id_numeric
+                      FOR UPDATE
+                      WHERE id_numeric = current_sample [count]
+
+         status = EMPTY
+         ch_commit_selected_sample(cur_sample,destination,status)
+         count = count + 1
+      ENDWHILE
+
+{**E0026-1E}
+
+   ELSE
+
+      file_msg = "Job  Id   : ":pr_job_id:" has no samples"
+      file_name = GLOBAL("USER_1")
+      FILE EXTEND file_name,status
+      FILE WRITE file_name, file_msg,status
+      FILE CLOSE file_name,status
+   ENDIF
+
+ENDROUTINE   {commit_samples_in_job}
+
+{------------------------------ create_log_file ------------------------------}
+
+ROUTINE create_log_file (VALUE file_name             )
+
+   file_msg = "List over samples and jobs committed ":commit_date
+
+   FILE CREATE file_name,status
+   FILE WRITE  file_name,file_msg,status
+   file_msg = " "
+   FILE WRITE  file_name,file_msg,status
+   FILE CLOSE  file_name,status
+
+ENDROUTINE   {create_log_file}
+{--------------------------------- setup_cons ---------------------------------}
+
+ROUTINE setup_cons
+
+   ARRAY std_sample
+   ARRAY can_sample
+   ARRAY act_job
+
+   commit_date = NOW
+   date_to_day = DATE(SUBSTRING(NOW,1,11))
+
+   new_file_name = "SMP$LOGFILES:ROSCOMMIT.LOG"
+   file_name = new_file_name
+   SET GLOBAL("USER_1") to file_name
+
+ENDROUTINE   {setup_cons}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

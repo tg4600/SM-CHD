@@ -1,0 +1,405 @@
+{******************************************************************************
+* Module Name   : TOT_SERVICE.rpf
+* Purpose       : Read and process xml-files delievered from TOTVS / Datasul via BizTalk
+*                 Parse out user, library, routine and all parameters
+*                 for use in routines in SAP_TRANSFER2
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+{ Change log:                                                                   }
+{                                                                               }
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY SAP_TRANSFER
+JOIN LIBRARY TOOLBOX
+
+Start_Batch_Process()
+
+EXIT
+
+{==============================================================================}
+{ Return-Value: None                                                           }
+{=[15.03.2016 (EA)]============================================================}
+
+ROUTINE Start_Batch_Process
+
+    DECLARE doLoop                      { Handle the loop (break if false)      }
+
+    doLoop = TRUE
+    REPEAT
+        CALL_ROUTINE "READ_XML_FILE"
+        IN LIBRARY GLOBAL("CURRENT_LIBRARY")
+        NEW CONTEXT
+    UNTIL (doLoop = FALSE)
+   
+ENDROUTINE { Start_Batch_Process }
+
+
+{**************************************************************************************************************
+***************************************************************************************************************}
+GLOBAL ROUTINE READ_XML_FILE
+    DECLARE files_array, child, columns, c, l, m, filename, newfilename, read_line, line, status, 
+            xml_library, xml_routine, par_array, child_array, ID, material, nothing 
+
+    ARRAY files_array
+    ARRAY par_array
+    ARRAY child_array
+    
+    SET FORMAT "999999.999"
+
+
+    FILE FIND "smp$userfiles:XML_INBOUND\*Datasul_*.xml", files_array, status
+
+{**************************************************************************************************************
+    IF SIZE_OF_ARRAY(files_array) = 0
+        FILE FIND "smp$userfiles:XML_INBOUND\Error\*_Datasul_BATCH_INFO.xml", files_array, status
+    ENDIF
+***************************************************************************************************************}
+    IF SIZE_OF_ARRAY(files_array) > 0
+        c = 1
+        WHILE (c <= SIZE_OF_ARRAY(files_array)) AND (files_array[c] <> EMPTY) DO
+            FILE OPEN files_array[c], status
+            IF status = EMPTY THEN
+                FILE READ files_array[c], read_line, status
+                line = read_line
+                WHILE status = EMPTY DO
+                    FILE READ files_array[c], read_line, status
+                    IF status = EMPTY THEN
+                        line = line:read_line
+                    ENDIF
+                ENDWHILE
+                FILE CLOSE files_array[c]
+
+                xml_library = GetVar ("entity type", line)
+                xml_routine = GetVar ("command", line)
+                material    = (Getvar ("material", line))
+                STRIP_LEADING_0(material)
+                l = INDEX(files_array[c], "_Datasul_") - 15
+                IF INDEX(files_array[c], "\Error\") > 0 THEN
+                    ID = files_array[c]
+                    ID = SUBSTRING(files_array[c], 33 , 14)
+                ELSE
+                    ID = SUBSTRING(files_array[c], l , 14)
+                ENDIF
+
+                par_array = GetPar(line, ID)
+                child_array = GetChild(line, columns)
+
+                IF columns >= 2 THEN
+                    Child = 1
+                    WHILE Child <= SIZE_OF_ARRAY(child_array) DO
+                        m = SIZE_OF_ARRAY(par_array) + 1
+                        par_array[m,1] = child_array[Child,1]
+                        par_array[m,2] = child_array[Child,2]
+                        Child = Child + 1
+                    ENDWHILE
+                ENDIF
+
+                m = SIZE_OF_ARRAY(par_array) + 1
+                par_array[m,1] = "FileName"
+                par_array[m,2] = STRIP(SUBSTRING(files_array[c], l, LENGTH(files_array[c])))
+
+                IF INDEX(files_array[c], "\Error\") > 0 THEN
+                    filename = files_array[c]
+                    newfilename = filename
+                    fm(filename:ASCII(10):xml_routine:ASCII(10):GetArray(par_array))
+                ELSE
+                    l = INDEX(files_array[c], "XML_INBOUND") + 10
+                    filename = SUBSTRING(files_array[c], 1, l):"\Error":SUBSTRING(files_array[c], l + 1, LENGTH(files_array[c]))
+                    newfilename = SUBSTRING(files_array[c], 1, l):"\Error":SUBSTRING(files_array[c], l + 1, 21):xml_routine:".xml"
+                    FILE COPY files_array[c], filename, status
+                    FILE DELETE files_array[c]
+                ENDIF
+                {WriteToLog(ASCII(10):"filename    :":filename:ASCII(10):"newfilename:":newfilename)}
+
+                IF filename <> newfilename
+                     FILE COPY filename newfilename, status
+                     FILE DELETE filename
+                ENDIF
+
+            {Send the data from array to selected routine}
+                IF     xml_library = "SAP_TRANSFER" THEN
+                    l = INDEX(files_array[c], "XML_INBOUND") + 12
+                    WriteToLog(STRIP(SUBSTRING(files_array[c], l, LENGTH(files_array[c]))):" ":PAD(xml_routine, " ", 21):GET_DETAILS(par_array)) 
+{**************************************************************************************************************
+***************************************************************************************************************}                
+                nothing = EMPTY
+                IF     xml_routine = "PRODUCTION_ORDER" THEN
+                    status = PRODUCTION_ORDER(par_array, nothing, nothing, nothing)
+                ELSEIF xml_routine = "INSPECTION_LOT" THEN
+                    status = INSPECTION_LOT(par_array, nothing, nothing, nothing)
+                ELSEIF xml_routine = "BATCH_INFO" THEN
+                    status = BATCH_INFO(par_array, nothing, nothing, nothing)
+                ELSEIF xml_routine = "BATCH_TRACE" THEN
+                    status = BATCH_TRACE(par_array, child_array, nothing, nothing)
+                ELSE
+                    fm("Unknown routine: '":xml_routine:"'")
+                ENDIF
+            ENDIF
+
+                IF (status = EMPTY) OR (status = TRUE)
+                    IF FILE EXISTS ( filename ) THEN
+                        WriteToLog("(OK) Delete ":filename)
+                        FILE DELETE filename
+                    ENDIF
+                    IF FILE EXISTS ( newfilename ) THEN
+                        l = INDEX(TOUPPER(newfilename), "ERROR") + 6
+                        IF l = 0 THEN
+                            l = INDEX(TOUPPER(newfilename), "XML_INBOUND") + 11
+                        ENDIF
+                        {WriteToLog("Delete    ":STRIP(SUBSTRING(newfilename, l, LENGTH(newfilename))))}
+                       FILE DELETE newfilename
+                    ENDIF
+                ELSE
+                    fm("Status: ":status)
+                ENDIF
+            ENDIF
+            c = c + 1
+        ENDWHILE
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE GetVar (VALUE input, VALUE line)
+{******************************************************************************
+* Module Name   : GetVar
+* Purpose       : Get variables from xml_file
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+DECLARE l, s, s2, e, output
+    l = LENGTH(line)
+    s = INDEX(line, input)
+    line = SUBSTRING(line, s, l)
+    s  = INDEX(line, ">") + 1
+    s2 = INDEX(line, "=") + 1
+    IF s2 < s THEN
+        s = s2
+    ENDIF
+    e  = INDEX(line, "<")
+    output = SUBSTRING(line, s, e - s)
+    output = SUBSTITUTE(output, "<", "")
+    output = SUBSTITUTE(output, ">", "")
+    output = SUBSTITUTE(output, ASCII(34), "")
+    RETURN (output)
+
+ENDROUTINE
+
+
+ROUTINE GetPar (VALUE line, VALUE ID)
+{******************************************************************************
+* Module Name   : GetPar
+* Purpose       : Get parameters from xml-file
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+DECLARE j, par_array, l, p, v
+ARRAY par_array
+
+    line = SUBSTRING(line, INDEX(line, "</ns0:command>") + 14, LENGTH(line))
+    j = SIZE_OF_ARRAY(par_array) + 1
+        par_array[j,1] = "ID"
+        par_array[j,2] = ID
+
+    WHILE (INDEX(line, "parameter name") > 0) AND (INDEX(line, "parameter name") < INDEX(line, "children"))
+        j = j + 1
+        line = SUBSTRING(line, INDEX(line, "parameter name") + 16, LENGTH(line))
+        l = INDEX(line, ASCII(34)) - 1
+        p = SUBSTRING(line, 1, l)
+        par_array[j,1] = p
+        line = SUBSTRING(line, l + 3, LENGTH(line))
+{       line = SUBSTRING(line, INDEX(line, ASCII(34):">") + 2, LENGTH(line))}
+        IF LEFTSTRING(line,2) = "/>" THEN
+            l = INDEX(line, "/>") - 1
+        ELSE
+            l = INDEX(line, "</") - 1
+        ENDIF
+        v = SUBSTRING(line, 1, l)
+        par_array[j,2] = v
+    ENDWHILE
+
+    RETURN(par_array)
+
+ENDROUTINE
+
+
+ROUTINE GetChild (VALUE line, c)
+{******************************************************************************
+* Module Name   : GetPar
+* Purpose       : Get parameters from xml-file
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+DECLARE i, r, Parameters, child_array, l, p, v
+ARRAY child_array
+
+    line = SUBSTRING(line, INDEX(line, "<ns0:children"), LENGTH(line))
+    r = 0
+    c = 2
+    Parameters = ""
+    WHILE (INDEX(line, "parameter name") > 0)
+
+        r = r + 1
+        line = SUBSTRING(line, INDEX(line, "parameter name") + 16, LENGTH(line))
+        p = SUBSTRING(line, 1, INDEX(line, ASCII(34)) - 1)
+        line = SUBSTRING(line, INDEX(line, ASCII(34):">") + 2, LENGTH(line))
+        l = INDEX(line, "</") - 1
+        v = SUBSTRING(line, 1, l)
+
+        IF INDEX(Parameters, p) = 0
+            r = SIZE_OF_ARRAY(child_array) + 1
+            {fm("child_array[":r:",":c:"] = ":p:": ":v)}
+            child_array[r,1] = p
+            child_array[r,c] = v
+            Parameters = Parameters:p:";"
+        ELSE
+            IF child_array[1,1] = p THEN
+        c = c + 1
+        ENDIF
+        i = 1
+            WHILE i <= SIZE_OF_ARRAY(child_array)
+                IF (child_array[i,1] = p)
+                {fm("child_array[":i:",":c:"] = ":p:": ":v)}
+                    child_array[i,c] = v
+                    i = SIZE_OF_ARRAY(child_array)
+                ENDIF
+            i = i + 1
+            ENDWHILE
+        ENDIF
+    ENDWHILE
+
+    RETURN(child_array)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+
+
+ROUTINE browse_files ( self )
+    DECLARE browse_array, file_count, search_array, check_ok, temp_file, slash_pos
+    ARRAY browse_array
+    ARRAY search_array
+
+    file_count = 0
+
+    FILE FIND "smp$userfiles:XML_INBOUND\Error\*.xml", search_array, check_ok
+
+    IF check_ok = EMPTY THEN
+        REPEAT
+            file_count = file_count + 1
+            temp_file = search_array [ file_count ]
+            slash_pos = INDEX ( temp_file, "\" )
+            WHILE slash_pos <> 0 DO
+                temp_file = temp_file # LEFTSTRING ( temp_file, slash_pos )
+                slash_pos = INDEX ( temp_file, "\" )
+            ENDWHILE
+            browse_array [ file_count ] = temp_file
+        UNTIL ( file_count = size_of_array ( search_array ) )
+        browse_on_array ( 40, self . text , browse_array )
+        self . repaste ( )
+    ENDIF
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE SMPBACK_ALIVE
+{* Purpose      : Create log file SMPBACK_ALIVE.log to be monitored by ORION.
+                  If alert "SampleManager Hearbeat WARN" occurs,
+                  then service (smpbackvgsm92prod) must be re-started.
+ * Parameters   : None
+ * Return Value : N/A
+ *************************************************************************}
+DECLARE file_name, check_ok, scheduled, delay, rep_int
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    file_name = "smp$logfiles:":"SMPBACK_ALIVE.log"
+
+    IF NOT FILE EXISTS ( file_name ) THEN
+        FILE CREATE file_name, check_ok
+    ENDIF
+
+    scheduled = SELECT timerqueue . run_time
+                WHERE report_name = GLOBAL("CURRENT_LIBRARY")
+    rep_int   = SELECT timerqueue . repeat_interval
+
+
+    delay = NOW - scheduled + INTERVAL(rep_int)
+
+    FILE EXTEND file_name, check_ok
+    FILE WRITE file_name, Now():";":delay, check_ok
+    FILE CLOSE file_name, check_ok
+
+    RESTORE DATE FORMAT
+
+ENDROUTINE
+ 
+{*************************************************************************}
+ROUTINE GET_DETAILS(par_array)
+{* Purpose      : Extract Material/Batch/Inspection-details
+ * Parameters   : None
+ * Return Value : Val
+ *************************************************************************}
+DECLARE i, val, insp
+    val = ""
+    i = 1
+        WHILE i <= size_of_array(par_array)
+        IF (par_array[i, 1] = "Material")
+        OR (par_array[i, 1] = "MaterialID")
+        OR (par_array[i, 1] = "MaterialToProduce") THEN
+            val = STRIP(par_array[i, 2])
+            STRIP_LEADING_0(val)
+            val = JUSTIFY(PAD(val, " ", 6), "RIGHT")
+        ENDIF    
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(par_array)
+        IF (par_array[i, 1] = "BatchID") 
+        OR (par_array[i, 1] = "BatchName") THEN
+            val = val:", ":STRIP(par_array[i, 2])
+        ENDIF    
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(par_array)
+        IF (par_array[i, 1] = "Type") THEN
+            val = val:", ":STRIP(par_array[i, 2])
+        ENDIF    
+        i = i + 1
+    ENDWHILE
+
+    i = 1
+    WHILE i <= size_of_array(par_array)
+        IF (par_array[i, 1] = "InspectionLotID") THEN
+            insp = STRIP(par_array[i, 2])
+            STRIP_LEADING_0(insp)
+            val = val:", ":insp
+        ENDIF    
+        i = i + 1
+    ENDWHILE
+
+    RETURN("(":val:")")
+
+ENDROUTINE
+ 
+{***************************************************************************************************************}

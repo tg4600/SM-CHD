@@ -1,0 +1,601 @@
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $LIB_UTILS
+
+GLOBAL
+ROUTINE find_results_and_row ( VALUE test_no, VALUE comp_name,
+                                     res_arr, n_res, comp_row )
+   DECLARE err_mes
+
+   err_mes = EMPTY
+
+   IF     (NOT find_results( test_no, res_arr, n_res ) )
+   THEN   err_mes = "No results entered"
+   ELSEIF (NOT get_component_row( comp_name, res_arr, n_res, comp_row ) )
+   THEN   err_mes = "Could not find component row"
+   ENDIF
+
+   IF   err_mes <> EMPTY
+   THEN flash_message( err_mes, TRUE )
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE get_chi_limits ( limit_arr, limit_count )
+
+   file_name = "SMP$TEXTFILES:CHI-TABEL.TXT"
+   FILE OPEN file_name, success
+   IF success <> EMPTY THEN
+      flash_message("Error in reading file:": file_name : "-" : success :
+                    " Contact EDP department", TRUE)
+      return ( FALSE )
+   ELSE
+      limit_count = 0
+      FILE READ file_name, file_line, success
+      WHILE (success=EMPTY) AND (file_line <> EMPTY) DO
+         limit_count = limit_count + 1
+         limit_arr [limit_count] = NUMERIC(file_line)
+         FILE READ file_name, file_line, success
+      ENDWHILE
+      FILE CLOSE file_name, success
+      return ( TRUE )
+   ENDIF
+ENDROUTINE
+
+
+ROUTINE is_not_null ( VALUE val )
+
+   IF   (val <> EMPTY) AND (NOT BLANK(val))
+   THEN return ( TRUE )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE calc_sol ( VALUE test_no , VALUE comp_name,
+                   VALUE comp_row, VALUE n_res, res_arr, mean_val )
+
+   ARRAY anal_arr
+   ARRAY mlp_arr
+   ARRAY chi_arr
+   ARRAY limit_arr
+
+   mean_val = EMPTY
+
+   IF NOT get_calc_num ( comp_row, res_arr, calc_instance ) THEN
+      flash_message("Warning: Could not find calculation instance",TRUE)
+      calc_instance = 1
+   ENDIF
+
+   anal_id = select test.analysis
+             where  test_number = test_no
+   anal_ver = select test.analysis_version
+   smp_id  = select test.sample
+
+{  Setting up default values if no parameters defined   }
+   ref_ml  = 1
+   do_sum  = FALSE
+   do_chi  = FALSE
+   do_flag = TRUE
+   do_min  = FALSE
+   do_base = FALSE
+   sup_lt  = FALSE
+   zer_mp  = TRUE    { Zeroes used as missing points }
+   upper_detect = FALSE
+   lower_detect = FALSE
+
+   comp_flag = strip(res_arr[comp_row,result_cont_pos])
+
+   IF   mlp_analysis_parameters( "A", "MEAN_SOL", 8, anal_id, anal_ver,
+                                 anal_arr, n_sets, err_mes )
+   THEN
+        IF   n_sets >= calc_instance
+        THEN n_set = calc_instance
+        ELSE n_set = 1
+             flash_message("Warning: To few parameter setup's. Using first one",
+                            TRUE )
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,1])) AND
+           (anal_arr[n_set,1]) THEN
+           do_sum = TRUE
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,2])) AND
+           (NUMTEXT(anal_arr[n_set,2])) AND (NUMERIC(anal_arr[n_set,2])>0) THEN
+           ref_ml = NUMERIC(anal_arr[n_set,2])
+        ENDIF
+
+        base_sol_flag = anal_arr[n_set,3]
+        IF   is_not_null(base_sol_flag)
+        THEN do_base = TRUE
+           n = comp_row
+           all_found = FALSE
+           base_sol = EMPTY
+           base_smp = EMPTY
+           err_mes = EMPTY
+           WHILE (n > 1) AND (NOT all_found) DO
+             n = n-1
+             IF res_arr[n,result_cont_pos] = base_sol_flag THEN
+                val = res_arr[n,result_text_pos]
+                IF     val = EMPTY
+                THEN   err_mes="Missing result on ":res_arr[n,result_name_pos]
+                ELSEIF NOT NUMTEXT(val)
+                THEN   err_mes = "Value:":strip(val):" must be numeric"
+                ELSEIF NUMERIC(val) <= 0
+                THEN   err_mes="Basic solution values must be greater than zero"
+                ENDIF
+
+                IF err_mes <> EMPTY THEN
+                   flash_message( err_mes, TRUE )
+                   return ( EMPTY )
+                ENDIF
+
+                IF   base_sol = EMPTY
+                THEN base_sol = NUMERIC( val )
+                ELSE base_smp = NUMERIC( val )
+                     base_sol = base_sol - base_smp
+                     IF base_sol <= 0 THEN
+                        flash_message("Error: Base Solution must be greater ":
+                                      "than base sample quantity", TRUE)
+                        return ( EMPTY )
+                     ENDIF
+                     all_found = TRUE
+                ENDIF
+
+             ENDIF
+           ENDWHILE
+
+           IF NOT all_found THEN
+              flash_message("Error in setup. Could not find two components ":
+                            "having:":base_sol_flag:" in flags",TRUE)
+              return ( EMPTY )
+           ENDIF
+
+        ELSE do_base = FALSE
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,4])) AND
+           (anal_arr[n_set,4]) THEN
+           do_chi = TRUE
+        ENDIF
+
+        comp_flag = strip(anal_arr[n_set,5])
+        IF   NOT is_not_null( comp_flag )
+        THEN do_flag = FALSE
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,6])) THEN
+           IF   NUMTEXT(anal_arr[n_set,6])
+           THEN min_no = NUMERIC(anal_arr[n_set,6])
+                do_min = TRUE
+           ELSE flash_message("Error in setup. Cell count minimum limit:" :
+                              strip(anal_arr[n_set,6]) : " is not numeric",TRUE)
+                return
+           ENDIF
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,7])) AND
+           (anal_arr[n_set,7]) THEN
+           sup_lt = TRUE
+        ENDIF
+
+        IF (is_not_null(anal_arr[n_set,8])) AND
+           (NOT anal_arr[n_set,8]) THEN
+           zer_mp = FALSE
+        ENDIF
+
+   ENDIF
+
+   IF (comp_flag <> EMPTY) AND (NOT BLANK(comp_flag)) AND
+      (do_flag) THEN
+
+      n = comp_row
+      found = FALSE
+      WHILE (n > 1) AND (NOT found) DO
+         n = n-1
+         IF (strip(res_arr[n,result_cont_pos])=comp_flag)
+         THEN found = TRUE
+         ENDIF
+      ENDWHILE
+
+      IF   (NOT found)
+      THEN flash_message("Error in setup. No components with flag:":
+                          comp_flag,TRUE)
+           return
+      ELSEIF (res_arr[n,result_text_pos] = EMPTY)
+      THEN flash_message("Missing result in component:":
+                          res_arr[n,result_name_pos],TRUE)
+           return
+      ELSEIF (res_arr[n,result_oorf_pos] = TRUE) OR
+             (res_arr[n,result_text_pos] = "NEWTEST")
+      THEN new_test_proc ( test_no, comp_name, comp_flag, "RES-FAIL", mean_val )
+           return
+      ELSEIF (res_arr[n,result_oorf_pos] = FALSE) AND
+             (res_arr[n,result_type_pos] = "O")
+      THEN phrase_id = res_arr[n,result_calc_pos]
+           oorf = select limit_phrase_entry . comparison
+                  where  limit_phrase = phrase_id
+                  and    result_value = res_arr[n,result_text_pos]
+           IF   oorf = "F"
+           THEN new_test_proc ( test_no, comp_name, comp_flag, "RES-FAIL",
+                                mean_val )
+                return
+           ENDIF
+      ENDIF
+
+   ENDIF
+
+   comp_id  = strip( comp_name )
+   comp_len = length( comp_id )
+
+   zeroes = 0
+   bigger_signs = 0
+   missing_points = 0
+   calc_res = 0
+   calc_sum = 0
+   comps = 0
+   min_sol     = 9999999999
+   min_sol_val = 9999999999
+   min_sol_count = 0
+   max_sol =  -1
+   sum_val = 0
+   sum_sol = 0
+   sum_ml  = 0
+{**AS1266 HBe 21-8-00}
+   sum_dil = 0
+{**AE1266 HBe 21-8-00}
+
+   
+
+
+   n_chi = 0
+   err_mess = EMPTY
+   n = 0
+   WHILE (n < n_res) AND (err_mess=EMPTY) DO
+      n = n + 1
+      IF (n <> comp_row) AND
+         (substring(res_arr[n,result_name_pos],1,comp_len)=comp_id)
+      THEN IF   res_arr[n,result_text_pos] = EMPTY
+           THEN err_mess = "Missing result in component ":
+                            res_arr[n,result_name_pos]
+           ELSEIF (NOT NUMTEXT(res_arr[n,result_text_pos]))
+           THEN err_mess = "Result must be numeric in component ":
+                            res_arr[n,result_name_pos]
+           ELSEIF (NUMERIC(res_arr[n,result_text_pos])<0)
+           THEN err_mess = "Result is negative in component ":
+                            res_arr[n,result_name_pos]
+           ELSE str = strip(res_arr[n,result_name_pos])
+                pos = length ( str ) + 1
+                sol = EMPTY
+                ml  = EMPTY
+
+{               Find first end-string number                     }
+                found = FALSE
+                WHILE (pos > comp_len) AND (NOT found) DO
+                   pos = pos-1
+                   IF INDEX("0123456789", SUBSTRING(str,pos,1) ) <> 0
+                   THEN found = TRUE
+                   ENDIF
+                ENDWHILE
+
+{               Find solution                                    }
+                IF found THEN
+                   p = pos
+                   found = FALSE
+                   WHILE (p > comp_len) AND (NOT found) DO
+                      p = p-1
+                      IF SUBSTRING(str,p,1) = "-" THEN
+                         found = TRUE
+                      ENDIF
+                   ENDWHILE
+                   IF found THEN
+                      sol_str = strip(SUBSTRING(str,p+1,pos-p))
+                      IF NUMTEXT( sol_str) THEN
+                         sol = sol_str
+                      ENDIF
+                   ENDIF
+                ENDIF
+
+{               Find ml                                          }
+                IF sol <> EMPTY THEN
+                   pos = p-1
+                   found = FALSE
+                   WHILE (pos > comp_len) AND (NOT found) DO
+                      pos = pos-1
+                      IF SUBSTRING(str,pos,2) = "ml" THEN
+                         found = TRUE
+                         pos = pos-1
+                      ENDIF
+                   ENDWHILE
+                   IF found THEN
+                      found = FALSE
+                      ml_str = SUBSTRING(str,comp_len+1,pos-comp_len)
+                      ml_str = strip(ml_str)
+                      IF NUMTEXT( ml_str) THEN
+                         ml = ml_str
+                      ENDIF
+                   ENDIF
+                ENDIF
+
+                IF   ml = EMPTY
+                THEN err_mess = "Error in setup on component:":
+                                 str:". Must include: <prefix> Xml -Y"
+                ELSEIF ml = "0"
+                THEN err_mess = "Error in setup on component:": str :
+                                ". Qty in ml must not be 0"
+                ELSE comps = comps + 1
+                     val = strip(res_arr[n,result_text_pos])
+                     IF     val = "0"
+                     THEN   zeroes = zeroes+1
+                            fac = (ref_ml/NUMERIC(ml))*(10^NUMERIC(sol))
+                            IF     fac < NUMERIC(min_sol)
+                            THEN   min_sol = fac
+                                   min_sol_count = 1
+                            ELSEIF fac = NUMERIC(min_sol)
+                            THEN   min_sol_count = min_sol_count + 1
+                            ENDIF
+                            IF (NOT zer_mp) THEN
+                              sum_ml = sum_ml + ml
+{**AS1266 HBe 21-8-00}
+                          sum_dil = sum_dil + NUMERIC(ml)*(10^NUMERIC((-1)*sol))
+{**AE1266 HBe 21-8-00}
+                              calc_res = calc_res + 1
+                              chi_arr[calc_res,1] = NUMERIC(val)
+                              chi_arr[calc_res,2] = fac
+                            ENDIF
+                            IF NUMERIC(sol) < min_sol_val THEN
+                               min_sol_val = NUMERIC(sol)
+                            ENDIF
+                     ELSEIF val = "+0"
+                     THEN   missing_points = missing_points+1
+                     ELSEIF INDEX(val,">") <> 0
+                     THEN   bigger_signs = bigger_signs+1
+                            sol = STRIP((NUMERIC(sol))+LOG(ref_ml/NUMERIC(ml)))
+                            cut_decimals ( sol, TRUE )
+                            IF NUMERIC(sol) > NUMERIC(max_sol) THEN
+                               max_sol = sol
+                               max_val = val
+                            ENDIF
+                     ELSEIF INDEX(val,"<") = 0
+                     THEN   calc_res = calc_res+1
+                            sum_ml  = sum_ml  + ml
+                            sum_val = sum_val + NUMERIC(val)
+                            sum_sol = sum_sol + NUMERIC(val)*(10^NUMERIC(sol))
+{**AS1266 HBe 21-8-00}
+                            sum_dil = sum_dil + NUMERIC(ml)*(10^NUMERIC((-1)*sol))
+{**AE1266 HBe 21-8-00}
+
+                            fac = (ref_ml/NUMERIC(ml))*(10^NUMERIC(sol))
+                            calc_sum = calc_sum + NUMERIC(val)*fac
+                            chi_arr[calc_res,1] = NUMERIC(val)
+                            chi_arr[calc_res,2] = fac
+                     ENDIF
+                ENDIF
+
+           ENDIF
+      ENDIF
+   ENDWHILE
+
+   val_to_exp = TRUE
+
+   IF     err_mess <> EMPTY
+   THEN   flash_message( err_mess, TRUE )
+   ELSEIF comps = 0
+   THEN   flash_message("Error: No matching component names",TRUE)
+   ELSEIF missing_points = comps
+   THEN   flash_message("Only missing points !",TRUE)
+          new_test_proc ( test_no, comp_name, comp_flag,"NO_RESULTS",mean_val)
+   ELSEIF zeroes+missing_points = comps
+   THEN   IF min_sol_count > 1 THEN
+{Consider removing the line below - It is probably not correct to do this, 
+ but it is in agreement with the current function description}
+             min_sol = min_sol / min_sol_count
+          ENDIF
+          cut_decimals( min_sol, TRUE )
+          IF   sup_lt
+          THEN cut_decimals( min_sol_val, TRUE )
+               mean_val = "0E+" : strip(min_sol_val)
+          ELSE 
+             mean_val = strip(min_sol)
+             lower_detect=TRUE
+             cur_format = GLOBAL("FORMAT_TEXT")
+             IF NUMTEXT(mean_val) THEN
+{**MS1741 HBe 25-10-2006: The mean_val was a string, not text format, so the format command did not work}             
+                mean_val = NUMERIC(mean_val)
+                IF mean_val > 10000 
+                THEN
+                   SET FORMAT "99.9E+99"
+                   mean_val = "<":STRIP(STRING(mean_val))
+                ELSE
+                   SET FORMAT "99999"
+                   mean_val = "<":STRIP(STRING(mean_val))
+                ENDIF
+{**ME1741}                
+             ELSE
+                mean_val = "<":mean_val
+             ENDIF
+             SET FORMAT cur_format
+          ENDIF
+          val_to_exp = FALSE
+          do_chi = FALSE
+   ELSEIF missing_points+bigger_signs = comps
+   THEN   mean_val = strip(max_val) : " E+" : strip(max_sol)
+{**AS1273 HBe 25-9-00}
+          upper_detect = TRUE
+{**AE1273}
+          val_to_exp = FALSE
+          do_chi = FALSE
+   ELSEIF calc_res = 0
+   THEN   flash_message("No results to calculate on",TRUE)
+   ELSE   IF   do_sum
+          THEN IF   sum_ml > 0
+{**MS1266 HBe 21-8-00
+               THEN mean_val = ref_ml * sum_sol / sum_ml
+**}
+{**MS1273 HBe 25-9-00}
+               THEN mean_val = ref_ml * sum_val / sum_dil
+
+{**ME 1273}
+{**ME1266 HBe 21-8-00}
+          ELSE flash_message("Error: Sum of calculations is zero",TRUE)
+               ENDIF
+          ELSE mean_val = calc_sum / calc_res
+          ENDIF
+   ENDIF
+
+   IF do_min THEN
+      IF sum_val < min_no THEN
+           mean_val = "NEWTEST"
+           flash_message("Total cell count less than " : strip(min_no),TRUE)
+           new_test_proc ( test_no, comp_name, comp_flag, "SUMCOLLOW", mean_val)
+           return
+      ENDIF
+   ENDIF
+
+   IF (do_chi) AND (calc_res > 0) AND (get_chi_limits(limit_arr,limit_count))
+   THEN n = 0
+        res_used = 0
+        chi_sum  = 0
+        WHILE n < calc_res DO
+           n = n+1
+           expected = mean_val / chi_arr[n,2]
+           res_used = res_used + 1
+           IF expected <> 0 THEN
+              dif = expected - chi_arr[n,1]
+              chi_sum = chi_sum + ( ( dif * dif ) / expected )
+           ENDIF
+        ENDWHILE
+
+{**MS 1501 HBe 30-10-03: Only doing CHI-test if range is covered}
+
+        IF (res_used <= limit_count) THEN
+
+           IF (res_used > 1) AND
+              (chi_sum > limit_arr[ res_used - 1 ]) THEN
+              mean_val = "NEWTEST"
+              flash_message("Results do not conform to Chi^2 test",TRUE)
+              new_test_proc ( test_no, comp_name, comp_flag, "CHI2", mean_val )
+              return
+           ENDIF
+        ELSE
+           FLASH_MESSAGE("CHI-test can not performed, the CHI table only holds values to evaluate up to " : STRIP(limit_count ) : " result lines.", TRUE)
+           mean_val = "NO-CHI-VAL"
+        ENDIF
+{**ME1501}
+
+   ENDIF
+
+   IF do_base THEN
+{**MS 1273 HBe 25-9-00}
+      IF (NUMTEXT(mean_val)) AND (NOT lower_detect) AND (NOT upper_detect) THEN
+         mean_val = mean_val * ( base_sol + base_smp ) / base_smp
+      ELSEIF (upper_detect) AND (substring(mean_val,1,1) = ">") THEN
+            SET FORMAT "999"
+            max_sol = STRIP(max_sol + ROUND(LOG(( base_sol + base_smp ) / base_smp)))
+            mean_val = strip(max_val) : "E+" : strip(max_sol)
+      ELSEIF (lower_detect) AND (substring(mean_val,1,1) = "<") THEN
+            min_sol = STRIP(min_sol * ( base_sol + base_smp ) / base_smp)
+            mean_val = strip(min_sol)
+            cur_format = GLOBAL("FORMAT_TEXT")           
+            IF NUMTEXT(mean_val) THEN
+               IF NUMERIC(mean_val) > 10000 
+               THEN
+                  SET FORMAT "99.9E+99"
+                  mean_val = "<":STRING(NUMERIC(mean_val))
+               ELSE
+                  SET FORMAT "99999"
+                  mean_val = "<":STRING(NUMERIC(mean_val))
+               ENDIF
+            ELSE
+               mean_val = "<":mean_val
+            ENDIF            
+            SET FORMAT cur_format  
+
+      ELSE
+         FLASH_MESSAGE("Mean Value is not numeric or starting with > or < sign!",TRUE) 
+      ENDIF
+{**ME 1273}
+   ENDIF
+
+   mlp_id = select sample.product
+            where  id_numeric = smp_id
+   mlp_ver= select sample.product_version
+   IF   mlp_analysis_parameters( "M", "MEAN_SOL", 2, mlp_id, mlp_ver,
+                                 mlp_arr, n_sets, err_mes ) AND
+        (n_sets > 0) AND
+        get_cell_content_row(mlp_arr,n_sets,anal_id,1,1,mlp_row)
+   THEN IF   NOT NUMTEXT(mlp_arr[mlp_row,2])
+        THEN flash_message("Error: MLP MEAN_SOL parameter:" :
+                           mlp_arr[1,1] : " is not numeric",TRUE)
+        ELSE 
+{**MS1273 HBe 25-9-00}
+           IF NUMTEXT(mean_val) AND (NOT lower_detect) AND (NOT upper_detect) THEN
+                 mean_val = mean_val / mlp_arr[mlp_row,2]
+           ELSEIF (upper_detect) AND (substring(mean_val,1,1) = ">") THEN
+                 max_val = ">" : ROUND(max_val / mlp_arr[mlp_row,2])
+                 mean_val = strip(max_val) : " E+" : strip(max_sol)
+           ELSEIF (lower_detect) AND (substring(mean_val,1,1) = "<") THEN
+                 mean_val = mean_val / mlp_arr[mlp_row,2]
+                 IF NUMTEXT(mean_val) THEN
+                    IF NUMERIC(mean_val) > 10000 
+                    THEN
+                       SET FORMAT "99.9E+99"
+                       mean_val = "<":STRING(NUMERIC(mean_val))
+                    ELSE
+                       SET FORMAT "99999"
+                       mean_val = "<":STRING(NUMERIC(mean_val))
+                    ENDIF
+                 ELSE
+                    mean_val = "<":mean_val
+                 ENDIF            
+                 SET FORMAT cur_format                  
+           ELSE
+                 FLASH_MESSAGE("Mean value is not numeric!",TRUE)                 
+           ENDIF
+{**ME 1273}
+        ENDIF
+   ENDIF
+
+   IF (NUMTEXT(mean_val)) AND (val_to_exp) THEN
+      IF NUMERIC(mean_val) > 100000 THEN
+         cur_format = GLOBAL("FORMAT_TEXT")
+         SET FORMAT "999999999999999.9999999"
+         mean_val = NUMERIC(mean_val)
+         IF   res_arr[comp_row,result_sfro_pos] > -1
+         THEN ro = NUMERIC(res_arr[comp_row,result_sfro_pos])
+         ELSE ro = 2
+         ENDIF
+         mean_val = strip(mean_val)
+         cut_decimals( mean_val, FALSE )
+         sol = LENGTH(mean_val) - 1
+         sol_ro = sol - ro
+         mean_val = NUMERIC(mean_val)
+         IF sol_ro > 0 THEN
+            mean_val = strip( TRUNC(mean_val / 10^(sol_ro)) * (10^(sol_ro)) )
+            cut_decimals ( mean_val, FALSE )
+            mean_val = NUMERIC ( mean_val )
+         ENDIF
+         mean_val = strip( mean_val / (10^(sol)) )
+         cut_decimals( mean_val, TRUE )
+         mean_val = STRIP(mean_val) : "E+" : strip(sol)
+         SET FORMAT cur_format
+      ENDIF
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  new_test_proc ( VALUE test_no, VALUE comp_name, VALUE comp_flag,
+                         VALUE reason_code,   mean_val )
+   IF   TOUPPER(comp_flag) = "NNT"
+   THEN mean_val = "UNACCEP"
+   ELSE mean_val = "NEWTEST"
+        do_newtest(test_no,comp_name,mean_val,reason_code)
+   ENDIF
+
+ENDROUTINE

@@ -1,0 +1,460 @@
+{******************************************************************************
+*
+* Module Name   : USER_MANAGEMENT.RPF
+*
+* Purpose       : To align OPERATOR and PASSWORD records with info from AD
+*               : based on the global("LOGIN_AD_ACCESS_GROUP")
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_USER_LOGIN
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $USER_ENVIRONMENT
+
+DECLARE repeat_interval
+
+    repeat_interval = SELECT timerqueue.repeat_interval FOR UPDATE WHERE report_name = GLOBAL("current_library")
+    IF repeat_interval <> EMPTY THEN
+        START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+        ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+        UPDATE timerqueue
+        COMMIT
+    ENDIF 
+    
+DECLARE access_group, cmd, file, line, status, i, var, AD, r, c, USERS, ID, context, delete_log, d
+ARRAY AD
+ARRAY USERS
+
+delete_log = TRUE
+
+access_group = GLOBAL("LOGIN_AD_ACCESS_GROUP")
+i = INDEX(access_group, "CN=")
+IF i > 0 THEN
+    access_group = MIDSTRING(access_group, i + 3, LENGTH(access_group))
+ENDIF
+
+
+cmd     = "smp$userfiles\Users\GetUserDetails.cmd"
+file    = "smp$userfiles\Users\UserDetails.txt"
+
+
+{**************************************************************************************************************
+IF NOT FILE EXISTS(cmd)  THEN 
+    FILE CREATE cmd, status
+    FILE WRITE  cmd, "REM DSQUERY and DSGET is a command-line tool that is built into Windows Server 2008. It is available if you have the AD DS server role installed.                            ", status
+    FILE WRITE  cmd, "@echo off                                                                                                                                                                    ", status
+    FILE WRITE  cmd, "cls                                                                                                                                                                          ", status
+    FILE WRITE  cmd, "if exist UserDetails.tmp del UserDetails.tmp /q                                                                                                              ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "dsquery group -name ":access_group:" -s DKHOEDC05 | dsget group -members | find /V ":ASCII(34):",OU=Dummy Users,":ASCII(34):" | find /V ":ASCII(34):"Disabled":ASCII(34):" | find /V ":ASCII(34):"TERMINAT":ASCII(34):" | find /V ":ASCII(34):"SERVICE":ASCII(34):" > Users.txt  ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "    FOR /F ":ASCII(34):"tokens=*":ASCII(34):" %%a in (Users.txt) DO CALL :_GetDetails %%a                                                                                    ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "ren  UserDetails.tmp *.txt                                                                                                                                           ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "goto :EOF                                                                                                                                                                    ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, ":_GetDetails                                                                                                                                                                 ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "    dsget user %1 -s DKHOEDC05 -samid -display -office -email | find /V ":ASCII(34):"dsget succeeded":ASCII(34):" | find /V ":ASCII(34):"samid":ASCII(34):" >> UserDetails.tmp                                                  ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, "goto :EOF                                                                                                                                                                    ", status
+    FILE WRITE  cmd, "                                                                                                                                                                             ", status
+    FILE WRITE  cmd, ":EOF                                                                                                                                                                         ", status
+    FILE CLOSE  cmd, status
+ENDIF 
+***************************************************************************************************************}
+
+SET DATE FORMAT "YYYYMZDZ H24MISS"
+d = SUBSTITUTE(STRING(NOW), " ", "_")
+RESTORE DATE FORMAT
+
+{**************************************************************************************************************
+IF NOT FILE EXISTS(file) THEN 
+    window_set_status("Retrieving info from AD")
+    SPAWN cmd QUIETLY
+ENDIF 
+***************************************************************************************************************}
+
+FILE COPY file, "smp$logfiles:UserDetails_":d:".log", status
+
+r = 0
+FILE OPEN file, status
+
+IF status <> EMPTY THEN
+    WriteToLog("Attempt to open '":file:"', for reading, returns:")
+    WriteToLog("Status: '":STRIP(status):"'")
+    WriteToLog("Exit routine...")
+    EXIT
+ENDIF
+
+FILE READ file, line, status
+
+IF status <> EMPTY THEN
+    WriteToLog("Attempt to read line in '":file:"', returns:")
+    WriteToLog("Line:   '":STRIP(line):"'")
+    WriteToLog("Status: '":STRIP(status))
+    WriteToLog("Exit routine...")
+    FILE COPY file, "smp$logfiles:UserDetails ":d:".log", status
+   {FILE DELETE file, status}
+    EXIT
+ENDIF
+
+window_set_status("Reading AD ":line)
+
+WHILE line <> EMPTY DO
+    IF (LEFTSTRING(line,  7) != "  samid") AND
+       (LEFTSTRING(line, 15) != "dsget succeeded") THEN
+        r = r + 1
+        c = 0
+        line = STRIP(line)
+        line = SUBSTITUTE(line, ASCII(153), ASCII(214))
+        i = INDEX(line, "    ")
+        WHILE i > 0 DO
+            c = c + 1
+            var = STRIP(LEFTSTRING(line, i - 1))
+            AD[r,c] = var
+            line = STRIP(MIDSTRING(line, i + 4, LENGTH(line)))
+            i = INDEX(line, "    ")
+        ENDWHILE
+        var = STRIP(line)
+        IF LEFTSTRING(var, 4) = ASCII(34):"CN=" THEN
+            var = MIDSTRING(var, 5, LENGTH(var))
+            var = LEFTSTRING(var,INDEX(var,",OU=") - 1)
+        ENDIF
+        c = c + 1
+        AD[r,c] = var
+        IF c < 3 THEN
+            array_remove_slice (AD, 1, r)
+            r = r - 1
+        ENDIF
+    ENDIF
+    FILE READ file, line, status
+    window_set_status("Reading AD ":line)
+ENDWHILE
+
+window_set_status("")
+FILE CLOSE file, status
+
+IF size_of_array(AD) < 100 THEN
+    WriteToLog("EXIT routine, there was an error reading the retrieved details from AD)")
+    WriteToLog("size_of_array(AD):":STRIP(size_of_array(AD)))
+    EXIT
+ENDIF
+
+ID = SELECT personnel.identity
+     WHERE removeflag = FALSE
+     AND  (identity LIKE "DK%"
+       OR  identity LIKE "CZ%"
+       OR  identity LIKE "BR%"
+       OR  identity LIKE "MX%"
+       OR  identity LIKE "DE%"
+       OR  identity LIKE "FR%"
+       OR  identity LIKE "US%"
+       OR  identity LIKE "GB%"
+       OR  identity LIKE "MY%")
+WHILE ID <> EMPTY DO
+    USERS[SIZE_OF_ARRAY(USERS) + 1, 1] = ID
+    push_file_descriptor ("PERSONNEL", context)
+        USERS[SIZE_OF_ARRAY(USERS), 2] = (SELECT personnel . location_id WHERE identity =  ID)
+        USERS[SIZE_OF_ARRAY(USERS), 3] = (SELECT personnel . description )
+        USERS[SIZE_OF_ARRAY(USERS), 4] = (SELECT password . cryptpass WHERE identity =  ID)
+    pop_file_descriptor ( context )
+    window_set_status("Retrieving PERSONNEL record: ":
+                      USERS[SIZE_OF_ARRAY(USERS), 1]:"   ":
+                      USERS[SIZE_OF_ARRAY(USERS), 2])
+NEXT PERSONNEL
+    ID = SELECT personnel.identity
+ENDWHILE
+window_set_status("")
+
+
+{*** Update existing users ***}
+DECLARE a, u
+u = 1
+WHILE u <= SIZE_OF_ARRAY(USERS) DO
+    a = 1
+    WHILE a <= SIZE_OF_ARRAY(AD) DO
+        IF STRIP(TOUPPER(AD[a,1])) = STRIP(USERS[u,1]) THEN
+            ID = AD[a,1]
+            window_set_status("Update ":AD[a, 1]:" - ":AD[a, 2]:" - ":AD[a, 3]{:" - ":AD[a, 4]})
+            IF (SET_OPERATOR (AD[a, 1], AD[a, 2], AD[a, 3], AD[a, 4], AD[a, 5])) THEN
+                SET_PASSWORD (AD[a, 1])
+            ENDIF
+            array_remove_slice (AD, 1, a)
+            array_remove_slice (USERS, 1, u)
+            a = a - 1
+            u = u - 1
+        ENDIF
+        a = a + 1
+    ENDWHILE
+    u = u + 1
+ENDWHILE
+window_set_status("")
+
+{*** Add new Users ***}
+a = SIZE_OF_ARRAY(AD)
+WHILE a >= 1 DO
+    window_set_status("Add    ":AD[a, 1])
+    IF (SET_OPERATOR (AD[a, 1], AD[a, 2], AD[a, 3], AD[a, 4], AD[a, 5])) THEN
+        SET_PASSWORD (AD[a, 1])
+        WriteToLog("Add user: ":AD[a, 1]:", ":AD[a, 2]:", ":AD[a, 3]:", ":AD[a, 4])
+    ENDIF
+    a = a - 1
+    window_set_status("")
+ENDWHILE
+window_set_status("")
+
+{*** Remove obsolete Users ***}
+u = 1
+WHILE u <= SIZE_OF_ARRAY(USERS) DO
+        ID = USERS[u, 1]
+        IF (SELECT personnel . identity WHERE identity = id and removeflag = FALSE) <> EMPTY THEN
+            IF (SIZE_OF_ARRAY(USERS) > 10) AND (GLOBAL("MODE") = "BACKGROUND") THEN
+                WriteToLog("Attempted to remove ":ID)
+            ELSE
+                window_set_status("Remove ":ID)
+                IF (ID = SELECT personnel . identity FOR UPDATE WHERE identity = ID AND removeflag = FALSE) THEN
+                    START WRITE TRANSACTION "Remove operator"
+                    ASSIGN personnel . removeflag = TRUE
+                    UPDATE personnel
+                    COMMIT
+                    WriteToLog("Remove operator ":ID)
+                ENDIF
+                IF (ID = SELECT password . identity FOR UPDATE WHERE identity = ID) THEN
+                    START WRITE TRANSACTION "Delete user"
+                    DELETE password, status
+                    UPDATE password
+                    COMMIT
+                    WriteToLog("Delete user     ":ID)
+                ENDIF
+            ENDIF
+        ENDIF
+        array_remove_slice (USERS, 1, u)
+        u = u - 1
+    u = u + 1
+ENDWHILE
+window_set_status("")
+
+ID = SELECT personnel.identity
+     WHERE removeflag = TRUE
+WHILE ID <> EMPTY DO
+    USERS[SIZE_OF_ARRAY(USERS) + 1, 1] = ID
+    window_set_status("Retrieving removed PERSONNEL record: ":USERS[SIZE_OF_ARRAY(USERS), 1]{:"   ":USERS[SIZE_OF_ARRAY(USERS), 2]})
+NEXT PERSONNEL
+    ID = SELECT personnel.identity
+ENDWHILE
+window_set_status("")
+
+{*** Remove password for obsolete Users ***}
+u = 1
+WHILE u <= SIZE_OF_ARRAY(USERS) DO
+    ID = USERS[u, 1]
+    window_set_status("Delete user ":ID)
+    IF (ID = SELECT password . identity FOR UPDATE WHERE identity = ID) THEN
+        START WRITE TRANSACTION "Delete user"
+        DELETE password, status
+        UPDATE password
+        COMMIT
+        WriteToLog("Delete user     ":ID)
+    ENDIF
+    array_remove_slice (USERS, 1, u)
+ENDWHILE
+
+window_set_status("Completed")
+
+IF FILE EXISTS(cmd)  THEN FILE DELETE cmd  ENDIF
+{IF FILE EXISTS(file) THEN FILE DELETE file ENDIF}
+
+IF delete_log THEN
+    FILE DELETE "smp$logfiles:UserDetails ":d:".log", status
+ENDIF
+
+
+EXIT
+
+{*************************************************************************
+* Purpose      : Create Operator with READ_ONLY permissions (Copy of operator: VIEW)
+* Parameters   : WinUsername, CaseSensitive username from AD (~samid)
+*              : display, Full name of operator from AD
+*              : office, Office location from AD
+*              : email
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SET_OPERATOR(VALUE WinUsername, VALUE description, VALUE office, VALUE email, VALUE dept)
+
+DECLARE status, location, group_id, default_group, ID, LogTxt
+
+    ID = STRIP(TOUPPER(WinUsername))
+    IF (LENGTH(ID)  > 10) OR
+       (email       = EMPTY) OR 
+       (office      = EMPTY) OR
+       (description = EMPTY) OR
+       (WinUsername = EMPTY)
+        RETURN (FALSE)
+    ENDIF
+    office = SUBSTITUTE (TOUPPER(office)," ","_")
+
+    IF LEFTSTRING(office, 9) = "HUSTOPECE" THEN
+        office = "HUSTOPECE"
+    ELSEIF LEFTSTRING(office, 6) = "MEXICO" THEN
+        office = "MEXICO"
+    ENDIF
+
+    IF (ID = SELECT personnel . identity WHERE identity = ID) THEN
+        location        = SELECT personnel . location_id {WHERE identity = ID}
+        default_group   = SELECT personnel . default_group
+        group_id        = SELECT personnel . group_id
+    ENDIF
+
+    IF (office = SELECT location . identity WHERE identity = office AND removeflag = FALSE) THEN
+        location      = office
+        default_group = office
+    ELSE
+        location      = "UNKNOWN"
+        default_group = "GLOBAL"
+    ENDIF
+
+    IF INDEX("MILWAUKEE,NEW_BERLIN,WEST_ALLIS", office) > 0 THEN
+        group_id = "4000"
+    ELSEIF INDEX("POHLHEIM,MA-POH", office) > 0 THEN
+        group_id = "2210"
+    ELSEIF INDEX("ARPAJON", office) > 0 THEN
+        group_id = "2020"
+    ELSEIF INDEX("HUSTOPECE", office) > 0 THEN
+        group_id = "2500"
+    ELSEIF INDEX("NIENBURG", office) > 0 THEN
+        group_id = "2200"
+    ELSEIF INDEX("VALINHOS", office) > 0 THEN
+        group_id = "4400"
+    ELSEIF INDEX("MEXICO", office) > 0 THEN
+        group_id = "9999"
+    ELSE
+        group_id = "2004"
+    ENDIF
+
+    LogTxt = ID
+    IF (WinUsername              <> SELECT personnel . ad_init       ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Windows Username: ":(PAD(SELECT personnel . ad_init      , " ", 50):" -> ": WinUsername              )  
+    ENDIF
+    IF (ID:" (":description:")"  <> SELECT personnel . name          ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Name:             ":(PAD(SELECT personnel . name         , " ", 50):" -> ": ID:" (":description:")"  )  
+    ENDIF
+    IF (TOLOWER(email)           <> SELECT personnel . email         ) THEN  
+        LogTxt = LogTxt:ASCII(10):"E-mail:           ":(PAD(SELECT personnel . email        , " ", 50):" -> ": TOLOWER(email)           )  
+    ENDIF
+    IF (description              <> SELECT personnel . description   ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Description:      ":(PAD(SELECT personnel . description  , " ", 50):" -> ": description              )  
+    ENDIF
+    IF (group_id                 <> SELECT personnel . group_id      ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Group ID:         ":(PAD(SELECT personnel . group_id     , " ", 50):" -> ": group_id                 )  
+    ENDIF
+    IF (location                 <> SELECT personnel . location_id   ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Location:         ":(PAD(SELECT personnel . location_id  , " ", 50):" -> ": location                 )  
+    ENDIF
+    IF (default_group            <> SELECT personnel . default_group ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Default Group:    ":(PAD(SELECT personnel . default_group, " ", 50):" -> ": default_group            )  
+    ENDIF
+    IF (dept                     <> SELECT personnel . department ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Department:       ":(PAD(SELECT personnel . department   , " ", 50):" -> ": dept                     )  
+    ENDIF
+    IF (FALSE                    <> SELECT personnel . removeflag    ) THEN  
+        LogTxt = LogTxt:ASCII(10):"Removed:          ":(PAD(SELECT personnel . removeflag   , " ", 50):" -> ": FALSE                    )  
+    ENDIF
+
+    IF LogTxt <> ID THEN
+        WriteToLog(ASCII(10):LogTxt:ASCII(10))
+        RESERVE ENTRY PERSONNEL, ID COPY_FROM "VIEW" , status
+        IF status <> EMPTY THEN
+            ID = STRIP(SELECT personnel . identity FOR UPDATE WHERE identity = ID)
+            START WRITE TRANSACTION "Update Operator"
+        ELSE
+            START WRITE TRANSACTION "Add Operator"
+        ENDIF
+
+        ASSIGN personnel . ad_init       = WinUsername
+        ASSIGN personnel . name          = ID:" (":description:")"
+        ASSIGN personnel . email         = TOLOWER(email)
+        ASSIGN personnel . description   = description
+        ASSIGN personnel . group_id      = group_id
+        ASSIGN personnel . location_id   = location
+        ASSIGN personnel . department    = dept
+        ASSIGN personnel . default_group = default_group
+        ASSIGN personnel . removeflag    = FALSE
+        UPDATE personnel
+        COMMIT
+    ENDIF
+
+    SQL("insert into grouplink (operator_id, group_id, description ) ":
+        "(select '":ID:"' operator_id, group_id, description from grouplink where operator_id = 'VIEW' ":
+        " except ":
+        " select operator_id, group_id, description from grouplink where operator_id = '":ID:"')")
+
+    SQL("insert into role_assignment (operator_id, role_id, group_id) ":
+        "(select '":ID:"' operator_id, role_id, group_id from role_assignment where operator_id = 'VIEW' ":
+        " except ":
+        " select operator_id, role_id, group_id from role_assignment where operator_id = '":ID:"')")
+
+    RETURN (TRUE)
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Create Operator with READ_ONLY permissions
+* Parameters   : WinUsername, CaseSensitive username from AD (~samid)
+*              : display, Full name of operator from AD
+*              : office, Office location from AD
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SET_PASSWORD(VALUE WinUsername)
+
+DECLARE ID
+
+    ID = TOUPPER(WinUsername)
+    START WRITE TRANSACTION "Set Password"
+    RESERVE ENTRY PASSWORD, ID COPY_FROM "VIEW" , status
+    IF status = EMPTY THEN
+        ASSIGN password . last_login = NULL
+    ELSE
+        ID = SELECT password . identity FOR UPDATE WHERE identity = ID
+    ENDIF
+    ASSIGN password . cryptpass = "********"
+    ASSIGN password . expires   = NULL
+    UPDATE password
+    COMMIT
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+    delete_log = FALSE
+
+ENDROUTINE
+
+
+ROUTINE SQL(VALUE SQL_string)
+{*************************************************************************
+* Purpose      : Execute oracle SQL string
+* Parameters   : SQL string
+* Return Value : None
+**************************************************************************}
+        {WriteToLog(SQL_String)}
+        execute_sql(SQL_string)
+        execute_sql("commit")
+ENDROUTINE

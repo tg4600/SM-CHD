@@ -1,0 +1,208 @@
+{Task 1427: HBe 8-11-2002: Generation of a file used by SAP to determine if a CoA is available from LIMS  }
+{The setup of view "ERP_CERT" determines the content of the file                                          }
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_UTILS
+
+DECLARE view_name
+
+WriteToLog("Start generation of external data at: ":NOW)
+
+view_name       = "erp_cert"
+lines_written   = 0
+
+IF get_global("EXPORT-ITEM-CERT-FILE", export_file, TRUE) THEN
+    export_file = STRIP(export_file)
+    old_file = FILE EXISTS ("smp$exportfiles:":export_file)
+    IF old_file = TRUE THEN
+        FILE DELETE "smp$exportfiles:":export_file
+    ENDIF
+
+    FILE CREATE "smp$exportfiles:":export_file, is_ok
+    IF is_ok <> EMPTY THEN
+        WriteToLog(is_ok)
+    ENDIF
+
+    SET DATE FORMAT "YYYYMZDZ"
+
+    item = SELECT 'view_name'.identity WHERE identity <> EMPTY
+    IF item <> EMPTY THEN
+        textline (text)
+    ENDIF
+
+    WHILE ((item <> EMPTY) AND (NOT BLANK(item)) AND (lines_written < 100000)) DO
+        lines_written = lines_written + 1
+        FILE EXTEND "smp$exportfiles:":export_file, is_ok
+        IF is_ok <> EMPTY THEN
+        WriteToLog(is_ok)
+        ENDIF
+        FILE WRITE  "smp$exportfiles:":export_file, text, is_ok
+        IF is_ok <> EMPTY THEN
+        WriteToLog(is_ok)
+        ENDIF
+    NEXT 'view_name'
+        textline (text)
+        item = select 'view_name'.identity
+    ENDWHILE
+
+    FILE CLOSE "smp$exportfiles:":export_file, is_ok
+    IF is_ok <> EMPTY THEN
+        WriteToLog(is_ok)
+    ENDIF
+ENDIF
+
+RESTORE DATE FORMAT
+
+WriteToLog("Generation of external data completed at: ":NOW)
+WriteToLog("Lines created:":STRIP(lines_written))
+WriteToLog("")
+
+IF ((get_global("MPS-NODE",     mps_node,     TRUE ))  AND
+    (get_global("MPS-USERID",   mps_user_id,  TRUE ))  AND
+    (get_global("MPS-PASSWORD", mps_password, TRUE ))) THEN
+    IF NOT(send_export_file(export_file, mps_node, mps_user_id, mps_password, err_mes)) THEN
+        WriteToLog("Problem doing the FTP transfer, attempt ended at : ":NOW : " with error message: ":err_mes)
+    ENDIF
+ELSE
+    WriteToLog("Problem obtaining ERP connection information, no FTP transfer performed.")
+ENDIF
+
+WriteToLog("")
+
+EXIT
+
+ROUTINE textline (text)
+
+   zero_string = ""
+   p_name = STRIP(select 'view_name'.identity)
+   l_pname = length(p_name)
+   zero_string = PAD(zero_string, "0", 18 - l_pname)
+
+   text = zerostring:p_name
+   text = text:JUSTIFY(PAD(STRIP(select 'view_name'.document_type), " ", 10) "LEFT")
+
+{   text = text:ASCII(10)}
+ENDROUTINE
+
+
+ROUTINE  get_global ( VALUE id, the_value, VALUE log_error )
+
+   the_value = EMPTY
+   the_operator = OPERATOR
+
+   the_value = select config_item.value
+               where  operator = the_operator
+               and    identity = id
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN the_value = select config_header.value
+                    where  identity = id
+   ENDIF
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN IF   log_error
+        THEN WriteToLog("ERROR: Could not find global variable:" : id )
+        ENDIF
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE
+
+{ROUTINE WriteToLog( VALUE text )
+   FILE WRITE log_file, text
+ENDROUTINE}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+
+ROUTINE export_init ( VALUE the_log_file )
+   log_file = the_log_file
+
+   old_log_file = FILE EXISTS (log_file)
+   IF old_log_file = TRUE
+   THEN
+      FILE DELETE log_file
+   ENDIF
+
+   FILE CREATE log_file, rc
+   IF   rc = EMPTY
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE  send_export_file ( VALUE export_file, VALUE mps_node,
+                            VALUE mps_user_id  , VALUE mps_password,
+                            err_mes )
+
+
+   {export_path = "E:\Program Files\Thermo\SampleManager\Server\":STRIP(GLOBAL("INSTANCE")):"\EXPORT\"}
+   export_path = LOGICAL("smp$exportfiles"):"\"
+
+   export_definition = ASCII(34):export_path:export_file:ASCII(34)
+
+   ftp_input_file = export_path:"ftp_input.com"
+
+
+   FILE DELETE ftp_input_file, rc
+   FILE CREATE ftp_input_file, rc
+   IF rc <> EMPTY THEN
+      err_mes = "ERROR: Could not create FTP transfer command file. " :
+                "Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+   WriteToLog("Command file created, now initiating export of file: ":STRIP(export_file): " to ":mps_node)
+   FILE WRITE ftp_input_file, "user ":strip(mps_user_id):" ":strip(mps_password), rc
+   FILE WRITE ftp_input_file, "cd /chdksap/lims "
+   FILE WRITE ftp_input_file, "put ":export_definition: " " : export_file, rc
+   FILE WRITE ftp_input_file, "quit"
+
+   FILE CLOSE ftp_input_file
+
+   IF rc <> EMPTY THEN
+      err_mes = "ERROR: Could not write FTP transfer command file. " :
+                "Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+   command_string = "ftp -n -s:" : ASCII(34) : ftp_input_file : ASCII(34) : " ":strip(mps_node):" > ":export_path:"FTP.log"
+
+   SPAWN command_string, rc QUIETLY
+   IF rc = EMPTY THEN
+        FILE OPEN export_path:"FTP.log", rc
+        IF rc = EMPTY THEN
+            FILE READ export_path:"FTP.log", line, rc
+            WHILE (rc = EMPTY) AND (line <> EMPTY)
+                WriteToLog(line)
+                FILE READ export_path:"FTP.log", line, rc
+            ENDWHILE
+        ENDIF
+   ELSE
+      err_mes = "ERROR: Could not transfer MPS load file. Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+
+   RETURN ( TRUE )
+
+ENDROUTINE

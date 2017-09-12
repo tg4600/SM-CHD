@@ -1,0 +1,5826 @@
+{******************************************************************************
+*
+* Module Name   : $STB_LIB_MATRIX  
+*
+* Purpose       : Functions for the Matrix
+*
+*******************************************************************************}
+
+
+SET NAME "DEFER/"
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_FLAGS
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_GLOBAL
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_LIST_VIEWER
+JOIN LIBRARY $LIB_MLPS
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_RE_CRITERIA
+JOIN LIBRARY $LIB_RE_GLOBALS
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $OPTIONAL_MESSAGE
+JOIN LIBRARY $PROMPT_GRID
+JOIN LIBRARY $PROMPT_SPLIT
+JOIN LIBRARY $PROMPT_TAB
+JOIN LIBRARY $PROMPT_TOOLBAR
+JOIN LIBRARY $PROMPT_TREE
+JOIN LIBRARY $STB_GLBL
+JOIN LIBRARY $STB_LIB
+JOIN LIBRARY $STB_PRODUCT_PULL
+
+CONSTANT DEFAULT_COLUMN_WIDTH = 10          { to be used in the event of no config }
+                                            { record existing for the header       }
+CONSTANT TYPE_PROTOCOL = "P"
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_rebuild_matrix ( self )
+{
+* Runs the rebuild action on each layer grid and the overview
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE count, grid
+
+    count = 1
+    WHILE ( count <= self . layer_count( ) ) DO
+
+        grid = self . get_pull_grid_by_position( count )
+        grid . rebuild ()
+
+        count = count + 1
+
+    ENDWHILE
+
+    self . overview_form . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_factors ( self, factor_db, VALUE axis_type )
+{
+*
+* Parameters : self      , stb matrix object
+*              factor_db , factor_object
+*              axis_type , layer(Z), time(T) or c(C)
+*
+*******************************************************************************}
+
+    DECLARE select_array, setup_object
+
+    ARRAY select_array
+
+    IF self . mode = "ADD" THEN
+
+        CALL_ROUTINE "get_main_setup_form" USING setup_object IN LIBRARY "$stb_matrix_setup"
+
+        copy_factors ( factor_db, setup_object . axis_table, axis_type )
+
+    ELSEIF self . mode = "COPY" THEN
+
+        DECLARE new_value, old_header_id, old_header_ver, points_to_copy
+
+        IF self . is_protocol( ) THEN
+
+            new_value = SELECT pds_proto . identity : SELECT pds_proto . protocol_version
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+            old_header_ver = RIGHTSTRING ( self . copy_value, 10 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type  )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , old_header_id       )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , old_header_ver      )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "axis_type"        , axis_type           )
+
+        ELSE
+
+            new_value = self . header_id
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , old_header_id      )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , "         1"       )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "axis_type"        , axis_type          )
+
+        ENDIF
+
+        object_create ( points_to_copy, "STD_OBJECT_DATABASE" )
+        points_to_copy . initialise ( "PDS_AXIS_POINT" )
+
+        points_to_copy . select_for_update ( select_array )
+
+        IF ( points_to_copy . size () > 0 ) THEN
+            factor_db = copy_header_subtables ( points_to_copy, new_value, self . copy_value )
+            factor_db . add_index ( "AXIS_POS" )
+        ENDIF
+
+    ELSE
+
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , self . header_id   )
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , self . header_ver  )
+        ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "axis_type"        , axis_type )
+
+        IF self . mode = "MODIFY" THEN
+
+            factor_db . select_for_update ( select_array )
+
+        ELSEIF self . mode = "DISPLAY" THEN
+
+            factor_db . select ( select_array )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE copy_factors ( dest_db, source_db, axis_type )
+
+{
+* Copies records from one object db to another
+*
+* Parameters : dest_db    , destination db object
+*              source_db  , source db object
+*              axis_type  , axis type of the matrix 
+*
+*******************************************************************************}
+
+
+    DECLARE counter, rec_axistype
+
+    counter = 0
+
+    WHILE ( counter < source_db . size () ) DO
+
+        counter = counter + 1
+        source_db . set_by_number ( counter )
+
+        rec_axistype = object_select_field ( source_db . current, "PDS_AXIS_POINT", "AXIS_TYPE" )
+
+        IF rec_axistype = axis_type THEN
+            dest_db . add ( source_db . current )
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_matrix_pulls ( self )
+
+{
+* loads pulls in to the pull object
+*
+* Parameters : self , Matrix object
+*
+*******************************************************************************}
+
+    DECLARE select_array, setup_object, pulls_to_copy, new_value, old_header_id,
+            old_header_ver
+
+    ARRAY select_array
+
+    IF self . mode = "ADD" THEN
+
+        CALL_ROUTINE "get_main_setup_form" USING setup_object IN LIBRARY "$stb_matrix_setup"
+
+        copy_pulls ( self . pulls, setup_object . pull_table  )
+
+    ELSEIF self . mode = "COPY" THEN
+
+        IF self . is_protocol( ) THEN
+
+            new_value = SELECT pds_proto . identity : SELECT pds_proto . protocol_version
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+            old_header_ver = RIGHTSTRING ( self . copy_value, 10 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , old_header_id  )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , old_header_ver )
+
+        ELSE
+
+            new_value = self . header_id
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header", old_header_id )
+
+        ENDIF
+
+        object_create ( pulls_to_copy, "STB_MATRIX_PULLS" )
+        pulls_to_copy . initialise ( self . pull_table )
+        pulls_to_copy . select_for_update ( select_array )
+
+        IF pulls_to_copy . size () > 0 THEN
+
+            self . pulls = copy_header_subtables ( pulls_to_copy, new_value, self . copy_value )
+
+                                       { wipe copied information of sample information }
+                                       { reset sample status                           }
+
+            IF self . is_study( ) THEN
+                reset_copied_samples ( self . pulls )
+            ENDIF
+
+        ENDIF
+
+    ELSE
+
+        IF self . is_protocol( ) THEN
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , self . header_id  )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , self . header_ver )
+
+        ELSE
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header", self . header_id )
+
+        ENDIF
+
+        IF self . mode = "MODIFY" THEN
+            self . pulls . select_for_update ( select_array )
+        ELSEIF self . mode = "DISPLAY" THEN
+            self . pulls . select{_for_read} ( select_array )
+        ENDIF
+
+    ENDIF
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_pull_samples ( self )
+{
+*  loads samples for matrix object. only valid for studies.
+*
+* Parameters : self, matrix object
+*
+*******************************************************************************}
+
+    DECLARE errors
+    
+    errors = EMPTY
+
+    IF self . is_study( ) THEN
+
+        self . pulls . set_first( )
+
+        WHILE ( self . pulls . current <> EMPTY ) AND ( errors = EMPTY ) DO
+
+            errors = self . load_pull_sample( self . pulls . current )
+
+            self . pulls . set_next( )
+
+        ENDWHILE
+
+    ENDIF
+    
+    RETURN( errors )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_basetimes ( self )
+{
+*  loads basetimes for matrix object
+*
+* Parameters : self, matrix object
+*
+*******************************************************************************}
+
+
+    DECLARE select_array, basetimes
+    DECLARE new_value, old_header_id, old_header_ver, points_to_copy, old_value
+
+    basetimes = self . basetimes
+
+    ARRAY select_array
+
+    IF self . mode = "ADD" THEN
+
+        DECLARE main_setup_form
+
+        CALL_ROUTINE "get_main_setup_form" USING main_setup_form IN LIBRARY "$STB_MATRIX_SETUP"
+
+        IF main_setup_form . is_study( ) THEN
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , TYPE_PROTOCOL                            )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , main_setup_form . created_from )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , main_setup_form . proto_ver    )
+
+            object_create ( points_to_copy, "STD_OBJECT_DATABASE" )
+            points_to_copy . initialise ( "PDS_BASETIME" )
+            points_to_copy . select_for_update ( select_array )
+
+            new_value = self . matrix_type : self . header_id : "         1"
+            old_value = TYPE_PROTOCOL : main_setup_form . created_from : main_setup_form . proto_ver
+
+            IF ( points_to_copy . size () > 0 ) THEN
+                basetimes . basetime_db = copy_header_subtables ( points_to_copy, new_value, old_value)
+            ENDIF
+
+        ENDIF
+
+    ELSEIF self . mode = "COPY" THEN
+
+        IF self . is_protocol( ) THEN
+
+            new_value = SELECT pds_proto . identity : SELECT pds_proto . protocol_version
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+            old_header_ver = RIGHTSTRING ( self . copy_value, 10 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , old_header_id  )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , old_header_ver )
+
+        ELSE
+
+            new_value = self . header_id
+
+            old_header_id  = LEFTSTRING  ( self . copy_value, 20 )
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , old_header_id  )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , "         1" )
+
+        ENDIF
+
+        object_create ( points_to_copy, "STD_OBJECT_DATABASE" )
+        points_to_copy . initialise ( "PDS_BASETIME" )
+        points_to_copy . select_for_update ( select_array )
+
+        IF ( points_to_copy . size () > 0 ) THEN
+            basetimes . basetime_db = copy_header_subtables ( points_to_copy, new_value, self . copy_value )
+        ENDIF
+
+    ELSE
+
+        IF ( self . is_protocol( ) ) THEN
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , self . header_id   )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , self . header_ver  )
+
+        ELSE
+
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "matrix_type"      , self . matrix_type )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "header"           , self . header_id   )
+            ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "protocol_version" , "         1" )
+
+        ENDIF
+
+        IF self . mode = "MODIFY" THEN
+            basetimes . basetime_db . select_for_update ( select_array )
+        ELSE
+            basetimes . basetime_db . select{_for_read} ( select_array )
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE copy_header_subtables ( records_to_copy, VALUE new_id, VALUE copy_id )
+
+{
+* Copies the records from one table to the same table with a new index.
+* It is designed for use with pds_axis_point & pull tables
+*
+* Parameters : records_to_copy , db_object of records to be copied
+*              new_id          , new proto/study id
+*              copy_id         , copied proto/study id
+*
+*******************************************************************************}
+
+
+    DECLARE counter, old_ndx, replace_start, status, old_len, new_len, new_record, new_ndx,
+            old_size, copy_records, old_ndx_array
+
+    ARRAY old_ndx_array
+
+                                       { get key0 of all records and store in }
+                                       { an array. This is done because of    }
+                                       { problems with 'COPY FROM'            }
+
+    counter = 0
+    WHILE ( counter < records_to_copy . size () ) DO
+
+        counter = counter + 1
+        records_to_copy . set_by_number ( counter )
+
+        old_ndx_array [ counter ] = get_record_key0 ( records_to_copy . current )
+
+    ENDWHILE
+
+                                        { insert new records in to object }
+
+    object_create ( copy_records, object_get_class_name ( records_to_copy ))
+    copy_records . initialise ( records_to_copy . table )
+
+    old_size = records_to_copy . size()
+
+    counter = 0
+    WHILE ( counter < old_size ) DO
+
+        counter = counter + 1
+        records_to_copy . set_by_index ( "KEY0", old_ndx_array [ counter ] )
+
+                                       { take old ndx and replace any ref to }
+                                       { old proto/study ids with new p/s ids}
+
+        old_ndx = old_ndx_array [ counter ]
+
+        replace_start = INDEX ( old_ndx, copy_id )
+
+        old_len = STRINGLENGTH ( old_ndx )
+        new_len = STRINGLENGTH ( new_id  )
+
+        new_ndx = LEFTSTRING ( old_ndx, replace_start - 1 ) :
+                  new_id :
+                  RIGHTSTRING ( old_ndx, oldlen - replace_start - new_len + 1 )
+
+        new_record = EMPTY
+
+                                       { create records from old one }
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_record
+        new_record . new = TRUE
+        new_record . table = records_to_copy . table
+        object_add_table ( new_record, new_record . table )
+
+
+        RESERVE ENTRY 'records_to_copy . table' IN OBJECT new_record, new_ndx
+            COPY_FROM old_ndx, status
+
+        IF status <> EMPTY THEN
+            fatal_error(status)
+        ENDIF
+    
+        copy_records . add ( new_record )
+
+    ENDWHILE
+
+                                       { return the old db database }
+
+    RETURN ( copy_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_sample( self, VALUE id_numeric )
+{
+* Adds the sample associated with the passed pull record to the sample object
+* database. pull_record must contain a pds_study_pull record
+*
+* Parameters : self        , Stb Matrix object
+*              pull_record , Pds study pull record
+*
+*******************************************************************************}
+
+    DECLARE sample_obj, errors
+
+    errors = EMPTY
+
+    sample_obj = self . samples . sample_db . get_by_index( "KEY0", id_numeric )
+
+    IF sample_obj = EMPTY THEN
+
+        id_numeric = SELECT sample . id_numeric
+                        WHERE  id_numeric = id_numeric
+            
+        IF ( id_numeric = EMPTY  ) THEN
+        
+            errors = "Sample record does not exist: " : STRIP( id_numeric )
+            
+        ELSE
+
+            CREATE OBJECT "STD_OBJECT_RECORD", sample_obj
+            sample_obj . table = "SAMPLE"
+
+            OBJECT_ADD_TABLE( sample_obj, "SAMPLE" )
+
+            OBJECT_SET_CURRENT_TABLE( sample_obj, "SAMPLE" )
+
+            self . samples . sample_db . add( sample_obj )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN( errors )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_load_pull_sample( self, pull_record )
+{
+* Adds the sample associated with the passed pull record to the sample object
+* database. pull_record must contain a pds_study_pull record
+*
+* Parameters : self        , Stb Matrix object
+*              pull_record , Pds study pull record
+*
+*******************************************************************************}
+
+    DECLARE id_numeric, errors
+
+    errors = EMPTY
+
+    id_numeric = SELECT pds_study_pull . created_sample_id
+                     IN OBJECT pull_record
+
+    IF ( id_numeric <> 0 ) THEN
+
+        errors = self . load_sample( id_numeric )
+
+    ENDIF
+
+    RETURN( errors )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE reset_copied_samples ( pull_db )
+
+{
+* Resets the pull information in a copied studies pull database
+*
+* Parameters : pull_db , pulls to be reset.
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    count = 0
+    WHILE ( count < pull_db . size () ) DO
+
+        count = count + 1
+        pull_db . set_by_number ( count )
+
+        ASSIGN pds_study_pull . cell_disp         IN OBJECT pull_db . current = "P"
+        ASSIGN pds_study_pull . created_sample_id IN OBJECT pull_db . current = PACKED_DECIMAL( 0 )
+        ASSIGN pds_study_pull . sample_id_text    IN OBJECT pull_db . current = ""
+        ASSIGN pds_study_pull . due_login_date    IN OBJECT pull_db . current = ""
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE copy_pulls ( dest_db, source_db )
+
+{
+* Copy records from one DB Obj to another
+*
+* Parameters : dest_db   , destination database object
+*              source_db , source database object
+*
+*******************************************************************************}
+
+    DECLARE counter
+
+    counter = 0
+    WHILE ( counter < source_db . size () ) DO
+        counter = counter + 1
+        source_db . set_by_number ( counter )
+        dest_db . add ( source_db . current )
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_setup_layers ( self )
+{
+* 
+*
+* Parameters : self , STb Matrix Object
+*
+*******************************************************************************}
+
+    DECLARE layer_counter, tab_form, tab_ndx
+
+    layer_counter = 0
+    WHILE ( layer_counter < self . layer_factors . size () ) DO
+
+        layer_counter = layer_counter + 1
+        self . layer_factors . set_by_index_number ( "AXIS_POS", layer_counter )
+
+        setup_layer ( self, tab_form, self . layer_factors . current )
+
+        tab_ndx = size_of_array ( self . tab_forms ) + 1
+
+        self . tab_forms [ tab_ndx ] = tab_form
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_class_define
+{
+* Defines the stb pull grid class
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    set_up_popup_class( )
+
+    DEFINE CLASS "STB_PULL_GRID"
+
+        INHERIT "STD_PROMPT_GRID_EX"
+
+        INITIALISATION
+        
+        PROPERTIES
+            "parent_matrix"
+
+        ACTIONS
+            "enter_cell"                                     ,
+            "build_context_menu"                             ,
+            "return"                                         ,
+            "setup_columns"                                  ,
+            "get_pull_colour"                                ,
+            "get_selected_factor_range"                      ,
+            "get_selected_time_range"                        ,
+            "get_selected_condition_range"                   ,
+            "show_remove_selected_time_factors"              ,
+            "show_remove_selected_condition_factors"         ,
+            "show_insert_time_factor_before_selected"        ,
+            "show_insert_condition_factor_before_selected"   ,
+            "option_remove_selected_time_factors"            ,
+            "option_remove_selected_condition_factors"       ,
+            "option_insert_time_factor_before_selected"      ,
+            "option_insert_condition_factor_before_selected" 
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_class_initialisation( self )
+{
+* Stb Pull Grid Class Initialisation
+*
+*******************************************************************************}
+
+    self . parent_matrix = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE setup_layer ( self, tab_form, layer_record )
+{
+* 
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE grid_userinfo, pull_grid, layer_id, default_config, factor_title
+
+    ARRAY grid_userinfo
+
+    set_up_std_prompt_grid_class ()
+
+    layer_id = object_select_field ( layer_record, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+
+    factor_title = layer_id
+
+    default_config = SELECT 'self . header_table' . default_config
+    
+    IF NOT BLANK( default_config ) THEN
+
+        IF NOT get_default_config_item ( default_config, "load_type" ) THEN
+        
+            factor_title = SELECT layer_factor . aka_name
+                               WHERE identity = layer_id
+                               
+        ENDIF
+    ENDIF
+
+    OBJECT_CREATE ( tab_form, PROMPT_CLASS_FORM )
+
+    PROMPT OBJECT tab_form
+        CLASS PROMPT_CLASS_FORM
+        WITH ( header       = factor_title, 
+               column       = 1,
+               row          = 1,
+               width        = 102,
+               height       = 12,
+               button_style = FORM_BUTTON_NONE,
+               use_top_line = TRUE )
+
+    get_layer_pulls ( self, layer_id, grid_userinfo )
+
+    stb_pull_grid_class_define( )
+
+    PROMPT OBJECT pull_grid
+        CLASS "STB_PULL_GRID"
+        WITH ( column               = 1                        ,
+               row                  = 1                        ,
+               width                = tab_form . width + 1     ,
+               height               = tab_form . height        ,
+               userinfo             = grid_userinfo            ,
+               title_size_top       = 1                        ,
+               title_size_left      = 10                       ,
+               display_cell_routine = "pull_grid_display_cell" ,
+               prompt_cell_routine  = "pull_grid_prompt_cell"  ,
+               right_mouse_routine  = "pull_grid_mouse_click" ,
+               parent_matrix        = self                     )
+
+    IF self . time_xaxis THEN
+
+        pull_grid . title_text_left = self . get_factor_list( self . c_factors    )
+        pull_grid . title_text_top  = self . get_factor_list( self . time_factors )
+
+        pull_grid . cell_rows    = self . condition_count( )
+        pull_grid . cell_columns = self . time_count( )
+
+    ELSE
+
+        pull_grid . title_text_left = self . get_factor_list( self . time_factors )
+        pull_grid . title_text_top  = self . get_factor_list( self . c_factors    )
+
+        pull_grid . cell_rows    = self . time_count( )
+        pull_grid . cell_columns = self . condition_count( )
+
+    ENDIF
+
+    pull_grid . setup_columns ( self . header_table )
+
+    tab_form . add_prompt ( pull_grid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_layer_pulls ( self, layer_id, grid_userinfo )
+{
+* Gets the pulls for each cell in layer,c, time combination
+*
+* Parameters : self          , matrix_object
+*              layer id      , layer pulls are created for
+*              grid_userinfo , the grid userinfo array
+*
+*******************************************************************************}
+
+    DECLARE count_time, time_db, count_c, c_db, cell_info,
+            time_factor, c_factor, undel_count_time, undel_count_c
+
+    time_db = self . time_factors
+    c_db    = self . c_factors
+
+    count_time = 0
+    undel_count_time = 0
+
+    WHILE ( count_time < time_db . size () ) DO
+
+        count_time = count_time + 1
+        time_db . set_by_index_number ( "AXIS_POS", count_time )
+
+        IF NOT ( time_db . current . deleted ) THEN
+
+            undel_count_time = undel_count_time + 1
+
+            time_factor = object_select_field ( time_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+
+            count_c = 0
+            undel_count_c = 0
+            WHILE ( count_c < c_db . size () ) DO
+
+                count_c = count_c + 1
+                c_db . set_by_index_number ( "AXIS_POS", count_c )
+
+                IF NOT ( c_db . current . deleted ) THEN
+
+                    undel_count_c = undel_count_c + 1
+
+                    c_factor = object_select_field (c_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+
+                    setup_cell_object ( self, layer_id, time_factor, c_factor, cell_info, 1 )
+
+                    IF self . time_xaxis THEN
+                        grid_userinfo [ undel_count_time, undel_count_c ] = cell_info
+                    ELSE
+                        grid_userinfo [ undel_count_c, undel_count_time ] = cell_info
+                    ENDIF
+
+                ENDIF
+
+            ENDWHILE
+
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE setup_cell_object (       self         ,
+                                   VALUE layer_id     ,
+                                   VALUE time_factor  ,
+                                   VALUE c_factor     ,
+                                         cell_info    ,
+                                   VALUE default_pull )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE pull_num, pull_rec, cell_pulls, pull_syntaxes
+
+    ARRAY cell_pulls
+    ARRAY pull_syntaxes
+
+    pull_num = 0
+
+    REPEAT
+
+        pull_num = pull_num + 1
+
+        pull_rec = self . get_pull( layer_id, time_factor, c_factor, pull_num )
+
+        IF pull_rec <> EMPTY THEN
+        
+            IF NOT ( pull_rec . deleted ) THEN
+            
+                cell_pulls [ pull_num ] = pull_rec
+                
+            ENDIF
+            
+        ENDIF
+
+    UNTIL ( pull_rec = EMPTY )
+
+    CREATE OBJECT "STB_MATRIX_CELL", cell_info
+    
+    IF ( size_of_array ( cell_pulls ) > 0 ) THEN
+
+        get_pull_syntaxes ( self, cell_pulls, pull_syntaxes )
+
+        ARRAY_COPY ( cell_info . pull_info, pull_syntaxes )
+        ARRAY_COPY ( cell_info . pull_records, cell_pulls )
+
+        cell_info . current_pull = default_pull
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_get_pull_syntax ( self, pull_object )
+{
+* Returns the syntax string for the passed pull
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE pull_syn, field_count, pull_field, qty, unit
+
+    pull_syn = ""
+    
+    field_count = 1
+    WHILE ( field_count <= size_of_array ( self . std_cell_syn ) ) DO
+    
+        pull_field = self . std_cell_syn [ field_count ]
+        
+        IF ( pull_field = "pull_qty_unit" ) THEN
+
+            qty  = SELECT 'self . pull_table' . pull_amount IN OBJECT pull_object
+            unit = SELECT 'self . pull_table' . pull_unit IN OBJECT pull_object
+
+            pull_syn = pull_syn : " : " : self . format_quantity( qty, unit ) : " " : unit
+
+        ELSEIF ( valid_field ( self . pull_table, pull_field ) ) THEN
+
+            pull_syn = pull_syn:" : ":
+                       STRIP( SELECT 'self . pull_table' . 'pull_field' IN OBJECT pull_object )
+
+        ENDIF
+        
+        field_count = field_count + 1
+
+    ENDWHILE
+
+    RETURN( pull_syn )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_pull_syntaxes ( self, cell_info, pull_syntaxes )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE no_pulls, counter, pull_syn
+
+    no_pulls = size_of_array ( cell_info )
+
+    counter = 0
+    WHILE ( counter < no_pulls ) DO
+
+        counter = counter + 1
+
+        pull_syn = STRIP ( counter ) : " of " : STRIP ( no_pulls ) :
+                   self . get_pull_syntax( cell_info [ counter ] )
+
+
+        pull_syntaxes [ counter, 1 ] = pull_syn
+        pull_syntaxes [ counter, 2 ] = counter
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_setup_columns ( self, VALUE header_table )
+{
+* Sets the grid's default column size
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE column_width, config_id
+
+    config_id = SELECT 'header_table' . default_config
+
+    IF config_id <> EMPTY THEN
+
+        column_width = get_default_config_item ( config_id, "cell_width" )
+
+        IF column_width = ERROR THEN
+            column_width = DEFAULT_COLUMN_WIDTH
+        ENDIF
+
+        ARRAY self . column_size ARRAYSIZE ( 0 ) = column_width
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_get_pull_colour ( self, pull_record )
+{
+* Returns the colour of the pull cell
+*
+* Parameters : self, Matrix Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE pull_available, inactive, colour
+
+    IF self . parent_matrix . is_study( ) THEN
+
+        pull_available = NOT self . parent_matrix . pull_is_pending( pull_record )
+
+    ELSE
+    
+        pull_available = FALSE
+
+    ENDIF
+
+    inactive = NOT SELECT 'pull_record . table' . active
+                IN OBJECT pull_record
+
+    IF inactive THEN
+
+        colour = PROMPT_COLOUR_GREY
+
+    ELSEIF ( pull_available ) THEN
+
+        colour = PROMPT_COLOUR_BLUE
+        
+    ELSE
+    
+        colour = PROMPT_COLOUR_BLACK
+
+    ENDIF
+
+    RETURN( colour )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_get_selected_factor_range (       self    ,
+                                                         VALUE is_time ,
+                                                               first   ,
+                                                               last    )
+{
+* Returns the first and last position of the factor selection. Returns true
+* if selection active
+*
+* Parameters : self    , Matrix Pull Grid Object
+*              is_time , if true the time factor range is returned else condition
+*              first   , The first condition factor selected
+*              last    , The last condition factor selected
+*
+*******************************************************************************}
+
+    DECLARE top, left, bottom, right, selection_active
+
+    selection_active = FALSE
+
+    IF self . get_select_area ( top, left, bottom, right ) THEN
+    
+        IF is_time AND self . parent_matrix . time_xaxis THEN
+        
+            selection_active = ( top = 1 ) AND ( bottom = self . cell_rows )
+        
+            first = left
+            last  = right
+        
+        ELSE
+
+            selection_active = ( left = 1 ) AND ( right = self . cell_columns )
+
+            first = top
+            last  = bottom
+
+        ENDIF
+        
+    ENDIF
+
+    RETURN( selection_active )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_get_selected_time_range ( self, first, last )
+{
+* Returns the first and last position of the time selection. Returns true
+* if selection active
+*
+* Parameters : self  , Matrix Pull Grid Object
+*              first , The first time factor selected
+*              last  , The last time factor selected
+*
+*******************************************************************************}
+
+    RETURN( self . get_selected_factor_range( TRUE, first, last ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_get_selected_condition_range ( self, first, last )
+{
+* Returns the first and last position of the condition selection. Returns true
+* if selection active
+*
+* Parameters : self  , Matrix Pull Grid Object
+*              first , The first condition factor selected
+*              last  , The last condition factor selected
+*
+*******************************************************************************}
+
+    RETURN( self . get_selected_factor_range( FALSE, first, last ) )
+
+ENDROUTINE
+ 
+{******************************************************************************}
+
+ROUTINE pull_grid_display_cell (       self        ,
+                                 VALUE cell_column ,
+                                 VALUE cell_row    ,
+                                       window      ,
+                                 VALUE column      ,
+                                 VALUE row         ,
+                                 VALUE cell_width  ,
+                                 VALUE cell_height )
+{
+* Called to display a matrix cell in the grid
+*
+* Parameters : self, Matrix Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE pull_no, display_syn, pull_record, colour, cell_obj
+
+    pull_no = self . user_info [ cell_column, cell_row ] . current_pull
+    display_syn = self . user_info [ cell_column, cell_row ] . pull_info [ pull_no, 1 ]
+
+    colour = PROMPT_COLOUR_BLACK
+
+    IF ( pull_no <> 0 ) THEN
+    
+        cell_obj = self . user_info [cell_column , cell_row]
+        
+        pull_record = cell_obj . pull_records [ pull_no ]
+        
+        colour = self . get_pull_colour( pull_record )
+        
+    ENDIF
+
+    DISPLAY display_syn
+        AT column, row
+        IN WINDOW window
+        WITH ( width             = cell_width ,
+               foreground_colour = colour     )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE pull_grid_prompt_cell (       self    ,
+                                VALUE cell_column ,
+                                VALUE cell_row    ,
+                                      window      ,
+                                VALUE column      ,
+                                VALUE row         ,
+                                VALUE cell_width  ,
+                                VALUE cell_height )
+
+{
+* Called to prompt for a matrix cell in the grid
+*
+* Parameters : self, Matrix Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE current_pull_no, pull_no, matrix_object, blank_string, cell_obj
+    DECLARE pull_record, colour
+
+    matrix_object = self . parent_matrix
+    
+    cell_obj = self . user_info [cell_column , cell_row]
+
+    current_pull_no = cell_obj . current_pull
+
+    IF current_pull_no = 0 THEN
+
+        blank_string = ""
+
+        PROMPT FOR blank_string
+            AT column, row
+            IN WINDOW window
+            WITH ( width          = cell_width                   ,
+                   display_only   = TRUE                         ,
+                   userinfo       = self                         ,
+                   build_routine  = "matrix_cell_callback_build" )
+
+        pull_no = 0
+
+    ELSE
+        
+        pull_no = current_pull_no
+        
+        pull_record = cell_obj . pull_records [ pull_no ]
+        
+        colour = self . get_pull_colour( pull_record )
+
+        PROMPT FOR pull_no
+            CHOOSE OUTOF cell_obj . pull_info
+            AT column, row
+            IN WINDOW window
+            WITH ( width             = cell_width                      ,
+                   userinfo          = self                            ,
+                   build_routine     = "matrix_cell_callback_build"    ,
+                   foreground_colour = colour                          ,
+                   selected_routine  = "matrix_cell_callback_selected" )
+
+        IF pull_no <> current_pull_no THEN
+
+            cell_obj . current_pull = pull_no
+            matrix_object . current_pull = pull_no
+
+            self . re_display_cell ( cell_column , cell_row )
+        
+            matrix_object . update_pull_property_sheet( )
+            
+        ENDIF
+
+    ENDIF
+
+    IF ( LASTKEY = "INSERT HERE" ) THEN
+        
+        matrix_object . insert_pull_in_current( )
+        
+        self . re_display_cell ( cell_column , cell_row )
+
+    ELSEIF ( LASTKEY = "REMOVE" ) THEN
+
+        matrix_object . option_delete_pull( )
+        
+        self . re_display_cell ( cell_column , cell_row )
+        self . stop_prompt ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE matrix_cell_callback_build ( self )
+{
+* Called when the build key is pressed in a matrix cell. Toggles the pull info
+* visibilty
+*
+* Parameters : self, Cell prompt object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object
+
+    matrix_object = self . userinfo . parent_matrix
+  
+    matrix_object . toggle_pull_property_visibility( )  
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE matrix_cell_callback_selected ( self )
+{
+* Called when the user chooses a value from a cell's drop-down.
+*
+* Parameters : self, Cell prompt object
+*
+*******************************************************************************}
+
+    DECLARE pull_grid, cell_obj
+    
+    pull_grid = self . user_info
+    
+    cell_obj = pull_grid . user_info [pull_grid . current_column , pull_grid . current_row]
+
+    cell_obj . current_pull = self . choose_array[self . choose_index,2]
+
+    {* call return to set update displays and set matrix's current pull *}
+    pull_grid . return( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_enter_cell (       self        ,
+                                          VALUE cell_column ,
+                                          VALUE cell_row    )
+{
+* Called when a cell is entered
+*
+* Parameters : self       , The Stb Pull Grid object
+*              cell_column, The new cell column
+*              cell_row   , The new cell row
+*
+*******************************************************************************}
+
+    DECLARE matrix_object
+
+    matrix_object = self . parent_matrix
+
+    IF ( cell_column <> 0 ) AND ( cell_row <> 0 ) THEN
+      
+        matrix_object . current_layer = matrix_object . matrix_form . tab . selected
+
+        IF matrix_object . time_xaxis THEN
+
+            matrix_object . current_time  = cell_column
+            matrix_object . current_c     = cell_row
+
+        ELSE
+
+            matrix_object . current_c     = cell_column
+            matrix_object . current_time  = cell_row
+
+        ENDIF
+
+        IF ( self . user_info [ cell_column, cell_row ] <> EMPTY ) THEN
+        
+            matrix_object . current_pull = self . user_info [ cell_column, cell_row ] . current_pull
+        ELSE
+        
+            matrix_object . current_pull = EMPTY
+
+        ENDIF
+        
+        matrix_object . update_pull_property_sheet( )
+        matrix_object . update_overview_property_sheet( )
+        
+    ENDIF
+    
+    matrix_object . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_return ( self )
+{
+* Called when the user presses return. Forces the prompt to stay in the
+* current cell if return is pressed. Allows the display info to be updated.
+*
+* Parameters : self, Matrix Pull Grid Object
+*
+*******************************************************************************}
+
+    self . set_position( self . current_column, self . current_row )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_create_matrix_form ( self )
+{
+* Creates the matrix form object
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE matrix_form, header_txt, button_close, button_view_pull
+    DECLARE button_view_overview, message_text
+
+    header_txt = SELECT 'self . header_table' . identity : " "
+
+    IF self . is_study( ) THEN
+    
+        IF self . is_active_study( ) THEN
+             
+            SET DATE FORMAT "DD-Mon-YYYY"
+            
+            header_txt = header_txt : "Activated On : " :
+                         STRIP ( SELECT 'self . header_table' . start_date )
+                         
+            RESTORE DATE FORMAT
+            
+        ENDIF
+        
+    ENDIF
+
+    PROMPT OBJECT matrix_form
+        CLASS "STB_MATRIX_FORM"
+        WITH ( header        = header_txt ,
+               column        = 4          ,
+               row           = 4          ,
+               width         = 108        ,
+               height        = 19         ,
+               userinfo      = self       ,
+               parent_matrix = self       )
+
+    self . matrix_form = matrix_form
+
+    matrix_form . create_tab( )
+    
+    matrix_form . add_tab_forms_from_array( self . tab_forms )
+
+    PROMPT OBJECT button_close
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE matrix_form . height - 1
+        FROM matrix_form . width - 10
+        WITH ( caption      = GET_USER_MESSAGE ("STD_CLOSE",1) ,
+               sendlast_key = "DO"                             ,
+               width        = 10                               )
+
+    matrix_form . add_prompt ( button_close )
+
+    matrix_form . add_panel( matrix_form . width - 12 ,
+                             matrix_form . height - 1 ,
+                             1                        ,
+                             1                        ,
+                             PANEL_H_EXPAND_ON        )
+
+
+    self . create_pull_form( )
+
+    self . create_overview_form( )
+
+    message_text = GET_USER_MESSAGE ("MATRIX_TOGGLE_OVERVIEW", 1)
+
+    PROMPT OBJECT button_view_overview
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE matrix_form . height - 1
+        FROM 1 TO 13
+        WITH ( caption             = message_text                               ,
+               mouse_click_routine = "matrix_overview_toggle_button_mouse_click")
+
+    matrix_form . button_overview = button_view_overview
+    
+    matrix_form . add_prompt ( button_view_overview )
+
+    message_text = GET_USER_MESSAGE ("MATRIX_TOGGLE_PULL_PROPERTIES", 1)
+
+    PROMPT OBJECT button_view_pull
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE matrix_form . height - 1
+        FROM 15 TO 27
+        WITH ( caption             = message_text                              ,
+               mouse_click_routine = "pull_property_toggle_button_mouse_click" )
+
+    matrix_form . button_pull_info = button_view_pull
+
+    matrix_form . add_prompt ( button_view_pull )
+
+    matrix_form . create_toolbar( )
+
+    self . add_toolbuttons_dimensioning( matrix_form . toolbar )
+    self . add_toolbuttons_presentation( matrix_form . toolbar )
+    self . add_toolbuttons_manipulation( matrix_form . toolbar )
+    
+    IF self . is_study( ) THEN
+        self . add_toolbuttons_sample_tools( matrix_form . toolbar )
+    ENDIF
+       
+    matrix_form . add_prompt ( self . pullinfo_form )
+    matrix_form . add_prompt ( self . overview_form )
+
+    IF self . layer_count( ) > 0 THEN
+        self . current_layer = 1
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE check_pulls_have_test_schedule ( self )
+{
+* Alert user to the pulls that don't have test schedules defined. Only shows
+* the first 10 pulls
+*
+* Parameters : self, 
+*
+*******************************************************************************}
+
+    DECLARE count, pull_db, test_sched, pull_number, layer_factor
+    DECLARE continue, time_factor, c_factor, blank_count, detail
+
+    continue = TRUE
+
+    pull_db = self . userinfo . pulls
+
+    blank_count = 0
+    detail = GET_USER_MESSAGE ("MATRIX_NO_TEST_SCHED", 3)
+
+    count = 1
+    WHILE ( ( count <= pull_db . size ( ) ) AND continue ) AND ( count <= 10 ) DO
+    
+        pull_db . set_by_number ( count )
+        
+        test_sched = SELECT 'pull_db . table' . test_schedule
+                         IN OBJECT pull_db . current
+        
+        IF NOT ( pull_db . current . deleted ) AND BLANK( test_sched ) THEN
+
+            pull_number = SELECT 'pull_db . table' . pull_num
+                              IN OBJECT pull_db . current
+                              
+            layer_factor = SELECT 'pull_db . table' . layer_factor
+                               IN OBJECT pull_db . current
+
+            time_factor = SELECT 'pull_db . table' . time_factor
+                              IN OBJECT pull_db . current
+
+            c_factor = SELECT 'pull_db . table' . c_factor
+                           IN OBJECT pull_db . current
+
+            detail = detail : ASCII( 13 ) : ASCII( 9 ) :
+                              GET_USER_MESSAGE ("MATRIX_NO_TEST_SCHED",1) :
+                              STRIP ( pull_number ) :
+                              GET_USER_MESSAGE ("MATRIX_NO_TEST_SCHED",2) :
+                              STRIP ( layer_factor ) :
+                              ", " :
+                              STRIP ( time_factor ) :
+                              ", " :
+                              STRIP ( c_factor )
+
+            blank_count = blank_count + 1
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+    
+    IF count < pull_db . size ( ) THEN
+    
+        detail = detail : ASCII( 13 ) : ASCII( 9 ) : " (more...)"
+    
+    ENDIF
+    
+    IF blank_count > 0 THEN
+       
+        optional_message ( "Stability"              ,
+                           detail                   ,
+                           FORM_BUTTON_OK           ,
+                           "STABILITY"              ,
+                           "PULLS_NO_TEST_SCHEDULE" )
+         
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_set_pull_property_visible ( self, VALUE visible )
+{
+* Hides or shows the pull property sheet
+*
+* Parameters : self    , Stb Matrix object
+*              visible , If true the property sheet is shown
+*
+*******************************************************************************}
+
+    DECLARE pull_form
+
+    pull_form = self . pull_info_form
+
+    IF visible THEN
+        self . update_pull_property_sheet( )
+    ENDIF
+
+    window_begin_update ( self . matrix_form . window )
+    pull_form . set_visible ( visible )
+    window_end_update ( self . matrix_form . window )
+
+    self . matrix_form . set_position( self . matrix_form . tab . tag )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_set_matrix_overview_visible ( self, VALUE visible )
+{
+* Hides or shows the matrix overview sheet
+*
+* Parameters : self    , Stb Matrix object
+*              visible , If true the property sheet is shown
+*
+*******************************************************************************}
+
+    DECLARE form
+
+    form = self . overview_form
+
+    IF form <> EMPTY THEN
+
+        IF visible THEN
+            self . update_overview_property_sheet( )
+        ENDIF
+
+        window_begin_update ( self . matrix_form . window )
+        form . set_visible ( visible )
+        window_end_update ( self . matrix_form . window )
+        
+        self . matrix_form . set_position( self . matrix_form . tab . tag )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_is_pull_property_visible ( self )
+{
+* Returns true if the pull property sheet is visible
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    RETURN( self . pull_info_form . visible )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_is_matrix_overview_visible ( self )
+{
+* Returns true if the matrix overview sheet is visible
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    RETURN( self . overview_form . visible )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_toggle_pull_property_visibility ( self )
+{
+* Toggles the pull property sheet visibility
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+      
+    self . set_pull_property_visible( NOT self . is_pull_property_visible( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_toggle_matrix_overview_visibility ( self )
+{
+* Toggles the layer property sheet visibility
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+      
+    self . set_matrix_overview_visible( NOT self . is_matrix_overview_visible( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE pull_property_toggle_button_mouse_click ( self )
+{
+* Button mouse click callback routine
+*
+* Parameters : self, Pull Property Visibility button
+*
+*******************************************************************************}
+
+    DECLARE matrix_object
+
+    matrix_object = self . parent_prompt . parent_matrix
+    
+    matrix_object . toggle_pull_property_visibility( )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE matrix_overview_toggle_button_mouse_click ( self )
+{
+* Button mouse click callback routine
+*
+* Parameters : self, Matrix Overview Visibility button
+*
+*******************************************************************************}
+
+    DECLARE matrix_object
+
+    matrix_object = self . parent_prompt . parent_matrix
+    
+    matrix_object . toggle_matrix_overview_visibility( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_get_factor_list ( self, factor_db )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE counter, factor_list, undel_count, default_config, ret_val
+
+    ARRAY factor_list
+
+    counter = 0
+    undel_count = 0
+
+    WHILE ( counter < factor_db . size () ) DO
+
+        counter = counter + 1
+        factor_db . set_by_index_number ( "AXIS_POS", counter )
+
+        IF NOT ( factor_db . current . deleted ) THEN
+            undel_count = undel_count + 1
+
+            default_config = SELECT 'self . header_table' . default_config
+
+            IF BLANK( default_config ) THEN
+                ret_val = TRUE
+            ELSE
+                ret_val = get_default_config_item ( default_config, "load_type" )
+            ENDIF
+
+            IF ret_val THEN
+                factor_list [ undel_count, 1 ] =
+                    object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+            ELSE
+                factor_list [ undel_count, 1 ] =
+                    object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AKA_NAME" )
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    WHILE ( undel_count < factor_db . size () + 20 ) DO
+
+        undel_count = undel_count + 1
+        factor_list [ undel_count, 1 ] = ""
+
+    ENDWHILE
+
+    RETURN ( factor_list )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_c_factor_before ( self )
+{
+* Prompts the user for a new C-factor to add before the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+    
+    IF self . current_c <> EMPTY THEN
+        insert_pos = self . current_c
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_condition_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_c_factor_after ( self )
+{
+* Prompts the user for a new C-factor to add after the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+    
+    IF self . current_c <> EMPTY THEN
+        insert_pos = self . current_c + 1
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_condition_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_c_factor_options ( self )
+{
+* Displays New C-Factor Options
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE menu, item
+
+    CREATE OBJECT POPUP_MENU_CLASS, menu
+    
+    IF self . can_new_c_factor_before( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_C_BEFORE", 1 )
+        item . set_action( self, "OPTION_NEW_C_FACTOR_BEFORE" )
+    
+        menu . add( item )
+    
+    ENDIF
+    
+    IF self . can_new_c_factor_after( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_C_AFTER", 1 )
+        item . set_action( self, "OPTION_NEW_C_FACTOR_AFTER" )
+
+        menu . add( item )
+    
+    ENDIF
+
+    menu . start( )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_time_factor_before ( self )
+{
+* Prompts the user for a new Time factor to add before the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+    
+    IF self . current_time <> EMPTY THEN
+        insert_pos = self . current_time
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_time_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_time_factor_after ( self )
+{
+* Prompts the user for a new Time factor to add after the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+    
+    IF self . current_time <> EMPTY THEN
+        insert_pos = self . current_time + 1
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_time_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_time_factor_options ( self )
+{
+* Displays New Time-Factor Options
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE menu, item
+
+    CREATE OBJECT POPUP_MENU_CLASS, menu
+    
+    IF self . can_new_time_factor_before( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_TIME_BEFORE", 1 )
+        item . set_action( self, "OPTION_NEW_TIME_FACTOR_BEFORE" )
+        
+        menu . add( item )
+
+    ENDIF
+    
+    IF self . can_new_time_factor_after( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_TIME_AFTER", 1 )
+        item . set_action( self, "OPTION_NEW_TIME_FACTOR_AFTER" )
+            
+        menu . add( item )
+    
+    ENDIF
+
+    menu . start( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_new_condition_factor_at ( self, VALUE insert_column )
+{
+* Prompts the user for a new C-factor to add
+*
+* Parameters : self          , Stb Matrix object
+*              insert_column , The position to insert new time factor
+*
+*******************************************************************************}
+
+    DECLARE factor_title, aka_name, default_config, ret_val, condition_id
+
+    IF self . current_layer <> EMPTY THEN
+
+        IF get_identity ( condition_id   ,
+                          GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_QUERY", 1 ) ,
+                          GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_TITLE", 1 ) ,
+                          "C_FACTOR"     ,
+                          EMPTY          ) THEN
+
+            IF self . condition_id_exists( condition_id ) THEN
+            
+                flash_message ( GET_USER_MESSAGE ( "MATRIX_NON_UNIQUE_FACTOR", 1 ), TRUE )
+                
+            ELSE
+            
+                IF ( self . product_info_form <> EMPTY ) THEN
+                    product_form_insert_new_c_factor ( self, condition_id, insert_column )
+                ENDIF
+
+                default_config = SELECT 'self . header_table' . default_config
+
+                IF BLANK( default_config ) THEN
+                    ret_val = TRUE
+                ELSE
+                    ret_val = get_default_config_item ( default_config, "load_type" )
+                ENDIF
+
+                aka_name = SELECT c_factor . aka_name
+                            WHERE identity = condition_id
+
+                IF ret_val THEN
+                    factor_title = condition_id
+                ELSE
+                    factor_title = aka_name
+                ENDIF
+
+                IF self . time_xaxis THEN
+                    insert_row_in_grid ( self, factor_title, insert_column )
+                ELSE
+                    insert_column_in_grid ( self, factor_title, insert_column )
+                ENDIF
+
+                insert_column_in_db ( self,
+                                      self . c_factors ,
+                                      condition_id,
+                                      aka_name,
+                                      "C",
+                                      insert_column )
+
+                self . c_factors . re_index ( "AXIS_POS" )
+
+                self . current_c = insert_column
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_new_time_factor_at ( self, VALUE insert_column )
+{
+* Prompts the user for a new Time factor to add
+*
+* Parameters : self          , Stb Matrix object
+*              insert_column , The position to insert new time factor
+*
+*******************************************************************************}
+
+    DECLARE default_config, ret_val, factor_title, aka_name, time_id
+
+    IF self . current_layer <> EMPTY THEN
+
+        IF get_identity ( time_id   ,
+                          GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_QUERY", 2 ) ,
+                          GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_TITLE", 2 ) ,
+                          "TIME_FACTOR"  ,
+                          EMPTY          ) THEN
+
+            IF self . time_id_exists( time_id ) THEN
+            
+                flash_message ( GET_USER_MESSAGE ( "MATRIX_NON_UNIQUE_FACTOR", 1 ), TRUE )
+                
+            ELSE
+
+                default_config = SELECT 'self . header_table' . default_config
+
+                IF BLANK( default_config ) THEN
+                    ret_val = TRUE
+                ELSE
+                    ret_val = get_default_config_item ( default_config, "load_type" )
+                ENDIF
+
+                aka_name = SELECT time_factor . aka_name
+                            WHERE identity = time_id
+
+                IF ret_val THEN
+                    factor_title = time_id
+                ELSE
+                    factor_title = aka_name
+                ENDIF
+
+                IF self . time_xaxis THEN
+                    insert_column_in_grid ( self, factor_title, insert_column )
+                ELSE
+                    insert_row_in_grid ( self, factor_title, insert_column )
+                ENDIF
+
+                insert_column_in_db ( self,
+                                      self . time_factors,
+                                      time_id,
+                                      aka_name,
+                                      "T",
+                                      insert_column )
+
+                self . time_factors . re_index ( "AXIS_POS" )
+
+                self . current_time = insert_column
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE insert_column_in_grid ( matrix_object, VALUE column_title, VALUE ins_col )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE count, grid, row_count, cell_info, window_id
+
+    window_id = matrix_object . matrix_form . window
+
+    window_begin_update ( window_id )
+
+    count = 1
+    WHILE ( count <= matrix_object . layer_count( ) ) DO
+
+        grid = matrix_object . get_pull_grid_by_position( count )
+
+        array_insert_slice ( grid . userinfo, 1, ins_col )
+
+        row_count = 0
+        WHILE ( row_count < grid . cell_rows ) DO
+
+            row_count = row_count + 1
+
+            CREATE OBJECT "STB_MATRIX_CELL", cell_info
+
+            grid . userinfo [ ins_col, row_count ] = cell_info
+
+        ENDWHILE
+
+        grid . insert_column ( ins_col, 10, GRID_SEPARATOR_TITLE )
+
+        grid . title_text_top [ ins_col, 1 ] = column_title
+        grid . rebuild ()
+
+        count = count + 1
+
+    ENDWHILE
+
+    window_end_update ( window_id )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE insert_column_in_db (       matrix_object ,
+                                    factor_db     ,
+                                    axis_name     ,
+                              VALUE aka_name      ,
+                              VALUE axis_type     ,
+                              VALUE axis_pos      )
+
+{
+* 
+*
+* Parameters  :
+*
+******************************************************************************}
+
+    DECLARE count, factor_ndx, current_pos, new_record, status
+
+    factor_db . re_index ( "AXIS_POS" ) 
+
+    count = factor_db . size()
+
+    { make space in the ordering for new item }
+
+    IF axis_pos > count THEN
+
+        { if record introduced is in a column or row greater then }
+        { the size of the factor object database put it at the end}
+
+        current_pos = count + 1
+
+    ELSE
+
+        REPEAT
+
+            factor_db . set_by_index_number ( "AXIS_POS", count )
+
+            current_pos = object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POS" )
+
+            IF NOT ( factor_db . current . deleted ) AND
+                   ( current_pos >= axis_pos       ) THEN
+
+                  object_assign_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POS", current_pos + 1 )
+            ENDIF
+
+            count = count - 1
+
+        UNTIL ( current_pos < axis_pos ) OR ( count = 0 )
+
+    ENDIF
+
+    { insert record into new position }
+
+    factor_ndx = matrix_object . matrix_type :
+                 PAD ( matrix_object . header_id, " ", "20" )
+
+    IF matrix_object . is_study( ) THEN
+        factor_ndx = factor_ndx : "         1"
+    ELSE
+        factor_ndx = factor_ndx : matrix_object . header_ver
+    ENDIF
+
+    factor_ndx = factor_ndx : PAD ( axis_name, " ", "10" ) : STRIP ( axis_type )
+
+    factor_db . set_by_index ( "KEY0", factor_ndx )
+
+    IF ( factor_db . current = EMPTY ) THEN
+
+        CREATE OBJECT "STD_OBJECT_RECORD", new_record
+
+        new_record . new = TRUE
+
+        new_record . table = "PDS_AXIS_POINT"
+
+        object_add_table ( new_record, "PDS_AXIS_POINT" )
+
+        RESERVE ENTRY pds_axis_point IN OBJECT new_record, factor_ndx, status
+
+        axis_pos = packed_decimal ( axis_pos )
+
+        IF status = EMPTY THEN
+            object_assign_field ( new_record, "PDS_AXIS_POINT", "AXIS_POS", axis_pos )
+            object_assign_field ( new_record, "PDS_AXIS_POINT", "AKA_NAME", aka_name )
+            factor_db . add ( new_record )
+        ELSE
+            flash_message ( status, EMPTY )
+        ENDIF
+
+    ELSE
+        { if the factor exists it must be deleted so undel it }
+
+        factor_db . set_by_index ( "KEY0", factor_ndx )
+
+        factor_db . current . undelete ()
+        object_assign_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POS", axis_pos )
+
+        new_record = factor_db . current
+
+    ENDIF
+
+    RETURN ( new_record )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE insert_row_in_grid ( matrix_object, row_title, VALUE ins_row )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE count, grid, col_count, cell_info, window_id
+
+    window_id = matrix_object . matrix_form . window
+
+    window_begin_update ( window_id )
+
+    count = 1
+    WHILE ( count <= matrix_object . layer_count( ) ) DO
+
+        grid = matrix_object . get_pull_grid_by_position( count )
+
+        array_insert_slice ( grid . userinfo, 2, ins_row )
+
+        col_count = 0
+        WHILE ( col_count < grid . cell_columns ) DO
+
+            col_count = col_count + 1
+
+            CREATE OBJECT "STB_MATRIX_CELL", cell_info
+
+            grid . userinfo [ col_count, ins_row ] = cell_info
+
+        ENDWHILE
+
+        grid . insert_row ( ins_row, 1, GRID_SEPARATOR_TITLE )
+
+        grid . title_text_left [ ins_row, 1 ] = row_title
+        grid . rebuild ()
+
+        count = count + 1
+
+    ENDWHILE
+
+    window_end_update ( window_id )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_layer_factor_before ( self )
+{
+* Prompts the user for a new Layer factor to add before the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+    
+    IF self . current_layer <> EMPTY THEN
+        insert_pos = self . current_layer
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_layer_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_layer_factor_after ( self )
+{
+* Prompts the user for a new Layer factor to add after the current one
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE insert_pos
+
+    IF self . current_layer <> EMPTY THEN
+        insert_pos = self . current_layer + 1
+    ELSE
+        insert_pos = 1
+    ENDIF
+
+    self . new_layer_factor_at ( insert_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_new_layer_factor_options ( self )
+{
+* Displays New Layer-Factor Options
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE menu, item
+
+    CREATE OBJECT POPUP_MENU_CLASS, menu
+    
+    IF self . can_new_layer_factor_before( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_LAYER_BEFORE", 1 )
+        item . set_action( self, "OPTION_NEW_LAYER_FACTOR_BEFORE" )
+            
+        menu . add( item )
+    
+    ENDIF
+    
+    IF self . can_new_layer_factor_after( ) THEN
+
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = GET_USER_MESSAGE( "TOOLBAR_INSERT_LAYER_AFTER", 1 )
+        item . set_action( self, "OPTION_NEW_LAYER_FACTOR_AFTER" )
+                
+        menu . add( item )
+
+    ENDIF
+
+    menu . start( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_new_layer_factor_at ( self, VALUE insert_column )
+{
+* Prompts the user for a new Layer factor to add
+*
+* Parameters : self          , Stb Matrix object
+*              insert_column , position to insert
+*
+*******************************************************************************}
+
+    DECLARE new_layer_id, factor_db, tab_form, new_layer_rec, tab_prompt, aka_name
+
+    IF get_identity ( new_layer_id   ,
+                      GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_QUERY", 3 ) ,
+                      GET_USER_MESSAGE ( "INSERT_FACTOR_FORM_TITLE", 3 ) ,
+                      "LAYER_FACTOR" ,
+                      EMPTY          ) THEN
+
+        IF self . layer_id_exists( new_layer_id ) THEN
+
+            flash_message ( GET_USER_MESSAGE ( "MATRIX_NON_UNIQUE_FACTOR", 1 ), TRUE )
+
+        ELSE
+
+            factor_db = self . layer_factors
+
+            aka_name = SELECT layer_factor . aka_name
+                        WHERE identity = new_layer_id
+
+            new_layer_rec = insert_column_in_db ( self, factor_db, new_layer_id, aka_name, "Z", insert_column )
+
+            factor_db . re_index ( "AXIS_POS" )
+
+            setup_layer ( self, tab_form, new_layer_rec )
+
+            self . tab_forms [ insert_column ] = tab_form
+
+            tab_prompt = self . matrix_form . tab
+
+            tab_prompt . insert_form ( tab_form, insert_column )
+
+            tab_prompt . set_current_tab( insert_column )
+            self . current_layer = tab_prompt . selected
+            
+            IF ( self . product_info_form <> EMPTY ) THEN
+
+                product_form_insert_new_layer ( self, insert_column, new_layer_id )
+                
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE update_timer_queue ( pulls )
+
+{
+* Calls the update timer routines for new pulls and calls the delete timer
+* routines for the deleted pulls. Pulls that are deleted and new are ignored
+*
+* Parameters : pull_db , pull object database
+*
+*******************************************************************************}
+
+
+    DECLARE counter, pull_rec, pull_db
+
+    pull_db = pulls
+
+    counter = 0
+    WHILE ( counter < pull_db . size () ) DO
+
+        counter = counter + 1
+        pull_db . set_by_number ( counter )
+
+        pull_rec = pull_db . current
+
+        IF ( pull_rec . deleted ) AND ( pull_rec . new ) THEN
+
+        ELSEIF ( pull_rec . deleted ) THEN
+
+        ELSEIF ( pull_rec . new ) THEN
+
+            add_pull_to_timerqueue ( pull_rec )
+
+        ENDIF
+
+    ENDWHILE
+
+    counter = 0
+    WHILE ( counter < size_of_array ( pulls . del_pull_orig_ndx ) ) DO
+
+        counter = counter + 1
+        pulls . del_pull_orig_ndx [ counter ] . delete_timerqueue_entry ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_modify_column_width ( self )
+
+{
+* change the column width in the matrix
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE counter, grid, new_width
+
+    new_width = get_new_column_width ( )
+
+    IF new_width <> -1 THEN
+
+        counter = 0
+        WHILE ( counter < self . layer_count ( ) ) DO
+
+            counter = counter + 1
+
+            grid = self . get_pull_grid_by_position( counter )
+
+            ARRAY grid . column_size ARRAYSIZE ( 0 ) = new_width
+
+            grid . rebuild ()
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_new_column_width
+{
+* Returns the new column width as selected by the user. If cancel is pressed -1
+* is returned
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    DECLARE display_id, prompt_id, default_val, form, new_width
+
+    new_width = -1
+
+    object_create ( form, "STD_FORM" )
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 1                     ,
+                width  = 35                     ,
+                row    = form_scr_pos (  1, GLOBAL ( "GUI_HEIGHT" ) ),
+                column = form_scr_pos ( 35, GLOBAL ( "GUI_WIDTH"  ) ),
+                header = GET_USER_MESSAGE ( "COL_WIDTH_TITLE", 1 ),
+                use_top_line = TRUE )
+
+    PROMPT OBJECT display_id
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 1 FROM 2 TO 20
+        WITH ( value  = GET_USER_MESSAGE ( "COL_WIDTH_1", 1 ),
+               raised = FALSE            ,
+               bold   = TRUE             )
+
+    default_val = DEFAULT_COLUMN_WIDTH
+
+    PROMPT OBJECT prompt_id
+        CLASS "STD_PROMPT_TEXT_INTEGER"
+        ON LINE 1 FROM 22 TO 34
+        WITH ( value  = default_val,
+               minimum = 1  ,
+               maximum = 40 )
+
+    form . add_display ( display_id )
+    form . add_prompt  ( prompt_id )
+    
+    form . start_prompt ()
+    form . wait_prompt ()
+    form . end_prompt ()
+
+    IF form . get_lastkey () = "DO" THEN
+    
+        new_width = prompt_id . value
+        
+    ENDIF
+
+    RETURN ( new_width )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_update_global_pull ( matrix_object )
+{
+* Sets the global pull number for the matrix. If the pull no. does not exist
+* then the pull no. is not modified
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE matrix_grid, tab_prompt, layer_count, row_count
+    DECLARE col_count, pull_form, global_pull
+
+    setup_global_pull_form ( pull_form )
+
+    pull_form . start_prompt ()
+    pull_form . wait_prompt ()
+    pull_form . stop_prompt ()
+{
+    pull_form . end_prompt ()
+}
+    IF pull_form . get_lastkey () = "DO" THEN
+
+        global_pull = pull_form . prompt_objects [ 1 ] . value
+
+        tab_prompt = matrix_object . matrix_form . tab
+
+        layer_count = 0
+        WHILE ( layer_count < size_of_array ( tab_prompt . forms ) )DO
+
+            layer_count = layer_count + 1
+
+            matrix_grid = tab_prompt . forms [ layer_count ] . prompt_objects [ 1 ]
+
+            row_count = 0
+            WHILE ( row_count < matrix_grid . cell_rows ) DO
+
+                row_count = row_count + 1
+
+                col_count = 0
+                WHILE ( col_count < matrix_grid . cell_columns ) DO
+
+                    col_count = col_count + 1
+
+                    IF ( global_pull <= size_of_array ( matrix_grid . userinfo [ col_count, row_count ] . pullinfo ) ) THEN
+
+                         matrix_grid . userinfo [ col_count, row_count ] . current_pull = global_pull
+
+                    ENDIF
+
+                ENDWHILE
+
+             ENDWHILE
+             
+             { updates the tab prompt }
+
+             tab_prompt . forms [ layer_count ] . prompt_objects [ 1 ] . rebuild ()
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE setup_global_pull_form ( form )
+
+{
+* Form to find the new pull number to change to
+*
+* Parameters : form , variable to hold the form object
+*
+*******************************************************************************}
+
+
+    DECLARE display_id, prompt_id, default_val
+
+    object_create ( form, "STD_FORM" )
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 1                     ,
+                width  = 35                     ,
+                row    = form_scr_pos (  1, GLOBAL ( "GUI_HEIGHT" ) ),
+                column = form_scr_pos ( 35, GLOBAL ( "GUI_WIDTH"  ) ),
+                header = GET_USER_MESSAGE ( "GLOBAL_PULL_TITLE", 1 ),
+                use_top_line = TRUE )
+
+    PROMPT OBJECT display_id
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 1 FROM 2 TO 20
+        WITH ( value  = GET_USER_MESSAGE ( "GLOBAL_PULL_1", 1 ),
+               raised = FALSE            ,
+               bold   = TRUE             )
+
+    default_val = 1
+
+    PROMPT OBJECT prompt_id
+        CLASS "STD_PROMPT_TEXT_INTEGER"
+        ON LINE 1 FROM 22 TO 34
+        WITH ( value  = default_val,
+               minimum = 1,
+               maximum = MAX_PULLS_IN_CELL )
+
+    form . add_display ( display_id )
+    form . add_prompt  ( prompt_id )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_create_propagate_form ( self )
+{
+* Creates and returns the propagate form object
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE form, tab, range_form, data_form
+
+    PROMPT OBJECT form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height             = 11,
+                width              = 70,
+                row                = 3 ,
+                column             = 3 ,
+                header             = GET_USER_MESSAGE ( "PROPAGATE_MAIN_TITLE", 1 ),
+                validation_routine = "propagate_form_validation",
+                userinfo           = self ,
+                prompt_id          = "$STB_GRID_CLICK_PROPAGATE")
+
+    CREATE OBJECT PROMPT_TAB_CLASS , tab
+
+    tab . height = 11
+    tab . width  = form . width
+    tab . row    = 0.5
+    tab . column = 1
+
+    range_form = setup_range_form ( self )
+    tab . add_form ( range_form )
+
+    data_form  = setup_data_form ( self )
+    tab . add_form ( data_form )
+
+    form . add_prompt ( tab )
+
+    RETURN( form )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE setup_range_form ( matrix_object )
+
+{
+* Range form. Displays the range selected by the user and allows modification.
+*
+* Parameters : matrix_object , matrix object
+*
+*******************************************************************************}
+
+    DECLARE display_col, display_width, prompt_col, prompt_width,
+            layer_factors, time_factors, c_factors, prompt_obj, range_form
+
+    layer_factors = get_factor_array ( matrix_object . layer_factors )
+    time_factors  = get_factor_array ( matrix_object . time_factors  )
+    c_factors  = get_factor_array ( matrix_object . c_factors  )
+
+    display_col = 3
+    display_width = 20
+
+    prompt_col = display_col + display_width + 2
+    prompt_width = 11
+
+    PROMPT OBJECT range_form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 8,
+                width  = 65,
+                row    = 1 ,
+                column = 1 ,
+                button_style = FORM_BUTTON_NONE,
+                header = GET_USER_MESSAGE ( "PROPOGATE_RANGE_TITLE", 1 ),
+                use_top_line = TRUE )
+
+    range_form . add_frame ( GET_USER_MESSAGE ( "PROPOGATE_RANGE_SUB_TITLE", 1 ),
+                             1, 1, 3, range_form . width - 1 )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 1 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_FROM_FACTOR", 1 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+               
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 2 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_FROM_FACTOR", 2 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 3 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_FROM_FACTOR", 3 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF layer_factors
+        ON LINE 1 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF time_factors
+        ON LINE 2 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF c_factors
+        ON LINE 3 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    display_col = prompt_width + prompt_col + 5
+    display_width = 2
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 1 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_TO_FACTOR", 1 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+               
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 2 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_TO_FACTOR", 2 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 3 FROM display_col TO display_col + display_width
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_TO_FACTOR", 3 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    prompt_col = display_col + display_width + 2
+    prompt_width = 11
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF layer_factors
+        ON LINE 1 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF time_factors
+        ON LINE 2 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CHOOSE OUTOF c_factors
+        ON LINE 3 FROM prompt_col TO prompt_col + prompt_width
+        WITH ( validation_routine = "must_select_factor" )
+
+    range_form . add_prompt( prompt_obj )
+
+    range_form . add_frame ( GET_USER_MESSAGE ( "PROPOGATE_RANGE_SUB_TITLE_2", 1 ),
+                             1, 7, 1, range_form . width - 1 )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 7 FROM 2 TO 13
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_ALL", 1 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        ON LINE 7 FROM 15
+        BROWSE ON boolean
+        WITH ( value = TRUE,
+               is_check = TRUE                                ,
+               toggled_routine = "enable_numbers"             ,
+               vgl_library     = GLOBAL ( "current_library" ) )
+
+    range_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 7 FROM 20 TO 40
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_RANGE_PULL_NO", 1 ),
+               raised = FALSE     ,
+               bold   = TRUE      )
+
+    range_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT_INTEGER"
+        ON LINE 7 FROM 45
+        WITH ( value   = 1     ,
+               minimum = 1     ,
+               maximum = MAX_PULLS_IN_CELL,
+               enabled = FALSE )
+               
+    range_form . add_prompt( prompt_obj )
+
+    RETURN( range_form )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE must_select_factor ( self )
+
+{
+* validates that a factor has been entered
+*
+* Parameters : self , factor prompt object 
+*
+*******************************************************************************}
+
+
+    DECLARE count
+
+    count = 0
+    WHILE ( count < size_of_array ( self . choose_array ) ) DO
+        count = count + 1
+
+        IF ( STRIP ( self . choose_array [ count, 1 ] ) = STRIP ( self . text ) ) THEN
+            RETURN ( TRUE )
+        ENDIF
+
+    ENDWHILE
+
+    flash_message ( GET_USER_MESSAGE ( "MATRIX_SELECT_FACTOR", 2 ), TRUE )
+
+    RETURN ( FALSE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE get_factor_array ( factor_db )
+
+{
+* Returns array of factors for prompt
+*
+* Parameters : factor_obj , Database object with identities to be included
+*                           in the drop down
+*
+*******************************************************************************}
+
+
+    DECLARE array_count, count, choose_outof
+
+    ARRAY choose_outof
+
+    array_count = 0
+    count = 0
+    WHILE ( count < factor_db . size () ) DO
+
+        count = count + 1
+        factor_db . set_by_index_number ( "AXIS_POS", count )
+
+        IF ( factor_db.current . deleted <> TRUE )
+
+            array_count = array_count + 1
+            choose_outof [ array_count, 1 ] = object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+            choose_outof [ array_count, 2 ] = count
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( choose_outof )
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE enable_numbers ( self )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+
+    self . parent_prompt . prompt_objects [ 8 ] . set_enabled ( NOT ( self . value ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE set_field_default ( prompt_object, current_pull, VALUE field )
+
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    IF current_pull <> EMPTY THEN
+
+        prompt_object . value = SELECT 'current_pull . table' . 'field'
+                            IN OBJECT current_pull
+       
+    
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE setup_data_form ( matrix_object )
+
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE display_row, display_col, display_width, prompt_col, prompt_width, prompt_copy_col,
+            prompt_obj, current_pull, data_form
+
+    current_pull = matrix_object . get_current_pull( )
+
+    PROMPT OBJECT data_form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  height = 8,
+                width  = 65,
+                row    = 1 ,
+                column = 1 ,
+                button_style = FORM_BUTTON_NONE,
+                header = GET_USER_MESSAGE ( "PROPOGATE_DATA_TITLE", 1 ),
+                use_top_line = TRUE )
+
+    data_form . add_frame ( GET_USER_MESSAGE ( "PROPOGATE_DATA_SUB_TITLE", 1 ),
+                            1, 1, data_form . height, data_form . width - 1 )
+
+    display_col   = 2
+    display_row   = 1
+    display_width = 20
+
+    prompt_col   = display_col + display_width + 2
+    prompt_width = 20
+
+    prompt_copy_col = prompt_col + prompt_width + 5
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_DESCRIPTION", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE        )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               user_info = "description" )
+
+    set_field_default ( prompt_obj, current_pull, "description" )
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_SAMPLE_TEMPLATE", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE        )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON samp_tmpl_header
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               user_info = "sample_template" )
+
+    set_field_default ( prompt_obj, current_pull, "sample_template" )
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+               
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_TEST_SCHEDULE", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE        )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON test_sched_header
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               user_info = "test_schedule" )
+
+    set_field_default ( prompt_obj, current_pull, "test_schedule" )
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_PULL_NAME", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE        )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT_PHRASE"
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               phrase = "PULL_NAME",
+               identities = TRUE   ,
+               valid_only = TRUE   ,
+               user_info  = "pull_name" )
+               
+    set_field_default ( prompt_obj, current_pull, "pull_name" )
+               
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+               
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_NUMBER_OF_LABELS", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE         )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT_INTEGER"
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               minimum = 0 ,
+               maximum = LABEL_MAXIMUM_COPIES,
+               user_info = "label_number" )
+
+    set_field_default ( prompt_obj, current_pull, "label_number" )
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+               
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value  = GET_USER_MESSAGE ( "PROPOGATE_DATA_LOCATION", 1 ),
+               column = display_col  ,
+               row    = display_row  ,
+               width  = display_width,
+               raised = FALSE           )
+               
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON location
+        WITH ( column = prompt_col  ,
+               row    = display_row  ,
+               width  = prompt_width,
+               user_info = "location" )
+
+    set_field_default ( prompt_obj, current_pull, "location" )
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    )
+               
+    data_form . add_prompt( prompt_obj )
+
+    display_row = display_row + 1
+
+    PROMPT OBJECT prompt_obj
+        CLASS "STD_PROMPT_TEXT"
+        WITH ( value     = GET_USER_MESSAGE ( "PROPOGATE_DATA_PULL_AMOUNT", 1 ),
+               column    = display_col  ,
+               row       = display_row  ,
+               width     = display_width,
+               raised    = FALSE       )
+
+    data_form . add_display( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        CLASS "PROMPT_QTY_UNIT"
+        WITH ( column       = prompt_col  ,
+               row          = display_row  ,
+               width        = prompt_width,
+               user_info    = "pull_qty_unit" ,
+               base_unit    = matrix_object . get_product_unit( ) ,
+               display_only = BLANK( matrix_object . get_product( ) ) ,
+               lowered      = TRUE     )
+
+    IF current_pull <> EMPTY THEN
+    
+        prompt_obj . display_unit = SELECT 'matrix_object . pull_table' . pull_unit
+                                        IN OBJECT current_pull
+
+        prompt_obj . value = SELECT 'matrix_object . pull_table' . pull_amount
+                                 IN OBJECT current_pull
+
+    ENDIF
+
+    data_form . add_prompt( prompt_obj )
+
+    PROMPT OBJECT prompt_obj
+        BROWSE ON boolean
+        WITH ( value = FALSE           ,
+               is_check = TRUE         ,
+               column = prompt_copy_col,
+               row    = display_row    ,
+               display_only = BLANK( matrix_object . get_product( ) ) )
+
+    data_form . add_prompt( prompt_obj )
+
+    RETURN( data_form )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE propagate_form_validation ( self )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, pull_data, pull_range, layers, times, cs,
+            layer_one, layer_two, c_one, c_two, time_one, time_two, ok,
+            all_pulls, pull_number
+
+    matrix_object = self . userinfo
+
+    pull_range = self . prompt_objects [ 1 ] . forms [ 1 ] . prompt_objects
+    pull_data  = self . prompt_objects [ 1 ] . forms [ 2 ] . prompt_objects
+
+    layer_one = pull_range [ 1 ] . text
+    layer_two = pull_range [ 4 ] . text
+
+    time_one  = pull_range [ 2 ] . text
+    time_two  = pull_range [ 5 ] . text
+
+    c_one     = pull_range [ 3 ] . text
+    c_two     = pull_range [ 6 ] . text
+
+
+    IF NOT ( check_field_selected ( pull_data ) ) THEN
+        flash_message ( GET_USER_MESSAGE ("MATRIX_PROP_ONE",1) , TRUE )
+        RETURN ( FALSE )
+    ENDIF
+
+    IF ( pull_range [ 1 ] . choose_index > pull_range [ 4 ] . choose_index ) THEN
+        flash_message ( GET_USER_MESSAGE ("MATRIX_LAYER_GTR",1) , TRUE )
+         RETURN ( FALSE )
+    ENDIF
+
+    IF ( pull_range [ 2 ] . choose_index > pull_range [ 5 ] . choose_index ) THEN
+        flash_message ( GET_USER_MESSAGE ("MATRIX_TIME_GTR",1), TRUE )
+        RETURN ( FALSE )
+    ENDIF
+
+    IF ( pull_range [ 3 ] . choose_index >  pull_range [ 6 ] . choose_index ) THEN
+        flash_message ( GET_USER_MESSAGE ("MATRIX_C_GTR",1) , TRUE )
+        RETURN ( FALSE )
+    ENDIF
+    
+    layers = get_factor_range_ids ( matrix_object . layer_factors , layer_one, layer_two )
+    times  = get_factor_range_ids ( matrix_object . time_factors  , time_one , time_two  )
+    cs     = get_factor_range_ids ( matrix_object . c_factors     , c_one    , c_two     )
+
+    
+    all_pulls   = pull_range [ 7 ] . value
+    pull_number = TRUNC( NUMERIC( pull_range [ 8 ] . text ) )
+    
+    ok = do_propogate_data_check ( matrix_object , 
+                                   layers        ,
+                                   times         ,
+                                   cs            ,
+                                   all_pulls     , 
+                                   pull_number   ,
+                                   pull_data     ) 
+
+    IF ok THEN
+        do_propogate_data_write ( matrix_object ,
+                                  layers        ,
+                                  times         ,
+                                  cs            ,
+                                  all_pulls ,
+                                  pull_number  ,
+                                  pull_data     )
+
+
+    ENDIF
+
+    RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE check_field_selected ( pull_data )
+{
+* Not very good way of determining if a field is selected.
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE count
+
+    count =  0
+    WHILE ( count < size_of_array ( pull_data ) ) DO
+        count = count + 1
+        IF ( pull_data [ count ] . column = 49 ) THEN
+            IF ( pull_data [ count ] . value ) THEN
+                RETURN ( TRUE )
+            ENDIF
+        ENDIF
+    ENDWHILE
+
+    RETURN ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_factor_range_ids ( factor_db, first_factor, second_factor )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE first_pos, second_pos, search_pos, factor_array, array_ndx,
+            count
+
+    ARRAY factor_array
+
+    array_ndx = 0
+
+    first_pos  = get_axispos_number ( factor_db, first_factor  )
+    second_pos = get_axispos_number ( factor_db, second_factor )
+
+    swop_min_max_if_necessary ( first_pos, second_pos )
+
+    search_pos = first_pos
+
+    WHILE ( search_pos <= second_pos ) DO
+
+        count = 0
+        WHILE ( count < factor_db . size () ) DO
+
+            count = count + 1
+            factor_db . set_by_index_number ( "AXIS_POS", count )
+            IF ( search_pos = TRUNC ( STRIP ( object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POS" ) ) ) ) THEN
+                array_ndx = array_ndx + 1
+                factor_array [ array_ndx ] = object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" )
+            ENDIF
+
+        ENDWHILE
+
+        search_pos = search_pos + 1
+
+    ENDWHILE
+
+    RETURN ( factor_array )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_axispos_number ( factor_db, first_factor )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE count, return_value
+
+    count = 0
+    WHILE ( count < factor_db . size () ) DO
+
+        count = count + 1
+        factor_db . set_by_index_number ( "AXIS_POS", count )
+
+        IF ( STRIP ( first_factor ) = STRIP( object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POINT_NAME" ) ) ) THEN
+
+            return_value = TRUNC ( STRIP ( object_select_field ( factor_db . current, "PDS_AXIS_POINT", "AXIS_POS" ) ) )
+            RETURN ( return_value )
+
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE do_propogate_data_write (       matrix_object ,
+                                        layers        ,
+                                        times         ,
+                                        cs            ,
+                                  VALUE all_pulls     ,
+                                  VALUE pull_no       ,
+                                        pull_data     )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE layer_c, time_c, c_c, pull_obj, exitloop, layer_id, time_id, condition_id
+
+    layer_c = 0
+    WHILE ( layer_c < size_of_array ( layers ) ) DO
+        layer_c = layer_c + 1
+        
+        layer_id = layers [ layer_c ]
+        
+        c_c = 0
+        WHILE ( c_c < size_of_array ( cs ) ) DO
+            c_c = c_c + 1
+
+            condition_id = cs [ c_c ]
+
+            time_c = 0
+            WHILE ( time_c < size_of_array ( times ) ) DO
+                time_c = time_c + 1
+            
+                time_id = times [ time_c ]
+            
+                IF all_pulls THEN
+
+                    pull_no = 0
+
+                    exitloop = FALSE
+
+                    REPEAT
+
+                        pull_no = pull_no + 1
+                        
+                        pull_obj = matrix_object . get_pull ( layer_id     ,
+                                                              time_id      ,
+                                                              condition_id ,
+                                                              pull_no      )
+
+                        IF pull_obj = EMPTY THEN
+                            exitloop = TRUE
+                        ELSE
+                            write_data ( matrix_object, pull_obj, pull_data, layer_id, condition_id )
+                        ENDIF
+
+                    UNTIL ( exitloop )
+
+                ELSE
+
+                    pull_obj = matrix_object . get_pull ( layer_id     ,
+                                                          time_id      ,
+                                                          condition_id ,
+                                                          pull_no      )
+                                                               
+                    IF pull_obj <> EMPTY THEN
+                        write_data ( matrix_object, pull_obj, pull_data, layer_id, condition_id )
+                    ENDIF
+
+                ENDIF
+        
+            ENDWHILE
+
+        ENDWHILE
+
+    ENDWHILE
+
+    update_cell_syntax ( matrix_object )
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+ROUTINE do_propogate_data_check (       matrix_object ,
+                                        layers        ,
+                                        times         ,
+                                        cs            ,
+                                  VALUE all_pulls     ,
+                                  VALUE pull_no       ,
+                                        pull_data     )
+
+{******************************************************************************}
+
+    DECLARE layer_c, time_c, c_c, pull_obj, 
+            exitloop, new_tot_amount, product_form, failed_count, return_value,
+            curr_tot_amount, condition_current_amount, condition_new_amount,
+            condition_object, condition_overage, layer_id, time_id, condition_id
+            
+    failed_count    = 0        
+    new_tot_amount  = 0
+    curr_tot_amount = 0
+
+    product_form = matrix_object . product_info_form
+    
+    return_value = TRUE
+
+    layer_c = 0
+    WHILE ( layer_c < size_of_array ( layers ) ) DO
+        layer_c = layer_c + 1
+
+        layer_id = layers [ layer_c ]
+
+        c_c = 0
+        WHILE ( c_c < size_of_array ( cs ) ) DO
+            c_c = c_c + 1
+
+            condition_id = cs [ c_c ]
+
+            condition_current_amount = 0
+            condition_new_amount = 0
+
+            time_c = 0
+            WHILE ( time_c < size_of_array ( times ) ) DO
+                time_c = time_c + 1
+
+                time_id = times [ time_c ]
+
+                IF all_pulls THEN
+
+                    pull_no = 0
+
+                    exitloop = FALSE
+
+                    REPEAT
+
+                        pull_no = pull_no + 1
+                        
+                        pull_obj = matrix_object . get_pull ( layer_id     ,
+                                                              time_id      ,
+                                                              condition_id ,
+                                                              pull_no      )
+
+                        IF pull_obj = EMPTY THEN
+                            exitloop = TRUE
+                        ELSE
+                            check_data ( matrix_object   ,
+                                         pull_obj        ,
+                                         pull_data       ,
+                                         condition_current_amount ,
+                                         condition_new_amount  )
+                        ENDIF
+
+                    UNTIL ( exitloop )
+
+                ELSE
+
+                    pull_obj = matrix_object . get_pull ( layer_id     ,
+                                                          time_id      ,
+                                                          condition_id ,
+                                                          pull_no      )
+                                                               
+                    IF pull_obj <> EMPTY THEN
+                    
+                        check_data ( matrix_object   ,
+                                     pull_obj        ,
+                                     pull_data       ,
+                                     condition_current_amount ,
+                                     condition_new_amount  )
+                    ENDIF
+
+                ENDIF
+
+            ENDWHILE
+
+            IF matrix_object . is_active_study() THEN
+
+                condition_object = matrix_object . get_condition_object( layer_id, condition_id )
+
+                condition_overage = SELECT condition_entry . overage
+                                        IN OBJECT condition_object
+
+                IF condition_new_amount - condition_current_amount > condition_overage THEN
+                    failed_count = failed_count + 1
+                ENDIF
+
+            ENDIF
+
+            new_tot_amount = new_tot_amount + condition_new_amount
+            curr_tot_amount = curr_tot_amount + condition_current_amount
+
+        ENDWHILE          
+        
+        IF matrix_object . is_study() AND NOT matrix_object . is_active_study() THEN
+        
+            IF NOT ( product_form . check_batch_availability_scenario ( layer_id         ,
+                                                                        curr_tot_amount  ,
+                                                                        new_tot_amount   ) ) THEN
+                failed_count = failed_count + 1
+            
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+    
+    IF ( failed_count > 0 ) THEN
+
+        IF NOT matrix_object . is_active_study() THEN
+            return_value = confirm_with_text( GET_USER_MESSAGE ( "STB_INVENTORY_QUANTITY_NOT_ENOUGH" , 1 ) )
+        ELSE
+            flash_message( GET_USER_MESSAGE ( "STB_INVENTORY_QUANTITY_NOT_ENOUGH" , 2 ), TRUE )
+            return_value = FALSE
+        ENDIF
+    
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+
+ROUTINE check_data (       matrix_object   , 
+                           pull_obj        , 
+                           pull_prompts    ,
+                           condition_current_amount ,
+                           condition_new_amount  )
+
+{******************************************************************************}
+
+    DECLARE pull_table, amount_to_use, current_amount, do_check
+
+    IF matrix_object . is_study( ) THEN
+        do_check = matrix_object . pull_is_pending( pull_obj )
+    ELSE
+    
+        do_check = TRUE
+    
+    ENDIF
+
+    IF do_check THEN
+        
+        IF ( pull_prompts [ 14 ] . value = TRUE  ) THEN
+
+            pull_table = pull_obj . table
+
+            current_amount = SELECT 'pull_table' . pull_amount IN OBJECT pull_obj
+            amount_to_use = pull_prompts [ 13 ] . value 
+
+
+            condition_new_amount = condition_new_amount + amount_to_use
+            condition_current_amount = condition_current_amount + current_amount
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+
+ROUTINE write_data (       matrix_object , 
+                           pull_obj      , 
+                           pull_prompts  ,
+                     VALUE layer_factor  ,
+                     VALUE c_factor      )
+
+{
+*
+*******************************************************************************}
+
+    DECLARE count, field_name, pull_data, current_amount
+    DECLARE amount_to_use, row_object, current_overage, do_write
+
+    count = 1
+
+    IF matrix_object . is_study( ) THEN
+
+        do_write = matrix_object . pull_is_pending( pull_obj )
+        
+    ELSE
+    
+        do_write = TRUE
+    
+    ENDIF
+
+    IF do_write THEN
+    
+        IF ( pull_prompts [ 14 ] . value = TRUE ) THEN
+
+            IF ( matrix_object . is_active_study( ) ) THEN
+
+                current_amount = SELECT 'pull_obj . table' . pull_amount IN OBJECT pull_obj
+                amount_to_use = pull_prompts [ 13 ] . value 
+
+                row_object = matrix_object . get_condition_object( layer_factor, c_factor )
+
+                current_overage = SELECT condition_entry . overage
+                                    IN OBJECT row_object
+
+                ASSIGN condition_entry . overage
+                    IN OBJECT row_object = ( current_overage - ( amount_to_use - current_amount ) )
+
+            ENDIF
+            
+        ENDIF
+        
+        WHILE ( count < size_of_array ( pull_prompts ) ) DO
+
+            field_name = pull_prompts [ count ] . userinfo
+            
+            IF field_name = "pull_qty_unit" THEN
+            
+                ASSIGN 'matrix_object . pull_table' . pull_amount 
+                        IN OBJECT pull_obj = pull_prompts [ count ] . value
+            
+                ASSIGN 'matrix_object . pull_table' . pull_unit
+                        IN OBJECT pull_obj = pull_prompts [ count ] . display_unit
+            
+            ELSE
+            
+                pull_data  = STRIP ( pull_prompts [ count ] . text )
+
+                IF pull_prompts [ count + 1 ] . value = TRUE THEN
+
+                    ASSIGN 'matrix_object . pull_table' . 'field_name' 
+                        IN OBJECT pull_obj = pull_data
+
+                ENDIF
+
+            ENDIF
+
+            count = count + 2
+
+        ENDWHILE
+
+    ENDIF    
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_option_modify_cell_syntax ( matrix_object )
+{
+* Allows the user to modify the information displayed in the cell
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE count, the_grid, field_count, local_count, the_form, pull_info, arr_count
+
+    pull_info = get_syntax_pull_fields( matrix_object )
+
+
+    PROMPT OBJECT the_grid
+        CLASS PROMPT_CLASS_GRID
+        WITH ( column               = 2                     ,
+               row                  = 1                     ,
+               width                = 35                    ,
+               cell_columns         = 1                     ,
+               border               = TRUE                  ,
+               title_size_top       = 1                     ,
+               title_size_left      = 15                    ,
+               display_cell_routine = "display_syntax_cell" ,
+               prompt_cell_routine  = "prompt_syntax_cell"  )
+
+    ARRAY the_grid . userinfo
+    ARRAY the_grid . column_size = 20
+    ARRAY the_grid . title_text_left = ""
+
+    count = 1
+    field_count = 0
+    WHILE ( count <= size_of_array ( pull_info ) ) DO
+
+        field_count = field_count + 1
+        the_grid . title_text_left [ field_count, 1 ] = pull_info [ count, PULL_FIELD_DESC ]
+        the_grid . userinfo [ field_count ] = FALSE
+
+        local_count = 1
+        WHILE ( local_count <= size_of_array ( matrix_object . std_cell_syn ) ) DO
+
+            IF matrix_object . std_cell_syn [ local_count ] = pull_info [ count, PULL_FIELD_NAME ] THEN
+
+                the_grid . userinfo [ count ] = TRUE
+                local_count = size_of_array ( matrix_object . std_cell_syn ) + 1
+            ENDIF
+
+            local_count = local_count + 1
+
+        ENDWHILE
+
+        count = count + 1
+
+    ENDWHILE
+
+    the_grid . cell_rows = field_count
+    the_grid . height = field_count + 1
+
+    ARRAY the_grid . title_text_top = ""
+
+    the_grid . title_text_top [ 1, 1 ] = GET_USER_MESSAGE ("MATRIX_GRID_DISPLAY",1)
+
+    PROMPT OBJECT the_form
+        CLASS PROMPT_CLASS_FORM
+        WITH (  row    = 5,
+                column = 5,
+                header = GET_USER_MESSAGE ( "CELL_SYNTAX_TITLE", 1 ),
+                use_top_line = TRUE )
+
+    the_form . height = the_grid . height + the_grid . row
+    the_form . width  = the_grid . width + the_grid . column + 1
+
+    the_form . add_frame ( GET_USER_MESSAGE ( "CELL_SYNTAX_TITLE", 1 ), 1, 1, the_grid . height, the_grid . width + 2 )
+
+    the_form . add_prompt ( the_grid )
+    
+    the_form . start_prompt ( )
+    the_form . set_position ( 2 )
+    the_form . wait_prompt ( )
+    the_form . end_prompt ( )
+    
+
+    IF ( the_form . get_last_key( ) = "DO" ) THEN
+    
+        ARRAY matrix_object . std_cell_syn
+
+        arr_count = 1
+        count = 1
+        WHILE ( count <= the_grid . cell_rows ) DO
+
+            IF the_grid . userinfo [ count ] THEN
+
+                matrix_object . std_cell_syn [ arr_count ] = pull_info [ count, PULL_FIELD_NAME ]
+                arr_count = arr_count + 1
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+        update_cell_syntax ( matrix_object )
+    
+        matrix_object . rebuild_matrix ()
+    
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE display_syntax_cell ( self              ,
+                              VALUE cell_column ,
+                              VALUE cell_row    ,
+                                    window      ,
+                              VALUE column      ,
+                              VALUE row         ,
+                              VALUE cell_width  ,
+                              VALUE cell_height )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DISPLAY self . userinfo [ cell_row ]
+        FORMAT boolean
+        AT column, row
+        IN WINDOW window
+        WITH ( width = cell_width,
+               is_check = TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE prompt_syntax_cell ( self    ,
+                             VALUE cell_column ,
+                             VALUE cell_row    ,
+                                   window      ,
+                             VALUE column      ,
+                             VALUE row         ,
+                             VALUE cell_width  ,
+                             VALUE cell_height )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE prompt_value
+
+    prompt_value = self . userinfo [ cell_row ]
+
+    PROMPT FOR prompt_value
+        FORMAT boolean
+        AT column, row
+        IN WINDOW window
+        WITH ( width    = cell_width,
+               is_check = TRUE       )
+
+    self . userinfo [ cell_row ] = prompt_value
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE update_cell_syntax ( matrix_object )
+{
+*
+*
+*
+* Parameters : matrix_object , Stb Matrix Object
+*
+******************************************************************************}
+
+    DECLARE matrix_grid, layer_count, row_count, col_count, cell_pulls, pull_syntaxes
+
+    ARRAY cell_pulls
+
+    layer_count = 0
+    WHILE ( layer_count < matrix_object . layer_count( ) )DO
+
+        layer_count = layer_count + 1
+        matrix_grid = matrix_object . get_pull_grid_by_position( layer_count )
+
+        row_count = 0
+        WHILE ( row_count < matrix_grid . cell_rows ) DO
+
+            row_count = row_count + 1
+            col_count = 0
+            WHILE ( col_count < matrix_grid . cell_columns ) DO
+
+                col_count = col_count + 1
+                IF ( matrix_grid . userinfo [ col_count, row_count ] . current_pull <> 0 ) THEN
+
+                    ARRAY pull_syntaxes
+                    get_pull_syntaxes ( matrix_object                                                  ,
+                                        matrix_grid . userinfo [ col_count, row_count ] . pull_records ,
+                                        pull_syntaxes                                                  )
+
+                    array_copy ( matrix_grid . userinfo [ col_count, row_count ] . pull_info, pull_syntaxes )
+
+                ENDIF
+
+            ENDWHILE
+
+        ENDWHILE
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE set_study_status ( VALUE new_study_status )
+
+{
+* Sets the study status for life cycle mods such as cancel, reactivate and
+* finalise. Only the status field will be set
+*
+* Parameters : status , the studies new status
+*
+*******************************************************************************}
+
+
+    DECLARE header_context, study_id, update_study_id
+
+    study_id = SELECT pds_study . identity
+
+    push_file_descriptor ( "PDS_STUDY", header_context )
+
+    update_study_id = SELECT pds_study . identity FOR UPDATE
+               WHERE identity = study_id
+
+    IF ( update_study_id <> EMPTY  ) AND
+       ( update_study_id <> LOCKED ) THEN
+
+        ASSIGN pds_study . status = new_study_status
+
+        START WRITE TRANSACTION "Update study status"
+        UPDATE pds_study
+        COMMIT
+    ENDIF
+
+    pop_file_descriptor ( header_context )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE update_timequeue_status_change ( VALUE new_status, pull_db )
+
+{
+* Updates the timequeue entries depending on what has happened to the study's
+* status
+*
+* Parameters : new_status , the studies status
+*              pull_db    , all pulls in the matrix
+*
+*******************************************************************************}
+
+
+    DECLARE pull_counter, action_routine, action_library, success
+
+    IF new_status = "CANCEL" THEN
+        action_routine = "cancel_pull"
+        action_library = "$stb_lib_pulls"
+    ELSEIF new_status = "REACTIVATE" THEN
+        action_routine = "reactivate_pull"
+        action_library = "$stb_lib_pulls"
+    ELSEIF new_status = "FINALISE" THEN
+        action_routine = "finalise_pull"
+        action_library = "$stb_lib_pulls"
+    ENDIF
+
+    pull_counter = 0
+    WHILE ( pull_counter <= pull_db . size () ) DO
+
+        pull_counter = pull_counter + 1
+
+        pull_db . set_by_index_number ( "KEY0", pull_counter )
+
+        CALL_ROUTINE action_routine
+            NEW TRANSACTION
+            USING pull_db . current
+            RETURNING success
+            IN LIBRARY action_library
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_remove_time_factor_by_pos (       self     ,
+                                                      VALUE position  )
+{
+* Removes the current time factor identified by passed position
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE ok, time_id
+
+    ok = FALSE
+
+    time_id = self . get_time_id_at_position ( position )
+
+    IF ( entire_factor_pending_samples ( self          ,
+                                         "TIME_FACTOR" ,
+                                         time_id       ) ) THEN
+
+        self . time_factors . re_index_all ()
+
+        remove_xy_factor ( self                ,
+                           self . time_xaxis   ,
+                           position            ,
+                           self . pulls        ,
+                           self . time_factors ,
+                           "TIME_FACTOR"       )
+
+        self . product_info_form . update_all()
+
+        ok = TRUE
+
+    ENDIF
+    
+    RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_remove_c_factor_by_pos ( self, VALUE position )
+{
+* Remove the c-factor identified by passed position
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE ok, c_id
+
+    ok = FALSE
+
+    c_id = self . get_condition_id_at_position ( position )
+
+    IF ( entire_factor_pending_samples ( self         ,
+                                         "C_FACTOR"   ,
+                                         c_id         ) ) THEN
+
+        self . c_factors . re_index_all ()
+
+        remove_xy_factor ( self                          ,
+                           NOT ( self . time_xaxis )     ,
+                           position                      ,
+                           self . pulls ,
+                           self . c_factors   ,
+                           "C_FACTOR"                    )
+
+        {* Update overage *}
+
+        IF ( self . product_info_form <> EMPTY ) THEN
+            product_form_remove_c_factor ( self ) 
+        ENDIF
+
+        ok = TRUE
+
+    ELSE
+
+        flash_message ( GET_USER_MESSAGE ( "REMOVE_FACTOR_WRONG_STATUS", 3 ), TRUE )
+
+    ENDIF
+
+    RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_remove_time_factor ( self )
+{
+* Allows the user to remove the current time factor
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    IF self . can_remove_time_factor( ) THEN
+
+        IF confirm_with_text ( GET_USER_MESSAGE ( "REMOVE_FACTOR_WARNING", 2 ) ) THEN
+
+            self . remove_time_factor_by_pos( self . current_time )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_remove_c_factor ( self )
+{
+* Allows the user to remove the current c-factor
+*
+* Parameters : self, Stb Matrix object
+*
+*******************************************************************************}
+
+    IF self . can_remove_c_factor( ) THEN
+
+        IF confirm_with_text ( GET_USER_MESSAGE ( "REMOVE_FACTOR_WARNING", 3 ) ) THEN
+
+            self . remove_c_factor_by_pos( self . current_c )
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE remove_xy_factor (       matrix_object ,
+                           VALUE is_xaxis   ,
+                           VALUE current_pos,
+                                 pull_db    ,
+                                 factor_db  ,
+                           VALUE factor_fld )
+{
+* 
+*
+* Parameters : 
+*
+*******************************************************************************}
+
+    DECLARE count, factor_id, pull_table_name, pre_factor, non_del,
+            key0_values, undel_count, tab_prompt, pull_grid
+
+    tab_prompt = matrix_object . matrix_form . tab
+
+    ARRAY key0_values
+
+                                       { remove the column or row from the grid }
+
+    count = 0
+    WHILE ( count < size_of_array ( tab_prompt . forms ) ) DO
+        
+        count = count + 1
+        
+        pull_grid = matrix_object . get_pull_grid_by_position( count )
+        
+        IF is_xaxis THEN
+        
+            IF pull_grid . cell_columns > 1 THEN
+                pull_grid . remove_column ( current_pos )
+            ENDIF
+            
+            ARRAY_REMOVE_SLICE ( pull_grid . userinfo, 1, current_pos )
+        ELSE
+        
+            IF pull_grid . cell_rows > 1 THEN
+                pull_grid . remove_row ( current_pos )
+            ENDIF
+            
+            ARRAY_REMOVE_SLICE ( pull_grid . userinfo, 2, current_pos )
+        ENDIF
+
+    ENDWHILE
+
+                                       { delete factor from database }
+
+    count = 0
+    undel_count = 0
+    WHILE ( count < factor_db . size () ) DO
+        count = count + 1
+        factor_db . set_by_index_number ( "AXIS_POS", count )
+        IF NOT ( factor_db . current . deleted ) THEN
+            undel_count = undel_count + 1
+            IF undel_count = current_pos THEN
+                factor_id = SELECT pds_axis_point . axis_point_name IN OBJECT factor_db . current
+                factor_db . current . delete ()
+            ENDIF
+        ENDIF
+    ENDWHILE
+
+                                       { place key0 in array with correct }
+                                       { order of axis points             }
+
+    count = 0
+    WHILE ( count < factor_db . size () ) DO
+        count = count + 1
+        factor_db . set_by_index_number ( "AXIS_POS", count )
+
+        key0_values [ count ] = get_record_key0 ( factor_db . current )
+
+    ENDWHILE
+
+                                       { renumber the factor axis pos   }
+
+    count = 0
+    non_del = 0
+    WHILE ( count < size_of_array ( key0_values ) ) DO
+
+        count = count + 1
+        factor_db . set_by_index ( "KEY0", key0_values [ count ] )
+
+        IF NOT ( factor_db . current . deleted ) THEN
+            non_del = non_del + 1
+            ASSIGN pds_axis_point . axis_pos IN OBJECT factor_db . current = PACKED_DECIMAL ( non_del )
+        ENDIF
+
+    ENDWHILE
+
+                                       { delete pulls from the database }
+
+    pull_table_name = pull_db . table
+
+
+    count = 0
+    WHILE ( count < pull_db . size () ) DO
+
+        count = count + 1
+        pull_db . set_by_number ( count )
+
+        pre_factor = SELECT 'pull_table_name' . 'factor_fld'
+                         IN OBJECT pull_db . current
+
+        IF pre_factor = factor_id THEN
+            pull_db . current . delete ()
+        ENDIF
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_remove_layer_factor ( self )
+{
+* Allows the user to remove the current layer factor
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE tab_prompt, factor_db, curr_layer, pull_db
+    DECLARE factor_id, pull_table_name, pre_factor, non_del, db_pos, count
+
+    factor_db = self . layer_factors
+    pull_db = self . pulls
+
+    tab_prompt = self . matrix_form . tab
+
+    curr_layer = tab_prompt . selected
+
+    IF self . can_remove_layer_factor( ) THEN
+
+        IF ( entire_factor_pending_samples ( self         ,
+                                             "LAYER_FACTOR",
+                                             self . get_current_layer_id( ) ) ) THEN
+
+            IF confirm_with_text ( GET_USER_MESSAGE ( "REMOVE_FACTOR_WARNING", 1 ) ) THEN
+
+                tab_prompt . remove_form ( curr_layer )
+
+                count = 0
+                db_pos = 0
+                WHILE ( count < factor_db . size () ) DO
+                    count = count + 1
+                    factor_db . set_by_index_number ( "AXIS_POS", count )
+                    IF NOT ( factor_db . current . deleted ) THEN
+                        db_pos = db_pos + 1
+                        IF db_pos = curr_layer THEN
+                            factor_id = SELECT pds_axis_point . axis_point_name 
+                                             IN OBJECT factor_db . current
+                            factor_db . current . delete ()
+                        ENDIF
+                    ENDIF
+                ENDWHILE
+
+                                               { renumber the factor axis pos   }
+
+                factor_db . set_by_index_number ( "AXIS_POS", 1 )
+
+                non_del = 0
+                WHILE ( factor_db . current <> EMPTY ) DO
+
+                    IF NOT ( factor_db . current . deleted ) THEN
+                        non_del = non_del + 1
+                        ASSIGN pds_axis_point . axis_pos
+                            IN OBJECT factor_db . current = PACKED_DECIMAL ( non_del )
+                    ENDIF
+
+                    factor_db . set_next ()
+
+                ENDWHILE
+
+                                               { renumber the deleted factor axis pos   }
+
+                factor_db . set_by_index_number ( "AXIS_POS", 1 )
+
+                WHILE ( factor_db . current <> EMPTY ) DO
+
+                    IF ( factor_db . current . deleted ) THEN
+                        non_del = non_del + 1
+                        ASSIGN pds_axis_point . axis_pos
+                            IN OBJECT factor_db . current = PACKED_DECIMAL ( non_del )
+                    ENDIF
+
+                    factor_db . set_next ()
+
+                ENDWHILE
+
+                                               { set the form active }
+
+                pull_table_name = pull_db . table
+
+                count = 0
+                WHILE ( count < pull_db . size () ) DO
+
+                    count = count + 1
+                    pull_db . set_by_number ( count )
+
+                    pre_factor = SELECT 'pull_table_name' . layer_factor
+                                     IN OBJECT pull_db . current
+
+                    IF pre_factor = factor_id THEN
+                        pull_db . current . delete ()
+                    ENDIF
+
+                ENDWHILE
+
+                factor_db . re_index ( "AXIS_POS" )
+
+                IF ( self . product_info_form <> EMPTY ) THEN
+                    product_form_remove_layer ( self, factor_id ) 
+                ENDIF
+
+            ENDIF
+
+        ELSE
+
+            flash_message ( GET_USER_MESSAGE ( "REMOVE_FACTOR_WRONG_STATUS", 1 ), TRUE )
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( GET_USER_MESSAGE ( "REMOVE_FACTOR_TOO_FEW", 1 ), TRUE )
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE check_study_completed ( matrix_object )
+{
+* check that the study is completed by checking all the pulls of the study
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE pull_db, count, all_pulled
+
+    all_pulled = TRUE
+
+    pull_db = matrix_object . pulls
+
+    count = 0
+    WHILE ( count < pull_db . size ( ) ) AND all_pulled DO
+
+        count = count + 1
+        pull_db . set_by_number ( count )
+
+        IF matrix_object . pull_is_pending( pull_db . current ) THEN
+            all_pulled = FALSE
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( all_pulled )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_show_remove_selected_time_factors( self )
+{
+* Returns True if should show the remove the selected time factors option
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last, selection_active, time_count
+
+    matrix_object = self . parent_matrix
+    
+    time_count = matrix_object . time_count( )
+    selection_active = self . get_selected_time_range ( first, last )
+    
+    RETURN (     ( selection_active                        ) AND
+             NOT ( ( first = 1 ) AND ( last = time_count ) ) AND
+             NOT ( matrix_object . is_display_only( )      )   )
+           
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_option_remove_selected_time_factors( self )
+{
+* Removes the selected time factors
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last, pos
+
+    matrix_object = self . parent_matrix
+
+    IF ( self . get_selected_time_range ( first, last ) ) THEN
+
+        pos = last
+        WHILE pos >= first DO
+
+            matrix_object . remove_time_factor_by_pos( pos )
+            
+            pos = pos - 1
+            
+        ENDWHILE
+
+    ENDIF
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_option_remove_selected_condition_factors( self )
+{
+* Removes the selected condition factors
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last, pos
+
+    matrix_object = self . parent_matrix
+
+    IF ( self . get_selected_condition_range ( first, last ) ) THEN
+
+        pos = last
+        WHILE pos >= first DO
+
+            matrix_object . remove_c_factor_by_pos( pos )
+            
+            pos = pos - 1
+            
+        ENDWHILE
+
+    ENDIF
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_show_remove_selected_condition_factors( self )
+{
+* Returns True if should show remove the selected condition factors option
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last, condition_count, selection_active
+
+    matrix_object = self . parent_matrix
+    
+    condition_count = matrix_object . condition_count( )
+    selection_active = self . get_selected_condition_range ( first, last )
+
+    RETURN (     ( selection_active                             ) AND
+             NOT ( ( first = 1 ) AND ( last = condition_count ) ) AND
+             NOT ( matrix_object . is_display_only( )           )   )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_show_insert_time_factor_before_selected( self )
+{
+* Returns true if can insert a time factor before the selection
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last
+
+    matrix_object = self . parent_matrix
+
+    RETURN (     ( self . get_selected_time_range ( first, last ) ) AND
+             NOT ( matrix_object . is_display_only( )             )   )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_option_insert_time_factor_before_selected( self )
+{
+* Inserts a time factor before the selection
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE first, last
+
+    IF self . get_selected_time_range ( first, last ) THEN
+
+        self . parent_matrix . new_time_factor_at( first )
+        
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_show_insert_condition_factor_before_selected( self )
+{
+* Returns true if can insert a condition factor before the selection
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE matrix_object, first, last
+
+    matrix_object = self . parent_matrix
+
+    RETURN (     ( self . get_selected_condition_range ( first, last ) ) AND
+             NOT ( matrix_object . is_display_only( )                  )   )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_option_insert_condition_factor_before_selected( self )
+{
+* Inserts a condition factor before the selection
+*
+* Parameters : self , Stb Pull Grid Object
+*
+*******************************************************************************}
+
+    DECLARE first, last
+
+    IF self . get_selected_condition_range ( first, last ) THEN
+
+        self . parent_matrix . new_condition_factor_at( first )
+        
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_grid_action_build_context_menu( self, menu )
+{
+* Builds context menu
+*
+* Parameters : self , Stb Pull Grid Object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+    DECLARE item, matrix
+
+    matrix = self . parent_matrix
+
+    CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+    item . text    = "Copy"
+    item . enabled = matrix . can_copy_selected_pulls( )
+    item . set_action( matrix, "OPTION_COPY_SELECTED_PULLS" )
+
+    menu . add( item )
+
+    CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+    item . text    = "Paste"
+    item . enabled = matrix . can_paste_pulls( )
+    item . set_action( matrix, "OPTION_PASTE_PULLS" )
+
+    menu . add( item )
+    
+    menu . add_divider( )
+
+    CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+    item . text    = "Propagate..."
+    item . enabled = matrix . can_propagate_current( )
+    item . set_action( matrix, "OPTION_PROPAGATE_CURRENT" )
+
+    menu . add( item )
+    
+    menu . add_divider( )
+
+    CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+    item . text    = "Insert Pulls..."
+    item . enabled = matrix . can_insert_pulls( )
+    item . set_action( matrix, "OPTION_INSERT_PULLS" )
+
+    menu . add( item )
+
+    CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+    item . text    = "Delete Pulls..."
+    item . enabled = matrix . can_delete_selected_pulls( )
+    item . set_action( matrix, "OPTION_DELETE_SELECTED_PULLS" )
+
+    menu . add( item )
+
+    menu . add_divider( )
+
+    IF self . show_insert_time_factor_before_selected( ) THEN
+
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = "Insert Time Factor"
+        item . set_action( self, "OPTION_INSERT_TIME_FACTOR_BEFORE_SELECTED" )
+
+        menu . add( item )
+
+    ENDIF
+
+    IF self . show_remove_selected_time_factors( ) THEN
+
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = "Remove Time Factor(s)"
+        item . set_action( self, "OPTION_REMOVE_SELECTED_TIME_FACTORS" )
+
+        menu . add( item )
+
+    ENDIF
+
+    menu . add_divider( )
+
+    IF self . show_insert_condition_factor_before_selected( ) THEN
+
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = "Insert Condition Factor"
+        item . set_action( self, "OPTION_INSERT_CONDITION_FACTOR_BEFORE_SELECTED" )
+
+        menu . add( item )
+
+    ENDIF
+    
+    IF self . show_remove_selected_condition_factors( ) THEN
+    
+        CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+        item . text    = "Remove Condition Factor(s)"
+        item . set_action( self, "OPTION_REMOVE_SELECTED_CONDITION_FACTORS" )
+
+        menu . add( item )
+
+    ENDIF
+    
+ENDROUTINE
+
+{*****************************************************************************}
+      
+ROUTINE pull_grid_mouse_click ( self )
+{
+* Stb Pull Grid's right mouse routine
+*
+* Parameters : self , Layer grid object
+*
+*******************************************************************************}
+
+    DECLARE menu
+
+    CREATE OBJECT POPUP_MENU_CLASS, menu
+    
+    self . build_context_menu( menu )
+
+    menu . start( )
+    
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_get_current_pull_number ( self )
+{
+* Return the currently selected pull number or -1
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE pull_record, pull_num
+
+    pull_num = -1
+
+    pull_record = self . get_current_pull( )
+    
+    IF ( pull_record <> EMPTY ) THEN
+
+        pull_num = SELECT 'pull_record . table' . pull_num IN OBJECT pull_record
+
+    ENDIF
+    
+    RETURN( pull_num )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_get_current_pull ( self )
+{
+* Return the currently selected pull's object record or EMPTY
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE pull_db, current_key0, pull
+
+    pull = EMPTY
+
+    pull_db = self . pulls
+    
+    current_key0 = self . get_current_pull_key0 ( )
+    
+    IF current_key0 <> ERROR THEN
+    
+        pull_db . set_by_index ( "KEY0", current_key0 )
+        pull = pull_db . current
+    
+    ENDIF
+    
+    RETURN( pull )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_get_current_cell_pull ( self, VALUE pull_num )
+{
+* Return the pull record corresponding to the passed pull number in the
+* currently selected cell's's object record
+*
+* Parameters : self , Stb Matrix object
+*
+*******************************************************************************}
+
+    DECLARE pull_db, current_key0
+
+    pull_db = self . pulls
+    
+    current_key0 = self . get_current_pull_key0 ( )
+    current_key0 = LEFTSTRING( current_key0, STRINGLENGTH( current_key0 ) - 10 ) :
+                   PACKED_DECIMAL( pull_num )
+    
+    pull_db . set_by_index ( "KEY0", current_key0 )
+    
+    RETURN( pull_db . current )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_toggle_cell_activation ( self ) 
+
+{
+* Toggles the current cell active / inactive
+*
+* Parameters : self , Stb Matrix object
+*   
+******************************************************************************}
+
+    DECLARE pull_db, time_db, time_select, current_pull
+            
+    IF self . can_toggle_cell_activation( ) THEN
+
+        current_pull = self . get_current_pull( )
+        
+        pull_db = self . pulls
+
+        ARRAY time_select
+
+        ARRAY_SELECT_ADD ( time_select, ARRAY_SELECT_NE, "IDENTITY", "" )
+        OBJECT_CREATE ( time_db, "STD_OBJECT_DATABASE" )
+        time_db . initialise ( "TIME_FACTOR" )
+        time_db . select_for_read ( time_select )
+        
+        IF current_pull = EMPTY THEN
+
+            flash_message ( GET_USER_MESSAGE ( "STB_SMP_PROC_NO_PULL", 1 ), TRUE )
+
+        ELSEIF self . is_protocol( ) THEN
+        
+            set_active_cell ( self, pull_db )
+
+        ELSEIF NOT self . pull_is_pending( current_pull ) THEN
+
+            flash_message ( GET_USER_MESSAGE ( "STB_PULL_HAS_SAMPLE", 1 ) , TRUE )
+
+        ELSEIF cell_active_date_check  ( pull_db, time_db ) THEN
+                
+            flash_message ( GET_USER_MESSAGE ( "STB_PULL_IN_PAST", 1 ) , TRUE )
+
+        ELSE
+        
+            set_active_cell ( self, pull_db ) 
+        
+        ENDIF
+
+    ENDIF
+    
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_option_toggle_condition_activation ( self ) 
+
+{
+* Toggles the current condition activation
+*
+* Parameters : self , Stb Matrix object
+*   
+******************************************************************************}
+     
+    DECLARE factor_id, factor_fld, pull_db, count, pull_table_name, pre_factor
+    DECLARE new_active_state, date_failed, status_failed, time_db, time_select
+    DECLARE current_pull_key
+
+    factor_id = self . get_current_condition_id( )
+
+    pull_db = self . pulls
+
+    factor_fld = "C_FACTOR"
+
+    date_failed   = FALSE
+    status_failed = FALSE
+   
+    current_pull_key = self . get_current_pull_key0 ( )
+ 
+    pull_db . set_by_index ( "KEY0", current_pull_key )
+    pull_table_name = pull_db . table
+
+    ARRAY time_select
+
+    ARRAY_SELECT_ADD ( time_select, ARRAY_SELECT_NE, "IDENTITY", "" )
+    object_create ( time_db, "STD_OBJECT_DATABASE" )
+    time_db . initialise ( "TIME_FACTOR" )
+    time_db . select_for_read ( time_select )
+        
+    new_active_state = NOT SELECT 'pull_db . table' . active IN OBJECT pull_db . current 
+
+    count = 0
+    WHILE ( count < pull_db . size () ) DO
+
+        count = count + 1
+        pull_db . set_by_number ( count )
+
+        pre_factor = SELECT 'pull_table_name' . 'factor_fld'
+                         IN OBJECT pull_db . current
+
+        IF pre_factor = factor_id THEN
+        
+            IF self . is_protocol( ) THEN
+                           
+                set_active_pull ( self, pull_db, new_active_state )
+            
+            ELSEIF NOT self . pull_is_pending( pull_db . current ) THEN
+
+                status_failed = TRUE
+
+            ELSEIF cell_active_date_check ( pull_db, time_db ) THEN
+                
+                date_failed = TRUE 
+
+            ELSE
+            
+                set_active_pull ( self, pull_db, new_active_state )
+                
+            ENDIF   
+
+        ENDIF
+
+    ENDWHILE
+    
+    IF ( status_failed ) AND ( date_failed ) THEN
+    
+        flash_message ( GET_USER_MESSAGE ( "STB_PULL_STATUS_AND_DATE", 1 ), TRUE )
+        
+    ELSEIF status_failed THEN
+    
+        flash_message ( GET_USER_MESSAGE ( "STB_PULL_STATUS", 1 ) , TRUE )
+
+    ELSEIF date_failed THEN
+    
+        flash_message ( GET_USER_MESSAGE ( "STB_PULL_DATE", 1 ), TRUE )
+
+    ELSE
+    
+        IF ( self . is_study( ) ) THEN
+    
+            IF ( SELECT pds_study . status = "C" ) THEN
+                ASSIGN pds_study . status = "A"
+            ENDIF
+    
+        ENDIF
+        
+        self . rebuild_matrix ()
+
+    ENDIF
+    
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE cell_active_date_check ( pull_db, time_db )
+
+{
+*   Assumes working on study cells. Follows date arithmetic in the module spec
+*   that will be less strict if the study login time window was set to start/median.
+*   Therefore give a warning if outside the original predicted date but inside
+*   the date calculated by the mod spec. 
+*   
+******************************************************************************}
+
+    DECLARE date_failed, activation_date, pull_timefac,
+            equiv_in_days, time_window, start_date, login_due_date
+    
+    date_failed = FALSE
+    
+    IF INDEX ( "OS", SELECT pds_study . status ) = 0 THEN
+
+        activation_date = DATE ( SELECT pds_study . start_date )
+
+        pull_timefac = STRIP ( object_select_field ( pull_db . current, "PDS_STUDY_PULL", "TIME_FACTOR" ) )
+
+        time_db . set_by_index ( "KEY0", pull_timefac )
+
+        equiv_in_days = INTERVAL ( object_select_field ( time_db . current, "TIME_FACTOR", "DAY_EQUIV"   ) )
+        time_window   = INTERVAL ( object_select_field ( time_db . current, "TIME_FACTOR", "TIME_WINDOW" ) )
+
+        CALL_ROUTINE "get_basetime" USING pull_db . current 
+                     RETURNING start_date IN LIBRARY "$STB_LIB"
+
+        IF IS_INTERVAL ( start_date ) THEN
+            login_due_date = activation_date + INTERVAL ( start_date ) + equiv_in_days + time_window
+        ELSEIF ( DATE ( start_date ) <> ERROR ) THEN
+            login_due_date = DATE ( start_date ) + equiv_in_days + time_window
+        ELSE
+            login_due_date = activation_date + equiv_in_days + time_window
+        ENDIF
+
+        IF login_due_date < NOW THEN
+
+            date_failed = TRUE
+
+        ELSEIF SELECT pds_study_pull . due_login_date IN OBJECT pull_db . current < NOW THEN
+
+            IF NOT SELECT pds_study_pull . active IN OBJECT pull_db . current THEN
+
+                flash_message ( GET_USER_MESSAGE ( "STB_PULL_WARN_DATE", 1 ) : 
+                                pull_timefac                                  : 
+                                GET_USER_MESSAGE ( "STB_PULL_WARN_DATE", 2 ) : 
+                                STRIP ( LEFTSTRING ( time_window, 4 ) )       : 
+                                GET_USER_MESSAGE ( "STB_PULL_WARN_DATE", 3 ) , TRUE )
+
+            ENDIF
+
+        ENDIF
+    
+    ENDIF
+    
+    RETURN ( date_failed )
+    
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE set_active_cell ( matrix_object, pull_db )
+
+{
+* Parameters : matrix_object, Stb Matrix object
+*   
+******************************************************************************}
+
+    DECLARE new_active_state, count, c_factor, time_factor, layer_factor
+
+    new_active_state = NOT SELECT 'pull_db . table' . active IN OBJECT pull_db . current 
+
+    { get the other pulls for the cell }
+
+    c_factor     = SELECT 'pull_db . table' . c_factor IN OBJECT pull_db . current
+    time_factor  = SELECT 'pull_db . table' . time_factor IN OBJECT pull_db . current
+    layer_factor = SELECT 'pull_db . table' . layer_factor IN OBJECT pull_db . current            
+
+    count = 0
+    WHILE ( count < pull_db . size () ) DO
+
+        count = count + 1
+        pull_db . set_by_number ( count )
+
+        IF ( c_factor     = SELECT 'pull_db . table' . c_factor IN OBJECT pull_db . current )    AND
+           ( time_factor  = SELECT 'pull_db . table' . time_factor IN OBJECT pull_db . current ) AND
+           ( layer_factor = SELECT 'pull_db . table' . layer_factor IN OBJECT pull_db . current )THEN
+
+            set_active_pull ( matrix_object, pull_db, new_active_state )
+
+        ENDIF
+
+    ENDWHILE
+
+    IF ( matrix_object . is_study( ) ) THEN
+
+        IF ( SELECT pds_study . status = "C" ) THEN
+            ASSIGN pds_study . status = "A"
+        ENDIF
+
+    ENDIF
+
+    matrix_object . rebuild_matrix ()
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE set_active_pull ( matrix_object, pull_db, VALUE is_active )
+
+{
+*
+* Parameters : matrix_object, Stb Matrix object
+*   
+******************************************************************************}
+
+    ASSIGN 'pull_db . table' . active IN OBJECT pull_db . current = is_active  
+    
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE stb_matrix_action_update_overview_property_sheet( self )
+
+{
+* Updates the overview property sheet for the current cell
+*
+* Parameters : self, Stb Matrix object
+*   
+******************************************************************************}
+
+    DECLARE layer_grid
+    
+    IF self . is_matrix_overview_visible( ) THEN
+    
+        self . overview_form . pull_list_form . list . refresh( )
+        self . overview_form . pull_list_form . update_filter_text( )
+
+        IF ( self . product_info_form <> EMPTY ) THEN
+
+            layer_grid = self . product_info_form . layer_grid
+
+            layer_grid . set_position ( 1, self . current_layer )
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE init_matrix_overview_form_class
+{
+* 
+*
+* Parameters : None
+*
+*******************************************************************************}
+
+    set_up_std_prompt_tab_class ( )
+    define_list_viewer_class    ( )
+    prompt_toolbar_initialise   ( )
+
+    DEFINE CLASS "MATRIX_OVERVIEW_FORM"
+
+        INHERIT PROMPT_CLASS_FORM
+
+        PROPERTIES
+            "parent_matrix" ,
+            "pull_list_form",
+            "product_form"
+
+        ACTIONS
+            "refresh"  ,
+            "repaste"
+
+    END CLASS
+
+    DEFINE CLASS "STB_PULL_LIST_FORM"
+
+        INHERIT "STD_FORM"
+
+        INITIALISATION
+
+        PROPERTIES
+            "toolbar"             ,
+            "list"                ,
+            "display_filter"      
+
+        ACTIONS
+            "update_filter_text",
+            "refresh"             ,
+            "is_filter_on_layer" ,
+            "is_filter_on_time" ,
+            "is_filter_on_condition" ,
+            "option_filter_layer"    ,
+            "option_filter_time"     ,
+            "option_filter_condition",
+            "option_refresh"
+
+    END CLASS
+
+
+    DEFINE CLASS "STB_PULL_LIST"
+
+        INHERIT LIST_VIEWER_CLASS
+
+        INITIALISATION
+
+        ACTIONS
+            "define_columns"
+
+    END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE matrix_overview_form_action_refresh( self )
+{
+* Refreshes the matrix overview form's contents
+*
+* Parameters : self , Stb Matrix Object
+*
+*******************************************************************************}
+
+    self . product_form . update_all( )
+    self . pull_list_form . list . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE matrix_overview_form_action_repaste( self )
+{
+* Repaste overide. Only does repaste if form is supposed to be visible
+*
+* Parameters : self , Stb Matrix Object
+*
+*******************************************************************************}
+
+    IF self . visible THEN
+
+        self . std_form :: repaste( )
+    
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_matrix_action_create_overview_form( self )
+{
+* 
+*
+* Parameters : self , Stb Matrix Object
+*
+*******************************************************************************}
+
+    DECLARE overview_form, tab, pull_list_form, product_form
+
+    init_matrix_overview_form_class( )
+
+    CREATE OBJECT "MATRIX_OVERVIEW_FORM", overview_form
+    self . overview_form = overview_form
+    
+    overview_form . icon          = "INT_PROPERTIES"
+    overview_form . column        = 60
+    overview_form . row           = 10
+    overview_form . width         = 86
+    overview_form . height        = 20
+    overview_form . button_style  = FORM_BUTTON_NONE
+    overview_form . header        = "Matrix Overview"
+    overview_form . visible       = FALSE
+    overview_form . parent_matrix = self
+
+    CREATE OBJECT PROMPT_TAB_CLASS, tab
+    tab . row    = 1
+    tab . column = 1
+    tab . width  = overview_form . width
+    tab . height = overview_form . height
+    tab . fullscreen = TRUE
+   
+    overview_form . add_prompt( tab )
+   
+    product_form = create_product_form ( self )
+    overview_form . product_form = product_form
+        
+    tab . add_form( product_form )
+    
+    pull_list_form = create_pull_list_form( self, overview_form )
+    overview_form . pull_list_form = pull_list_form
+
+    tab . add_form( pull_list_form )
+    
+ENDROUTINE
+
+{*************************************************************************}
+
+ROUTINE create_pull_list_form( matrix_object, overview_form )
+
+{
+*
+**************************************************************************}
+
+    DECLARE list, pull_list_form, toolbar, toolbutton, display_filter
+
+    PROMPT OBJECT pull_list_form
+        CLASS "STB_PULL_LIST_FORM"
+        WITH ( column        = 10                     ,
+               row           = 5                      ,
+               width         = overview_form . width  ,
+               button_style  = FORM_BUTTON_NONE       ,
+               height        = overview_form . height ,
+               header        = "Pull Info"            )
+
+    CREATE OBJECT TOOLBAR_CLASS , toolbar
+    pull_list_form . toolbar = toolbar
+    pull_list_form . add_prompt( toolbar )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . identity = "OPTION_FILTER_LAYER"
+    toolbutton . set_action( pull_list_form, "OPTION_FILTER_LAYER" )
+    toolbutton . set_icon  ( "INT_ITEM_FRONT" )
+    toolbutton . tooltip  = "Filter on current layer"
+    toolbutton . is_check = TRUE
+    toolbutton . value    = TRUE
+
+    toolbar . add_item ( toolbutton )
+    
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . identity = "OPTION_FILTER_TIME"
+    toolbutton . set_action( pull_list_form, "OPTION_FILTER_TIME" )
+    toolbutton . set_icon  ( "INT_TIME_PM" )
+    toolbutton . tooltip  = "Filter on current time factor"
+    toolbutton . is_check = TRUE
+    toolbutton . value    = TRUE
+
+    toolbar . add_item ( toolbutton )
+
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . identity = "OPTION_FILTER_CONDITION"
+    toolbutton . set_action( pull_list_form, "OPTION_FILTER_CONDITION" )
+    toolbutton . set_icon  ( "INT_TEMP_RIGHT" )
+    toolbutton . tooltip  = "Filter on current condition factor"
+    toolbutton . is_check = TRUE
+    toolbutton . value    = TRUE
+
+    toolbar . add_item ( toolbutton )
+    
+    toolbar . add_separator( )
+    
+    CREATE OBJECT TOOLBAR_BUTTON_CLASS , toolbutton
+    toolbutton . identity = "OPTION_REFRESH"
+    toolbutton . set_action( pull_list_form, "OPTION_REFRESH" )
+    toolbutton . set_icon  ( "INT_REFRESH" )
+    toolbutton . tooltip  = "Refresh"
+
+    toolbar . add_item ( toolbutton )
+    
+    CREATE OBJECT "STB_PULL_LIST", list
+    pull_list_form . list = list
+    
+    list . row     = 2
+    list . column  = 0
+    list . width   = pull_list_form . width + 1
+    list . height  = pull_list_form . height - 3.5
+    list . table   = matrix_object . pull_table
+    
+    list . define_columns( matrix_object . is_study( ) )
+    
+    list . create_list()
+    
+    pull_list_form . add_prompt( list )
+
+    CREATE OBJECT "STD_PROMPT_TEXT", display_filter
+    pull_list_form . display_filter = display_filter
+    
+    display_filter . row    = 0.4
+    display_filter . column = 24
+    display_filter . width  = pull_list_form .width - display_filter . column
+    display_filter . height = 1
+    display_filter . display_only = TRUE
+    display_filter . value  = "( No filter )"
+    
+    pull_list_form . add_prompt( display_filter )
+
+    RETURN( pull_list_form )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_class_initialisation( self )
+{
+* Stb Pull List Form Class Initialisation
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . toolbar             = EMPTY
+    self . list                = EMPTY
+    self . display_filter      = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_update_filter_text( self )
+{
+* Updates the filter text prompt
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    DECLARE filter_text, matrix_object
+
+    matrix_object = self . parent_prompt . parent_matrix
+
+    filter_text = ""
+
+    IF self . is_filter_on_layer( ) THEN
+    
+        filter_text = filter_text :
+                      "Layer: " :
+                      STRIP( matrix_object . get_current_layer_id( ) ) :
+                      ". "
+
+    ENDIF
+
+    IF self . is_filter_on_time( ) THEN
+    
+        filter_text = filter_text :
+                      "Time: " :
+                      STRIP( matrix_object . get_current_time_id( ) ) :
+                      ". "
+
+    ENDIF
+
+    IF self . is_filter_on_condition( ) THEN
+    
+        filter_text = filter_text :
+                      "Condition: " :
+                      STRIP( matrix_object . get_current_condition_id( ) ) :
+                      ". "
+
+    ENDIF
+
+    IF BLANK( filter_text ) THEN
+        filter_text = "( No filter )"
+    ELSE
+        filter_text = "Filtered on " : filter_text
+    ENDIF
+
+    self . display_filter . set_text( filter_text )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_is_filter_on_layer( self )
+{
+* Returns True if filtered on the current layer
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    DECLARE button
+
+    button = self . toolbar . get_item_by_identity( "OPTION_FILTER_LAYER" )
+
+    RETURN( button . get_check( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_is_filter_on_time( self )
+{
+* Returns True if filtered on the current time factor
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    DECLARE button
+
+    button = self . toolbar . get_item_by_identity( "OPTION_FILTER_TIME" )
+
+    RETURN( button . get_check( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_is_filter_on_condition( self )
+{
+* Returns True if filtered on the current condition factor
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    DECLARE button
+
+    button = self . toolbar . get_item_by_identity( "OPTION_FILTER_CONDITION" )
+
+    RETURN( button . get_check( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_option_filter_layer( self )
+{
+* Filters the list of pulls based on the current layer
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_option_filter_time( self )
+{
+* Filters the list of pulls based on the current time
+*
+* Parameters : Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_option_filter_condition( self )
+{
+* Filters the list of pulls based on the current condition
+*
+* Parameters : self , Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_refresh( self )
+{
+* Refreshes the list
+*
+* Parameters : self , Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . list . refresh( )
+    
+    self . update_filter_text( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_form_action_option_refresh( self )
+{
+* Refreshes the list
+*
+* Parameters : self , Stb Pull List Form Object
+*
+*******************************************************************************}
+
+    self . refresh( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_class_initialisation( self )
+{
+* Stb Pull List Class Initialisation
+*
+* Parameters :  self , Stb Pull List Object
+*
+*******************************************************************************}
+
+    self . autosize            = TRUE
+    self . clear_locks         = FALSE
+    self . menu_columns        = TRUE
+    self . menu_criteria       = FALSE
+    self . menu_auto_criteria  = FALSE
+    self . show_removed        = TRUE
+    self . menu_toggle_removed = FALSE
+    
+    self . data_callback      = STRIP ( GLOBAL ( "CURRENT_LIBRARY" ) ) :
+                                "/pull_list_populate"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE stb_pull_list_action_define_columns( self, VALUE is_study )
+{
+* Defines the columns
+* 
+* Parameters : self , Stb Pull List Object
+*
+*******************************************************************************}
+
+    self . add_column_field( "PULL_NUM" )
+    self . add_column_field( "PULL_NAME" )
+    self . add_column_field( "PULL_AMOUNT" )
+    self . add_column_field( "LOCATION" )
+    self . add_column_field( "SAMPLE_TEMPLATE" )
+    self . add_column_field( "TEST_SCHEDULE" )
+    self . add_column_field( "LABEL_NUMBER" )
+    self . add_column_field( "DESCRIPTION" )
+    
+    IF is_study THEN
+
+        self . add_column_field( "CELL_DISP" )
+        self . add_column_field( "CREATED_SAMPLE_ID" )
+        self . add_column_field( "SAMPLE_ID_TEXT" )
+        self . add_column_field( "DUE_LOGIN_DATE" )
+    
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE pull_list_populate( list, odb )
+{
+* Stb Pull List's population callback
+* 
+* Parameters : list , Stb Pull List Object
+*              odb  , object database to populate
+*
+*******************************************************************************}
+
+    DECLARE pull_list_form, all_pulls, include_pull, layer_id, time_id, condition_id
+    DECLARE matrix_object, current_layer_id, current_time_id, current_condition_id
+
+    pull_list_form = list . parent_prompt
+    
+    matrix_object = pull_list_form . parent_prompt . parent_matrix
+
+    current_layer_id     = matrix_object . get_current_layer_id( )
+    current_time_id      = matrix_object . get_current_time_id( )
+    current_condition_id = matrix_object . get_current_condition_id( )
+
+    all_pulls = matrix_object . pulls
+    
+    all_pulls . set_first( )
+            
+    WHILE all_pulls . current <> EMPTY DO
+
+        layer_id     = SELECT 'all_pulls . table' . layer_factor
+                           IN OBJECT all_pulls . current
+
+        time_id      = SELECT 'all_pulls . table' . time_factor
+                           IN OBJECT all_pulls . current
+
+        condition_id = SELECT 'all_pulls . table' . c_factor
+                           IN OBJECT all_pulls . current
+
+
+        
+        include_pull = ( ( ( NOT pull_list_form . is_filter_on_layer( )     ) OR
+                           ( layer_id = current_layer_id                    )    ) AND
+                         ( ( NOT pull_list_form . is_filter_on_time( )      ) OR
+                           ( time_id = current_time_id                      )    ) AND
+                         ( ( NOT pull_list_form . is_filter_on_condition( ) ) OR
+                           ( condition_id = current_condition_id            )    )     )
+
+        IF include_pull AND NOT all_pulls . current . deleted THEN
+
+            odb . add ( all_pulls . current )
+        
+        ENDIF
+        
+        all_pulls . set_next( )
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_modify_rmb_option( explorer_rmb    ,
+                                       record_object   ,
+                                       pull_collection )
+
+{
+* Explorer RMB option that provides multiple result entry for the selected
+* pull's samples
+*
+******************************************************************************}
+
+    DECLARE sample_collection
+
+    sample_collection = get_selected_pull_samples( pull_collection )
+
+    lib_re_criteria_from_collection( RE_MODIFY, sample_collection )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_display_rmb_option( explorer_rmb    ,
+                                        record_object   ,
+                                        pull_collection )
+
+{
+* Explorer RMB option that provides multiple result display for the selected
+* pull's samples
+*
+******************************************************************************}
+
+    DECLARE sample_collection
+
+    sample_collection = get_selected_pull_samples( pull_collection )
+
+    lib_re_criteria_from_collection( RE_DISPLAY, sample_collection )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_authorise_rmb_option( explorer_rmb    ,
+                                          record_object   ,
+                                          pull_collection )
+
+{
+* Explorer RMB option that provides multiple result authorise for the selected
+* pull's samples
+*
+******************************************************************************}
+
+    DECLARE sample_collection
+
+    sample_collection = get_selected_pull_samples( pull_collection )
+
+    lib_re_criteria_from_collection( RE_AUTHORISE, sample_collection )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_selected_pull_samples( pull_collection )
+
+{
+* Returns a collection of samples corresponding to the selected pulls
+*
+******************************************************************************}
+
+    DECLARE sample_id, sample_collection, select_array
+
+    CREATE OBJECT "STD_OBJECT_DATABASE", sample_collection
+    sample_collection . table = "SAMPLE"
+    sample_collection . initialise( "SAMPLE" )
+
+    pull_collection . set_first( )
+    
+    WHILE pull_collection . current <> EMPTY DO
+    
+        sample_id = SELECT pds_study_pull . created_sample_id
+                         IN OBJECT pull_collection . current
+
+        ARRAY select_array
+        ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ID_NUMERIC", sample_id )
+        
+        sample_collection . select( select_array )
+        
+    
+        pull_collection . set_next( )
+        
+    ENDWHILE
+
+    RETURN( sample_collection )
+
+ENDROUTINE

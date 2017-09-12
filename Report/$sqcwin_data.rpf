@@ -1,0 +1,3165 @@
+{******************************************************************************
+*
+* Module Name   : sqcwin_data  
+*
+* Purpose       : sqc data processing routines.
+*                 
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NAME "DISPLAY/"
+
+SET NOTPROTECTED
+
+JOIN LIBRARY $REPORTER_STAN               
+JOIN LIBRARY $REPORTER_USER
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN LIBRARY $CRITERIA_EDIT
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $BROWSE_FORM
+
+JOIN LIBRARY $SQCWIN_CLASS
+JOIN LIBRARY $SQCWIN_GLBL
+JOIN LIBRARY $SQCWIN_LIB
+JOIN LIBRARY $CRITERIA_LIB
+
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_DDE
+JOIN STANDARD_LIBRARY STD_CLIENT
+
+CONSTANT NUM_POS        = 1
+CONSTANT DATE_POS       = 2
+CONSTANT GROUP_POS      = 3
+CONSTANT VALUE_POS      = 4
+CONSTANT SAMPLE_ID_POS  = 5
+CONSTANT REP_POS        = 6
+CONSTANT BAD_POS        = 7
+CONSTANT COMMENT_POS    = 8
+
+CONSTANT SQC_DATA_EXP_CLASS      = "EXPORT_DATA"
+CONSTANT APPLICATION_LIST_CLASS  = "APPLICATION_LIST"
+CONSTANT APPLICATION_CLASS       = "APPLICATION"
+
+{******************************************************************************}
+
+GLOBAL ROUTINE sqcwin_criteria  (sqc_chart )
+
+{ 
+* Main selection criteria screen
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE sel_crit_valid
+
+    sel_crit_valid = FALSE
+
+    REPEAT
+
+        sel_crit_valid = sqcwin_get_criteria ( sqc_chart )
+
+    UNTIL ( sel_crit_valid )
+
+    IF  ( sqc_chart . next_screen <> "EXIT" ) THEN
+
+        IF ( GLOBAL("lastkey") = "RIGHT" ) AND
+           ( sqc_chart . first_time      ) THEN
+
+            sqc_chart . selected_chart = EMPTY
+            sqc_chart . selected_graph = EMPTY
+
+            sqc_chart . next_screen = "EDIT"
+
+        ELSEIF GLOBAL("lastkey") = "LEFT" THEN
+
+            sqc_chart . next_screen = "HEAD"
+
+        ELSEIF NOT( sqc_chart . first_time ) THEN
+
+            sqc_chart . next_screen = "REDRAW"
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE validate_selection_criteria ( selection_array )
+
+{ 
+* Examine selection criteria to ensure that an analysis, component and 
+* result type = 'N' specified
+* 
+*
+* Parameters   : selection_array
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE row_index, valid_analysis, valid_component, valid_result_type,
+        return_value
+
+    row_index = 1
+
+    valid_analysis     = FALSE
+    valid_component    = FALSE
+    valid_result_type  = FALSE
+    return_value       = TRUE
+
+    WHILE row_index <= SIZE_OF_ARRAY ( selection_array )
+
+        IF ( selection_array [ row_index , 2 ] = "ANALYSIS" ) AND
+           ( selection_array [ row_index , 1 ] = ARRAY_SELECT_EQ ) AND
+           ( STRIP ( selection_array [ row_index , 3 ] ) <> "" )
+        THEN
+
+        valid_analysis = TRUE
+
+        ENDIF
+
+        IF ( selection_array [ row_index , 2 ] = "COMPONENT_NAME" ) AND
+           ( selection_array [ row_index , 1 ] = ARRAY_SELECT_EQ ) AND
+           ( STRIP ( selection_array [ row_index , 3 ] ) <> "" )
+        THEN
+
+        valid_component = TRUE
+
+        ENDIF
+
+        IF ( selection_array [ row_index , 2 ] = "RESULT_TYPE" ) AND
+           ( selection_array [ row_index , 1 ] = ARRAY_SELECT_EQ ) AND
+           ( ( selection_array [ row_index , 3 ] = "N" ) OR ( selection_array [ row_index , 3 ] = "K" ) )
+        THEN
+
+        valid_result_type = TRUE
+
+        ENDIF
+
+        row_index = row_index + 1
+
+    ENDWHILE
+
+    IF ( NOT valid_analysis ) THEN
+
+        flash_message ( GET_USER_MESSAGE ( "SEL_CRIT_INVALID_ANALYSIS" , 1 ) , TRUE)
+        return_value = FALSE
+
+    ENDIF
+
+    IF ( NOT valid_component ) THEN
+
+        flash_message ( GET_USER_MESSAGE ( "SEL_CRIT_INVALID_COMPONENT" , 1 ) , TRUE)
+        return_value = FALSE
+
+    ENDIF
+
+    IF ( NOT valid_result_type ) THEN
+
+        flash_message ( GET_USER_MESSAGE ( "SEL_CRIT_INVALID_RESULT_TYPE" , 1 ) , TRUE)
+        return_value = FALSE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE edit_screen ( sqc_chart )
+
+{ 
+* Creates the grid and form to display the data in.
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : recalculate
+*
+*******************************************************************************}
+
+DECLARE grid, form, dec_places, recalculate, not_exiting
+
+    recalculate = FALSE
+
+    sqc_chart . sqc_header . set_by_number ( 1 )
+
+    dec_places = SELECT sqcwin_header . decimal_places IN OBJECT
+            sqc_chart . sqc_header . current
+
+    reset_format ( dec_places )
+
+    define_sqc_form ( )
+
+    CREATE OBJECT "STD_GRID_EDITOR", grid
+    create_sqc_form( form )
+
+    form . sqc_chart = sqc_chart
+    form . header = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_6", 1 )
+    form . return_behaviour = FORM_RETURN_STAY
+    form . button_style =  FORM_BUTTON_NONE
+
+    grid . height = 12
+    grid . width  = form . width - 2
+
+    grid . row    = 1
+    grid . column = 2
+    grid . cell_columns = 8
+
+    grid . cell_rows    = count_points_not_deleted ( sqc_chart )
+
+    ARRAY form . user_info
+    ARRAY grid . user_info
+
+    populate_grid ( sqc_chart , grid, form )
+
+    grid . column_size [ NUM_POS ]      = 6
+    grid . column_size [ DATE_POS ]     = 18
+    grid . column_size [ GROUP_POS ]    = 10
+    grid . column_size [ VALUE_POS ]    = 8
+    grid . column_size [ SAMPLE_ID_POS ]= 8
+    grid . column_size [ REP_POS ]      = 5
+    grid . column_size [ BAD_POS ]      = 5
+    grid . column_size [ COMMENT_POS ]  = 10
+
+    grid . title_size_top       = 1
+    grid . title_separator_top  = GRID_SEPARATOR_BOTH
+    grid . title_rendition_top  = PROMPT_RENDITION_BOLD
+
+    grid . title_text_top [NUM_POS,1]      = GET_USER_MESSAGE("SQCWIN_DATA_DIS_7",1)
+    grid . title_text_top [DATE_POS,1]     = GET_USER_MESSAGE("SQCWIN_DATA_DIS_8",1)
+    grid . title_text_top [GROUP_POS,1]    = GET_USER_MESSAGE("SQCWIN_DATA_DIS_9",1)
+    grid . title_text_top [VALUE_POS,1]    = GET_USER_MESSAGE("SQCWIN_DATA_DIS_10",1)
+    grid . title_text_top [SAMPLE_ID_POS,1]= GET_USER_MESSAGE("SQCWIN_DATA_DIS_11",1)
+    grid . title_text_top [REP_POS,1]      = GET_USER_MESSAGE("SQCWIN_DATA_DIS_12",1)
+    grid . title_text_top [BAD_POS,1]      = GET_USER_MESSAGE("SQCWIN_DATA_DIS_13",1)
+    grid . title_text_top [COMMENT_POS,1]  = GET_USER_MESSAGE("SQCWIN_DATA_DIS_14",1)
+
+    grid . display_cell_routine = "DISPLAY_CELL"
+    grid . prompt_cell_routine  = "PROMPT_CELL"
+    grid . check_move_routine   = "CHECK_MOVE"
+    grid . enter_cell_routine   = "enter_grid_cell"
+
+    form . add_prompt ( grid )
+    form . add_frame("",1,1,14,form.width)
+
+    add_repeater_button  ( form )
+    add_dec_place_prompt ( form )
+
+    add_form_buttons (form , sqc_chart)
+
+    form . start_prompt ( )
+
+    not_exiting = TRUE
+
+    WHILE not_exiting DO
+
+        form . wait_prompt ( )
+
+        not_exiting = FALSE
+        
+        IF ( LASTKEY = "DO" ) OR ( LASTKEY = "RIGHT" ) THEN
+
+            sqc_chart . decimal_places = form . prompt_objects [ 5 ] . value
+            read_from_form ( sqc_chart , form)
+            recalculate = TRUE
+
+        ENDIF
+
+        IF (sqc_chart . next_screen <> "DRAW") THEN
+
+            IF (GLOBAL("lastkey") = "RIGHT") THEN
+            sqc_chart . next_screen = "TYPE"
+            ELSEIF (GLOBAL("lastkey")="LEFT") THEN
+            sqc_chart . next_screen = "CRIT"
+            ENDIF
+
+        ENDIF
+
+        IF ( LASTKEY = "EXIT" ) THEN
+
+        IF ( sqc_chart . ok_button_only ) OR
+           ( confirm_with_text(
+             GET_USER_MESSAGE("SQCWIN_MAIN_CONF_4",1)) ) THEN
+
+            sqc_chart . next_screen = "EXIT"
+
+
+        ELSE
+
+            not_exiting = TRUE
+
+        ENDIF
+
+        ENDIF
+
+
+    ENDWHILE
+
+    RETURN ( recalculate )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE display_cell (       self       ,
+                       VALUE cell_column,
+                       VALUE cell_row   ,
+                             window     ,
+                       VALUE column     ,
+                       VALUE row        ,
+                       VALUE cell_width ,
+                       VALUE cell_height)
+
+{ 
+* Displays the contents of a grid cell 
+* 
+* 
+*
+* Parameters   : self, cell_column, cell_row, window, column, row, 
+*                cell_width, cell_height
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    IF ( cell_column = NUM_POS ) THEN
+
+        DISPLAY cell_row
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+
+    ELSEIF ( cell_column = BAD_POS ) THEN
+
+        DISPLAY self . user_info [ cell_column, cell_row ]
+        FORMAT BOOLEAN
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( is_check = TRUE )
+
+    ELSEIF ( cell_column = VALUE_POS ) THEN
+
+        DISPLAY self . user_info [ cell_column, cell_row ]
+        FORMAT REAL
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+    ELSE
+
+        DISPLAY self . user_info [ cell_column, cell_row ]
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE enter_grid_cell ( self              ,
+                          VALUE cell_column ,
+                          VALUE cell_row    )
+
+{ 
+* Called on entering a grid cell. Enables Group Propagate button
+* if in Group Name column
+* 
+*
+* Parameters   : self, cell_column, cell_row, window, column, row, 
+*                cell_width, cell_height
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE prop_button
+
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "propagate_button", prop_button       )
+
+    IF ( cell_column = GROUP_POS ) THEN
+
+        prop_button . set_enabled( TRUE )
+
+    ELSE
+
+        prop_button . set_enabled( FALSE )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE  prompt_cell (       self       ,
+                       VALUE cell_column,
+                       VALUE cell_row   ,
+                             window     ,
+                       VALUE column     ,
+                       VALUE row        ,
+                       VALUE cell_width ,
+                       VALUE cell_height)
+
+{ 
+* Prompts for the contents of a grid cell
+* 
+* 
+*
+* Parameters   : self, cell_column, cell_row, window, column, row
+*                cell_width, cell_height
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    IF (cell_column = NUM_POS ) THEN
+
+        PROMPT FOR cell_row
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH (  display_only=TRUE)
+
+    ELSEIF ( cell_column = DATE_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        BROWSE ON DATE
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( allow_time = TRUE,
+               display_only=TRUE )
+
+    ELSEIF ( cell_column = GROUP_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        BROWSE ON phrase_id . sqc_group
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( valid_only = FALSE )
+
+    ELSEIF ( cell_column = SAMPLE_ID_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( display_only = TRUE )
+
+    ELSEIF ( cell_column = VALUE_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        FORMAT REAL
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( display_only = TRUE )
+
+    ELSEIF ( cell_column = REP_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( display_only = TRUE,
+               user_info = self )
+
+    ELSEIF ( cell_column = BAD_POS ) THEN
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        FORMAT BOOLEAN
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+        WITH ( display_only = FALSE,
+               is_check = TRUE )
+
+    ELSE
+
+        PROMPT FOR self . user_info [ cell_column, cell_row ]
+        AT column , row
+        TO column + cell_width -1
+        IN WINDOW window
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_repeater_button ( form )
+
+{ 
+* Adds button for repeating the group name on the 'Edit Data' form
+* 
+* 
+*
+* Parameters   : form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE repeat_button, print_button, export_button
+
+    PROMPT OBJECT repeat_button
+    CLASS "STD_PROMPT_BUTTON"
+    ON LINE 14
+    FROM 2 TO 13
+    WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_BUT_PROPAGATE", 1 ) ,
+           mouse_click_routine = "repeat_data_call"                 ,
+           user_info = "propagate_button"                           ,
+           enabled = FALSE                                          )
+
+
+    repeat_button . icon_align = BUTTON_ICON_ALIGN_RIGHT
+    repeat_button . set_image_resource ( 0 )
+    repeat_button . use_images ( EMPTY ,
+                  16 ,
+                  client_icon_id_to_number( "INT_ARROW_DOWN" ) )
+
+    repeat_button . tooltip = GET_USER_MESSAGE ( "SQCWIN_BUT_PROPAGATE_TIP", 1 )
+
+    form . add_prompt ( repeat_button )
+
+    PROMPT OBJECT print_button
+    CLASS "STD_PROMPT_BUTTON"
+    ON LINE 14
+    FROM 15 TO 26
+    WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_17", 1 ) ,
+           mouse_click_routine = "print_data"              )
+
+    form . add_prompt ( print_button )
+
+    PROMPT OBJECT export_button
+    CLASS "STD_PROMPT_BUTTON"
+    ON LINE 14
+    FROM 28 TO 39
+    WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_18", 1 ) ,
+           mouse_click_routine = "export_data"              )
+
+    form . add_prompt ( export_button )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_data( self )
+
+{ 
+* Print data from Edit Data screen
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE edit_form
+
+    edit_form = self . parent_prompt
+
+    sqc_print_data ( edit_form . sqc_chart . sqc_header           ,
+                 edit_form . prompt_objects [ 1 ] . user_info )
+
+ENDROUTINE 
+
+{******************************************************************************}
+
+ROUTINE export_data( self )
+
+{ 
+* Export data from Edit Data screen
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE counter, field_list
+
+    ARRAY field_list
+
+    counter = 1
+
+    WHILE ( self . parent_prompt . prompt_objects [ 1 ] .
+            title_text_top [ counter, 1 ] <> "" ) DO
+
+    field_list [ counter ] = self . parent_prompt . prompt_objects [ 1 ] .
+                     title_text_top [ counter, 1 ]
+    counter = counter + 1
+
+    ENDWHILE
+
+    sqc_data_exp ( field_list,
+           self . parent_prompt . prompt_objects [ 1 ] . user_info,
+           self . parent_prompt . prompt_objects [ 1 ] . cell_rows )
+
+ENDROUTINE 
+
+{******************************************************************************}
+
+ROUTINE add_dec_place_prompt ( form )
+
+{ 
+* Add decimal place prompt
+* 
+* 
+*
+* Parameters   : form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE dec_place
+
+    form . add_display ( GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_15", 1 ) ,
+                         form . width -20,
+                         14,
+                         PROMPT_RENDITION_NORMAL )
+
+    PROMPT OBJECT dec_place
+        FORMAT integer
+        ON LINE 14
+        FROM form . width -5 TO form . width
+        WITH ( minimum = 0 ,
+               maximum = 5 ,
+               leave_prompt_routine = "update_decimal_places" )
+
+    form . sqc_chart . sqc_header . set_by_number ( 1 )
+
+    dec_place . value = SELECT sqcwin_header . decimal_places
+                            IN OBJECT form . sqc_chart . sqc_header . current
+
+    form . add_prompt ( dec_place )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE repeat_data_call ( self )
+
+{ 
+* Repeat group name funciton on the 'Edit Data' form
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE start_col, start_row, stop_row, current_row, prop_value
+
+    start_col = self . parent_prompt . prompt_objects [ 1 ] . current_column
+
+    IF ( start_col = GROUP_POS ) THEN
+
+        start_row   = self . parent_prompt . prompt_objects [ 1 ] . current_row
+        stop_row    = self . parent_prompt . prompt_objects [ 1 ] . cell_rows
+        current_row = start_row + 1
+
+        prop_value  = self . parent_prompt . prompt_objects [ 1 ] .
+                          user_info [ start_col, start_row ]
+
+        WHILE ( current_row <= stop_row ) DO
+
+            self . parent_prompt . prompt_objects [ 1 ]
+                      . user_info [ start_col, current_row ] = prop_value
+
+            self . parent_prompt . prompt_objects [ 1 ]
+                      . redisplay_cell ( start_col, current_row )
+
+            current_row = current_row + 1
+
+        ENDWHILE
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_form_buttons ( form ,  sqc_chart)
+
+{ 
+* Adds the buttons to the Edit Data screen
+* 
+* 
+*
+* Parameters   : form, sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE button_row,button_prompt
+
+
+    button_row= form . height - 1   
+
+    IF sqc_chart. ok_button_only THEN
+
+        PROMPT OBJECT button_prompt
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 1 TO 13
+            WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_OK", 1 ) ,
+                send_lastkey = "DO" )
+
+        form.add_prompt(button_prompt)
+
+    ELSE
+
+        IF ((sqc_chart . edit_mode = "MODIFY")
+        AND (sqc_chart . data_selection_was = FALSE)
+        AND ((SELECT sqcwin_header . data_selection IN OBJECT
+        sqc_chart . sqc_header . current) = FALSE)) THEN
+
+        PROMPT OBJECT button_prompt
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 1 TO 13
+            WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_PREV", 1 ) ,
+                enabled = FALSE                                     )
+        ELSE
+
+        PROMPT OBJECT button_prompt
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 1 TO 13
+            WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_PREV", 1 ) ,
+                user_info="PREV",
+                mouse_click_routine="button_press")
+
+        ENDIF
+
+        form.add_prompt(button_prompt)
+
+        PROMPT OBJECT button_prompt
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 15 TO 27
+            WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_NEXT", 1 ) ,
+                user_info="NEXT",
+                mouse_click_routine="button_press")
+
+        form.add_prompt(button_prompt)
+
+    ENDIF
+
+    PROMPT OBJECT button_prompt
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE button_row
+        FROM form . width -12 TO form . width
+        WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_CANCEL", 1 ) ,
+            user_info = "EXIT",
+            mouse_click_routine = "button_press" )
+
+    form.add_prompt(button_prompt)
+
+    PROMPT OBJECT button_prompt
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE button_row
+        FROM form . width -26 TO form . width -14
+        WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_HELP", 1 ),
+            send_lastkey = "HELP" )
+
+    form.add_prompt(button_prompt)
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE check_move ( self               ,
+                     VALUE cell_column  ,
+                     VALUE cell_row     ,
+                           new_column   ,
+                           new_row      )
+
+{ 
+* Redisplays rows when moving in the grid
+* 
+* 
+*
+* Parameters   : cell_column, cell_row, new_column, new_row
+* Return Value : n/a
+*
+*******************************************************************************}
+
+        IF ((cell_row <> new_row) OR (cell_column <> new_column)) THEN
+
+                self.current_row=new_row
+                self.current_column=new_column
+
+                IF cell_row>0 THEN
+
+                        self.redisplay_row(cell_row)
+
+                ENDIF
+
+                self.redisplay_row(new_row)
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE button_press ( self )
+
+{ 
+* Button press callback routine
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+        IF self.user_info="NEXT" THEN
+
+            SET GLOBAL "lastkey" TO "RIGHT"
+            self . parent_prompt . stop_prompt()
+
+        ELSEIF self.user_info="PREV"
+
+            SET GLOBAL "lastkey" TO "LEFT"
+            self . parent_prompt . stop_prompt()
+
+        ELSEIF self.user_info="EXIT"
+
+            self . parent_prompt . stop_prompt()
+
+            SET GLOBAL "lastkey" TO "EXIT"
+
+        ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_row ( self )
+
+{ 
+* Insert row button on Edit Data screen
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE grid, cur_row
+
+    grid = self . parent_prompt . prompt_objects [1]
+
+    cur_row = grid . current_row
+
+        array_insert_slice ( grid . user_info, 2, cur_row )
+    grid . insert_row ( cur_row , 1 , GRID_SEPARATOR_NONE)
+
+    insert_removed_row ( self . parent_prompt, grid, cur_row )
+
+    grid . redisplay_contents ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_row ( self )
+
+{ 
+* Delete row button on Edit Data screen
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE grid, cur_row
+
+
+    grid = self . parent_prompt . prompt_objects [1]
+
+    cur_row = grid . current_row
+
+    copy_removed_row ( self . parent_prompt , grid )
+
+        grid . remove_row ( cur_row )
+
+        array_remove_slice ( grid . user_info, 2, cur_row )
+
+    grid . redisplay_contents ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_new_record ( sqc_point , pos )
+
+{ 
+* Add new record
+* 
+* 
+*
+* Parameters   : sqc_point, pos
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE new_record, chart_id_text, point_number_text
+DECLARE new_key0, chart_id
+
+DECLARE obj
+
+    obj = sqc_point . get_by_number ( pos - 1 )
+    chart_id = SELECT sqcwin_point . chart_id IN OBJECT obj
+
+    FORMAT chart_id_text FROM chart_id
+        USING sqcwin_point . chart_id
+    chart_id_text = PAD(chart_id_text," ",20)
+
+    point_number_text = STRIP(STRING(pos))
+    point_number_text = PAD(point_number_text," ",6)
+    point_number_text = JUSTIFY(point_number_text,"RIGHT")
+    new_key0 = chart_id_text : point_number_text
+
+    CREATE OBJECT "STD_OBJECT_RECORD",new_record
+    new_record . new = TRUE
+    new_record . table = "sqcwin_point"
+    object_add_table ( new_record, "sqcwin_point" )
+
+    RESERVE ENTRY sqcwin_point IN OBJECT new_record , new_key0
+    sqc_point . add ( new_record )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE count_points_not_deleted (sqc_chart)
+
+{ 
+* Counts all the points that are not deleted
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : count
+*
+*******************************************************************************}
+
+DECLARE count, pos
+
+    count = 0
+    pos = 1
+
+    sqc_chart . sqc_point . set_by_number ( pos )
+
+    WHILE ( pos <= sqc_chart . sqc_point . size () ) DO
+
+        IF ( sqc_chart . sqc_point . current . deleted <> TRUE) THEN
+
+            count = count + 1
+
+        ENDIF
+
+        pos = pos + 1
+        sqc_chart . sqc_point . set_next ()
+
+    ENDWHILE
+
+    RETURN ( count )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE populate_grid ( sqc_chart , grid, form )
+
+{ 
+* Takes the information from the sqc_point and loads it into the grid
+* 
+* 
+*
+* Parameters   : sqc_chart, grid, form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE pos, obj, grid_row
+
+    pos = 1
+    grid_row = 1
+
+    WHILE ( pos <= sqc_chart . sqc_point . size ( ) ) DO
+
+        obj = sqc_chart . sqc_point . get_by_number ( pos )
+
+        IF ( NOT obj . deleted ) THEN
+
+        grid . user_info [ NUM_POS,  grid_row ] =
+            SELECT sqcwin_point . point_number IN OBJECT obj
+
+        grid . user_info [ DATE_POS, grid_row ] =
+            SELECT sqcwin_point . point_date IN OBJECT obj
+
+        grid . user_info [ GROUP_POS, grid_row ] =
+            STRIP ( SELECT sqcwin_point . point_name IN OBJECT obj )
+
+        grid . user_info [ VALUE_POS, grid_row ] =
+            SELECT sqcwin_point . point_value IN OBJECT obj
+
+        grid . user_info [ SAMPLE_ID_POS, grid_row ] =
+            SELECT sqcwin_point . sample_id IN OBJECT obj
+
+        grid . user_info [ REP_POS, grid_row ] =
+            SELECT sqcwin_point . replicate_number IN OBJECT obj
+
+        grid . user_info [ BAD_POS, grid_row ] =
+            SELECT sqcwin_point . bad IN OBJECT obj
+
+        grid . user_info [ COMMENT_POS, grid_row ] =
+            SELECT sqcwin_point . comments IN OBJECT obj
+
+        IF ( grid_row = 1 ) THEN
+
+            form . user_info [ DATE_POS ] =
+            SELECT sqcwin_point . point_date IN OBJECT obj
+
+            form . user_info [ GROUP_POS ] =
+            SELECT sqcwin_point . point_name IN OBJECT obj
+
+            form . user_info [ VALUE_POS ] =
+            SELECT sqcwin_point . point_value IN OBJECT obj
+
+            form . user_info [ SAMPLE_ID_POS ] =
+            SELECT sqcwin_point . sample_id IN OBJECT obj
+
+            form . user_info [ REP_POS ] =
+            SELECT sqcwin_point . replicate_number IN OBJECT obj
+
+            form . user_info [ BAD_POS ] =
+            SELECT sqcwin_point . bad IN OBJECT obj
+
+            form . user_info [ COMMENT_POS ] =
+            SELECT sqcwin_point . comments IN OBJECT obj
+
+        ENDIF
+
+        grid_row = grid_row + 1
+
+        ENDIF
+
+        pos = pos + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE read_from_form ( sqc_chart , form )
+
+{ 
+* Takes the information from the form and writes it to sqc_point and sqc_header
+* 
+* 
+*
+* Parameters   : sqc_chart, form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE obj, grid_row, grid
+
+    grid_row = 1
+
+    grid = form . prompt_objects [ 1 ]
+
+    WHILE ( grid_row <= grid . cell_rows ) DO
+
+        IF ( grid_row > sqc_chart . sqc_point . size ( ) ) THEN
+
+        add_new_record ( sqc_chart . sqc_point, grid_row )
+
+        ENDIF
+
+        obj = sqc_chart . sqc_point . get_by_number ( grid_row )
+
+        ASSIGN sqcwin_point . point_date IN OBJECT obj =
+        grid . user_info [ DATE_POS, grid_row ]
+
+        ASSIGN sqcwin_point . point_name IN OBJECT obj =
+        grid . user_info [ GROUP_POS, grid_row ]
+
+        ASSIGN sqcwin_point . sample_id IN OBJECT obj =
+        grid . user_info [ SAMPLE_ID_POS, grid_row ]
+
+        ASSIGN sqcwin_point . replicate_number IN OBJECT obj =
+        grid . user_info [ REP_POS, grid_row ]
+
+        ASSIGN sqcwin_point . bad IN OBJECT obj =
+        grid . user_info [ BAD_POS, grid_row ]
+
+        ASSIGN sqcwin_point . comments IN OBJECT obj =
+        grid . user_info [ COMMENT_POS, grid_row ]
+
+        IF  obj . deleted THEN
+
+        obj . undelete ( )
+
+        ENDIF
+
+        grid_row = grid_row + 1
+
+    ENDWHILE
+
+    IF ( grid_row <= sqc_chart . sqc_point . size ( ) ) THEN
+
+        mark_rest_as_deleted ( sqc_chart . sqc_point , grid_row )
+
+    ENDIF
+
+    obj = sqc_chart . sqc_header . get_by_number ( 1 )
+
+    ASSIGN sqcwin_header . decimal_places IN OBJECT obj =
+        form . prompt_objects [ 5 ] . value
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copy_removed_row ( form, grid )
+
+{ 
+* Copy user removed row in case it is inserted later
+* 
+* 
+*
+* Parameters   : form, grid
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE cur_row
+
+    cur_row = grid . current_row
+
+    form . user_info [ DATE_POS ] =
+        grid . user_info [ DATE_POS, cur_row ]
+
+    form . user_info [ GROUP_POS ] =
+        grid . user_info [ GROUP_POS , cur_row ]
+
+    form . user_info [ VALUE_POS ] =
+        grid . user_info [ VALUE_POS , cur_row ]
+
+    form . user_info [ SAMPLE_ID_POS ] =
+        grid . user_info [ SAMPLE_ID_POS , cur_row ]
+
+    form . user_info [ REP_POS ] =
+        grid . user_info [ REP_POS , cur_row ]
+
+    form . user_info [ BAD_POS ] =
+        grid . user_info [ BAD_POS , cur_row ]
+
+    form . user_info [ COMMENT_POS ] =
+        grid . user_info [ COMMENT_POS , cur_row ]
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE insert_removed_row ( form, grid, VALUE cur_row )
+
+{ 
+* Insert previously removed row
+* 
+* 
+*
+* Parameters   : form, grid, cur_row
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    grid . user_info [ DATE_POS, cur_row ] =
+        form . user_info [ DATE_POS ]
+
+    grid . user_info [ GROUP_POS , cur_row ] =
+        form . user_info [ GROUP_POS ]
+
+    grid . user_info [ VALUE_POS , cur_row ] =
+        form . user_info [ VALUE_POS ]
+
+    grid . user_info [ SAMPLE_ID_POS , cur_row ] =
+        form . user_info [ SAMPLE_ID_POS ]
+
+    grid . user_info [ REP_POS , cur_row ] =
+        form . user_info [ REP_POS ]
+
+    grid . user_info [ BAD_POS , cur_row ] =
+        form . user_info [ BAD_POS ]
+
+    grid . user_info [ COMMENT_POS , cur_row ] =
+        form . user_info [ COMMENT_POS ]
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE mark_rest_as_deleted ( sqc_point , pos )
+
+{ 
+* Mark records from pos to last record as deleted
+* 
+* 
+*
+* Parameters   : sqc_point, pos
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE obj
+
+    WHILE ( pos <= sqc_point . size ( ) ) DO
+
+        obj = sqc_point . get_by_number ( pos )
+        obj . delete ( )
+
+        pos = pos + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE sqc_print_data ( sqc_hdr, user_info )
+
+{ 
+* Main printing routine.
+* 
+* 
+*
+* Parameters   : sqc_hdr, user_info
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    print_header_info ( sqc_hdr, user_info )
+    {Stuff to be printed here depending on certain conditions}
+    print_title_line()
+    print_data_values( user_info )
+
+    FLUSH_LITERAL
+
+ENDROUTINE
+
+{ 
+* Print header info
+* 
+* 
+*
+* Parameters   : sqc_hdr, user_info
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE print_header_info ( sqc_hdr, user_info )
+
+DECLARE col_width, rec_id, chart_id, st_title, st_chart, st_date, vr_date 
+
+    col_width = 22
+
+    rec_id   = sqc_hdr . get_by_number (1)
+    chart_id = SELECT sqcwin_header . identifier IN OBJECT rec_id
+
+    st_title = USER_TITLE
+
+    st_chart = GET_USER_MESSAGE("SQCWIN_PRINT_T_1" ,1)
+    st_date  = GET_USER_MESSAGE("SQCWIN_PRINT_T_2" ,1)
+    vr_date  = NOW
+
+    output_hdr( st_title )
+    output_hdr( " " )
+    output_hdr( PAD( st_chart, " ", col_width) : chart_id )
+    output_hdr( PAD( st_date , " ", col_width) : vr_date )
+
+ENDROUTINE
+
+{ 
+* Print data values
+* 
+* 
+*
+* Parameters   : user_info
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE print_data_values ( user_info )
+
+DECLARE row, op_line
+
+    row = 1
+
+    WHILE ( user_info[2, row] <> EMPTY ) DO
+
+        op_line = PAD ( STRIP(STRING( row )), " ", 5 )
+
+        op_line = op_line : " " : LEFTSTRING( user_info[DATE_POS, row], 17 )
+
+        op_line = op_line : " " : PAD( user_info[GROUP_POS, row], " ", 10 )
+
+        op_line = op_line : " " : STRIP( STRING( user_info[VALUE_POS, row] ) )
+
+        op_line = op_line : "  " : JUSTIFY(STRING( user_info[SAMPLE_ID_POS, row] ), "LEFT")
+
+        op_line = op_line : " " : PAD(STRIP(STRING(user_info[REP_POS, row]))," ", 2 )
+
+        op_line = op_line : " " : user_info[COMMENT_POS, row]
+
+        output_hdr( op_line )
+
+        row = row + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{ 
+* Print title line
+* 
+* 
+*
+* Parameters   : 
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE print_title_line
+
+    DECLARE st_title_1, st_line_1, st_title_2, st_line_2
+
+    st_title_1 = GET_USER_MESSAGE("SQCWIN_PRINT_TOP_1" ,1)
+    st_line_1  = "      ----------------- ---------- -----"
+    st_title_2 = GET_USER_MESSAGE("SQCWIN_PRINT_TOP_2" ,1)
+    st_line_2  = "  --------- --- -------"
+
+    output_hdr( " " )
+    output_hdr( st_title_1 : st_title_2 )
+    output_hdr( st_line_1  : st_line_2  )
+
+ENDROUTINE
+
+{ 
+* Output header
+* 
+* 
+*
+* Parameters   : output_line
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE output_hdr ( VALUE output_line )
+
+    LITERAL
+$output_line___________________________________________________________________
+$ENDLITERAL
+
+ENDROUTINE
+
+{ 
+* Main data export routine
+* 
+* 
+*
+* Parameters   : field_list, value_array, value_rows
+* Return Value : n/a
+*
+*******************************************************************************}
+
+GLOBAL ROUTINE sqc_data_exp( field_list, value_array, value_rows )
+
+DECLARE the_form, client_file, found_app_object, application_name,
+            application_object
+
+    export_data_class_initialise()
+
+    CREATE OBJECT SQC_DATA_EXP_CLASS, the_form
+
+    the_form.start_prompt()
+    the_form.wait_prompt()
+
+    IF the_form . get_lastkey() = "DO" THEN
+
+        application_name = the_form . prompt_objects [1] . value
+
+        found_app_object = find_routine ( the_form . dest_list ,
+                                          application_name     ,
+                                          application_object   )
+
+        IF found_app_object THEN
+
+            write_array_to_csv ( value_array                        ,
+                                 field_list                         ,
+                                 the_form                           ,
+                                 application_object . tab_separated ,
+                                 client_file                        ,
+                                 value_rows                         )
+
+        ENDIF
+
+    ENDIF
+
+    the_form . end_prompt()
+
+ENDROUTINE
+
+{ 
+* Finds the routine and library for the application
+* 
+* 
+*
+* Parameters   : dest_list, application_name, application_object
+* Return Value : found
+*
+*******************************************************************************}
+
+ROUTINE find_routine ( dest_list           ,
+                 VALUE application_name    ,
+                       application_object  )
+
+DECLARE found
+
+    found =  dest_list . fetch ( application_name   ,
+                                 application_object )
+    RETURN ( found )
+
+ENDROUTINE
+
+
+
+{ 
+* Routine to start an instance of the export_data class
+* 
+* 
+*
+* Parameters   : n/a
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE export_data_class_initialise
+
+    IF NOT ( GLOBAL ( "LIBRARY_INITIALISED" ) ) THEN
+
+        export_data_class_declare ( )
+        SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+    ENDIF
+
+ENDROUTINE
+
+
+
+{ 
+* Definition of the export_data class
+* 
+* 
+*
+* Parameters   : n/a
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE export_data_class_declare
+
+    DEFINE CLASS SQC_DATA_EXP_CLASS
+
+        INHERIT PROMPT_CLASS_FORM
+
+        ACTIONS    "SELECT"
+
+        PROPERTIES "DEST_LIST"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+
+
+{ 
+* export_data class initialisation routine
+* 
+* 
+*
+* Parameters   : n/a
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE export_data_class_initialisation ( self )
+
+DECLARE output_array, prompt_text_start, prompt_text_width,
+        prompt_text_length, display_object, prompt_object
+
+    ARRAY output_array ARRAY_SIZE ( 0, 2 )
+
+    app_class_initialise ()
+
+    CREATE OBJECT APPLICATION_LIST_CLASS , self . dest_list
+
+    reporter_stan_add_options ( self . dest_list )
+
+    reporter_user_add_options ( self . dest_list )
+
+    setup_output_applications ( output_array     ,
+                                self . dest_list )
+    prompt_text_start  = 2
+    prompt_text_width  = 20
+    prompt_text_length = 25
+
+    self . height             =  6
+    self . width              = prompt_text_width + 40
+    self . row                = 10
+    self . column             = ( GLOBAL ( "SCREEN_WIDTH" ) - self . width ) / 2
+    self . border             = TRUE
+    self . header             = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_19", 1 )
+    self . footer             = ""
+    self . confirm_required   = FALSE
+    self . return_behaviour   = FORM_RETURN_WRAP
+    self . help_context       = "$REPORTER_FORM_PROMPT"
+    self . proportional       = TRUE
+    self . validation_routine = "validate_prompts"
+    self . button_style       = FORM_BUTTON_NONE
+
+    PROMPT OBJECT display_object
+        FORMAT TEXT
+        AT prompt_text_start , 1
+        WITH ( bold              = TRUE                 ,
+               length            = prompt_text_width    ,
+               raised            = TRUE                 ,
+               foreground_colour = PROMPT_COLOUR_BLACK  ,
+               value             = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_20", 1) )
+
+    self . add_display ( display_object )
+
+    PROMPT OBJECT prompt_object
+             CHOOSE OUTOF output_array
+        ON LINE 1 FROM ( prompt_text_start + prompt_text_width + 2 )
+        WITH ( lowered            = TRUE                    ,
+               width              = prompt_text_length      ,
+               foreground_colour  = PROMPT_COLOUR_BLACK     )
+
+    self . add_prompt ( prompt_object )
+
+    PROMPT OBJECT display_object
+        FORMAT TEXT
+        AT prompt_text_start , 2
+        WITH ( bold              = TRUE                ,
+               length            = prompt_text_width   ,
+               raised            = TRUE                ,
+               foreground_colour = PROMPT_COLOUR_BLACK ,
+               value             = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_21", 1) )
+
+    self . add_display ( display_object )
+
+    PROMPT OBJECT prompt_object
+        FORMAT TEXT20
+        ON LINE 2 FROM ( prompt_text_start + prompt_text_width + 2 )
+        WITH ( length               = prompt_text_length       ,
+               width                = prompt_text_length       ,
+               validation_routine   = "FILE_NAME_VALIDATION"   ,
+               browse_routine       = "FILE_NAME_BROWSE"       ,
+               lowered              = TRUE                     ,
+               value                = "C:\SQC_DATA.CSV"        ,
+               foreground_colour    = PROMPT_COLOUR_BLACK      )
+
+    self . add_prompt ( prompt_object )
+
+    self . add_frame ( ""        ,
+           prompt_text_start -1  ,
+           1                     ,
+           self . height     -4  ,
+           self . width      -2  )
+
+    add_control_buttons ( self )
+
+ENDROUTINE
+
+{ 
+* Prompt validation routine
+* 
+* 
+*
+* Parameters   : self
+* Return Value : valid
+*
+*******************************************************************************}
+
+ROUTINE validate_prompts ( self )
+
+DECLARE valid
+
+    IF ( self . get_lastkey ( ) = "EXIT" ) THEN
+
+        valid = TRUE
+
+    ELSEIF BLANK ( self . prompt_objects [ 1 ] . value ) OR
+           BLANK ( self . prompt_objects [ 2 ] . value ) THEN
+
+        valid = FALSE
+
+    ELSE
+
+        valid = TRUE
+
+    ENDIF
+
+    RETURN ( valid )
+
+ENDROUTINE
+
+{ 
+* Add control buttons
+* 
+* 
+*
+* Parameters   : the_form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE add_control_buttons ( the_form )
+
+DECLARE button, row, start_column, button_width ,number_buttons
+
+
+    number_buttons = 3
+    button_width   = 12
+
+    row = the_form . height - 1
+
+    start_column = ( ( the_form . width / number_buttons ) - button_width ) / 2
+
+    PROMPT OBJECT button
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE row
+        FROM    start_column
+        TO      start_column + button_width
+        WITH ( caption      = GET_USER_MESSAGE ( "SQCWIN_BUT_EXPORT", 1 ) ,
+               enabled      = TRUE         ,
+               send_lastkey = "DO"         )
+
+    the_form . add_prompt ( button )
+
+    start_column = start_column + ( the_form . width / number_buttons )
+
+    PROMPT OBJECT button
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE row
+        FROM    start_column
+        TO      start_column + button_width
+        WITH ( caption      = GET_USER_MESSAGE ( "SQCWIN_BUT_HELP", 1 ) ,
+               enabled      = TRUE         ,
+               send_lastkey = "HELP"       )
+
+    the_form . add_prompt ( button )
+
+    start_column = start_column + ( the_form . width / number_buttons )
+
+    PROMPT OBJECT button
+        CLASS "STD_PROMPT_BUTTON"
+        ON LINE row
+        FROM    start_column
+        TO      start_column + button_width
+        WITH ( caption      = GET_USER_MESSAGE ( "SQCWIN_BUT_CLOSE", 1 ) ,
+               enabled = TRUE         ,
+               send_lastkey = "EXIT"  )
+
+    the_form . add_prompt ( button )
+
+ENDROUTINE
+
+{ 
+* application_list class definition
+* 
+* 
+*
+* Parameters   : n/a
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE app_class_initialise
+
+    DEFINE CLASS APPLICATION_LIST_CLASS
+
+        PROPERTIES
+
+            "total"        ,
+            "destinations"
+
+        ACTIONS
+
+            "add"   ,
+            "fetch"
+
+        INITIALISATION
+
+    END CLASS
+
+
+    DEFINE CLASS APPLICATION_CLASS
+
+        PROPERTIES
+
+            "name"             ,
+            "prompt_text"      ,
+            "library"          ,
+            "output_routine"   ,
+            "tab_separated"
+
+        INITIALISATION
+
+    END CLASS
+
+ENDROUTINE
+
+
+{ 
+* application_list class initialisation routine
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE application_list_class_initialisation ( self )
+
+    ARRAY self . destinations
+    self . total = 0
+
+ENDROUTINE
+
+
+{ 
+* application_list class add action definition
+* 
+* 
+*
+* Parameters   : self, destination
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE application_list_action_add ( self        ,
+                                      destination )
+    self . total = self . total + 1
+    self . destinations [ self . total ] = destination
+
+ENDROUTINE
+
+{ 
+* application_list class fetch action definition
+* 
+* Fetches a destination object fromt eh destination list. Will return
+* FALSE if the destination is not valid
+*
+* Parameters   : self, destination_name, destination
+* Return Value : return_value
+*
+*******************************************************************************}
+
+ROUTINE application_list_action_fetch ( self             ,
+                                  VALUE destination_name ,
+                                        destination      )
+
+DECLARE return_value , count
+
+    count = 1
+    return_value = FALSE
+
+    WHILE ( count <= self . total ) DO
+
+        IF ( TOUPPER ( destination_name ) =
+             TOUPPER ( self . destinations [ count ] . name ) ) THEN
+
+            return_value = TRUE
+            destination = self . destinations [ count ]
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{ 
+* application class initialisation routine
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE application_class_initialisation ( self )
+
+    self . name             = ""
+    self . prompt_text      = ""
+    self . library          = ""
+    self . output_routine   = EMPTY
+    self . tab_separated    = FALSE
+
+ENDROUTINE
+
+{ 
+* File name prompt validation routine. Ensures format is *.*
+* 
+* 
+*
+* Parameters   : self
+* Return Value : return_value
+*
+*******************************************************************************}
+
+ROUTINE file_name_validation ( self )
+
+DECLARE client_new_filename, found, count, return_value
+
+    client_new_filename =  StripFileName ( self . text )
+
+    found = INDEX( client_new_filename, "." )
+
+    count = 0
+    return_value = FALSE
+
+    WHILE found <> 0 DO
+
+        client_new_filename = RIGHTSTRING ( client_new_filename,
+                              LENGTH ( client_new_filename ) - found )
+
+        count = count + 1
+
+        found = INDEX( client_new_filename, "." )
+
+    ENDWHILE
+
+    IF count = 1 THEN
+
+        return_value = TRUE
+
+    ELSE
+
+        flash_message ( GET_USER_MESSAGE ( "REPORTER_INVALID_FILE" , 1 ) , TRUE)
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{ 
+* File name browse routine
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE file_name_browse( self )
+
+DECLARE client_new_filename, client_file_dir,
+        client_file_filter, client_file_title, client_file_help,
+        client_file
+
+    client_new_filename = StripFileName ( self . text )
+
+    client_file_dir = LEFTSTRING ( self . text, LENGTH ( self . text ) -
+                      LENGTH ( client_new_filename ) )
+
+    client_file_filter = GET_USER_MESSAGE ( "REPORTER_FILE_FILTER" , 1 )
+    client_file_title  = GET_USER_MESSAGE ( "REPORTER_FILE_TITLE" , 1 )
+    client_file_help   = " "
+
+    client_file = client_find_file ( FALSE               ,
+                                     client_new_filename ,
+                                     client_file_dir     ,
+                                     client_file_filter  ,
+                                     client_file_title   ,
+                                     client_file_help    )
+
+    IF client_file <> EMPTY THEN
+
+        self . text = client_file
+        self . repaste ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{ 
+* Get file name routine
+* 
+* 
+*
+* Parameters   : client_file
+* Return Value : client_file
+*
+*******************************************************************************}
+
+ROUTINE  StripFileName ( VALUE client_file )
+
+DECLARE found
+
+    found = INDEX( client_file, "\" )
+
+    WHILE found <> 0 DO
+
+        client_file = RIGHTSTRING ( client_file,
+            LENGTH ( client_file ) - found )
+
+        found = INDEX( client_file, "\" )
+
+    ENDWHILE
+
+    RETURN ( client_file )
+
+ENDROUTINE
+
+{ 
+* Set output applications
+* 
+* 
+*
+* Parameters   : output_array, dest_list
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE setup_output_applications ( output_array, dest_list    )
+
+DECLARE loop, count
+
+    loop  = 1
+    count = 0
+
+    WHILE loop <= size_of_array ( dest_list . destinations ) DO
+
+       count = count + 1
+
+       output_array [count, 1] = dest_list . destinations [ loop ] . prompt_text
+       output_array [count, 2] = dest_list . destinations [ loop ] . name
+
+       loop = loop + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{ 
+* Write array to csv file
+* 
+* 
+*
+* Parameters   : value_array, field_list, the_form, is_tab, 
+*                client_file, value_rows
+* Return Value : BOOLEAN
+*
+*******************************************************************************}
+
+ROUTINE write_array_to_csv ( value_array  ,
+                             field_list   ,
+                             the_form     ,
+                             VALUE is_tab ,
+                             client_file  ,
+                             value_rows   )
+
+DECLARE row , output_line , status, server_file
+
+    server_file = "REPORTER" : STRIP( GLOBAL( "PROCESS_ID" ) )
+    server_file = "SMP$TEXTREPORTS:" : server_file : ".CSV"
+    client_file = the_form . prompt_objects [2] . value
+
+    FILE CREATE server_file , status
+
+    IF ( status = EMPTY ) THEN
+
+        write_title_line ( field_list  ,
+                           the_form    ,
+                           is_tab      ,
+                           output_line )
+
+        FILE WRITE server_file , output_line , status
+
+    ENDIF
+
+    row = 1
+
+    WHILE ( row <= value_rows ) AND
+          ( status = EMPTY ) DO
+
+        write_record ( value_array ,
+                       the_form    ,
+                       is_tab      ,
+                       output_line ,
+                       row         )
+
+        FILE WRITE server_file , output_line , status
+
+        row = row + 1
+
+    ENDWHILE
+
+    IF ( status <> EMPTY ) THEN
+
+        flash_message ( status , TRUE )
+
+    ELSE
+
+        FILE CLOSE server_file , status
+
+        IF status = EMPTY THEN
+
+            status = transfer_from_server ( server_file, client_file )
+            IF status = EMPTY THEN
+
+                FILE DELETE server_file , status
+
+                IF ( status <> EMPTY ) THEN
+                    flash_message ( status , TRUE )
+                ENDIF
+
+            ELSE
+
+                flash_message (GET_USER_MESSAGE ("REPORTER_TRANSFER_ERROR" ,1),
+                               TRUE )
+
+            ENDIF
+
+        ELSE
+
+            flash_message ( status , TRUE )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( status = EMPTY )
+
+ENDROUTINE
+
+
+
+{ 
+* Write title line
+* 
+* 
+*
+* Parameters   : field_list, the_form, is_tab, output_line
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE write_title_line ( field_list ,
+                           the_form   ,
+                     VALUE is_tab     ,
+                           output_line )
+
+DECLARE delimiter, field_title, loop, first
+
+    IF is_tab THEN
+
+        delimiter = CHR ( 09 )
+
+    ELSE
+
+        delimiter = ","
+
+    ENDIF
+
+    loop  = 1
+    first = TRUE
+
+    WHILE loop <= size_of_array(field_list) DO
+
+        field_title = field_list[loop]
+
+        IF is_tab THEN
+
+            field_title = PAD ( STRIP ( field_title ), " ", 20 )
+                              {the_form . field_width [ loop ] )}
+
+        ENDIF
+
+        IF first THEN
+
+            output_line = field_title
+            first = FALSE
+
+        ELSE
+
+            output_line = output_line :
+                          delimiter :
+                          field_title
+        ENDIF
+
+        loop = loop + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+
+
+{ 
+* Write record
+* 
+* 
+*
+* Parameters   : value_array, the_form, is_tab, output_line, row
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE write_record ( value_array ,
+                       the_form    ,
+                 VALUE is_tab      ,
+                       output_line ,
+                       VALUE row   )
+
+DECLARE delimiter, field_value, loop, first, count
+
+    IF is_tab THEN
+
+        delimiter = CHR ( 09 )
+
+    ELSE
+
+        delimiter = ","
+
+    ENDIF
+
+    loop  = 1
+    first = TRUE
+    count = 0
+
+    WHILE loop <= size_of_array ( value_array ) DO
+
+       count = count + 1
+
+       field_value = value_array[count,row]
+
+       IF is_tab THEN
+
+          field_value = PAD ( STRIP ( field_value ), " ", 30 )
+
+       ENDIF
+
+       IF first THEN
+
+          output_line = field_value
+          first = FALSE
+
+       ELSE
+
+          output_line = output_line :
+                        delimiter :
+                        field_value
+
+       ENDIF
+
+       loop = loop + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{ 
+* Update decimal places
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE update_decimal_places ( self )
+
+    IF ( self . original_text <> self . text ) THEN
+
+        reset_format ( self . text )
+        self . parent_prompt . prompt_objects [ 1 ] . redisplay_contents ( )
+
+    ENDIF
+
+ENDROUTINE
+
+{ 
+* Reselect sqcpoint data
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+GLOBAL ROUTINE reselect_data ( sqc_chart )
+
+DECLARE result_data_set, data_sel
+
+    sqc_chart . sqc_header . set_by_number ( 1 )
+
+    data_sel = object_select_field ( sqc_chart . sqc_header . current,
+                                     "SQCWIN_HEADER"                 ,
+                                     "DATA_SELECTION"                )
+
+    IF data_sel THEN
+
+        result_data_set = get_samp_test_result_data ( sqc_chart )
+        change_to_sqcpoint_table ( result_data_set, sqc_chart )
+
+    ENDIF
+
+ENDROUTINE
+
+
+
+{ 
+* get criteria
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : return_val
+*
+*******************************************************************************}
+
+GLOBAL ROUTINE sqcwin_get_criteria  ( sqc_chart )
+
+
+DECLARE form, text_one,text_two, text_three, text_four, prompt_one, prompt_two, 
+        prompt_three, prompt_four, return_val, not_exiting, active_data, 
+        com_data, simple_crit, advanced_crit, criteria_text, basic_prompt_width
+
+
+    return_val = FALSE
+    not_exiting = TRUE
+
+    create_sqc_form( form )
+    form.button_style=FORM_BUTTON_NONE
+    form.border = TRUE
+    form.header = GET_USER_MESSAGE( "SQCWIN_DATA_FORM_HEAD", 1 )
+    form . return_behaviour = FORM_RETURN_STAY
+    form.user_info=sqc_chart
+
+    PROMPT OBJECT text_one
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 4
+        BOLD
+        WITH ( raised = TRUE ,
+           value = 
+           GET_USER_MESSAGE( "SQCWIN_DATA_ANAL_PROMPT", 1 ) )
+
+    text_one . width = 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_COMP_PROMPT", 1 ) )
+
+    basic_prompt_width = text_one . width
+
+    text_one . column = ( 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_SIMPLE_CRIT", 1 ) ) + 5 )
+
+    PROMPT OBJECT text_two
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 5 FROM 2
+        BOLD
+        WITH ( raised = TRUE,
+           value = 
+           GET_USER_MESSAGE( "SQCWIN_DATA_COMP_PROMPT", 1 ) )
+
+    text_two . width = 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_COMP_PROMPT", 1 ) )
+
+    IF ( text_two . width > basic_prompt_width ) THEN
+
+        basic_prompt_width = text_two . width 
+
+    ENDIF
+
+    text_two . column = ( 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_SIMPLE_CRIT", 1 ) ) + 5 )
+    
+
+    PROMPT OBJECT text_three
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 6 FROM 2
+        BOLD
+        WITH ( raised = TRUE,
+           value = 
+           GET_USER_MESSAGE( "SQCWIN_DATA_RES_TYPE_PROMPT", 1 ) )
+
+    text_three . width = 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_RES_TYPE_PROMPT", 1 ) )
+
+    IF ( text_three . width > basic_prompt_width ) THEN
+
+        basic_prompt_width = text_three . width 
+
+    ENDIF
+
+    text_three . column = ( 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_SIMPLE_CRIT", 1 ) ) + 5 )
+    
+    PROMPT OBJECT text_four
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 7 FROM 2
+        BOLD
+        WITH ( raised = TRUE,
+           value = 
+           GET_USER_MESSAGE( "SQCWIN_DATA_PRODUCT_PROMPT", 1 ) )
+
+    text_four . width = 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_PRODUCT_PROMPT", 1 ) )
+
+    IF ( text_four . width > basic_prompt_width ) THEN
+
+        basic_prompt_width = text_four . width 
+
+    ENDIF
+
+    text_four . column = ( 
+    STRINGLENGTH( GET_USER_MESSAGE( "SQCWIN_DATA_SIMPLE_CRIT", 1 ) ) + 5 )
+    
+    PROMPT OBJECT prompt_one
+        ON LINE 4 FROM ( text_two . column + basic_prompt_width )
+        BROWSE ON versioned_analysis . identity
+        WITH( value = get_selection_field( "ANALYSIS", sqc_chart . selection_criteria ) ,
+              user_info = "analysis_prompt" )
+
+    prompt_one . width = 20
+
+    PROMPT OBJECT prompt_two
+        ON LINE 5 FROM ( text_two . column + basic_prompt_width )
+        BROWSE ON versioned_component . name
+        WITH( value = get_selection_field( "COMPONENT_NAME", sqc_chart . selection_criteria ) ,
+              enter_prompt_routine = "set_mand_array"                                         ,
+              user_info = "component_prompt"                                                  )
+
+    prompt_two . width = 20
+
+    PROMPT OBJECT prompt_three
+        ON LINE 6 FROM ( text_three . column + basic_prompt_width )
+        BROWSE ON VALID_PHRASE_ID.RES_TYPE
+        WITH( value = get_selection_field( "RESULT_TYPE", sqc_chart . selection_criteria ) ,
+              user_info = "res_type_prompt" )
+
+    prompt_three . width = 20
+
+    PROMPT OBJECT prompt_four
+        ON LINE 7 FROM ( text_four . column + basic_prompt_width )
+        BROWSE ON mlp_header . identity
+        WITH( value = get_selection_field( "PRODUCT", sqc_chart . selection_criteria ) ,
+              user_info = "product_prompt" )
+
+    prompt_four . width = 20
+
+    add_criteria_buttons( form )
+
+
+    form . add_frame( GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_5", 1 ) ,
+                      1                                           ,
+              0                                           ,
+              0                                           ,
+              form . width                                )
+
+    PROMPT OBJECT active_data
+           FORMAT boolean
+        ON LINE 1
+        WITH ( is_check  = TRUE         ,
+               caption = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_1", 1 ) )
+
+    active_data . column = 
+    ( STRINGLENGTH( GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_5", 1 ) ) + 5 )
+    active_data . width = STRINGLENGTH( GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_1", 1 ) )
+
+
+    PROMPT OBJECT com_data
+           FORMAT boolean
+        ON LINE 1
+        WITH ( is_check  = TRUE         ,
+               caption = GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_2", 1 ) )
+
+    com_data . column = ( ( active_data . width ) + ( active_data . width ) + 15 ) 
+
+    IF( sqc_chart . database_type = ACTIVE_DATABASE ) THEN
+
+        active_data . value = TRUE
+        com_data    . value = FALSE
+
+    ELSEIF( sqc_chart . database_type = COMMIT_DATABASE ) THEN
+
+        active_data . value = FALSE
+        com_data    . value = TRUE
+
+    ELSEIF( sqc_chart . database_type = BOTH_DATABASE ) THEN
+
+        active_data . value = TRUE
+        com_data    . value = TRUE
+
+    ENDIF
+    form . add_prompt( active_data )
+    form . add_prompt( com_data )
+
+
+    form.add_display(text_one)
+    form.add_display(text_two)
+    form.add_display(text_three)
+    form.add_display(text_four)
+    form.add_prompt(prompt_one)
+    form.add_prompt(prompt_two)
+    form.add_prompt(prompt_three)
+    form.add_prompt(prompt_four)
+
+    form . add_frame( "" ,
+                      1                                                 ,
+              2                                                 ,
+              0                                                 ,
+              form . width                                      )
+
+
+    PROMPT OBJECT simple_crit
+           ON LINE 2 FROM 1
+           BROWSE ON boolean
+
+    simple_crit . is_radio = TRUE
+    simple_crit . toggled_routine = "select_simple_crit"
+    simple_crit . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+    simple_crit . user_info = "simple_crit"
+    simple_crit . caption = GET_USER_MESSAGE( "SQCWIN_DATA_SIMPLE_CRIT" , 1 )
+
+    form . add_prompt( simple_crit )
+
+    
+    form . add_frame( "" ,
+                      1                                                 ,
+              8                                                 ,
+              0                                                 ,
+              form . width                                      )
+
+    PROMPT OBJECT advanced_crit
+           ON LINE 8 FROM 1
+           BROWSE ON boolean
+
+    advanced_crit . is_radio = TRUE
+    advanced_crit . toggled_routine = "select_advanced_crit"
+    advanced_crit . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+    advanced_crit . user_info = "advanced_crit"
+    advanced_crit . caption = GET_USER_MESSAGE ( "SQCWIN_DATA_ADVANCED_CRIT", 1 ) 
+
+    form . add_prompt( advanced_crit )
+
+    PROMPT OBJECT criteria_text
+        CLASS "STD_PROMPT_TEXT"
+        ON LINE 10 FROM 3
+        WITH ( value = ""                  , 
+               user_info = "criteria_text" ,
+               display_only = TRUE         ,
+               lowered = TRUE              ) 
+
+    criteria_text . height = ( form . height - criteria_text . row - 3 )
+
+    criteria_text . width = form . width * 0.75
+
+    form . add_prompt( criteria_text )
+
+    form . start_prompt()
+
+    
+    IF ( criteria_is_basic( sqc_chart . selection_criteria ) ) THEN
+
+        simple_crit . value = TRUE
+        simple_crit . set_text( simple_crit . value )
+        select_simple_crit( simple_crit )
+
+    ELSE
+    
+        advanced_crit . value = TRUE
+        advanced_crit . set_text( advanced_crit . value )
+        select_advanced_crit( advanced_crit )
+
+    ENDIF
+
+    WHILE (not_exiting) DO
+
+        form.wait_prompt()
+
+        IF ( LASTKEY = "EXIT" ) THEN
+
+            IF ( sqc_chart . ok_button_only ) OR
+               ( confirm_with_text(
+                 GET_USER_MESSAGE("SQCWIN_MAIN_CONF_4",1)) ) THEN
+
+                sqc_chart . next_screen = "EXIT"
+                not_exiting = FALSE
+                return_val = TRUE
+
+            ENDIF
+
+        ELSEIF ( sqc_chart . next_screen = "EXIT") THEN
+
+            not_exiting = FALSE
+
+        ELSEIF (GLOBAL ("lastkey")="RIGHT") THEN
+
+            
+            IF ( simple_crit . value ) THEN
+            
+                build_basic_selection_criteria( 
+                    sqc_chart . selection_criteria , 
+                    prompt_one . value             ,
+                    prompt_two . value             ,
+                    prompt_three . value           ,
+                    prompt_four . value            )
+
+            ENDIF
+
+            IF ( ( active_data . value )   AND
+                 ( com_data . value    ) ) THEN
+
+                sqc_chart . database_type = BOTH_DATABASE
+
+                IF validate_selection_criteria ( sqc_chart . selection_criteria ) THEN
+
+                    not_exiting = FALSE
+                    return_val = TRUE
+
+                ENDIF
+
+            ELSEIF ( com_data . value ) THEN
+
+                sqc_chart . database_type = COMMIT_DATABASE
+
+                IF validate_selection_criteria ( sqc_chart . selection_criteria ) THEN
+
+                    not_exiting = FALSE
+                    return_val = TRUE
+
+                ENDIF
+
+            ELSEIF ( active_data . value ) THEN
+
+                sqc_chart . database_type = ACTIVE_DATABASE
+
+                IF validate_selection_criteria ( sqc_chart . selection_criteria ) THEN
+
+                    not_exiting = FALSE
+                    return_val = TRUE
+
+                ENDIF
+
+            ELSE
+
+                flash_message( 
+                GET_USER_MESSAGE ( "SQCWIN_DATA_DIS_3", 1 ), TRUE )
+
+            ENDIF
+
+        ELSEIF( GLOBAL ( "lastkey" ) = "LEFT" ) THEN
+
+            not_exiting = FALSE
+            return_val = TRUE
+            sqc_chart . next_screen = "HEAD"
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN( return_val )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE select_simple_crit( self )
+
+{ 
+* Toggle routine called on selecting the simple criteria option.
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE advanced_crit, analysis_prompt, component_prompt, res_type_prompt,
+        product_prompt, advanced_button, selection_crit, crit_display_prompt
+    selection_crit  = self . parent_prompt . user_info . selection_criteria
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "advanced_crit", advanced_crit        )
+
+    advanced_crit . set_text( NOT  self . value )
+
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "analysis_prompt", analysis_prompt    )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "component_prompt", component_prompt        )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "res_type_prompt", res_type_prompt        )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "product_prompt", product_prompt        )
+
+    analysis_prompt . set_enabled( TRUE )
+
+    analysis_prompt . value = 
+    get_selection_field( "ANALYSIS", selection_crit ) 
+    analysis_prompt . set_text( analysis_prompt . value )
+
+    component_prompt . set_enabled( TRUE )
+
+    component_prompt . value = 
+    get_selection_field( "COMPONENT_NAME", selection_crit ) 
+    component_prompt . set_text( component_prompt . value )
+
+    res_type_prompt . set_enabled( TRUE )
+
+    res_type_prompt . value = 
+    get_selection_field( "RESULT_TYPE", selection_crit ) 
+    res_type_prompt . set_text( res_type_prompt . value )
+
+    product_prompt . set_enabled( TRUE )
+
+    product_prompt . value = 
+    get_selection_field( "PRODUCT", selection_crit ) 
+    product_prompt . set_text( product_prompt . value )
+
+    build_basic_selection_criteria( 
+           self . parent_prompt . user_info . selection_criteria ,
+                                         analysis_prompt . value ,
+                                        component_prompt . value ,  
+                                             res_type_prompt . value ,
+                                              product_prompt . value )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "advanced_button", advanced_button    )
+
+    advanced_button . set_enabled( FALSE )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "criteria_text", crit_display_prompt  )
+
+    crit_display_prompt . set_text ("" )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE select_advanced_crit( self )
+
+{ 
+* Toggle routine called on selecting the advanced criteria option.
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE simple_crit, analysis_prompt, component_prompt, res_type_prompt, 
+        product_prompt, advanced_button
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "simple_crit", simple_crit        )
+
+    simple_crit . set_text( NOT  self . value )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "analysis_prompt", analysis_prompt    )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "component_prompt", component_prompt        )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "res_type_prompt", res_type_prompt        )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "product_prompt", product_prompt        )
+
+    analysis_prompt . set_enabled( FALSE )
+
+    component_prompt . set_enabled( FALSE )
+
+    res_type_prompt . set_enabled( FALSE )
+
+    product_prompt . set_enabled( FALSE )
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "advanced_button", advanced_button    )
+
+    advanced_button . set_enabled( TRUE )
+
+    display_criteria( self . parent_prompt,
+                      self . parent_prompt . user_info . selection_criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+
+
+{ 
+* Add criteria buttons
+* 
+* 
+*
+* Parameters   : form
+* Return Value : n/a
+*
+*******************************************************************************}
+
+ROUTINE add_criteria_buttons ( form )
+
+DECLARE button_one,button_two,button_three,button_four,
+    button_five, button_row
+
+        button_row= form . height - 1
+
+    IF ( form . user_info . ok_button_only = TRUE ) THEN
+
+        PROMPT OBJECT button_one
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row FROM 1 TO 13
+            WITH (  caption=GET_USER_MESSAGE ( "SQCWIN_BUT_OK", 1 ),
+                user_info="NEXT",
+                mouse_click_routine="button_press")
+
+        PROMPT OBJECT button_two
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row FROM form . width -26 TO form . width -14
+            WITH (caption=GET_USER_MESSAGE ( "SQCWIN_BUT_HELP", 1 ),
+                  send_lastkey="HELP",
+                  enabled=TRUE)
+
+        PROMPT OBJECT button_three
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row FROM form . width -12 TO form . width
+            WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_BUT_CANCEL", 1 ),
+                   user_info="EXIT"                  ,
+                   mouse_click_routine="button_press")
+
+        PROMPT OBJECT button_four
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 10
+            FROM form . width -12 TO form . width
+            WITH ( caption = 
+                   GET_USER_MESSAGE( "SQCWIN_DATA_ADVANCED_CRIT_BUTTON" , 1 ) ,
+                   mouse_click_routine="advanced_crit_routine"                ,
+                   user_info = "advanced_button"                              ) 
+
+        form.add_prompt(button_one)
+        form.add_prompt(button_two)
+        form.add_prompt(button_three)
+        form.add_prompt(button_four)
+
+    ELSE
+
+        PROMPT OBJECT button_one
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 1 TO 13
+            WITH (  caption = GET_USER_MESSAGE ( "SQCWIN_BUT_PREV", 1 ) ,
+                user_info="PREV",
+                mouse_click_routine="button_press")
+
+        PROMPT OBJECT button_two
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM 15 TO 27
+            WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_BUT_NEXT", 1 ) ,
+                   user_info = "NEXT"                                  ,
+                   vgl_library = "$sqcwin_data"                        ,
+                   mouse_click_routine="button_press"                  )
+
+        PROMPT OBJECT button_four
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE 10
+            FROM form . width -12 TO form . width
+            WITH ( caption = 
+                   GET_USER_MESSAGE( "SQCWIN_DATA_ADVANCED_CRIT_BUTTON" , 1 ) ,
+                   mouse_click_routine="advanced_crit_routine"                ,
+                   user_info = "advanced_button"                              ) 
+
+        PROMPT OBJECT button_three
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM form . width - 26 TO form . width -14
+            WITH ( caption = GET_USER_MESSAGE ( "SQCWIN_BUT_HELP", 1 ) )
+
+        PROMPT OBJECT button_five
+            CLASS "STD_PROMPT_BUTTON"
+            ON LINE button_row
+            FROM form . width - 12 TO form . width
+            WITH ( user_info = "EXIT"                                    ,
+                   caption = GET_USER_MESSAGE ( "SQCWIN_BUT_CANCEL", 1 ) ,
+                   mouse_click_routine="button_press"                    )
+
+        form.add_prompt(button_one)
+        form.add_prompt(button_two)
+        form.add_prompt(button_three)
+        form.add_prompt(button_four)
+        form.add_prompt(button_five)
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE advanced_crit_routine( self ) 
+
+{ 
+* Routine called on pressing the 'Advanced' button on the selection
+* criteria screen
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE selection_array, mandatory_array
+
+    ARRAY selection_array
+    ARRAY mandatory_array
+
+        array_copy ( selection_array, 
+        self . parent_prompt . user_info . selection_criteria )
+
+        IF criteria_edit_criteria ( "samp_test_result",
+                        selection_array   ,
+                    mandatory_array   ,
+                    TRUE              ,
+                    TRUE              )
+
+
+        IF ( GLOBAL( "LASTKEY" ) = "DO" ) THEN
+
+            array_copy ( self . parent_prompt . user_info . selection_criteria
+            , selection_array )
+
+        display_criteria( self . parent_prompt ,
+                          self . parent_prompt . user_info . selection_criteria )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE display_criteria( form, selection_array )
+
+{ 
+* 
+* 
+* 
+*
+* Parameters   : 
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE text_array, crit_text_prompt, max_length, display_text, loop, 
+    criteria_length
+
+    ARRAY text_array
+
+    display_text = ""
+
+    criteria_lib_to_text ( selection_array    ,
+                           text_array         ,
+                   max_length         ,
+                   "samp_test_result" ,
+                   FALSE              )
+    loop = 1
+
+    criteria_length = size_of_array ( text_array ) 
+
+    get_prompt( form . prompt_objects             ,
+            "criteria_text", crit_text_prompt )
+
+    WHILE ( loop <= criteria_length ) DO
+
+        display_text = display_text : text_array [ loop ] : CHR( 13 )
+
+        loop = loop + 1
+
+    ENDWHILE
+
+
+    crit_text_prompt . set_text( display_text )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE build_basic_selection_criteria( select_array, analysis, component, 
+                                        result_type, product               )
+
+{ 
+* Builds a basic selection criteria array with analysis, components, 
+* result type and product.
+* 
+*
+* Parameters   : select_array, analysis, component
+* Return Value : n/a
+*
+*******************************************************************************}
+
+    select_array = EMPTY
+
+    ARRAY select_array
+
+    select_array [ 1, 1 ] = ARRAY_SELECT_EQ
+    select_array [ 1, 2 ] = "ANALYSIS"
+    select_array [ 1, 3 ] = analysis
+
+    select_array [ 2, 1 ] = ARRAY_SELECT_AND
+
+    select_array [ 3, 1 ] = ARRAY_SELECT_EQ
+    select_array [ 3, 2 ] = "COMPONENT_NAME"
+    select_array [ 3, 3 ] = component
+
+    select_array [ 4, 1 ] = ARRAY_SELECT_AND
+
+    select_array [ 5, 1 ] = ARRAY_SELECT_EQ
+    select_array [ 5, 2 ] = "RESULT_TYPE"
+    select_array [ 5, 3 ] = result_type
+
+    IF ( ( product <> EMPTY     )   AND
+         ( NOT BLANK( product ) ) ) THEN
+
+        select_array [ 6, 1 ] = ARRAY_SELECT_AND
+
+        select_array [ 7, 1 ] = ARRAY_SELECT_EQ
+        select_array [ 7, 2 ] = "PRODUCT"
+        select_array [ 7, 3 ] = product
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_selection_field( VALUE field_id, select_array )
+
+{ 
+* Searches the select_array for the field_id and returns it's value 
+* 
+* 
+*
+* Parameters   : field_id, select_array
+* Return Value : field_value
+*
+*******************************************************************************}
+
+DECLARE select_size, array_count, return_value
+
+    return_value = ""
+
+    select_size = sqcwin_array_size( select_array )
+
+    array_count = 1 
+
+    WHILE ( array_count <= select_size ) DO
+
+        IF( select_array[ array_count , 2 ] = field_id ) THEN
+
+            return_value = select_array[ array_count , 3 ]
+
+            array_count = select_size + 1
+
+        ENDIF
+
+        array_count = array_count + 1
+
+    ENDWHILE
+
+    RETURN( return_value )
+
+ENDROUTINE 
+
+{******************************************************************************}
+
+ROUTINE criteria_is_basic( select_array )
+
+{ 
+* Checks the select_array to see if it meets the requirements of the 
+* basic
+* 
+*
+* Parameters   : select_array
+* Return Value : is_basic
+*******************************************************************************}
+
+DECLARE is_basic, has_analysis, has_component, has_res_type, has_product,
+        array_bigness 
+
+    array_bigness = sqcwin_array_size( select_array )
+
+    IF ( array_bigness <= 7 ) THEN
+
+        has_analysis = 
+        select_array_has_field( "ANALYSIS", select_array )
+
+        has_component = 
+        select_array_has_field( "COMPONENT_NAME", select_array )
+
+        has_res_type = 
+        select_array_has_field( "RESULT_TYPE", select_array )
+
+        is_basic = has_analysis AND has_component AND has_res_type
+
+        IF ( array_bigness = 7 ) THEN
+
+            has_product = 
+            select_array_has_field( "PRODUCT", select_array )
+
+            is_basic = is_basic AND has_product
+
+        ENDIF
+
+    ELSE
+
+        is_basic = FALSE
+
+    ENDIF
+        
+    RETURN( is_basic )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE select_array_has_field( VALUE field_id, select_array )
+
+{ 
+* Routine to check if the select_array contains the field field_id.
+* 
+* 
+*
+* Parameters   : field_id, select_array
+* Return Value : has_field
+*
+*******************************************************************************}
+
+DECLARE has_field, array_bigness, array_elmnt
+
+    has_field = FALSE
+
+    array_bigness = sqcwin_array_size( select_array )
+
+    array_elmnt = 1
+
+    WHILE ( array_elmnt <= array_bigness ) DO
+
+        IF ( select_array[ array_elmnt ,2 ] = field_id ) THEN
+
+            has_field = TRUE
+
+            array_elmnt = array_bigness + 1
+
+        ENDIF
+
+        array_elmnt = array_elmnt + 1
+        
+    ENDWHILE
+
+    RETURN( has_field )
+
+ENDROUTINE
+
+{******************************************************************************}
+ROUTINE set_mand_array( self )
+
+{ 
+* 
+* 
+* 
+*
+* Parameters   : self
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE analysis_prompt, mand_array
+
+    ARRAY mand_array
+
+    get_prompt( self . parent_prompt . prompt_objects ,
+            "analysis_prompt", analysis_prompt    )
+
+    IF ( ( analysis_prompt . value <> EMPTY    )    AND
+         ( NOT BLANK( analysis_prompt . value) ) )  THEN
+
+        mand_array [ 1, 1 ] = ARRAY_SELECT_EQ
+        mand_array [ 1, 2 ] = "ANALYSIS"
+        mand_array [ 1, 3 ] = analysis_prompt . value
+
+        self . mandatory_array = mand_array
+
+    ELSE
+
+        mand_array [ 1, 1 ] = ARRAY_SELECT_GT
+        mand_array [ 1, 2 ] = "ANALYSIS"
+        mand_array [ 1, 3 ] = analysis_prompt . value
+
+        self . mandatory_array = mand_array
+
+    ENDIF
+
+ENDROUTINE
+{******************************************************************************}

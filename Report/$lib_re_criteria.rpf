@@ -1,0 +1,902 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_CRITERIA
+*
+* Purpose       : Result entry by criteria
+*
+* Document Ref. : SE/T/TVGL-WORK-RESENTO/1/5
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+
+JOIN LIBRARY $criteria_edit
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $lib_re_globals
+JOIN LIBRARY $lib_re_context
+JOIN LIBRARY $browse_field
+JOIN LIBRARY $lib_re_interface
+JOIN LIBRARY $lib_re_collection
+JOIN LIBRARY $lib_twr_user
+JOIN LIBRARY $result_list
+
+{* Constant definitions *******************************************************}
+
+CONSTANT SELECT_TABLE  = "SAMP_TEST_VIEW"
+CONSTANT TEST_FIELD    = "TEST_NUMBER"
+CONSTANT TEST_STATUS   = "TEST_STATUS"
+CONSTANT SAMPLE_STATUS = "STATUS"
+
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_modify_rmb_option( explorer_rmb, record_object, collection )
+
+{
+* Explorer RMB option that provides multiple result entry for samples
+*
+******************************************************************************}
+
+    lib_re_criteria_from_collection( RE_MODIFY, collection )
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_modify_samp_job_rmb_option( explorer_rmb, record_object, collection )
+
+{
+* Explorer RMB option that provides multiple result entry for samples
+*
+******************************************************************************}
+
+    lib_re_criteria_samp_job_collection( RE_MODIFY, collection )
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_display_rmb_option( explorer_rmb, record_object, collection )
+
+{
+* Explorer RMB option that provides multiple result display for samples
+*
+******************************************************************************}
+
+    lib_re_criteria_from_collection( RE_DISPLAY, collection )
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_authorise_rmb_option( explorer_rmb, record_object, collection )
+
+{
+* Explorer RMB option that provides multiple result authorise for samples
+*
+******************************************************************************}
+
+    lib_re_criteria_from_collection( RE_AUTHORISE, collection )
+
+	RETURN ( TRUE )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_re_criteria_from_collection( VALUE mode, collection )
+
+{
+* Invokes the result entry screen in the passed mode for the given sample
+* collection
+*
+* Parameters : mode       , RE_MODIFY, RE_DISPLAY or RE_AUTHORISE
+*              collection , a collection of samples
+*
+******************************************************************************}
+{*****************************************************************
+ * MOD SUPPORT INCIDENT 127904                                   *
+ ***************************************************************** }
+    IF collection . size ( ) > 1 THEN
+
+        IF ( collection.table = "SAMPLE") THEN
+
+            re_multiple_collection( mode, collection )
+
+        ELSEIF ( collection.table = "TEST")THEN
+
+            re_multiple_test_collection( mode, collection )
+
+        ELSEIF ( collection.table = "QC_TEST_VIEW")THEN
+
+            re_multiple_test_collection( mode, collection )
+
+        ENDIF
+
+    ELSE
+        re_single_collection( mode , collection )
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE lib_re_criteria_samp_job_collection ( VALUE mode, collection )
+
+{
+* Invokes the result entry screen in the passed mode for the given sample
+* collection
+*
+* Parameters : mode       , RE_MODIFY, RE_DISPLAY or RE_AUTHORISE
+*              collection , a collection of samples
+*
+******************************************************************************}
+
+    IF collection . size ( ) > 1 THEN
+        re_multiple_job_samp_collection( mode, collection )
+    ELSE
+        re_single_job_samp_collection( mode , collection )
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE re_multiple_job_samp_collection( VALUE mode, collection )
+
+{
+* Presents a result entry spreadsheet for the samples in the passed collection
+*
+******************************************************************************}
+
+    DECLARE select_array, sample_id, test_array, mandatory_array
+    DECLARE first_time
+
+    lib_re_interface_initialise ()
+
+    ARRAY mandatory_array
+    ARRAY select_array
+    ARRAY test_array
+
+    first_time = TRUE
+
+    collection . set_first()
+
+    WHILE collection . current <> EMPTY DO
+
+        sample_id = SELECT samp_job_view . id_numeric IN OBJECT collection . current
+
+        IF NOT first_time THEN
+            ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
+        ENDIF
+
+        ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ID_NUMERIC", sample_id )
+
+        collection . set_next()
+
+        first_time = FALSE
+
+    ENDWHILE
+
+    IF build_test_array ( test_array      ,
+                          select_array    ,
+                          mandatory_array ,
+                          mode            ,
+                          TRUE            ) THEN
+
+        do_result_entry ( test_array, mode )
+
+        lib_tcr_user_post_results_entry ( select_array ,
+                                          SELECT_TABLE ,
+                                          mode         )
+
+    ENDIF
+
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE re_single_job_samp_collection( VALUE mode, collection )
+
+{
+* Presents a result entry screen for the single selected sample
+*
+******************************************************************************}
+
+    DECLARE sample_id
+
+    collection . set_first()
+
+    IF collection . current <> EMPTY THEN
+
+        sample_id = SELECT samp_job_view . id_numeric IN OBJECT collection . current
+
+        IF sample_id <> EMPTY THEN
+
+            result_list_sample ( sample_id, mode )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE re_multiple_collection( VALUE mode, collection )
+
+{
+* Presents a result entry spreadsheet for the samples in the passed collection
+*
+******************************************************************************}
+
+    DECLARE select_array, sample_id, test_array, mandatory_array
+    DECLARE first_time
+
+    lib_re_interface_initialise ()
+
+    ARRAY mandatory_array
+    ARRAY select_array
+    ARRAY test_array
+
+    first_time = TRUE
+
+    collection . set_first()
+
+    WHILE collection . current <> EMPTY DO
+
+
+        sample_id = SELECT sample . id_numeric IN OBJECT collection . current
+
+        IF NOT first_time THEN
+            ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
+        ENDIF
+
+        ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "ID_NUMERIC", sample_id )
+
+        collection . set_next()
+
+        first_time = FALSE
+
+    ENDWHILE
+
+    IF build_test_array ( test_array      ,
+                          select_array    ,
+                          mandatory_array ,
+                          mode            ,
+                          TRUE            ) THEN
+
+        do_result_entry ( test_array, mode )
+
+        lib_tcr_user_post_results_entry ( select_array ,
+                                          SELECT_TABLE ,
+                                          mode         )
+
+    ENDIF
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+
+ROUTINE re_single_collection( VALUE mode, collection )
+
+{
+* Presents a result entry screen for the single selected sample
+*
+******************************************************************************}
+
+    DECLARE sample_id
+
+    collection . set_first()
+
+    IF collection . current <> EMPTY THEN
+
+        IF collection.table = "SAMPLE" THEN
+
+            sample_id = SELECT sample . id_numeric IN OBJECT collection . current
+
+        ELSEIF collection . table = "TEST"
+
+            sample_id = SELECT test . sample IN OBJECT collection . current
+
+        ELSEIF collection . table = "QC_TEST_VIEW"
+
+            sample_id = SELECT qc_test_view . sample IN OBJECT collection . current
+
+    ENDIF
+
+        IF sample_id <> EMPTY THEN
+
+            result_list_sample ( sample_id, mode )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE mod_by_criteria ( option )
+
+{
+*
+*   Result entry by criteria
+*
+*******************************************************************************}
+
+    results_by_criteria ( RE_MODIFY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE disp_by_criteria ( option )
+
+{
+*
+*   Result display by criteria
+*
+*******************************************************************************}
+
+    results_by_criteria ( RE_DISPLAY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE auth_by_criteria ( option )
+
+{
+*
+*   Result authorise by criteria
+*
+*******************************************************************************}
+
+    results_by_criteria ( RE_AUTHORISE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE results_by_criteria ( VALUE re_mode )
+
+{
+*
+*   The main routine
+*
+*******************************************************************************}
+
+    DECLARE select_array,
+            mandatory_array,
+            test_array
+
+    ARRAY select_array ARRAYSIZE ( 0, 3 )
+    ARRAY mandatory_array ARRAYSIZE ( 0, 3 )
+    ARRAY test_array ARRAYSIZE (0)
+
+    lib_re_interface_initialise ()
+
+    add_mandatory ( mandatory_array, re_mode )
+
+    criteria_edit ( SELECT_TABLE    ,
+                    select_array    ,
+                    mandatory_array ,
+                    TRUE            ,
+                    TRUE            )
+
+    IF size_of_array ( select_array ) > 0 THEN
+
+        IF build_test_array ( test_array      ,
+                              select_array    ,
+                              mandatory_array ,
+                              re_mode         ,
+                              FALSE           ) THEN
+
+            do_result_entry ( test_array, re_mode )
+
+            lib_tcr_user_post_results_entry ( select_array ,
+                              SELECT_TABLE ,
+                              re_mode      )
+
+            release_test_array ( test_array )
+
+        ENDIF
+
+    ELSEIF lastkey <> "EXIT" THEN
+
+        flash_message ( "RESULT_ENTRY_NO_CRITERIA", true )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE add_mandatory ( mandatory_array ,
+                        re_mode         )
+
+{
+*
+*   Add the status criteria to the mandatory array.
+*
+*******************************************************************************}
+
+    DECLARE display_control
+
+    IF ( re_mode = RE_MODIFY    ) OR
+       ( re_mode = RE_AUTHORISE ) THEN
+
+        array_select_add ( mandatory_array   ,
+                           ARRAY_SELECT_PUSH ,
+                           EMPTY             ,
+                           EMPTY             )
+
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           TEST_STATUS     ,
+                           "V"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           TEST_STATUS     ,
+                           "P"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           TEST_STATUS     ,
+                           "C"             )
+
+        array_select_add ( mandatory_array  ,
+                           ARRAY_SELECT_POP ,
+                           EMPTY            ,
+                           EMPTY            )
+        array_select_add ( mandatory_array  ,
+                           ARRAY_SELECT_AND ,
+                           EMPTY            ,
+                           EMPTY            )
+        array_select_add ( mandatory_array   ,
+                           ARRAY_SELECT_PUSH ,
+                           EMPTY             ,
+                           EMPTY             )
+
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "V"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "P"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "C"             )
+
+        array_select_add ( mandatory_array  ,
+                           ARRAY_SELECT_POP ,
+                           EMPTY            ,
+                           EMPTY            )
+
+    ELSE
+
+        display_control = global ( "RES_DISP_CONTROL" )
+
+        IF display_control = RE_DISPLAY_AUTHORISED THEN
+
+            array_select_add ( mandatory_array   ,
+                               ARRAY_SELECT_PUSH ,
+                               EMPTY             ,
+                               EMPTY             )
+
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "A"             )
+
+            array_select_add ( mandatory_array  ,
+                               ARRAY_SELECT_POP ,
+                               EMPTY            ,
+                               EMPTY            )
+
+        ELSEIF display_control = RE_DISPLAY_COMPLETE THEN
+
+            array_select_add ( mandatory_array   ,
+                               ARRAY_SELECT_PUSH ,
+                               EMPTY             ,
+                               EMPTY             )
+
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "C"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "A"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "I"             )
+
+            array_select_add ( mandatory_array  ,
+                               ARRAY_SELECT_POP ,
+                               EMPTY            ,
+                               EMPTY            )
+
+        ELSE
+
+            array_select_add ( mandatory_array   ,
+                               ARRAY_SELECT_PUSH ,
+                               EMPTY             ,
+                               EMPTY             )
+
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "V"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "P"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "C"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "A"             )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_OR ,
+                               EMPTY           ,
+                               EMPTY           )
+            array_select_add ( mandatory_array ,
+                               ARRAY_SELECT_EQ ,
+                               TEST_STATUS     ,
+                               "I"             )
+
+            array_select_add ( mandatory_array  ,
+                               ARRAY_SELECT_POP ,
+                               EMPTY            ,
+                               EMPTY            )
+
+        ENDIF
+
+        array_select_add ( mandatory_array  ,
+                           ARRAY_SELECT_AND ,
+                           EMPTY            ,
+                           EMPTY            )
+        array_select_add ( mandatory_array   ,
+                           ARRAY_SELECT_PUSH ,
+                           EMPTY             ,
+                           EMPTY             )
+
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "V"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "P"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "C"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "A"             )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_OR ,
+                           EMPTY           ,
+                           EMPTY           )
+        array_select_add ( mandatory_array ,
+                           ARRAY_SELECT_EQ ,
+                           SAMPLE_STATUS   ,
+                           "I"             )
+
+        array_select_add ( mandatory_array  ,
+                           ARRAY_SELECT_POP ,
+                           EMPTY            ,
+                           EMPTY            )
+
+    ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE build_test_array  (       test_array      ,
+                                  select_array    ,
+                                  mandatory_array ,
+                            VALUE re_mode         ,
+                            VALUE run_to_end      )
+
+{
+*
+*   Use the criteria and the madatory criteria to select a test list.
+*
+*******************************************************************************}
+
+    DECLARE test_count           ,
+        interface            ,
+        component_collection ,
+        current_test         ,
+        warn_at              ,
+        stop_now
+
+    warn_at    = GLOBAL ( "RES_SPREAD_WARN_LIMIT" )
+    stop_now   = FALSE
+    test_count = 0
+
+    lib_re_collection_create_component ( component_collection )
+
+    array_select_concat ( select_array, mandatory_array )
+
+        IF lib_tcr_user_pre_results_entry ( select_array ,
+                        SELECT_TABLE ,
+                        re_mode      ) THEN
+
+        array_select ( SELECT_TABLE ,
+                       FALSE        ,
+                       select_array )
+
+        current_test = SELECT 'SELECT_TABLE' . 'TEST_FIELD'
+
+        WHILE ( current_test <> EMPTY ) AND ( NOT stop_now ) DO
+
+            CREATE OBJECT STD_RESULT_INTERFACE, interface
+
+            interface . component_collection = component_collection
+            interface . use_current_test     = TRUE
+            interface . call_bind            = FALSE
+
+            IF re_mode = RE_MODIFY THEN
+
+                interface . set_modify_mode ()
+
+            ELSEIF re_mode = RE_AUTHORISE THEN
+
+                interface . set_authorise_mode ()
+
+            ELSE
+
+                interface . set_display_mode ()
+
+            ENDIF
+
+            interface . select_results ( SELECT 'SELECT_TABLE' . 'TEST_FIELD' )
+
+            test_count = test_count + 1
+
+            test_array [ test_count ] = interface
+
+            IF NOT run_to_end THEN
+
+                IF ( test_count >= warn_at ) THEN
+                    stop_now = lib_re_context_check_abort ( test_count ,
+                                                            warn_at    ,
+                                                            run_to_end )
+                ENDIF
+
+            ENDIF
+
+            IF NOT stop_now THEN
+
+                NEXT 'SELECT_TABLE'
+                current_test = SELECT 'SELECT_TABLE' . 'TEST_FIELD'
+
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    RETURN ( test_count > 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE release_test_array ( test_array )
+
+{
+*
+*   Release the test list.
+*
+*******************************************************************************}
+
+    DECLARE test_count ,
+        interface
+
+    test_count = 1
+
+    WHILE test_count <= size_of_array ( test_array ) DO
+
+        interface = test_array [ test_count ]
+
+        interface . release ( )
+
+        test_count = test_count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE do_result_entry ( test_array,
+                          re_mode )
+
+{
+*
+*   Build the result entry form and grid
+*
+*******************************************************************************}
+
+    DECLARE component_array
+
+    lib_re_interface_grid ( test_array      ,
+                component_array ,
+                re_mode         ,
+                TRUE            )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+{*****************************************************************************}
+{*****************************************************************
+ * MOD SUPPORT INCIDENT 127904                                   *
+ ***************************************************************** }
+ROUTINE re_multiple_test_collection( VALUE mode, collection )
+
+{
+* Presents a result entry spreadsheet for the samples in the passed collection
+*
+******************************************************************************}
+
+    DECLARE select_array, test_array, mandatory_array
+    DECLARE first_time, test_id, anal_id
+
+    lib_re_interface_initialise ()
+
+    ARRAY mandatory_array
+    ARRAY select_array
+    ARRAY test_array
+
+    first_time = TRUE
+
+    collection . set_first()
+
+    WHILE collection . current <> EMPTY DO
+
+    IF ( collection.table = "TEST")THEN
+
+        test_id = SELECT test . test_number IN OBJECT collection . current
+        anal_id = SELECT test . analysis IN OBJECT collection . current
+
+    ELSEIF ( collection.table = "QC_TEST_VIEW")THEN
+
+        test_id = SELECT qc_test_view . test_number IN OBJECT collection . current
+        anal_id = SELECT qc_test_view . analysis_id IN OBJECT collection . current
+
+    ENDIF
+
+    IF NOT first_time THEN
+        ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
+    ENDIF
+
+    ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "TEST_NUMBER", test_id )
+
+        collection . set_next()
+
+        first_time = FALSE
+
+    ENDWHILE
+
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_AND, EMPTY, EMPTY )
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_EQ, "ANALYSIS", anal_id )
+    ARRAY_SELECT_ADD ( select_array, ARRAY_SELECT_ORDER, "TEST_NUMBER", EMPTY )
+
+    IF build_test_array ( test_array      ,
+                          select_array    ,
+                          mandatory_array ,
+                          mode            ,
+                          TRUE            ) THEN
+
+        do_result_entry ( test_array, mode )
+
+        lib_tcr_user_post_results_entry ( select_array ,
+                                          SELECT_TABLE ,
+                                          mode         )
+
+    ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+

@@ -1,0 +1,194 @@
+{******************************************************************************
+*
+* Module Name   : LIT_MIGRATE_MLP
+*
+* Purpose       : Migrate mlp_value to have product, version, anal, comp in table
+*
+* Document Ref. :
+*
+* Specification :
+*
+*******************************************************************************
+*
+* Modification History ________________________________________________________
+*
+* Date___________  By________    Reason__________________________________________
+* Jul 01, 2007     LIT           Created
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_WINDOW         { window_Set_status }
+
+JOIN LIBRARY $LIB_UTILS                  { confirm_With_text }
+
+menu_update_mlp_values ( "option" )
+exit
+
+{ **************************************************************************** }
+
+ROUTINE MENU_update_mlp_values ( VALUE option )
+
+    DECLARE a_id             ,
+                a_vers           ,
+                a_update         ,
+                a_anal           ,
+                a_comp           ,
+                a_level          ,
+                a_cnt            ,
+                a_cnt2           ,
+                a_array          ,
+                a_array_delete   ,
+                status           ,
+                mlp_values       ,
+                pct
+
+
+    ARRAY a_array
+    ARRAY a_array_delete
+
+    a_cnt    = 0
+    a_cnt2   = 0
+    mlp_values = SELECT COUNT MLP_VALUES WHERE (PRODUCT_ID = "          " OR PRODUCT_ID = "" OR PRODUCT_ID = EMPTY OR PRODUCT_ID = null) AND ENTRY_CODE >= 0
+    a_update = SELECT MLP_VALUES.ENTRY_CODE WHERE (PRODUCT_ID = "          " OR PRODUCT_ID = "" OR PRODUCT_ID = EMPTY OR PRODUCT_ID = null) AND ENTRY_CODE >= 0
+
+    WHILE ( a_update <> EMPTY ) {AND (a_cnt <= 1000)} DO
+
+        a_level = SELECT MLP_VALUES.LEVEL_ID
+
+        { ---------------------------------------------------- }
+        { Either have a code for level->product or component   }
+        { ---------------------------------------------------- }
+
+        a_id = SELECT MLP_COMPONENTS.PRODUCT_ID WHERE ENTRY_CODE = a_update AND PRODUCT_ID <> "" ORDER ON ENTRY_CODE
+
+        IF ( a_id <> EMPTY ) THEN
+
+            a_vers = SELECT MLP_COMPONENTS.PRODUCT_VERSION
+            a_anal = SELECT MLP_COMPONENTS.ANALYSIS_ID
+            a_comp = SELECT MLP_COMPONENTS.COMPONENT_NAME
+
+        ELSE
+
+            a_id = SELECT MLP_HEADER.IDENTITY WHERE ENTRY_CODE = a_update
+
+            IF ( a_id <> EMPTY ) THEN
+
+                a_vers = SELECT MLP_HEADER.PRODUCT_VERSION
+                a_anal = ""
+                a_comp = ""
+
+            ENDIF
+
+        ENDIF
+
+        { ---------------------------------------------------- }
+        { either way we update this mlp_value                  }
+        { ---------------------------------------------------- }
+
+        pct = ROUND((a_cnt/mlp_values)*1000)/10:" % "
+
+        IF ( a_id <> EMPTY )
+
+            a_cnt            = a_cnt + 1
+            a_array[a_cnt,1] = a_update
+            a_array[a_cnt,2] = a_id
+            a_array[a_cnt,3] = a_vers
+            a_array[a_cnt,4] = a_anal
+            a_array[a_cnt,5] = a_comp
+            a_array[a_cnt,6] = a_level
+
+            window_set_status ( pct : a_cnt : ": " : a_id  : a_vers : a_level : a_anal : a_comp )
+
+        ELSE                   { or it should be deleted.... }
+
+            a_cnt2                   = a_cnt2 + 1
+            a_array_delete[a_cnt2,1] = a_update
+            a_array_delete[a_cnt2,2] = a_level
+
+            window_set_status ( pct : "** INVALID ** " : a_update : a_level )
+
+        ENDIF
+
+        NEXT MLP_VALUES
+        a_update = SELECT MLP_VALUES.ENTRY_CODE
+
+    ENDWHILE
+
+    { ----------------------------------------------------------- }
+    { Got em all, now update them all...                          }
+    { ----------------------------------------------------------- }
+
+    IF a_cnt > 0 THEN
+
+        mlp_values = a_cnt
+        a_cnt = 1
+
+        WHILE ( a_array[a_cnt,1] <> EMPTY ) DO
+
+            a_update = SELECT MLP_VALUES.ENTRY_CODE FOR UPDATE WHERE ENTRY_CODE = a_array[a_cnt,1] AND LEVEL_ID = a_array[a_cnt,6]
+
+            IF ( a_update <> EMPTY ) AND ( a_update <> LOCKED ) THEN
+
+                START WRITE TRANSACTION "MIGRATE_MLP_VALUES"
+
+                ASSIGN MLP_VALUES.PRODUCT_ID      = a_array[a_cnt,2]
+                ASSIGN MLP_VALUES.PRODUCT_VERSION = a_array[a_cnt,3]
+                ASSIGN MLP_VALUES.ANALYSIS_ID     = a_array[a_cnt,4]
+                ASSIGN MLP_VALUES.COMPONENT_NAME  = a_array[a_cnt,5]
+
+                UPDATE MLP_VALUES, status
+                COMMIT
+
+            ENDIF
+
+            pct = ROUND((a_cnt/mlp_values)*1000)/10:" % "
+
+            window_set_status (pct : STRIP(a_array[a_cnt,2]):"/":STRIP(a_array[a_cnt,6]):" ": a_array[a_cnt,3] :" ":  a_array[a_cnt,4] :" ":  a_array[a_cnt,5] )
+
+            a_cnt = a_cnt + 1
+
+        ENDWHILE
+
+    ENDIF  { a_cnt did not find any }
+
+    { ----------------------------------------------------------- }
+    { Optional delete non-referenced values - invalid entry_code  }
+    { ----------------------------------------------------------- }
+
+    IF ( a_cnt2 > 0 ) AND ( CONFIRM_WITH_TEXT ( "Delete invalid entry codes " : a_cnt2 ) ) THEN
+
+        a_cnt2 = 1
+
+        WHILE ( a_array_delete[a_cnt2,1] <> EMPTY ) DO
+
+            a_update = SELECT MLP_VALUES.ENTRY_CODE FOR UPDATE WHERE ENTRY_CODE = a_array_delete[a_cnt2,1] AND LEVEL_ID = a_array_delete[a_cnt2,2]
+
+            IF ( a_update <> EMPTY ) AND ( a_update <> LOCKED ) THEN
+
+                START WRITE TRANSACTION "MIGRATE_DELETE_MLP_VALUES"
+
+                DELETE MLP_VALUES, status
+
+                COMMIT
+
+            ENDIF
+
+            window_set_status ( a_array_delete[a_cnt2,2] : a_array_delete[a_cnt2,2] )
+
+            a_cnt2 = a_cnt2 + 1
+
+        ENDWHILE
+
+    ENDIF   { had records that were not referenced correct for entry_code }
+
+ENDROUTINE  {  menu_update_mlp_values }
+
+{ **************************************************************************** }
+{ **************************************************************************** }
+{ **************************************************************************** }

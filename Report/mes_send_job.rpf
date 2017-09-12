@@ -1,0 +1,228 @@
+{***********************************************************************
+*
+* Module Name   : MES_SEND_JOB
+*
+* Purpose       : Finds a job and send it to MES via MES_TRANSFER 
+*
+* Document Ref  : LIMS Design Specifications related to MES, version .2
+*
+* Specification : N/a 
+*
+************************************************************************
+* Modification History
+* 
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-05-14  Fredrik Lindstein   Created
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY SAP_TRANSFER2
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+{*************************************************************************
+*For testing
+*************************************************************************}
+FindJob()
+{*************************************************************************
+END For testing
+*************************************************************************}
+
+{*************************************************************************}
+ROUTINE FindJob
+{
+*
+* Purpose       : Main routine. Request a form and handles result.
+*
+* Parameters    : None
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE form, job_count, tmpJobid
+
+form = CreateForm ()
+
+form . start_prompt()
+form . wait_prompt()
+form . end_prompt()
+
+IF form.get_last_key ( ) = "DO" THEN
+    
+    tmpJobid  = form . prompt_objects[1] . value
+    job_count = SELECT COUNT JOB_HEADER 
+                WHERE job_name = tmpJobid
+                
+    IF job_count > 0 THEN
+        JobToMES(tmpJobid)
+{       FM("Job ": STRIP(tmpJobid) :" was sent to MES")}
+    ELSE
+        FM("Not a job: ": tmpJobid)
+    ENDIF
+
+ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE CreateForm
+{
+*
+* Purpose       : Creates a from and returns it.
+*
+* Parameters    : None
+*
+* Return Value  : Form as object
+*
+*************************************************************************}
+DECLARE job_prompt, form
+
+CREATE OBJECT PROMPT_CLASS_FORM,form
+ 
+form . height = 3
+form . width = 25
+form . row = 2
+form . column = 5
+form . border = TRUE
+form . header = "Find Job"
+form . footer = "Press <Exit> to quit"
+ 
+PROMPT OBJECT job_prompt
+BROWSE ON JOB_HEADER . JOB_NAME
+ON LINE 1 FROM 8
+
+form . add_prompt(job_prompt)
+form . add_display("Job: ", 1, 1, PROMPT_RENDITION_BOLD)
+
+RETURN (form)
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE SendJobToMes(VALUE JobId)
+{
+*
+* Purpose       : Send the found job to MES_TRANSFER
+*
+* Parameters    : Job header identity
+*
+* Return Value  : None
+*
+*************************************************************************}
+
+    CALL_ROUTINE "EnvironmentalSampling"
+        USING JobId
+        IN LIBRARY "MES_TRANSFER"
+        
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE RMBSendJobToMes(rmb_object, object , collection)
+{
+* Purpose       : Send the found job to MES_TRANSFER
+* Parameters    : Job header identity
+* Return Value  : None
+*************************************************************************}
+    DECLARE ArrJobs, table, job_id, i, j, AlreadyInArray
+    ARRAY ArrJobs  ARRAY_SIZE(0,2)
+
+    table = "QC_SAMPLE_VIEW"
+
+    collection . set_first()
+    i=0
+    WHILE collection . current <> EMPTY DO
+        job_id = SELECT 'table' . job IN OBJECT collection . current
+        AlreadyInArray = FALSE
+        j = 1
+        WHILE j < size_of_array(ArrJobs) + 1
+            IF ArrJobs [i, 2] = job_id THEN
+                AlreadyInArray = TRUE
+            ENDIF
+            j = j +1
+        ENDWHILE
+
+        IF NOT AlreadyInArray THEN
+            i = size_of_array(ArrJobs) + 1
+            ArrJobs [i, 1] = i
+            ArrJobs [i, 2] = job_id
+        ENDIF
+        collection . set_next()
+    ENDWHILE
+
+    i = 1
+    WHILE ArrJobs [i, 1] <> EMPTY DO
+        JobToMES(ArrJobs [i, 2])
+        fm("The job ":STRIP(ArrJobs [i, 2]):" was sent to MES")
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE RMBSendJobHeaderToMes(rmb_object, object , collection)
+{
+* Purpose       : Send the found job to MES_TRANSFER
+* Parameters    : Job header identity
+* Return Value  : None
+*************************************************************************}
+    DECLARE ArrJobs, ArrSent, ArrNotSent, table, job_id, i, j, AlreadyInArray
+    ARRAY ArrJobs    ARRAY_SIZE(0,2)
+    ARRAY ArrSent    
+    ARRAY ArrNotSent 
+
+    table = "JOB_HEADER"
+
+    collection . set_first()
+    i=0
+    WHILE collection . current <> EMPTY DO
+        job_id = SELECT 'table' . job_name IN OBJECT collection . current
+        AlreadyInArray = FALSE
+        j = 1
+        WHILE j < size_of_array(ArrJobs) + 1
+            IF ArrJobs [i, 2] = job_id THEN
+                AlreadyInArray = TRUE
+            ENDIF
+            j = j +1
+        ENDWHILE
+
+        IF NOT AlreadyInArray THEN
+            i = size_of_array(ArrJobs) + 1
+            ArrJobs [i, 1] = i
+            ArrJobs [i, 2] = job_id
+        ENDIF
+        collection . set_next()
+    ENDWHILE
+
+    i = 1
+    WHILE ArrJobs [i, 1] <> EMPTY DO
+        window_set_status("Handling ":ArrJobs [i, 2])
+        IF(JobToMES(ArrJobs [i, 2])) THEN
+            ArrSent[size_of_array(ArrSent) + 1] = ArrJobs [i, 2]
+        ELSE
+            ArrNotSent[size_of_array(ArrNotSent) + 1] = ArrJobs [i, 2]
+        ENDIF
+        {fm("The job ":STRIP(ArrJobs [i, 2]):" was sent to MES") }
+        i = i + 1
+    ENDWHILE
+
+    window_set_status("")
+    IF size_of_array(ArrSent) > 0 THEN
+        fm("The following job(s) were sent to MES:":ASCII(10):ASCII(10):GetArray(ArrSent))
+    ENDIF
+
+    IF size_of_array(ArrNotSent) > 0 THEN
+        fm("The following job(s) were NOT sent to MES:":ASCII(10):ASCII(10):GetArray(ArrNotSent))
+    ENDIF
+
+ENDROUTINE
+{*************************************************************************}
+{*************************************************************************}

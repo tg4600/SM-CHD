@@ -1,0 +1,764 @@
+{*****************************************************************************
+*
+* Module Name   : TASK_MONITOR
+*
+* Purpose       : Display and kill SampleManager processes from within
+*                 SampleManager.  Uses functions found on Windows XP
+*                 and above operating systems
+*
+* Portability   : All Win NT based platforms
+*
+* Document Ref. : CS/T/
+*
+* Re-entrant    : No
+*
+* Specification :
+*
+******************************************************************************
+* Modification History
+*
+* Version   Date        Author           Modify Details
+******************************************************************************
+* 1.0       01/01/2003  Tom Hody         Created
+* 1.1       08/06/2004  Larry Sanborn    Set up to work with OS prior to XP
+*                                        Added Refresh Button
+*                                        Added Suicide Watch (can't kill self)
+* 1.2       02/16/2005  Tom Hody         Removed the color setting on the list
+*                                        for current process
+*                                        Added display for current process
+* 1.3       09/18/2007  Tom Hody         Modified to work with the search
+*                                        directory structure standard in 9.x
+* 1.4       20-Mar-2009 Dave Hooper      Add checks and formating for
+*                                        Windows 2003.
+*                                        Change os user column from 10 to 15.
+* 1.5       01-Nov-2012 Dave Hooper      Add SampleManagerCommand.exe and
+*                                        SampleManagerTimeQueue.exe for SM10.
+*                                        Move loop counter inside IF to fix single
+*                                        instance display. Add Node Name.
+* 1.6       05/09/2013  Tom Hody         Added code to display licenses used
+*                                        for current SampleManager instance
+******************************************************************************
+* Get KILL from the Windows 2000 CD under the '\SUPPORT' Directory
+******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $LIB_UTILS
+
+{***************************************************************************
+ *                              MAIN CODE                                  *
+ ***************************************************************************}
+
+CONSTANT TASK_PROCESS_FORM = "TASK_FORM"
+
+CONSTANT REG_LOCAL_MACHINE = "HKEY_LOCAL_MACHINE"
+
+CONSTANT REG_WINNT_CURRENT_VERSION = "SOFTWARE\Microsoft\Windows NT\" :
+                                     "CurrentVersion"
+CONSTANT UTIL_EXE = "\lmutil.exe"
+
+CONSTANT UTIL_PARAM = " lmstat -f SampleManager -c "
+
+CONSTANT UTIL_LIC = "\samplemanager_11.lic"
+
+DECLARE form, list, current_process, close_button, kill_button, refresh_button
+DECLARE license_used
+
+{ setup the custom form class, and the list class }
+set_up_task_process_form_class ( )
+set_up_std_prompt_list_class ( )
+
+{ create the form and list }
+CREATE OBJECT TASK_PROCESS_FORM, form         { create the form object }
+CREATE OBJECT PROMPT_LIST_CLASS, form . list  { create the list object }
+
+{ save the instance name in a form property }
+form . use_instance =  TRUE {confirm_with_text ( "Proccesses for " :STRIP ( form . instance ) : " Only?" ) }
+
+form . header    = "SampleManager Tasks"   { form header }
+form . row       = 3                       { Row to paste form }
+form . column    = 5                       { Column to paste form }
+form . width     = 70                      { Width of form, in columns }
+form . height    = 12                      { Height of form, in rows }
+form . return_behaviour = FORM_RETURN_WRAP { cursor stays on prompt }
+
+form . button_style = FORM_BUTTON_NONE     { turn off standard buttons }
+
+{ display current users process id }
+PROMPT OBJECT current_process
+       AT 1, 1
+       WITH ( value = STRIP("Current Session Process ID = " : form . own_pid) ,
+              foreground_colour = PROMPT_COLOUR_RED                    )
+
+form . add_display ( current_process )
+
+{ display current license usage }
+PROMPT OBJECT license_used
+       AT 1, 0
+       WITH ( value = form . lic_mess )
+
+form . add_display ( license_used )
+
+{ create shortcut to the form list property }
+list = form . list
+
+{ Initialise the list }
+list . width  = 70            { width of list in columns }
+list . height = 7             { height of list in rows }
+list . row    = 2             { row to paste list on form }
+list . column = 1             { column to paste list on form }
+
+{ set list to only allow a single record select }
+list . style = list . style + LIST_STYLE_SINGLE_SEL
+
+{ define the double click routine to call the kill routine }
+list . double_click_routine = "kill_routine"
+
+{ define the right mouse click routine to call the kill routine }
+list . right_mouse_routine = "kill_routine"
+
+{ add the columns to the list }
+list . add_column ( "Mode"       , 10 ) { 1 SampleManager Mode }
+list . add_column ( "Instance"   , 10 ) { 2 SampleManager Instance }
+list . add_column ( "SM User"    , 10 ) { 3 SampleManager User }
+list . add_column ( "PID"        ,  6 ) { 4 PID from smp - users and Tasklist}
+list . add_column ( "Role ID"    , 14 ) { 5 Role ID }
+list . add_column ( "Logon Time" , 13 ) { 6 User Name from Tasklist }
+list . add_column ( "CPU Time"   ,  6 ) { 7 CPU Time }
+list . add_column ( "Node Name"  , 12 ) { 8 Computer Node }
+list . add_column ( "OS User"    , 10 ) { 9 OS username from smp -users }
+list . add_column ( "Status"     ,  0 ) {10 Program Status }
+
+{ add the list to the form }
+form . add_prompt ( list )
+
+{ close button }
+PROMPT OBJECT close_button
+        CLASS PROMPT_CLASS_BUTTON
+        AT ( form . width / 3 ) - 15, form . height - 1
+        WITH ( width = 10            ,
+               caption = "Close"    ,
+               send_lastkey = "EXIT" )
+
+{ add the button to the form }
+form . add_prompt ( close_button )
+
+{ refresh button }
+PROMPT OBJECT refresh_button
+        CLASS PROMPT_CLASS_BUTTON
+        AT ( form . width / 3 ) + 5, form . height - 1
+        WITH ( width = 10            ,
+               caption = "Refresh"    ,
+               mouse_click_routine = "refresh_btn" )
+
+{ add the button to the form }
+form . add_prompt ( refresh_button )
+
+{ kill process button }
+PROMPT OBJECT kill_button
+        CLASS PROMPT_CLASS_BUTTON
+        AT ( form . width / 3 ) + 25, form . height - 1
+        WITH ( width = 10                           ,
+               caption = "Kill PID"                     ,
+               mouse_click_routine = "kill_routine_btn" )
+
+{ add the button to the form }
+form . add_prompt ( kill_button )
+
+form . start_prompt ()        { paste form on screen }
+
+form . process_list ( )       { call process routine }
+
+form . wait_prompt ()         { active the form }
+form . end_prompt ()          { remove form from the screen }
+
+{***************************************************************************
+ *                                ROUTINES                                 *
+ ***************************************************************************}
+
+{***************************************************************************}
+
+ROUTINE set_up_task_process_form_class
+
+{
+* Create a new form class that will contain the informtion needed
+*   to process the smp -users and tasklist outputs.
+*
+* Parameters: None
+* Return Value: None
+*
+****************************************************************************}
+
+    DEFINE CLASS "TASK_FORM"
+
+        INITIALISATION
+
+        INHERIT PROMPT_CLASS_FORM
+
+        PROPERTIES
+            "data"        ,
+            "own_pid"     ,
+            "lic_mess"    ,
+            "id_ref"      ,
+            "list"        ,
+            "instance"    ,
+            "output"      ,
+            "use_instance",
+            "os_version"  ,
+            "smp_cmd"     ,
+            "task_cmd"    ,
+            "kill_cmd"
+
+        ACTIONS
+            "parse_sm"      ,
+            "parse_tasklist",
+            "pop_list"      ,
+            "process_list"
+
+    END CLASS
+
+ENDROUTINE { set_up_task_process_form_class }
+
+{***************************************************************************}
+
+ROUTINE task_form_class_initialisation ( self )
+
+{
+*
+* Initialise the task form class
+*
+* Parameters:  self - the form
+*
+* Return Value: None
+*
+****************************************************************************}
+
+    DECLARE path, len
+
+    { OS Version : 5.0 = Windows 2000
+                   5.1 = Windows XP
+                   5.2 = Windows 2003
+                   6.1 = Windows 2008 }
+    self . os_version = registry_get_value ( REG_LOCAL_MACHINE ,
+                               REG_WINNT_CURRENT_VERSION ,
+                               "CurrentVersion" )
+    self . own_pid = STRIP ( GLOBAL ( "PROCESS_ID" ))
+
+    { get current instance }
+    self . instance = GLOBAL ( "INSTANCE" )
+
+    { define the name of the output file }
+    self . output = LOGICAL ( "SMP$TEXTREPORTS" ) : "\spawn" :
+                    self . own_pid : ".out"
+
+    { define the 'smp -users' spawn command }
+    { on 9.x and greater systems, need to separate the two search directories }
+    { before the command can be created }
+    path = LOGICAL ( "SMP$PROGRAMS" )
+
+    IF ( index ( path, ";" ) > 0 ) THEN
+        len = length ( path ) - index ( path, ";" )
+        path = RIGHTSTRING ( path, len )
+    ENDIF
+
+    self . smp_cmd  = ASCII(34):path:"\smp":ASCII(34):" -users -instance ":self . instance: " | FIND /V ":ASCII(34):"Unknown":ASCII(34):" | FIND /V ":ASCII(34):"Background":ASCII(34)
+    WriteToLog(self . smp_cmd)
+
+    IF self . os_version >= 5.1 THEN
+
+        { WinXP or above }
+        self . task_cmd = "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq smp.exe" : ASCII(34) : " > " :
+                          ASCII(34) : self . output : ASCII(34) : " & " :
+                          "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq SampleManager.exe" : ASCII(34) : " >> " :
+                          ASCII(34) : self . output : ASCII(34) : " & " :
+                          "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq dllhost.exe" :
+                          ASCII(34) : " >> " : ASCII(34) : self . output : ASCII(34) : " & " :
+                          "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq SampleManagerServerHost.exe" :
+                          ASCII(34) : " >> " : ASCII(34) : self . output : ASCII(34): " & " :
+                         "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq SampleManagerCommand.exe" :
+                          ASCII(34) : " >> " : ASCII(34) : self . output : ASCII(34) : " & " :
+                         "tasklist /v /nh /fi " : ASCII(34) :
+                          "imagename eq SampleManagerTimerQueueService.exe" :
+                          ASCII(34) : " >> " : ASCII(34) : self . output : ASCII(34)
+        WriteToLog(self . task_cmd)
+        self . kill_cmd = "taskkill  /f /pid"
+    ELSE
+
+        { Win 2000 or below }
+        self . task_cmd = ""
+        self . kill_cmd = "kill"
+
+    ENDIF
+
+    IF (FILE EXISTS (LOGICAL ("SMP$LICENSE") : UTIL_EXE)) THEN
+
+        DECLARE command, log_out, lic_file, line_var, check_ok
+
+        lic_file = ASCII(34) : LOGICAL ("SMP$LICENSE") : UTIL_LIC : ASCII(34)
+        command = ASCII(34) : LOGICAL ("SMP$LICENSE") : UTIL_EXE : ASCII(34) : UTIL_PARAM : lic_file
+        log_out = LOGICAL ("SMP$LOGFILES") : "\licence." : GLOBAL ("PROCESS_ID") : ".log"
+
+        command = ASCII(34) : command : ASCII(34)
+        WriteToLog(command)
+
+        lib_utils_spawn_with_log ( command, log_out )
+
+        self . lic_mess = ""
+
+        FILE OPEN log_out
+        FILE READ log_out, line_var, check_ok
+
+        WHILE ( check_ok = EMPTY ) DO
+
+            FILE READ log_out, line_var, check_ok
+            line_var = STRIP ( line_var )
+
+            IF ( LEFTSTRING (line_var, 22 ) = "Users of SampleManager" ) THEN
+
+                self . lic_mess = line_var
+
+            ENDIF
+
+        ENDWHILE
+
+        FILE CLOSE log_out
+        FILE DELETE log_out
+
+    ENDIF
+
+ENDROUTINE { task_form_class_initialisation }
+
+{***************************************************************************}
+
+ROUTINE task_form_action_process_list ( self )
+
+{
+*
+* Execute the "smp -users" and the "tasklist" commands.
+*   call the routines to process the output.
+*
+* Parameters:  self - the form
+* Return Value: None
+*
+****************************************************************************}
+
+    DECLARE status
+
+    { set the form property data to an array, Also resets the data array }
+    {each time refresh button is pressed or a PID is killed              }
+    ARRAY self . data ARRAYSIZE ( 0, 10 )
+
+    { execute the spawn string }
+    status = lib_utils_spawn_with_log ( self.smp_cmd, self . output )
+
+    { if status not EMPTY, an error occured, delete the         }
+    { output file, display a message, and terminate the program }
+    IF ( status <> EMPTY ) THEN
+        FILE DELETE self . output
+        fatal_error ( status )
+    ENDIF
+
+    { parse the smp -user data from the output file }
+    self . parse_sm ( )
+
+    { delete the output file }
+    FILE DELETE self . output
+
+    {Only Windows 5.1 + has tasklist}
+    IF self.os_version >= 5.1 THEN
+
+        { execute the spawn string }
+        spawn self.task_cmd, status QUIETLY
+
+        { if status not EMPTY, an error occured, delete the         }
+        { output file, display a message, and terminate the program }
+        IF ( status <> EMPTY ) THEN
+            FILE DELETE self . output
+            fatal_error ( status )
+        ENDIF
+
+        { parse the tasklist data from the output file }
+        self . parse_tasklist ( )
+
+        { delete the output file }
+        FILE DELETE self . output
+
+    ENDIF
+    { populate the list with retrieved data }
+    self . pop_list ( )
+
+ENDROUTINE { task_form_action_process_list }
+
+{***************************************************************************}
+
+ROUTINE task_form_action_parse_sm ( self )
+
+{
+*
+* Parse the output from "smp -users".  Store data in form objects data array
+*
+* Parameters:  self - the form
+* Return Value: None
+*
+****************************************************************************}
+
+    DECLARE status, line_in, pos, loop, brk_pos, str1, str2, len, instance
+
+    { set the default for id_ref, will be used in tasklist process routine }
+    self . id_ref = "         "
+
+    IF FILE EXISTS (self . output) THEN
+
+        { open the output file generated from Tasklist }
+        FILE OPEN self . output, status
+
+        { read the 1st line }
+        FILE READ self . output, line_in, status
+
+        { check for the end of the column titles }
+        WHILE ( INDEX ( line_in, "-----" ) = 0 ) DO
+            FILE READ self . output, line_in, status
+        ENDWHILE
+
+        { The format of the output was changed between 2004 R2 and 9.01 }
+        { find the location of the column breaks using the separator line }
+        pos = index ( line_in, " " )
+        loop = 0
+        ARRAY brk_pos
+
+        WHILE pos > 0 DO
+            loop = loop + 1
+            brk_pos [ loop ] = pos
+
+            str1    = SPLITWORDS ( line_in, pos )
+            str2    = ( line_in # str1 ) # " "
+            line_in = str1 : "#" : str2
+
+            pos = index ( line_in, " " )
+        ENDWHILE
+        brk_pos [ loop + 1 ] = LENGTH ( line_in )
+
+        { read 1st vaid line from the output file }
+        FILE READ self . output, line_in, status
+
+        { set looping counter to zero }
+        loop = 0
+        { as long as there is information in the file, process it }
+        WHILE ( line_in <> EMPTY ) AND ( status = EMPTY ) DO
+            { find the instance name for the current line }
+            instance = STRIP ( SUBSTRING ( line_in, 18, 10 ) )
+
+            { determine if this line's data will be included in the array }
+            { If current instance was selected, verify that line is from  }
+            {   that instance.  If true, or all instances, save the data  }
+            IF (( self . use_instance ) AND ( instance = self . instance ) ) OR
+               ( NOT self . use_instance ) THEN
+
+               { increment the loop counter }
+                loop = loop + 1
+
+               { Mode }
+                pos = brk_pos [ 1 ] + 1
+                len = brk_pos [ 2 ] - pos
+                self . data [ loop, 1 ] = STRIP ( SUBSTRING ( line_in,  pos, len ) )
+                { Instance }
+                self . data [ loop, 2 ] = instance
+                { SM User }
+                pos = brk_pos [ 3 ] + 1
+                len = brk_pos [ 4 ] - pos
+                self . data [ loop, 3 ] = STRIP ( SUBSTRING ( line_in, pos, len ) )
+                { PID }
+                pos = brk_pos [ 6 ] + 1
+                len = brk_pos [ 7 ] - pos + 1
+                self . data [ loop, 4 ] = STRIP ( SUBSTRING ( line_in, pos, len  ) )
+                { OS User }
+                pos = brk_pos [ 5 ] + 1
+                len = brk_pos [ 6 ] - pos
+                self . data [ loop, 9 ] = STRIP ( SUBSTRING ( line_in, pos, len ) )
+                { Node Name }
+                pos = brk_pos [ 4 ] + 1
+                len = brk_pos [ 5 ] - pos
+                self . data [ loop, 8 ] = STRIP ( SUBSTRING ( line_in, pos, len ) )
+
+                { add PID to id_ref for use by the tasklist processing routine }
+                self . id_ref = self . id_ref :
+                                PAD ( self . data [ loop, 4 ], " ", 10 )
+            ENDIF
+
+            { read the next line from the file }
+            FILE READ self . output, line_in, status
+        ENDWHILE
+
+        { close the file }
+        FILE CLOSE self . output, status
+    ELSE
+
+        status = "Can't find SMP spawn output."
+        fatal_error ( status )
+
+    ENDIF
+ENDROUTINE { task_form_action_parse_sm }
+
+{***************************************************************************}
+
+ROUTINE task_form_action_parse_tasklist ( self )
+
+{
+*
+* Parse the output from "Tasklist".  Store data in form objects data array
+*
+* Parameters:  self - the form
+* Return Value: None
+*
+****************************************************************************}
+
+    DECLARE pid, row, status, line_in, exe
+
+    { open the output file generated from Tasklist }
+    FILE OPEN self . output, status
+
+    { read 1st vaid line from the output file }
+    FILE READ self . output, line_in, status
+
+    { as long as there is information in the file, process it }
+    WHILE ( line_in <> EMPTY ) AND ( status = EMPTY ) DO
+
+        IF NOT BLANK ( line_in ) THEN
+            IF self . os_version <= 5.1 THEN
+                pid = STRIP ( SUBSTRING ( line_in, 27, 6 ) )
+            ELSE
+                pid = STRIP ( SUBSTRING ( line_in, 29, 6 ) )
+            ENDIF
+
+            { find the matching PID that is already saved in the array }
+            row = INDEX ( self . id_ref, pid ) / 10
+
+            { if the PID is in the array, add information from Tasklist to it }
+            IF ( row > 0 ) THEN
+                IF self . os_version <= 5.1 THEN
+                    { Memory Usage }
+                    self . data [ row, 5 ] = STRIP ( SUBSTRING ( line_in,  60, 12 ) )
+                    { User Role }
+                    self . data [ row, 5 ] = SELECT user_role.role_id WHERE user_id = STRIP(self . data [ row, 3 ])
+                    { CPU Time }
+                    self . data [ row, 7 ] = STRIP ( SUBSTRING ( line_in, 140, 12 ) )
+                    { Program Status }
+                    self . data [ row, 10 ] = STRIP ( SUBSTRING ( line_in,  73, 15 ) )
+                    { User Name }
+                    self . data [ row, 6 ] = SELECT user_role.last_login WHERE user_id = STRIP(self . data [ row, 3 ])
+                    {self . data [ row, 6 ] = STRIP ( SUBSTRING ( line_in, 94, 49 ) ) }
+                 ELSE
+                    { Memory Usage }
+                    self . data [ row, 5 ] = STRIP ( SUBSTRING ( line_in,  65, 12 ) )
+                    { User Role }
+                    self . data [ row, 5 ] = SELECT user_role.role_id WHERE user_id = STRIP(self . data [ row, 3 ])
+                    { CPU Time }
+                    self . data [ row, 7 ] = STRIP ( SUBSTRING ( line_in, 146, 12 ) )
+                    { Program Status }
+                    self . data [ row, 10 ] = STRIP ( SUBSTRING ( line_in,  78, 15 ) )
+                    { User Name }
+                    self . data [ row, 6 ] = SELECT user_role.last_login WHERE user_id = STRIP(self . data [ row, 3 ])
+                    {self . data [ row, 6 ] = STRIP ( SUBSTRING ( line_in, 94, 49 ) ) }
+                 ENDIF
+                 window_set_status(STRIP(self . data [ row, 3 ]):"; ":line_in:"; ":self . data [ row, 7 ])
+            ELSEIF NUMTEXT(pid) THEN
+                row = SIZE_OF_ARRAY(self . data) + 1
+                { Executable }
+                exe = STRIP ( SUBSTRING ( line_in,   1, 29 ) )
+                IF INDEX(exe, ".") > 0 THEN
+                    exe = LEFTSTRING(exe, INDEX(exe, ".") - 1 )
+                ENDIF
+                self . data [ row, 1 ] = exe
+                { --- }
+                self . data [ row, 2 ] = STRIP ( SUBSTRING ( line_in,  36, 24 ) )
+                { User }
+                self . data [ row, 3 ] = STRIP ( SUBSTRING ( line_in,  94, 52 ) )
+                { PID }
+                self . data [ row, 4 ] = STRIP ( SUBSTRING ( line_in,  29,  6 ) )
+                { Memory Usage }
+                self . data [ row, 5 ] = STRIP ( SUBSTRING ( line_in,  65, 12 ) )
+                { User Role }
+                self . data [ row, 5 ] = "SYSTEM"
+                { CPU Time }
+                self . data [ row, 7 ] = STRIP ( SUBSTRING ( line_in, 146, 12 ) )
+                { Program Status }
+                self . data [ row, 10 ] = STRIP ( SUBSTRING ( line_in,  78, 15 ) )
+                { User Name }
+                SET DATE FORMAT "DD-MON-YYYY"
+                self . data [ row, 6 ] = STRING(NOW)
+                RESTORE DATE FORMAT
+                {self . data [ row, 6 ] = STRIP ( SUBSTRING ( line_in, 94, 49 ) ) }
+            ENDIF
+        ENDIF
+
+        { read the next line from the file }
+        FILE READ self . output, line_in, status
+    ENDWHILE
+
+    { close the file }
+    FILE CLOSE self . output, status
+
+ENDROUTINE { task_form_action_parse_tasklist }
+
+{***************************************************************************}
+
+ROUTINE task_form_action_pop_list ( self )
+
+{
+*
+* Populate the list with the gathered process information
+*
+* Parameters:  self - the form object
+* Return Value: None
+*
+****************************************************************************}
+
+    DECLARE list, arr_size, loop
+
+    DECLARE col 
+    ARRAY col ARRAY_SIZE (1)
+    col [1] = 6
+    {array_complex_sort ( self.data , col, ARRAY_SORT_DESCENDING ) } 
+
+    
+    list = self . list
+
+    list . remove_all_items ( )
+
+    loop = 0
+    arr_size = size_of_array ( self . data )
+
+    WHILE ( loop < arr_size ) DO
+        loop = loop + 1
+
+        list . insert_item ( self . data [ loop, 1 ] , 0 )
+        list . set_item ( 2, self . data [ loop, 2 ] )
+        list . set_item ( 3, self . data [ loop, 3 ] )
+        list . set_item ( 4, self . data [ loop, 4 ] )
+        list . set_item ( 5, self . data [ loop, 5 ] )
+        list . set_item ( 6, self . data [ loop, 6 ] )
+        list . set_item ( 7, self . data [ loop, 7 ] )
+        list . set_item ( 8, self . data [ loop, 8 ] )
+        list . set_item ( 9, self . data [ loop, 9 ] )
+        list . set_item ( 10, self . data [ loop, 10 ] )
+
+    ENDWHILE
+
+ENDROUTINE { task_form_action_process_list }
+
+{*****************************************************************************}
+
+ROUTINE refresh_btn ( self )
+
+{
+* Refresh the process list
+*
+* Parameters: self - the refresh button object
+* Return Value: None
+*
+******************************************************************************}
+
+    { call the process_list routine passing the form prompt }
+    self . parent_prompt . process_list()
+
+ENDROUTINE { kill_routine }
+
+{*****************************************************************************}
+
+ROUTINE kill_routine_btn ( self )
+
+{
+* Called from the Kill PID button.  Calls the kill_routine used by
+*   the list calback routine
+*
+* Parameters: self - the kill button object
+* Return Value: None
+*
+******************************************************************************}
+
+    { call the kill routine passing the list object }
+    kill_routine ( self . parent_prompt . list )
+
+ENDROUTINE { kill_routine }
+
+{*****************************************************************************}
+
+ROUTINE kill_routine ( self )
+
+{
+* Kill the process selected in the list.
+*
+* Parameters: self - the list object
+* Return Value: None
+*
+******************************************************************************}
+
+    DECLARE item_num, process_mode, pid, kill_it, status
+
+    { find the selected record from the list }
+    item_num = self . get_first_selected ( process_mode )
+
+    { if no record was selected, exit routine }
+    { this should only happen when using the kill button }
+    IF ( item_num = EMPTY ) THEN
+        RETURN
+    ENDIF
+
+    { Getting item in column 4, using 3 as this count starts at 0 (zero) }
+    pid = self . get_item ( item_num, 3 )
+
+    { Watch out for Suicide }
+    IF strip(pid) = self . parent_prompt . own_pid THEN
+
+        FLASH_MESSAGE ("You may not kill your own process",EMPTY)
+
+    ELSE { OK, do it }
+        { prompt to confirm killing process }
+        kill_it = confirm_with_text ( "Kill process " : STRIP( pid ) : " ?" )
+
+        { if kill OK'ed, spawn tskill to kill process }
+        IF ( kill_it ) THEN
+
+            SPAWN self . parent_prompt . kill_cmd : " " : pid, status QUIETLY
+
+            IF ( status <> EMPTY ) THEN
+                flash_message ( status, EMPTY )
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    { rebuild the list after the kill has been completed }
+    self . parent_prompt . process_list ( )
+
+ENDROUTINE { kill_routine }
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

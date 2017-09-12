@@ -1,0 +1,836 @@
+{***********************************************************************
+* Module Name   : UPDATE.RPF
+* Purpose       : Miscellaneous update routines to be executed "continuously"
+                  SET_WDT_RUNTIME:  Synchronising all reports in WDT to current time
+                                    (to be used when smpback has been down)
+                  SAMPLE_DATE:      Updating DateExp for samples/job after DateExp
+                                    has been updated from teststat.rpf
+                  INCIDENT_UPDATE:  Updating incidents based on result with detail from
+                                    result table (or from audit tables, where relevant).
+* Document Ref  :
+* Specification : N/a
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2010-09-07  Fredrik Lindstein   Created
+* 1.1       2010-09-17  Tommy Boegeskov     Modified
+************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY SAP_TRANSFER2
+JOIN LIBRARY LIT_EXPORT_LTE
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY AW_ROS
+
+JOIN STANDARD_LIBRARY STD_WINDOW         { window_Set_status }
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+DECLARE files_array, status, use_BZT,cmd
+ARRAY files_array
+CONSTANT Track = FALSE
+
+    IF global("MODE") = "INTERACTIVE" THEN
+        INCIDENT            ("")
+        SampleDateResReq    ("")
+        JobDateResReq       ("")   
+        SEND_AUTH_JOB2      ("")  
+        UPDATE_MLP          ("","")
+        EXIT
+    ENDIF
+
+DECLARE  repeat_interval
+
+    repeat_interval = SELECT timerqueue.repeat_interval FOR UPDATE WHERE report_name = GLOBAL("current_library")
+    START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+    ASSIGN timerqueue.run_time = NOW +  INTERVAL (repeat_interval)
+    UPDATE timerqueue
+    COMMIT
+ 
+
+use_BZT = GLOBAL("BIZTALK_ACTIVE")
+
+MAIN()
+
+EXIT
+
+ROUTINE MAIN
+
+    cmd = "if exist \\10.13.2.155\upload\*.csv      move \\10.13.2.155\upload\*.csv       E:\Thermo\SampleManager\Server\VGSM11PROD\Userfiles\VIDAS\AVE"
+    SPAWN cmd, status NOWAIT
+    IF status <> EMPTY THEN
+        WriteToLog(ASCII(10):ASCII(10):cmd:ASCII(10):status:ASCII(10))
+    ENDIF
+
+    cmd = "if exist \\10.130.115.30\Results\*.csv   move \\10.130.115.30\Results\*.csv    E:\Thermo\SampleManager\Server\VGSM11PROD\Userfiles\VIDAS\MKE"
+    SPAWN cmd, status NOWAIT
+    IF status <> EMPTY THEN
+        WriteToLog(ASCII(10):ASCII(10):cmd:ASCII(10):status:ASCII(10))
+    ENDIF
+
+    FILE FIND "smp$userfiles:CINAC\*.txt", files_array, status
+    COPY_CINAC_FILE(files_array)
+    IF SIZE_OF_ARRAY(files_array) > 0 THEN
+        RENAME_SPLITTED_FILES("smp$userfiles:CINAC\DK\*.txt")
+        RENAME_SPLITTED_FILES("smp$userfiles:CINAC\DE\*.txt")
+        RENAME_SPLITTED_FILES("smp$userfiles:CINAC\FR\*.txt")
+        RENAME_SPLITTED_FILES("smp$userfiles:CINAC\US\*.txt")
+    ENDIF
+
+    HandleFiles()
+
+    WDT_Export_deliver_arc_files ( 123 )
+
+    WDT_export_load_delivered_files ( 123 )
+
+ENDROUTINE
+
+ROUTINE SEND_AUTH_JOB2 (VALUE jobid)
+{*************************************************************************
+* Purpose      : Send job status and results to BizTalk for job
+                 To be called from BGR_UPDATE, based on entries in INCIDENTS_UPDATE
+* Parameters   : job_name
+* Return Value : N/A
+**************************************************************************}
+DECLARE sap_update, date_authorised
+
+    CompleteIncidents(jobid)
+    use_BZT = GLOBAL("BIZTALK_ACTIVE")
+    IF use_BZT THEN
+        sap_update      = SELECT job_header . sap_update_date WHERE job_name = jobid
+        date_authorised = SELECT job_header . date_authorised
+        SendJobStatus(jobid)
+        IF (date_authorised > sap_update) THEN
+            RETURN(date_authorised)
+        ELSE
+            RETURN(sap_update)
+        ENDIF
+    ELSE
+        RETURN("Not using BizTAlk")
+    ENDIF    
+
+    RETURN(EMPTY)
+
+ENDROUTINE
+
+ROUTINE SampleDateResReq(VALUE Sample)
+{*************************************************************************
+* Purpose      : Calculate and set the expected end date for a sample
+* Parameters   : id_numeric
+* Return Value : date_exp
+**************************************************************************}
+DECLARE DateResExp, DateResReq, SampleStatus, TestDateExp, IncDateExp, Status, GroupID, Started, Location, DaysToStart, SetIdeal
+
+SampleStatus = SELECT sample.status WHERE id_numeric = sample
+IF SampleStatus = EMPTY THEN
+    RETURN (NULL)
+ENDIF
+Started = FALSE
+        IF INDEX("XCR", SampleStatus) > 0 THEN
+            DateResExp = NOW
+            Started = TRUE
+        ELSEIF INDEX("HU", SampleStatus) > 0 THEN
+            DateResExp = NULL
+            RETURN (NULL)
+        ELSE
+            DateResReq = SELECT sample.date_exp WHERE id_numeric = sample
+            IF DateResReq = "" THEN
+                DateResReq = NOW
+            ENDIF
+            SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+            TestDateExp = MAX_DATE("TEST", "DATE_EXP", "SAMPLE", sample)
+            IncDateExp  = MAX_DATE("INCIDENTS", "DATE_EXP", "SAMPLE", sample)
+            IF IS_DATE(TestDateExp) THEN
+                DateResExp = TestDateExp
+            ELSEIF IS_DATE(IncDateExp) THEN
+                DateResExp = IncDateExp
+            ENDIF
+            IF IS_DATE(TestDateExp) AND IS_DATE(IncDateExp) THEN
+                IF IncDateExp > TestDateExp THEN
+                    DateResExp = IncDateExp
+                ELSE
+                    DateResExp = TestDateExp
+                ENDIF
+            ENDIF
+            IF (SELECT COUNT test
+                WHERE sample = sample
+                  AND date_started > DATE("01-JAN-1900")) > 0 THEN
+                Started = TRUE
+            ENDIF
+        ENDIF
+
+        IF NOT Started THEN
+            Location    = SELECT sample.location_id WHERE id_numeric = sample
+            DaysToStart = SELECT location_details.days_to_start WHERE location_id = Location
+            IF (NUMERIC(DaysToStart)=0) OR (DaysToStart = EMPTY) THEN
+                DaysToStart = "0"
+            ENDIF
+            DateResExp = DateResExp + INTERVAL(DaysToStart)
+        ENDIF
+        IF IS_DATE(DateResExp) THEN
+        SetIdeal = ("" = DATE(SELECT sample.date_ideal_complete WHERE id_numeric = sample))
+            Status = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = sample
+            DateResReq = SELECT sample.DateResReq
+            GroupID = STRIP(SELECT sample.group_id)
+            IF Status = LOCKED THEN
+                ErrorLog("ROUTINE SAMPLE_DATE failed, Sample ID: ":STRIP(Sample):" was locked by other user")
+                {RETURN(EMPTY)}
+            ELSE
+                SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+                IF (DateResExp <> EMPTY) AND (DateResReq <> LOCKED) AND (Status <> "A") THEN
+                    IF (DateResExp <> DateResReq) THEN
+                        IF GroupID = "4000" THEN
+                            DateResExp  = DateResExp - INTERVAL("0 07:00:00")
+                        ENDIF
+{
+                        IF (SELECT config_item.value WHERE identity = "TIMEZONE_CLIENT_DLS" and group_name = "4000") THEN
+                            DateResExp  = DateResExp + INTERVAL("0 01:00:00")
+                        ENDIF
+}
+                        IF (SELECT config_header.value WHERE identity = "TIMEZONE_CLIENT_DLS") THEN
+                            DateResExp  = DateResExp - INTERVAL("0 01:00:00")
+                        ENDIF
+                        ASSIGN sample.dateresreq = DateResExp
+                        ASSIGN sample.date_exp   = DateResExp
+                        IF SetIdeal THEN
+                            ASSIGN sample.date_ideal_complete = DateResExp
+                        ENDIF
+                        START WRITE TRANSACTION "Set date_res_req"
+                        UPDATE sample
+                        COMMIT
+                    ENDIF
+                ENDIF
+                RESTORE DATE FORMAT
+            ENDIF
+        ENDIF
+
+    insert_iu("UPDATE", "JobDateResReq", (SELECT sample.job_name WHERE id_numeric = sample), "")
+
+    RETURN(DateResExp)
+ENDROUTINE
+
+
+ROUTINE JobDateResReq(VALUE Job)
+{*************************************************************************
+* Purpose      : Calculate and set the expected end date for a job
+* Parameters   : job_name
+* Return Value : date_exp
+**************************************************************************}
+    DECLARE EndDate, location, DaysToEnd, EndDay, saturday, sunday ,
+            IncDateExp, SmpDateExp, Status, OldDateResExp {, group_id}
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+            saturday  = FALSE
+            sunday    = FALSE
+            DaysToEnd = 0  {If unable to determine location, set DaysToEnd = 1 (Default)}
+
+        EndDate        = SELECT job_header.date_exp WHERE job_name = job
+        SmpDateExp     = MAX_DATE("SAMPLE", "DATE_EXP", "JOB_NAME", job)
+        IncDateExp     = MAX_DATE("INCIDENTS", "DATE_EXP", "JOB_NAME", job)
+        Location       = SELECT sample.location_id WHERE job_name = job AND date_exp = SmpDateExp
+
+        IF (SELECT COUNT location_details WHERE location_id = location AND removeflag = FALSE) > 0 THEN
+            DaysToEnd   = SELECT location_details.days_to_end WHERE location_id = location
+            saturday    = SELECT location_details.saturday_work
+            sunday      = SELECT location_details.sunday_work
+        ENDIF
+
+        IF IS_DATE(SmpDateExp) AND IS_DATE(IncDateExp) THEN
+            IF IncDateExp > SmpDateExp THEN
+                EndDate = IncDateExp
+            ELSE
+                EndDate = SmpDateExp
+            ENDIF
+        ELSEIF IS_DATE(SmpDateExp) THEN
+                EndDate = SmpDateExp
+        ELSEIF IS_DATE(IncDateExp) THEN
+            EndDate = IncDateExp
+        ENDIF
+
+        IF (NUMERIC(DaysToEnd)=0) OR (DaysToEnd = EMPTY) THEN
+            DaysToEnd = "0"
+        ENDIF
+
+        IF IS_DATE(EndDate) THEN
+            EndDate = EndDate + INTERVAL(DaysToEnd)
+    { *** Check if enddate = working day is *** }
+            EndDay   = DAYNUMBER(EndDate)
+            IF EndDay = 6 THEN  { *** Saturday *** }
+               IF NOT saturday THEN
+                  EndDate = EndDate + INTERVAL("0001 00:00:00.00")
+                  EndDay   = DAYNUMBER(EndDate)
+               ENDIF
+            ENDIF
+
+            IF EndDay = 7 THEN  { *** Sunday *** }
+               IF NOT sunday THEN
+                  EndDate = EndDate + INTERVAL("0001 00:00:00.00")
+                  EndDay   = DAYNUMBER(EndDate)
+               ENDIF
+            ENDIF
+
+
+    { *** Add Expected End Date to job_header *** }
+            Status = SELECT job_header.job_name FOR UPDATE WHERE job_name = job
+            IF Status = LOCKED THEN
+                WriteToLog(STRIP(job):" 'LOCKED', DteExp: ":EndDate)
+            ELSEIF Status <> EMPTY THEN
+                OldDateResExp = SELECT job_header.date_exp
+{
+                IF (group_id = "4000") THEN
+                    EndDate  = EndDate - INTERVAL("0 07:00:00")
+                    WriteToLog("Check TZ offset for: ":job)
+                ENDIF
+}
+                IF (EndDate > NOW) AND
+                   ((EndDate > OldDateResExp + INTERVAL("0000 03:00:00.00")) OR
+                    (EndDate < OldDateResExp - INTERVAL("0000 03:00:00.00"))) THEN
+                    START WRITE TRANSACTION "Set job_date_res_req"
+                    ASSIGN job_header.date_exp = EndDate
+                    UPDATE job_header
+                    COMMIT
+                    IF(SendEndDate(Job)) THEN
+                       EndDate = EndDate:" -> SAP"
+                    ENDIF
+                ENDIF
+            ENDIF
+    ELSE
+        ErrorLog("ROUTINE SAMPLE_DATE failed, ":STRIP(job))
+    ENDIF
+
+RETURN(EndDate)
+
+ENDROUTINE
+
+
+ROUTINE CompleteIncidents(VALUE job)
+
+DECLARE ID, inc_array, i, status
+
+ARRAY inc_array ARRAYSIZE(0,1)
+
+    ID = SELECT incidents . incident_id WHERE job_name = job AND status = "V"
+
+    WHILE ID <> EMPTY DO
+        i = SIZE_OF_ARRAY(inc_array) + 1
+        inc_array[i,1] = ID
+    NEXT incidents
+        ID = SELECT incidents . incident_id
+    ENDWHILE
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(inc_array) DO
+        status = SELECT incidents . incident_id FOR UPDATE where incident_id = inc_array[i,1]
+        IF status = inc_array[i,1] THEN
+            IF NOT transaction_is_write ( ) THEN
+                START WRITE TRANSACTION "Update Incident"
+            ENDIF
+            ASSIGN incidents . status = "C"
+            UPDATE incidents
+            COMMIT
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE SQL(VALUE SQL_string)
+{*************************************************************************
+* Purpose      : Execute oracle SQL string
+* Parameters   : SQL string
+* Return Value : None
+**************************************************************************}
+        {WriteToLog(SQL_String)}
+        execute_sql(SQL_string)
+        execute_sql("commit")
+ENDROUTINE
+
+ROUTINE ErrorLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined error log
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+DECLARE file_name, Library, check_ok
+
+    file_name = "smp$logfiles:":"Error":".log"
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    IF NOT FILE EXISTS ( file_name ) THEN
+        FILE CREATE file_name, check_ok
+    ENDIF
+
+    Library = PAD(global("current_library"), " ", 25)
+
+    FILE EXTEND file_name, check_ok
+    FILE WRITE file_name, Now() : " " : Library : "  " : Msg , check_ok
+    FILE CLOSE file_name, check_ok
+
+    RESTORE DATE FORMAT
+
+ENDROUTINE
+
+GLOBAL ROUTINE COPY_CINAC_FILE(files_array)
+{*************************************************************************
+* Purpose      : Copy cinac files to IM folders, handling
+*                DK*.txt, DE*.txt, FR*.txt and US*.txt,
+* Return Value : N/A
+**************************************************************************}
+    DECLARE c, l, file, path, DTE
+
+    c = 1
+    WHILE (files_array[c] <> EMPTY) DO
+    file = files_array[c]
+        l = LENGTH(files_array[c])-1
+        WHILE (SUBSTRING(files_array[c],l,1) <> "\") AND (l > 0) DO
+            l = l - 1
+        ENDWHILE
+        file     = STRIP(SUBSTRING(files_array[c],l + 1,LENGTH(files_array[c])))
+        l = INDEX(files_array[c],"CINAC\") + 6
+        path     = STRIP(SUBSTRING(files_array[c],1,l - 1))
+        IF (INDEX("DK\DE\FR\US\",TOUPPER(LEFTSTRING(file,2))) > 0) THEN
+            WriteToLog(" Splitting ":files_array[c])
+            SPLIT_CINAC_FILE(files_array[c])
+            {Add timestamp to filename if not present
+             to ensure unique filenames}
+            SET DATE FORMAT "YYYYMZDZ"
+            DTE = "_":NOW
+            RESTORE DATE FORMAT
+            IF INDEX(file, DTE) = 0 THEN
+                SET DATE FORMAT "H24MISS"
+                DTE = "_":NOW
+                RESTORE DATE FORMAT
+                file = SUBSTRING(file, 1, INDEX(file,".") - 1):DTE:SUBSTRING(file, INDEX(file,"."), 4)
+            ENDIF
+
+            FILE COPY files_array[c], path:"IM_":file, status
+            IF status = EMPTY THEN
+                FILE DELETE files_array[c], status
+            ENDIF
+            WriteToLog(" Rename to ":path:"IM_":file)
+        ENDIF
+        c = c + 1
+    ENDWHILE
+
+ENDROUTINE
+
+GLOBAL ROUTINE SPLIT_CINAC_FILE(VALUE file)
+{*************************************************************************
+* Purpose      : Split cinac files into seperate files pr. test number
+*                DK*.txt, DE*.txt, FR*.txt and US*.txt,
+*                Handling folders smp$userfiles:CINAC\[folder]
+*                Input foldername
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+    DECLARE l, c, test_num, head_line, data, source,
+            read_line, line, path, status, sample, filename
+
+        l = INDEX(file,"CINAC\") + 6
+        path = STRIP(SUBSTRING(file,1,l - 1))
+        l = LENGTH(file)-1
+        WHILE (SUBSTRING(file,l,1) <> "\") AND (l > 0) DO
+            l = l - 1
+        ENDWHILE
+        source = STRIP(SUBSTRING(file,l + 1 ,LENGTH(file)))
+        path = path:LEFTSTRING(source,2):"\"
+
+        FILE OPEN file
+        line = 0
+        FILE READ file, read_line, status
+        line = line + 1
+        head_line = EMPTY
+        WHILE (status = EMPTY) AND (line < 50) DO
+            IF status = EMPTY THEN
+                test_num = EMPTY
+                data = EMPTY
+                l = INDEX(read_line,".") - 1
+                test_num = SUBSTRING(read_line,1,l)
+                IF SUBSTRING(test_num,2,2) = ":\" THEN
+                    head_line = read_line
+                ELSE
+                    IF NUMTEXT(test_num) THEN
+                        test_num = NUMERIC(test_num)
+                        IF test_num <= 9999999999 THEN
+                            sample = SELECT test.sample WHERE test_number = test_num
+                            IF sample = EMPTY THEN
+                                sample = "NO_SAMPLE"
+                                filename = sample:"_":STRIP(NUMBER_TO_TEXT(test_num, "99999999999")):"_":source
+                            ELSE
+                                sample = STRIP(sample)
+                                filename = sample:"_":STRIP(NUMBER_TO_TEXT(test_num, "99999999999")):"_":source
+                            ENDIF
+                        ELSE
+                            sample = "INVALID"
+                            filename = sample:"_":STRIP(test_num):"_":source
+                        ENDIF
+                    ELSE
+                        sample = "NO_SAMPLE"
+                        filename = sample:"_":STRIP(test_num):"_":source
+                    ENDIF
+                    data = read_line
+                    IF test_num <> EMPTY THEN
+                        c = 0
+                        WHILE FILE EXISTS (path:filename)
+                            c = c + 1
+                            filename = LEFTSTRING(filename, LENGTH(filename) - 4):"_":RIGHTSTRING("0":STRIP(ROUND(c)),2)
+                        ENDWHILE
+                        FILE CREATE path:filename:".tmp", status
+                        FILE EXTEND path:filename:".tmp"
+                        FILE WRITE  path:filename:".tmp", head_line
+                        FILE WRITE  path:filename:".tmp", data
+                        FILE CLOSE  path:filename:".tmp"
+                        IF sample = "NO_SAMPLE" THEN
+                            FILE DELETE path:filename:".tmp", status
+                            WriteToLog("     skip ":path:filename)
+                        ELSE   
+                            FILE COPY   path:filename:".tmp", path:filename, status
+                            IF status = EMPTY
+                                FILE DELETE path:filename:".tmp"
+                            ENDIF
+                            WriteToLog("     into ":path:filename)
+                        ENDIF
+                    ENDIF
+                ENDIF
+            ENDIF
+            FILE READ file, read_line, status
+        line = line + 1
+        ENDWHILE
+        FILE CLOSE file
+
+ENDROUTINE
+
+ROUTINE MAX_DATE(VALUE table, VALUE field, VALUE key_field, key)
+{*************************************************************************
+* Purpose      : Find max value for a date field
+*
+* Parameters   : table      - table to select from
+*              : field      - field to evaluate
+*              : key_field  - key field for selecting
+*              : key        - key value
+*
+* Return Value : max_value
+*
+* Syntax       : variable = MAX_DATE("TABLE", "FIELD", "KEY_FIELD", key)
+**************************************************************************}
+
+    DECLARE arr, val
+
+    ARRAY arr
+
+    val = select 'table'.'field' where 'key_field' = key
+
+    WHILE val <> EMPTY DO
+        arr[SIZE_OF_ARRAY(arr) + 1] = val
+    NEXT 'table'
+        val = select 'table'.'field'
+    ENDWHILE
+
+    array_sort ( arr , ARRAY_SORT_DESCENDING )
+
+    RETURN(arr[1])
+
+ENDROUTINE
+
+ROUTINE RENAME_SPLITTED_FILES(VALUE Folder)
+{*************************************************************************
+* Purpose      : Rename unprocessed files to retry transfer
+                 (Ignoring Instrument Managers ignore list)
+* Parameters   : folder
+* Return Value : N/A
+**************************************************************************}
+DECLARE split_files_array, i, l, fname, cnt, ext
+ARRAY   split_files_array
+
+    i = 1
+    FILE FIND Folder, split_files_array, status
+    IF SIZE_OF_ARRAY(split_files_array) > 0 THEN
+        WHILE i <= SIZE_OF_ARRAY(split_files_array)    
+            fname = split_files_array[i]
+            l = INDEX(fname, ".")
+            ext = STRIP(SUBSTRING(fname, l, LENGTH(fname)))
+            l = LENGTH(fname)
+            IF MIDSTRING(fname, l - 6, 1) = "_" THEN
+                cnt = MIDSTRING(fname, l - 5, 2)
+                IF NUMTEXT(cnt) THEN
+                    SET FORMAT "99"
+                    cnt = RIGHTSTRING("00":STRIP(STRING(NUMERIC(cnt + 1))),2)
+                ELSE
+                    cnt = "x":cnt
+                ENDIF
+                fname = LEFTSTRING(fname, l - 6):cnt:ext
+            ELSE
+                fname = LEFTSTRING(fname, l-4):"_01":ext
+            ENDIF
+            IF fname != split_files_array[i] THEN
+                FILE COPY split_files_array[i], fname, status
+                IF status = EMPTY THEN
+                    FILE DELETE split_files_array[i], status
+                ENDIF
+            ENDIF
+            i = i + 1
+        ENDWHILE
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE UPDATE_MLP(VALUE mlp_id, VALUE mlp_ver)
+{*************************************************************************
+* Purpose      : SET product_id, product_version, analysis_id and component_name for MLP_VALUES
+*              : 
+* Parameters   : mlp_id, mlp_ver
+* Return Value : N/A
+**************************************************************************}
+DECLARE entry_code, ec_array, ec, anal_id, compname, ms, i, ms_array, sub_id, sub_ver, LogTxt, mlp_dte, sub_dte
+ARRAY ec_array
+ARRAY ms_array
+
+    mlp_dte = SELECT mlp_header.modified_on WHERE identity = mlp_id AND product_version = mlp_ver
+    entry_code = SELECT DISTINCT mlp_components.entry_code WHERE product_id = mlp_id AND product_version = mlp_ver
+    WHILE entry_code <> EMPTY DO
+        ec_array[SIZE_OF_ARRAY(ec_array)+1,1] = entry_code
+        ec_array[SIZE_OF_ARRAY(ec_array)  ,2] = mlp_id
+        ec_array[SIZE_OF_ARRAY(ec_array)  ,3] = mlp_ver
+    NEXT mlp_components
+        entry_code = SELECT mlp_components.entry_code
+    ENDWHILE
+
+    ec = 1
+
+    WHILE ec <= SIZE_OF_ARRAY(ec_array) DO
+        anal_id  = STRIP(SELECT mlp_components . analysis_id WHERE entry_code = ec_array[ec,1])
+        compname = STRIP(SELECT mlp_components . component_name)
+        IF(STRIP(ec_array[ec,2]) <> SELECT mlp_values.product_id      WHERE entry_code = ec_array[ec,1])
+        OR(      ec_array[ec,3]  <> SELECT mlp_values.product_version WHERE entry_code = ec_array[ec,1]) THEN
+        ENDIF
+            SQL("UPDATE MLP_VALUES SET product_id = '":STRIP(ec_array[ec,2]):"', product_version = '":ec_array[ec,3]:"', analysis_id = '":anal_id:"', component_name = '":compname:"' WHERE entry_code = '":ec_array[ec,1]:"'")
+        ec = ec + 1
+    ENDWHILE
+    
+    ms = SELECT mlp_schedule . identity WHERE identity = mlp_id and identity_version = mlp_ver
+
+    WHILE ms <> EMPTY DO
+        ms_array[SIZE_OF_ARRAY(ms_array) + 1,1] = ms
+        ms_array[SIZE_OF_ARRAY(ms_array)    ,2] = SELECT mlp_schedule . identity_version
+        ms_array[SIZE_OF_ARRAY(ms_array)    ,3] = SELECT mlp_schedule . mlp_id
+        ms_array[SIZE_OF_ARRAY(ms_array)    ,4] = SELECT mlp_schedule . order_num
+        ms_array[SIZE_OF_ARRAY(ms_array)    ,5] = SELECT mlp_schedule . mlp_version
+        
+    NEXT mlp_schedule
+        ms = SELECT mlp_schedule . identity
+    ENDWHILE
+
+    i = 1
+    WriteToLog(STRIP(mlp_id):", ":mlp_dte:", ~ version ":mlp_ver)
+    WHILE i <= SIZE_OF_ARRAY(ms_array) DO
+        sub_id  = ms_array[i, 3]  
+        sub_ver = SELECT max_active_mlp_ver . max_version WHERE identity = sub_id
+        IF sub_ver = EMPTY THEN
+            sub_ver = 0
+        ELSE
+            IF mlp_dte <> EMPTY THEN
+                IF (DATE("11-JUN-2012") < mlp_dte ) AND (mlp_dte < DATE("12-JUN-2012")) THEN
+                    mlp_dte = SELECT mlp_header.created_date WHERE identity = mlp_id AND product_version = mlp_ver
+                    sub_dte = SELECT mlp_header.modified_on WHERE identity = sub_id ORDER ON modified_on ASCENDING
+                    WriteToLog(STRIP(mlp_id):", ":STRIP(mlp_ver):", ":mlp_dte:", ":STRIP(sub_id):", ":sub_dte)
+                    WHILE sub_dte < mlp_dte 
+                    NEXT mlp_header
+                        sub_dte = SELECT mlp_header.modified_on 
+                    ENDWHILE
+                ELSE
+                    sub_dte = SELECT mlp_header.modified_on WHERE identity = sub_id ORDER ON product_version DESCENDING
+                    IF (IS_DATE(sub_dte)) AND (sub_dte <> EMPTY) THEN
+                        WHILE (sub_dte > mlp_dte) AND (sub_dte <> EMPTY)
+                        NEXT mlp_header
+                            sub_dte = SELECT mlp_header.modified_on 
+                        ENDWHILE
+                    ENDIF    
+                ENDIF
+            ELSE
+                WriteToLog(STRIP(mlp_id):", ":STRIP(mlp_ver):", ":mlp_dte)
+                RETURN(EMPTY)
+            ENDIF
+            sub_ver = (SELECT mlp_header.product_version WHERE identity = STRIP(sub_id) AND modified_on > sub_dte - INTERVAL("   0 00:00:10") ORDER ON product_version)
+            WriteToLog("    ":STRIP(sub_id):", ":sub_dte:", ~ version ":sub_ver)
+        ENDIF
+        
+        ms = SELECT mlp_schedule . identity FOR UPDATE
+             WHERE identity         = ms_array[i, 1]
+               AND identity_version = ms_array[i, 2]
+               AND mlp_id           = ms_array[i, 3]
+               AND order_num        = ms_array[i, 4]
+        IF (ms = ms_array[i, 1]) AND (ms_array[i, 5] <> sub_ver) THEN
+            mlp_ver = ms_array[i, 5]
+            IF (sub_ver <> mlp_ver) THEN
+                LogTxt = STRIP(ms_array[i, 1]):";":STRIP(ms_array[i, 2]):";":STRIP(ms_array[i,3]):";":STRIP(ms_array[i, 5]):"->":STRIP(sub_ver)
+                WriteTolog(LogTxt)
+                START WRITE TRANSACTION "Set SUB_MLP Version"
+                ASSIGN mlp_schedule . mlp_version = sub_ver
+                UPDATE mlp_schedule
+                COMMIT 
+            ENDIF    
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN(TRUE)
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+ROUTINE INCIDENT(VALUE incident_id)
+{*************************************************************************
+* Purpose      : Update description of result incidents
+                 To be called from BGR_UPDATE, based on entries in INCIDENTS_UPDATE
+* Parameters   : incident_id
+* Return Value : N/A
+**************************************************************************}
+DECLARE description, template_id, result_id, test_number, component, res_name, analysis, sample, res_text, res_unit, 
+        mlp, mlp_ver, limits, i_date,  r_date, audit, audit_array
+
+    description = STRIP(SELECT incidents.description WHERE incident_id = incident_id)
+    template_id = SELECT incidents.template_id
+    IF (template_id <> "EXTERNAL") AND 
+       (template_id <> "INTERNAL") AND
+       (template_id <> "RED"     ) AND
+       (template_id <> "YELLOW"  ) AND 
+       (template_id <> "GREEN"   ) THEN
+        RETURN(TRUE)
+    ENDIF              
+    result_id   = SELECT incidents.resultid
+    test_number = SELECT test.test_number WHERE test_number = SUBSTRING(result_id,1,10)
+    IF (NOT BLANK(test_number)) AND (test_number <> EMPTY) THEN
+        component   = (SUBSTRING(result_id,11,255))
+        IF test_number = EMPTY THEN
+            RETURN(Description)
+        ENDIF
+        res_name    = SELECT result.name WHERE test_number = test_number AND name = STRIP(component)
+        IF res_name <> EMPTY THEN
+            analysis    = STRIP(SELECT test.analysis WHERE test_number = test_number)
+            sample      = SELECT test.sample
+            res_text    = STRIP(SELECT result.text)
+            res_unit    = STRIP(SELECT result.units)
+            IF res_unit = EMPTY THEN
+                res_unit = SELECT incidents.units
+            ENDIF
+            IF (sample <> EMPTY) THEN
+                mlp         = SELECT sample.product WHERE id_numeric = sample
+                mlp_ver     = SELECT sample.product_version
+            ENDIF
+
+            IF (test_number <> EMPTY) AND
+               ((template_id = "INTERNAL") OR 
+                (template_id = "EXTERNAL") OR 
+                (template_id = "GREEN") OR 
+                (template_id = "YELLOW") OR 
+                (template_id = "RED")) THEN
+                IF (1 < SELECT COUNT mlp_limits_view
+                         WHERE product_id = mlp
+                           AND product_version = mlp_ver
+                           AND level_id = template_id
+                           AND ((analysis_id = analysis AND component_name = res_name)
+                             OR (analysis_id = "$NULL" AND component_name = res_name))) THEN
+                    limits = "Multiple limits"
+                ELSE             
+                    limits = SELECT mlp_limits_view.limits
+                             WHERE product_id = mlp
+                               AND product_version = mlp_ver
+                               AND level_id = template_id
+                               AND ((analysis_id = analysis AND component_name = res_name)
+                                 OR (analysis_id = "$NULL" AND component_name = res_name))
+                ENDIF
+            ELSE
+                limits = EMPTY
+            ENDIF
+
+            IF limits = EMPTY THEN
+                limits = "()"
+            ELSEIF res_unit = ""
+                limits = " (":STRIP(limits):")"            
+            ELSEIF res_unit <> EMPTY THEN
+                limits = " (":STRIP(limits):" ":res_unit:")"            
+            ELSE
+                res_unit = ""
+            ENDIF 
+
+            IF res_name = EMPTY THEN
+                ErrorLog("ROUTINE INCIDENT_UPDATE failed; ":STRIP(component):" was not found in test number: ":STRIP(test_number))
+            ELSE
+                analysis    = analysis:"/":STRIP(SELECT test.test_count)
+                i_date      = SELECT incidents.incident_date
+                r_date      = SELECT result.entered_on
+
+                IF (r_date <> EMPTY) THEN
+                    IF NOT ((i_date < r_date + INTERVAL("0 00:00:05")) AND
+                            (r_date < i_date + INTERVAL("0 00:00:05"))) THEN
+                        ARRAY audit_array ARRAY_SIZE (0, 1)
+                        audit = SELECT audit_view_result.transaction
+                                 WHERE record_key0 = result_id
+                                   AND (transaction_date > (i_date + INTERVAL("0 00:00:01")))
+                           AND FIELD_NAME = "TEXT"
+                                   ORDER ON transaction_date
+                        WHILE audit <> EMPTY
+                            audit_array[size_of_array(audit_array) + 1, 1] = audit
+                            NEXT audit_view_result
+                            audit = SELECT audit_view_result.transaction
+                            res_text = STRIP(SELECT audit_view_result.value_after WHERE record_key0 = result_id AND transaction = audit_array[1,1])
+                        ENDWHILE
+                    ENDIF
+                ENDIF
+            ENDIF
+
+            IF res_text <> EMPTY THEN
+                description = analysis: " - " :STRIP(res_name): " - " :STRIP(res_text):" ":res_unit:limits 
+                WriteToLog(incident_id:" ":description)
+            ELSEIF INDEX(description, "Exceeding level") > 0 THEN
+                description = description:limits 
+                WriteToLog(incident_id:" ":description)
+            ELSE
+                description = analysis:" - ":STRIP(res_name):" - ":STRIP(res_text):" ":res_unit:limits
+                WriteToLog((SELECT incidents.template_id):incident_id:" ":description)
+            ENDIF
+
+            result_id    = SELECT incidents.incident_id FOR UPDATE WHERE incident_id = incident_id
+            IF result_id = incident_id THEN
+                IF LENGTH(description) > 230
+                    description = LEFTSTRING(description, 230):"...)"
+                ENDIF
+                ASSIGN incidents.result_name = res_name
+                ASSIGN incidents.result_text = res_text
+                ASSIGN incidents.units       = res_unit
+                ASSIGN incidents.description = description
+                IF NOT transaction_is_write ( ) THEN
+                    START WRITE TRANSACTION "Update Incident"
+                ENDIF
+                UPDATE incidents
+                COMMIT
+            ELSE
+                WriteToLog("incident_id (":incident_id:") = ":result_id)
+            ENDIF    
+        ENDIF
+    ENDIF
+
+    RETURN(Description)
+
+ENDROUTINE
+
+

@@ -1,0 +1,145 @@
+
+{ This definition is required at the top of all calculations }
+GLOBAL ROUTINE calculation(current_sample,
+			   testno,
+			   compname)
+
+   JOIN  LIBRARY  $LIB_UTILS
+   JOIN  LIBRARY  TOOLBOX
+
+   ARRAY res_arr
+   ARRAY new_res
+   ARRAY check_arr
+   ARRAY flag_comp_arr
+   ARRAY parm_arr
+
+   calcresult = EMPTY
+
+   err_mes  = EMPTY
+   fail_val = EMPTY
+
+   IF     (NOT find_results( testno, res_arr, n_res ) )
+   THEN   err_mes = "No results entered"
+   ELSEIF (NOT get_component_row( compname, res_arr, n_res, comp_row ) )
+   THEN   err_mes = "Could not find component row"
+   ELSEIF res_arr[comp_row,result_cont_pos] = EMPTY
+   THEN   err_mes = "Flag is needed in setup for this component"
+   ENDIF
+
+   IF   err_mes = EMPTY
+   THEN
+     prod_id = select sample . product
+               where  id_numeric = current_sample
+     prod_ver= select sample . product_version
+     IF   prod_id = EMPTY
+     THEN err_mes = "No product specified on sample"
+     ELSE
+        anal_id = select test . analysis
+                  where  test_number = testno
+        IF   anal_id = EMPTY
+        THEN err_mes = "No analysis found on test"
+        ELSE
+           ent_code = select mlp_components . entry_code
+                      where  analysis_id <> EMPTY
+                      and    analysis_id = anal_id
+                      and    component_name = compname
+                      and    product_id = prod_id
+
+           IF   ent_code = EMPTY
+           THEN err_mes = "Analysis/Component missing on MLP Components"
+           ELSE c = select mlp_values . entry_code
+                    where  entry_code = ent_code
+                phrase_id = EMPTY
+                WHILE (c <> EMPTY) AND (phrase_id = EMPTY) DO
+                   phrase_id = select mlp_values . text_phrase
+                   NEXT mlp_values
+                   c = select mlp_values . entry_code
+                ENDWHILE
+                IF   phrase_id = EMPTY THEN
+                     err_mes = "No Phrase List found in MLP Limits for this ":
+                             "component"
+                ENDIF
+           ENDIF
+        ENDIF
+     ENDIF
+   ENDIF
+
+   IF   err_mes <> EMPTY
+   THEN flash_message(err_mes,TRUE)
+        return
+   ENDIF
+
+   the_flag = res_arr[comp_row,result_cont_pos]
+
+   create_fail = FALSE
+
+   flag_comps = 0
+   n = 0
+   WHILE (n<n_res) AND (NOT create_fail) DO
+      n = n+1
+      IF (n<>comp_row) AND (res_arr[n,result_cont_pos]=the_flag) THEN
+         IF res_arr[n,result_text_pos] = EMPTY THEN
+            flash_message("Missing result in component:":
+                           res_arr[n,result_name_pos],TRUE)
+            return ( EMPTY )
+         ENDIF
+         flag_comps = flag_comps + 1
+         flag_comp_arr[flag_comps] = n
+         IF   (res_arr[n,result_oorf_pos] <> EMPTY) AND
+              (res_arr[n,result_oorf_pos])
+         THEN create_fail = TRUE
+         ENDIF
+      ENDIF
+   ENDWHILE
+
+   IF flag_comps = 0 THEN
+      flash_message("Error in setup: No other components have flag:":
+                     the_flag, TRUE )
+      return ( EMPTY )
+   ENDIF
+
+   IF NOT create_fail THEN
+      any_parms = mlp_analysis_parameters ( "M", "FAILOPTION", 3,
+                                    prod_id, prod_ver,
+                                    parm_arr, parms, mess )
+      f = 0
+      WHILE (f<flag_comps) AND (NOT create_fail) DO
+         f = f+1
+         row = flag_comp_arr[f]
+         IF res_arr[row,result_type_pos] = "O" THEN
+            phr_id = res_arr[row,result_calc_pos]
+            IF any_parms THEN
+               n = 1
+               found = FALSE
+               WHILE (get_cell_content_row(parm_arr,parms,anal_id,1,n,parm_row))
+                      AND (not found) DO
+                  n = n+1
+                  IF   parm_arr[parm_row,2] = phr_id
+                  THEN phr_id = parm_arr[parm_row,3]
+                       found = TRUE
+                  ENDIF
+               ENDWHILE
+            ENDIF
+            oorf = select limit_phrase_entry . comparison
+                   where  limit_phrase = phr_id
+                   and    result_value = res_arr[row,result_text_pos]
+            IF   oorf = "F" THEN
+                 create_fail = TRUE
+            ENDIF
+         ENDIF
+      ENDWHILE
+   ENDIF
+
+   IF   create_fail
+   THEN cond = "F"
+   ELSE cond = "P"
+   ENDIF
+
+   IF   NOT first_phrase_value(phrase_id, cond, fail_val, err_mes)
+   THEN flash_message( err_mes, TRUE )
+   ELSE calcresult = fail_val
+   ENDIF
+
+{ The next two lines are required at the end of the calculation }
+return(calcresult) { The calculated result is returned here }
+ENDROUTINE

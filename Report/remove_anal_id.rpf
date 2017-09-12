@@ -1,0 +1,318 @@
+{******************************************************************************
+*
+* Issue No      : 1584 . HBe 19-10-2004
+*
+* Module Name   : REMOVE_ANAL_ID.RPF
+*
+* Purpose       : Change removeflag across VERSIONED_ANALYSIS versions of a given VERSIONED_ANALYSIS indentity.
+*                 
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+
+
+   SET NAME "/DISPLAY"
+   ENABLE WINDOWS
+   SET COMPILE_OPTION DECLARE
+
+   JOIN STANDARD_LIBRARY STD_BLOCK
+   JOIN LIBRARY $LIB_UTILS
+   
+   JOIN STANDARD_LIBRARY STD_UTILS
+
+   SET NOTPROTECTED
+
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_RESULT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+
+
+{ver_anal_removeflag ( "RE_REMOVE" )}
+
+
+ROUTINE ver_anal_removeflag ( VALUE mode )
+	     
+ 
+   DECLARE prompt_form, tsr_header, tsr_footer, window_width
+   DECLARE title, versioned_analysis_identity_title, versioned_analysis_identity, button_ok, button_cancel, analysis_description, versioned_analysis_description, versioned_analysis_vers
+   DECLARE accept_button
+   
+   title = "Select Analysis identity" 
+   accept_button = "OK"
+   
+   IF mode = "RE_REMOVE" THEN
+      tsr_header   = "Remove Analysis Versions"
+      accept_button = "Remove"
+      SET BROWSE ACTIVE
+   ELSEIF mode = "RE_RESTORE" THEN  
+      SET BROWSE REMOVED
+      tsr_header   = "Restore Analysis Versions"
+      accept_button = "Restore"
+   ELSE   
+      FLASH_MESSAGE ("Exiting due to Illegal Operation attempt..." , TRUE)
+      EXIT
+   ENDIF   
+   
+    window_width = 31 + LENGTH(tsr_header)
+   
+   
+   tsr_footer   = "FOOTER TEXT"
+
+   create_prompt_form ( prompt_form  ,
+	                window_width ,
+	                4            ,
+	                tsr_header   ,
+	                tsr_footer   )
+   
+
+
+	PROMPT OBJECT versioned_analysis_identity_title
+		FORMAT TEXT
+                ON LINE 2 FROM 1
+		WITH ( bold   = TRUE             ,
+		       width  = LENGTH(title)      ,
+		       value  = title)
+
+	prompt_form . add_display ( versioned_analysis_identity_title )
+
+
+
+	PROMPT OBJECT versioned_analysis_identity
+                BROWSE ON versioned_analysis . identity
+                THEN select
+                ON LINE 1 FROM LENGTH(title) + 2
+                
+        prompt_form . add_prompt ( versioned_analysis_identity )
+	
+	
+	PROMPT OBJECT analysis_description
+	                BROWSE ON versioned_analysis . description
+	                ON LINE 4 FROM LENGTH(title) + 2
+			WITH ( lowered = TRUE, width = 30 )
+			
+	prompt_form . add_display ( analysis_description )
+	
+	PROMPT OBJECT button_ok
+	                CLASS "STD_PROMPT_BUTTON"
+	                ON LINE 1
+		        FROM    window_width - 15
+	        	WITH  ( caption      = accept_button ,
+	                	enabled      = TRUE    ,
+				width        = 10 ,
+	        	        mouse_click_routine = "do_operation"  )
+	
+	prompt_form . add_prompt ( button_ok )
+	
+	PROMPT OBJECT button_cancel
+	                CLASS "STD_PROMPT_BUTTON"
+		        ON LINE 3
+	                FROM    window_width - 15
+	        	WITH  ( caption      =
+				get_user_message ( "SMP_PROMPT_BUTTON_CANCEL" , 1 ) ,
+		                enabled      = TRUE      ,
+				width        = 10  ,
+	                	send_lastkey = "EXIT"  )
+	
+	prompt_form . add_prompt ( button_cancel )
+	        
+	     
+	prompt_form . button_style = FORM_BUTTON_NONE
+
+	prompt_form . height = 5
+	prompt_form . width  = 50
+
+	versioned_analysis_identity_title . column = 2
+	versioned_analysis_identity_title . row = 1
+
+	versioned_analysis_identity . column = 2
+	versioned_analysis_identity . row = 2
+		
+	analysis_description . column = 2
+	analysis_description . row = 3
+
+
+  
+	prompt_form . start_prompt ()
+
+	
+        WHILE prompt_form . get_lastkey () <> "EXIT" DO
+                IF mode      = "RE_REMOVE" THEN
+                   versioned_analysis_vers  = (SELECT MAX versioned_analysis.analysis_version 
+                                WHERE identity = versioned_analysis_identity.value
+                                AND removeflag = FALSE)
+                ELSEIF mode  = "RE_RESTORE" THEN
+                   versioned_analysis_vers  = (SELECT MAX versioned_analysis.analysis_version
+                                WHERE identity = versioned_analysis_identity.value
+                                AND removeflag = TRUE)
+                ENDIF
+                IF (versioned_analysis_vers = EMPTY) OR BLANK(versioned_analysis_vers) THEN 
+                   versioned_analysis_vers = "0"                  
+                ENDIF   
+                               
+                versioned_analysis_description = SELECT versioned_analysis.description
+                                  WHERE identity = versioned_analysis_identity.value
+                                  AND analysis_version = versioned_analysis_vers
+                                  
+                                  
+	        analysis_description . set_text ( versioned_analysis_description )
+					       					       
+		prompt_form . active_prompt = 1
+
+		prompt_form . set_enabled ( TRUE )
+
+		prompt_form . wait_prompt ()
+		
+
+	ENDWHILE
+	
+	prompt_form . end_prompt ()
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+	
+ROUTINE do_operation ( self )
+
+   DECLARE field1, field2, field3, name_of_table, name_block
+   DECLARE versioned_analysis_select_array, check_ok, size_block, row_idx
+   DECLARE new_remove_stat, old_remove_stat
+   DECLARE versioned_analysis_id
+   
+   
+   versioned_analysis_id = SELECT versioned_analysis . identity IN OBJECT self . parent_prompt . prompt_objects [1]
+   
+  
+   IF mode = "RE_REMOVE" THEN
+      new_remove_stat = TRUE
+   ELSEIF mode = "RE_RESTORE" THEN
+      new_remove_stat = FALSE
+   ELSE
+      FLASH_MESSAGE("Illegal operation, exiting", TRUE)
+      RETURN(false)
+   ENDIF
+   
+   
+   IF new_remove_stat = TRUE 
+      THEN old_remove_stat = FALSE
+   ELSEIF new_remove_stat = FALSE 
+      THEN old_remove_stat = TRUE   
+   ENDIF
+	                         
+
+      field1            = "REMOVEFLAG"
+      field2            = "MODIFIED_BY"
+      field3            = "MODIFIED_ON"
+      name_of_table 	= "versioned_analysis"
+      name_block 	= "versioned_analysis_HEADER_BLOCK"
+
+
+      ARRAY versioned_analysis_select_array
+
+         versioned_analysis_select_array[1,1] = ARRAY_SELECT_EQ
+         versioned_analysis_select_array[1,2] = "IDENTITY"
+         versioned_analysis_select_array[1,3] = versioned_analysis_id
+         versioned_analysis_select_array[2,1] = ARRAY_SELECT_AND
+	 versioned_analysis_select_array[2,2] = ""
+         versioned_analysis_select_array[2,3] = ""
+         versioned_analysis_select_array[3,1] = ARRAY_SELECT_EQ
+	 versioned_analysis_select_array[3,2] = "REMOVEFLAG"
+         versioned_analysis_select_array[3,3] = old_remove_stat
+
+      block_row_initialise ( name_block , name_of_table)
+      check_ok = block_row_select ( name_block, versioned_analysis_select_array, TRUE)
+	     
+      IF check_ok <> TRUE THEN
+	 FLASH_MESSAGE("Unable to change versioned_analysis removal status", TRUE)
+	 RETURN
+      ENDIF
+                
+
+      size_block = block_row_size (name_block)
+      block_row_first (name_block)
+         
+      row_idx = 0   
+                
+      WHILE  row_idx < size_block 
+                
+         row_idx = row_idx + 1
+                   
+         block_row_field_assign (name_block , field1	, new_remove_stat )
+         block_row_field_assign (name_block , field2	, GLOBAL("OPERATOR"))
+         block_row_field_assign (name_block , field3	, NOW )
+                
+         block_row_next (name_block)
+                   
+      ENDWHILE
+             
+      START WRITE TRANSACTION "save_translation"
+	     
+      BLOCK_ROW_UPDATE  (name_block)
+	     
+      COMMIT
+	     
+      BLOCK_ROW_RELEASE (name_block)
+      
+      IF mode = "RE_REMOVE" THEN
+         FLASH_MESSAGE(STRIP(row_idx) : " versions of versioned_analysis " : STRIP(versioned_analysis_id) : " have been removed.", TRUE)
+      ELSEIF mode = "RE_RESTORE" THEN
+         FLASH_MESSAGE(STRIP(row_idx) : " versions of versioned_analysis " : STRIP(versioned_analysis_id) : " have been restored.", TRUE)
+      ENDIF   
+      
+                
+ENDROUTINE 
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_remove ( option )
+
+	ver_anal_removeflag ( "RE_REMOVE" )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_restore ( option )
+
+	ver_anal_removeflag ( "RE_RESTORE" )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE create_prompt_form (       prompt_form   ,
+                             VALUE window_width  ,
+                             VALUE window_height ,
+                                   window_header ,
+                                   window_footer )
+
+	CREATE OBJECT PROMPT_CLASS_FORM , prompt_form
+
+	prompt_form . height = window_height
+	prompt_form . width  = window_width
+	prompt_form . row    = 11
+	prompt_form . column = ROUND ( ( GLOBAL ( "SCREEN_WIDTH" ) -
+					window_width  ) / 2 )
+	prompt_form . border = TRUE
+	prompt_form . header = window_header
+	prompt_form . footer = window_footer
+	prompt_form . proportional = TRUE
+	prompt_form . return_behaviour = FORM_RETURN_LEAVE
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+

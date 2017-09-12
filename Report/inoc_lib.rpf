@@ -1,0 +1,281 @@
+
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY $LIB_UTILS
+
+{**M1620 HBe 11-8-2005: Sample-ID included for identification of user-constant when parameters are missing}
+
+GLOBAL ROUTINE get_inoc_parameters ( VALUE comp_name,
+                                     VALUE test_no,
+                                     VALUE sample_id,
+                                           res_arr,
+                                     VALUE n_res,
+                                     VALUE comp_row,
+                                           parm_arr )
+
+   ARRAY mlp_arr
+
+   IF   get_endstring_parameters(comp_name,3,TRUE,FALSE,parm_arr)
+   THEN
+        IF (NOT substitute_non_numeric( parm_arr ) ) THEN
+            return ( FALSE )
+        ENDIF
+        RETURN ( TRUE )
+   ELSE smp_id = select test.sample
+                 where  test_number = test_no
+        IF smp_id = EMPTY THEN
+           flash_message("ERROR: This test does not exist",TRUE)
+           RETURN (FALSE)
+        ENDIF
+
+        anal_id= SELECT test.analysis
+        mlp_id = select sample.product
+                 where  id_numeric = smp_id
+        mlp_ver= select sample.product_version
+
+        IF mlp_analysis_parameters( "M", "INOC_PCT", 4, mlp_id, mlp_ver,
+                                     mlp_arr, n_sets, err_mess )
+
+        THEN
+           get_calc_num ( comp_row, res_arr, parm_no )
+           IF get_cell_content_row ( mlp_arr, n_sets, anal_id, 1, parm_no,
+                                     row_found )
+           THEN parm_arr[1,1] = mlp_arr[row_found,2]
+                parm_arr[1,2] = mlp_arr[row_found,3]
+                parm_arr[1,3] = mlp_arr[row_found,4]
+
+                IF (NOT substitute_non_numeric( parm_arr ) ) THEN
+                   return ( FALSE )
+                ENDIF
+
+                return ( TRUE )
+
+           ENDIF
+        ENDIF
+
+        IF mlp_analysis_parameters( "S", "INOC_PCT", 3, mlp_id, mlp_ver,
+                                     mlp_arr, n_sets, err_mess )
+        THEN
+
+              get_calc_num ( comp_row, res_arr, parm_no )
+
+{....         IF   parm_no > (n_sets-1) .....}
+
+              IF ( (NOT get_cell_content_row ( mlp_arr, n_sets, anal_id, 1,
+                                               parm_no+1, row_found ) ) OR
+                   (NOT get_cell_content_row ( mlp_arr, n_sets, anal_id, 1,
+                                                       1, row_found1 )) )
+              THEN err_mess = "To few sets of parameters"
+              ELSE
+                parm_arr[1,1] = mlp_arr[row_found1,2]
+                parm_arr[1,2] = mlp_arr[row_found ,2]
+                parm_arr[1,3] = mlp_arr[row_found ,3]
+
+                IF (NOT substitute_non_numeric( parm_arr ) ) THEN
+                   return ( FALSE )
+                ENDIF
+
+                return ( TRUE )
+
+              ENDIF
+
+        ENDIF
+
+   ENDIF
+
+   IF GLOBAL ( "SHOW_ERRORS" ) THEN
+      flash_message("Error: No inoculate parameter setup available. ":
+                 "Reason:":err_mess:" (Try comparing MLP version on sample and MLP.)",TRUE)
+   ENDIF   
+
+{**MS1620 HBe 11-8-2005:  If neither MLP nor Standard parameters for INOC_PCT are found, prompt for adhoc values, 
+                         remembering last entered values, suggesting default values}                 
+   DECLARE return_value
+   
+   return_value = EMPTY
+                         
+   IF get_manual_value (sample_id, test_no, comp_name, "MLP Parameter 'INOC_PCT'", 
+                       "Amount of Milk in Bottels 1 and 2", FALSE, 206.9, "INOC_PCT-milk", "REAL", return_value)
+   THEN 
+      parm_arr[1,1] = return_value 
+      parm_arr[1,2] = return_value
+         
+      IF get_manual_value (sample_id, test_no, comp_name, "MLP Parameter 'INOC_PCT'", 
+                  "Desired Inoculation %", FALSE, 0.01, "INOC_PCT-inocul", "REAL", return_value)
+      THEN
+         parm_arr[1,3] = return_value
+      ELSE
+         FLASH_MESSAGE("Inoculation Percentage Not Found", TRUE)
+         RETURN(FALSE)
+      ENDIF
+   ELSE 
+      FLASH_MESSAGE("No Milk Amount Found", TRUE)
+      RETURN (FALSE)
+   ENDIF                 
+   
+   RETURN ( TRUE )
+
+{**ME1620}
+
+ENDROUTINE
+
+
+ROUTINE  substitute_non_numeric ( parm_arr )
+
+   check_value = parm_arr[1,3]
+   IF   (NOT NUMTEXT(check_value))
+   THEN check_value = strip(check_value)
+        row = comp_row
+        not_found = TRUE
+        WHILE (not_found) AND (row>1) DO
+           row = row - 1
+           IF   res_arr[row,result_cont_pos] = check_value
+           THEN parm_arr[1,3] = res_arr[row,result_text_pos]
+                not_found = FALSE
+           ENDIF
+        ENDWHILE
+        IF   not_found
+        THEN flash_message("Error: Could not find substituting component",TRUE)
+             return ( FALSE )
+        ENDIF
+   ENDIF
+
+   IF   all_numeric ( parm_arr,1,3 )
+   THEN return ( TRUE  )
+   ELSE flash_message("Error: All parameters must be numeric",TRUE)
+        RETURN ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+
+GLOBAL
+ROUTINE  get_sample_qty ( VALUE mode,
+                          VALUE test_no,
+                          VALUE comp_name,
+                                comp_row,
+                                res_arr,
+                                n_res,
+                                inoc_qty,
+                                inoc_qty2 )
+
+   inoc_qty  = EMPTY
+   inoc_qty2 = EMPTY
+
+   IF   NOT find_results( test_no, res_arr, n_res )
+   THEN flash_message("No results entered. No calculation is possible",TRUE)
+        return ( FALSE )
+   ENDIF
+
+   IF   (NOT get_component_row( comp_name, res_arr, n_res, comp_row ))
+   THEN flash_message("ERROR: Current component:":comp_name:
+                      " not found in analysis",TRUE)
+        return ( FALSE )
+   ENDIF
+
+   IF   comp_row = 1
+   THEN flash_message(
+        "ERROR: Inoculate calculation not possible for first component",TRUE)
+        return ( FALSE )
+   ENDIF
+
+   find_by_flag = FALSE
+
+
+   IF  (res_arr[comp_row,result_cont_pos] <> EMPTY) AND
+       (NOT BLANK(res_arr[comp_row,result_cont_pos]))
+   THEN find_by_flag = TRUE
+        row = comp_row
+        found = FALSE
+        WHILE (NOT(found)) AND (row>1) DO
+           row = row - 1
+           IF (res_arr[     row,result_cont_pos] =
+               res_arr[comp_row,result_cont_pos]) AND
+              (res_arr[     row,result_type_pos] <> "K")
+           THEN found = TRUE
+           ENDIF
+        ENDWHILE
+
+        IF   found
+        THEN IF   (res_arr[row,result_text_pos] = EMPTY) OR
+                  (BLANK(res_arr[row,result_text_pos]))
+             THEN flash_message(
+                  "ERROR: No inoculate Quantity entered",TRUE)
+             ELSE inoc_qty = res_arr[row,result_valu_pos]
+             ENDIF
+        ELSE flash_message(
+             "ERROR: No component found corresponding to flag:":
+                        res_arr[comp_row,result_cont_pos],TRUE)
+        ENDIF
+   ENDIF
+
+   IF   (mode = "S") AND (NOT find_by_flag)
+   THEN IF   (res_arr[comp_row-1,result_text_pos] <> EMPTY) AND
+             (NOT BLANK(res_arr[comp_row-1,result_text_pos]))
+        THEN inoc_qty = res_arr[comp_row-1,result_valu_pos]
+        ELSE flash_message(
+             "ERROR: No Inoculate Quantity in primer component",TRUE)
+        ENDIF
+   ENDIF
+
+   IF   mode = "R"
+   THEN row  = comp_row - 1
+        no_error = TRUE
+        WHILE (row>0) AND (no_error) AND
+              ((inoc_qty=EMPTY) OR ( (inoc_qty2=EMPTY) AND (find_by_flag)) ) DO
+            IF   res_arr[ row, result_type_pos ] = "N"
+            THEN IF   inoc_qty2=EMPTY
+                 THEN inoc_qty2=res_arr[ row, result_valu_pos ]
+                      IF   inoc_qty2 = EMPTY
+                      THEN no_error = FALSE
+                      ENDIF
+                 ELSE inoc_qty=res_arr[ row, result_valu_pos ]
+                      IF   inoc_qty = EMPTY
+                      THEN no_error = FALSE
+                      ENDIF
+                 ENDIF
+            ENDIF
+            row = row - 1
+        ENDWHILE
+
+        IF   (row = 0) AND (no_error) AND (inoc_qty=EMPTY)
+        THEN flash_message("ERROR: Two numeric components must be ":
+                           "specified before this one",TRUE)
+        ELSEIF NOT no_error
+        THEN flash_message("ERROR: Missing results to calculate",TRUE)
+        ENDIF
+
+   ENDIF
+
+   ok = check_qty(inoc_qty)
+
+   IF  (ok) AND (mode = "R")
+   THEN ok = check_qty(inoc_qty2)
+   ENDIF
+
+   return ( ok )
+
+ENDROUTINE
+
+
+ROUTINE  check_qty ( VALUE qty )
+
+   ok = TRUE
+
+   IF      qty = EMPTY
+   THEN    ok = FALSE
+   ELSEIF  (NOT NUMTEXT(qty))
+   THEN    flash_message("ERROR: The entered quantity is not numeric",TRUE)
+           ok = FALSE
+   ENDIF
+
+   return ( ok )
+
+ENDROUTINE
+
+GLOBAL
+ROUTINE prompt_inoc_parameters(parm_arr, VALUE no_parms)
+
+
+RETURN(TRUE)
+
+ENDROUTINE

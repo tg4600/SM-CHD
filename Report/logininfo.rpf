@@ -1,0 +1,2188 @@
+{SMP$REPORTS:LOGININFO.RPF}
+
+{        NB: This report is used by the job/sample template setup              }
+
+{------------------------------------------------------------------------------}
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0001        280893  LPE     Display Productdescription and create job      }
+{                               descriptions                                   }
+{**A0002        280893  LPE     Prompt for Bulk Job ID                         }
+{**A0002-1      230994  LPE     Browse for bulk Job Id in Active and Committed }
+{                               Database                                       }
+{**A0004        280893  LPE     Group ID from MPL_HEADER                       }
+{**A0005        280893  LPE     Sample Type from MLP_HEADER                    }
+{**A0006        280893  LPE     Productname check                              }
+{**A0006-1      301194  LPE     Productname as in Job                          }
+{**A0007        280893  LPE     Batchname check                                }
+{**A0007-1      301194  LPE     Batchname as in job                            }
+{**A0008        280893  LPE     Sampling Point check                           }
+{**A0008-1      291194  LPE     Sampling Point check to new syntax :           }
+{                               (product_name:"/":batch_name:"/":sample_point  }
+{**A0032        221194  LPE     Take Sampled_date from sample with same Job Id }
+{                               If not found, then prompt for it.              }
+{**MS           29-3-00 HBe     Migration 3.1-0 to 4.1                         }
+{**MS1268       25-8-00 HBe     Change for global use - groupid's from default }
+{                               group_id on table personnel.                   }
+{**MS1287       23-1-01 HBe     Missing changes for global use included        }
+{**MS1359       15-10-01 HBe    Change for global use - login_plant from       }
+{                               default group_id on table personnel.           }
+{**MS1826       30-01-08    Select default location from Operator          }
+{**AS????       14-06-09 HBe    Two new routines for Phage lab included.       }
+{                                          }
+{------------------------------------------------------------------------------}
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_FLAGS
+
+ENABLE WINDOWS
+
+ROUTINE JP_PRODUCT_NAME ( VALUE col        ,
+                          VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+{**A0001S**JP_PRODUCT_NAME}
+   DECLARE prod_desc
+   DECLARE old_prod
+
+   old_prod = SELECT job_header . product_name
+   val      = SELECT job_header . product_name
+
+   IF is_display THEN
+
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+   ELSE
+
+      PROMPT FOR val AT col, row
+                     IN WINDOW win_name
+                     WITH ( display_only       = is_display                ,
+                            always_validate    = TRUE                      ,
+                            enter_prompt_routine = "enter_this_prompt"     ,
+                            help_routine       = "help_call_product"       ,
+                            vgl_library        = GLOBAL ("CURRENT_LIBRARY"))
+                        BROWSE ON mlp_header
+                        THEN SELECT
+
+
+       prod_name = SELECT job_header . product_name
+
+       has_changed = val <> old_prod
+
+       IF ( NOT is_display ) AND ( has_changed ) THEN
+
+{** 20090316/DKTBG added handling of MLP-Version
+          prod_name = SELECT mlp_header . identity
+          prod_desc = SELECT mlp_header . description}
+
+          prod_ver =  SELECT  max mlp_header . product_version WHERE (identity = val) and (approval_status = "A")
+          IF prod_ver <> EMPTY THEN
+              prod_name = SELECT mlp_header . identity WHERE (identity = val) and (product_version = prod_ver)
+              prod_desc = SELECT mlp_header . description WHERE (identity = val) and product_version = prod_ver
+
+    {** 20090316/DKTBG added handling of MLP-Version}
+
+              ASSIGN job_header . product_name        = prod_name
+              ASSIGN job_header . PRODUCT_DESCRIPTION = prod_desc
+              ASSIGN job_header . BROWSE_DESCRIPTION  = STRIP (prod_desc) : " " :
+                                                   SUBSTRING ( NOW, 1, 11) : " " :
+                                                   STRIP (OPERATOR)
+          ENDIF
+       ENDIF
+   ENDIF
+{**A0001E**JP_PRODUCT_NAME}
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+
+{--------------------------------------------------------------------------- }
+
+ROUTINE JP_BULK_JOB_ID ( VALUE col        ,
+                         VALUE row        ,
+                               win_name   ,
+                         VALUE is_display )
+
+{**A0002S**JP_BULK_JOB_ID}
+{**A0002-1S**JP_BULK_JOB_ID}
+
+DECLARE endkey, old_contents
+
+SET JOBSTATUS "VCAX"
+
+   db_mode = "A"
+
+   contents = SELECT job_header . bulk_job_id
+
+   IF is_display THEN
+      DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    job_header
+
+   ELSE
+
+      CREATE TEXT WINDOW bulk_win HEIGHT 3 WIDTH 18 BORDER=""
+      PASTE TEXT WINDOW bulk_win ON LINE 13 FROM 56 {(column+required_width)}
+
+      DISPLAY "Active DB" ON LINE 1 FROM 2 IN WINDOW bulk_win BOLD
+      DISPLAY "Press REMOVE to" ON LINE 2 FROM 2 IN WINDOW bulk_win
+      DISPLAY "change Database" ON LINE 3 FROM 2 IN WINDOW bulk_win
+
+      table_type = "JOB_HEADER"
+
+      REPEAT
+         old_contents = contents
+
+         PROMPT FOR contents AT col, row
+                             IN WINDOW win_name
+                             BROWSE ON 'table_type'
+
+         endkey = LASTKEY
+
+
+         IF (endkey = "REMOVE" ) THEN
+            IF db_mode = "A" THEN
+               DISPLAY "Committed DB" ON LINE 1 FROM 2 TO 18 IN WINDOW bulk_win BOLD
+
+            SET MODE COMMITTED
+            db_mode = "C"
+         ELSE
+            DISPLAY "Active DB" ON LINE 1 FROM 2 TO 18 IN WINDOW bulk_win BOLD
+            SET MODE ACTIVE
+            db_mode = "A"
+         ENDIF
+         PROMPT FOR contents AT col, row
+                             IN WINDOW win_name
+                             BROWSE ON 'table_type'
+
+
+      ENDIF
+      IF ( endkey = "INSERT HERE" ) THEN
+
+         flash_message ( GET MESSAGE ( 100 , 1 ), TRUE )
+         contents = " "
+      ENDIF
+
+   UNTIL endkey <> "INSERT HERE"
+
+   UNPASTE TEXT WINDOW bulk_win
+
+   SET MODE ACTIVE
+
+   ASSIGN job_header . bulk_job_id = contents
+ENDIF
+
+{**A0002E**JP_BULK_JOB_ID}
+{**A0002-1E**JP_BULK_JOB_ID}
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+{**AS1268 HBe 29-8-00: Used for assigning group_id to job_template}
+{--------------------------------------------------------------------------- }
+
+ROUTINE JOB_GROUP_ID ( VALUE col        ,
+                      VALUE row        ,
+                            win_name   ,
+                      VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT job_header . group_id
+
+   IF BLANK(contents) THEN
+
+      group = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+
+         IF group <> EMPTY THEN
+
+            contents = group
+
+         ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    group_header
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+      ENDIF
+
+      ASSIGN job_header . group_id  =  contents
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT group_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+
+         ASSIGN job_header . group_id  =  contents
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+
+{**AE1268}
+
+{ --------------------------------------------------------------------------- }
+
+{**AS1359 HBe 15-10-01: Used for assigning login_plant to job_template}
+{--------------------------------------------------------------------------- }
+
+ROUTINE JOB_LOGIN_PLANT ( VALUE col        ,
+                          VALUE row        ,
+                          win_name   ,
+                          VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT job_header . login_plant
+
+   IF BLANK(contents) THEN
+
+      group = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+
+         IF group <> EMPTY THEN
+
+            contents = group
+
+         ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    group_header
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+      ENDIF
+
+      ASSIGN job_header . login_plant  =  contents
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT group_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+
+         ASSIGN job_header . login_plant  =  contents
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+{**AE1359}
+
+
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_GROUP_ID ( VALUE col        ,
+                      VALUE row        ,
+                            win_name   ,
+                      VALUE is_display )
+
+GLOBAL CONSTANT ST_GROUP_ID = "GROUPLINK"
+
+{**A0004S**SP_GROUP_ID}
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT sample . group_id
+
+   IF BLANK(contents) THEN
+
+      the_job  =  SELECT sample . job_name
+
+      job_prod_nam =  SELECT job_header . product_name
+                     WHERE ( job_name = the_job )
+
+      IF job_prod_nam <> EMPTY THEN
+
+{**MS1268 HBe 25-8-00
+         group = SELECT mlp_header.group_id
+                 WHERE identity = job_prod_nam
+**}
+         group = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+{**ME1268}
+
+         IF group <> EMPTY THEN
+
+            contents = group
+
+         ENDIF
+      ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    group_header
+      ELSE
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+      ENDIF
+
+      ASSIGN sample . group_id  =  contents
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT group_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+         ASSIGN sample . group_id  =  contents
+
+      ENDIF
+
+   ENDIF
+
+{**A0004E**SP_GROUP_ID}
+ENDROUTINE
+
+{**AS1809 HBe 1-10-07: Used for assigning location id to sample_template}
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_LOCATION_ID ( VALUE col        ,
+                      VALUE row        ,
+                            win_name   ,
+                      VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT sample . location_id
+
+   IF BLANK(contents) THEN
+
+      location = SELECT personnel.location_id
+                 WHERE identity = OPERATOR
+
+         IF location <> EMPTY THEN
+
+            contents = location
+
+         ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    location
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON location
+      ENDIF
+
+      ASSIGN sample . location_id  =  contents
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT location
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON location
+
+         ASSIGN sample . location_id  =  contents
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_LOGIN_PLANT ( VALUE col        ,
+                         VALUE row        ,
+                            win_name   ,
+                         VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT sample . login_plant
+
+   IF BLANK(contents) THEN
+
+      the_job  =  SELECT sample . job_name
+
+      job_prod_nam =  SELECT job_header . product_name
+                     WHERE ( job_name = the_job )
+
+      IF job_prod_nam <> EMPTY THEN
+
+         group = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+
+      ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    group_header
+      ELSE
+
+         IF group <> EMPTY THEN
+
+            contents = group
+
+         ENDIF
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+         ASSIGN sample . login_plant  =  contents
+
+      ENDIF
+
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT group_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+         ASSIGN sample . login_plant  =  contents
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+
+{--------------------------------------------------------------------------- }
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE SP_SAMPLE_TYPE ( VALUE col        ,
+                         VALUE row        ,
+                               win_name   ,
+                         VALUE is_display )
+
+{get_double_browse_type ( "IDENTIFIER" , "*SAMPTYPE"  )}
+{**A0005S**SP_SAMPLE_TYPE}
+
+declare job_prod_nam
+declare sa_type
+
+   contents =  SELECT sample . sample_type
+
+   IF BLANK(contents) THEN
+
+      the_job  =  SELECT sample . job_name
+
+{**AS2003R1}
+      the_mlp_id  = SELECT sample . product
+      the_mlp_ver = SELECT max_active_mlp_ver . max_version
+                    WHERE  identity = the_mlp_id
+{**AE 2003R1}
+
+      job_prod_nam =  SELECT job_header . product_name
+                WHERE ( job_name = the_job )
+
+      IF job_prod_nam <> EMPTY THEN
+
+         sa_type = SELECT mlp_header . sample_type
+                    WHERE ( identity = job_prod_nam )
+{**AS 2003R1}
+                    AND product_version = the_mlp_ver
+{**AE 2003R1}
+         IF sa_type <> EMPTY THEN
+
+            contents = sa_type
+
+         ENDIF
+      ENDIF
+
+      IF is_display THEN
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    mlp_header . sample_type
+
+      ELSE
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON VALID_PHRASE.SAMP_TYPE
+      ENDIF
+
+      ASSIGN sample . sample_type  =  contents
+
+   ELSE
+
+      IF is_display THEN
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT TEXT10
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                      FORMAT TEXT10
+
+         ASSIGN sample . sample_type = contents
+
+      ENDIF
+   ENDIF
+
+{**A0005E**SP_SAMPLE_TYPE}
+
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_PRODUCT_NAME ( VALUE col        ,
+                          VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+
+{**A0006S**SP_PRODUCT_NAME}
+{**A0006-1S**SP_PRODUCT_NAME}
+
+   declare prod_name_ok, job_prod_name, lk, can_exit
+
+   contents = SELECT sample.product_name
+
+   i_bl = BLANK(contents)
+
+   IF BLANK(contents) THEN
+
+      the_job  = SELECT sample . job_name
+
+      the_table = "SAMPLE"
+      the_field = "ID_NUMERIC"
+
+      push_file_descriptor ( the_table, the_field )
+
+      job_prod_name =  SELECT job_header . product_name
+                     WHERE ( job_name = the_job )
+
+
+      pop_file_descriptor ( the_field )
+
+      IF NOT BLANK(job_prod_name) THEN
+
+         contents = job_prod_name
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON mlp_header
+      ENDIF
+
+    product_version = SELECT MAX mlp_header . product_version
+                      WHERE  ( identity = job_prod_name) AND
+                             ( approval_status = "A" )
+
+    product_description = SELECT mlp_header . description
+                          WHERE (identity = job_prod_name)
+                            AND (product_version = product_version)
+
+      ASSIGN sample . description = product_description
+      ASSIGN sample . product_name = contents
+
+   ELSE
+
+      IF is_display THEN
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON mlp_header
+
+         ASSIGN sample . product_name = contents
+
+      ENDIF
+   ENDIF
+
+{**A0006E**SP_PRODUCT_NAME}
+{**A0006-1E**SP_PRODUCT_NAME}
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_PRODUCT_DESCRIPTION ( VALUE col        ,
+                          VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+
+{**A0006S**SP_PRODUCT_NAME}
+{**A0006-1S**SP_PRODUCT_NAME}
+
+   declare prod_name_ok, job_prod_name, lk, can_exit
+
+   contents = SELECT sample.product_name
+
+   i_bl = BLANK(contents)
+
+   IF BLANK(contents) THEN
+
+      the_job  = SELECT sample . job_name
+
+      the_table = "SAMPLE"
+      the_field = "ID_NUMERIC"
+
+      push_file_descriptor ( the_table, the_field )
+
+      job_prod_name =  SELECT job_header . product_name
+                     WHERE ( job_name = the_job )
+
+
+      pop_file_descriptor ( the_field )
+
+      IF NOT BLANK(job_prod_name) THEN
+
+         contents = job_prod_name
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON mlp_header
+      ENDIF
+
+    product_version = SELECT MAX mlp_header . product_version
+                      WHERE  ( identity = job_prod_name) AND
+                             ( approval_status = "A" )
+
+    product_description = SELECT mlp_header . description
+                          WHERE (identity = job_prod_name)
+                            AND (product_version = product_version)
+
+      ASSIGN sample . description = product_description
+
+   ELSE
+
+      IF is_display THEN
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON mlp_header
+
+         ASSIGN sample . product_name = contents
+
+      ENDIF
+   ENDIF
+
+{**A0006E**SP_PRODUCT_NAME}
+{**A0006-1E**SP_PRODUCT_NAME}
+ENDROUTINE
+
+{--------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+{**AS HBe 14-6-2009}
+{NOTE:Using field sample.product_before to register 
+what product was used at the dairy.}
+
+ROUTINE SP_DAIRY_PRODUCT_ID ( VALUE col        ,
+                          VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+
+   
+      contents =  SELECT sample . product_before
+   
+      IF ((BLANK(contents)) OR (contents = EMPTY)) THEN
+   
+         IF is_display THEN
+            DISPLAY contents AT        col, row
+                          IN WINDOW win_name
+                          FORMAT    mlp_header
+   
+         ELSE
+            PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                      BROWSE ON MLP_HEADER
+         ENDIF
+   
+         ASSIGN sample . product_before  =  contents
+   
+      ELSE
+   
+         IF is_display THEN
+   
+            DISPLAY contents AT col, row
+                      IN WINDOW win_name
+                          FORMAT MLP_HEADER
+   
+         ELSE
+   
+            PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                      BROWSE ON mlp_header
+   
+            ASSIGN sample . product_before   = contents
+   
+         ENDIF
+   ENDIF
+
+ENDROUTINE
+
+
+
+{--------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_DAIRY_PROD_CODE ( VALUE col        ,
+                         VALUE row        ,
+                               win_name   ,
+                         VALUE is_display )
+                         
+{NOTE:Uses sample.batch_before to save and display the product_code from MLP 
+header for the highest version MLP version of the MLPsaved in SAMPLE.PRODUCT_BEFORE.}                         
+
+declare the_mlp_id
+declare the_mlp_ver
+declare prod_code
+
+{   contents =  SELECT sample . batch_before
+
+   IF BLANK(contents) THEN}
+
+      the_mlp_id  = SELECT sample . product_before
+      the_mlp_ver = SELECT max_mlp_version . max_version
+                    WHERE  identity = the_mlp_id
+
+      prod_code   = SELECT mlp_header . product_code
+                    WHERE ( identity = the_mlp_id )
+                    AND product_version = the_mlp_ver
+
+
+
+      IF prod_code <> EMPTY THEN
+         contents = prod_code
+      ELSE
+         contents = "NA"
+      ENDIF
+{   ENDIF}
+
+   IF is_display THEN
+      DISPLAY contents AT        col, row
+                    IN WINDOW win_name
+                    FORMAT    mlp_header . product_code
+
+   ELSE
+      PROMPT FOR contents AT col, row
+                 IN WINDOW win_name
+                 WITH ( display_only = TRUE )
+                 BROWSE ON mlp_header.product_code
+   ENDIF
+
+   ASSIGN sample . batch_before  =  contents
+
+   
+ENDROUTINE
+
+{**AE HBe 14-6-2009}
+{--------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_BATCH_NAME ( VALUE col        ,
+                        VALUE row        ,
+                              win_name   ,
+                        VALUE is_display )
+
+{**A0007S**SP_BATCH_NAME}
+{**A0007-1S**SP_BATCH_NAME}
+
+   DECLARE batch_name_ok
+
+   DECLARE job_batch_name, lk, can_exit, old_contents , cur_id
+
+   contents = SELECT sample.batch_name
+
+   IF BLANK(contents) THEN
+
+      the_job  = SELECT sample . job_name
+
+      job_batch_name =  SELECT job_header . batch_name
+                     WHERE ( job_name = the_job )
+
+      IF job_batch_name <> EMPTY THEN
+
+         contents = job_batch_name
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                      FORMAT TEXT10
+
+      ENDIF
+
+      ASSIGN sample . batch_name = contents
+
+   ELSE
+
+      IF is_display THEN
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT    mlp_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                      FORMAT TEXT10
+
+         ASSIGN sample . batch_name = contents
+
+      ENDIF
+   ENDIF
+{**A0007E**SP_BATCH_NAME}
+{**A0007-1E**SP_BATCH_NAME}
+ENDROUTINE
+{--------------------------------------------------------------------------- }
+
+{*****}
+ROUTINE ENV_JOB_BATCH_NAME (    VALUE col,
+                VALUE row,
+                win_name,
+                VALUE is_display )
+
+
+{JOIN LIBRARY $LIB_FLAGS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $LIB_UTILS}
+
+ENABLE WINDOWS
+
+SET FORMAT "9999999999"
+product_id  = SELECT job_header. product_name
+work_center = SELECT job_header. work_center
+product_id  = STRIP(product_id)
+work_center = STRIP(work_center)
+
+SET DATE FORMAT "YYMZDZ"
+    ymd = STRING(NOW()) 
+RESTORE DATE FORMAT
+
+{inc_id = RIGHTSTRING ( "000000000000" : STRIP (NUMBER_TO_TEXT (INCREMENT ( "SYNTAX", work_center:product_id ), "9999999999" )) , 7 )
+batch = work_center:inc_id
+inc = RIGHTSTRING ( "00" : STRIP (NUMBER_TO_TEXT (INCREMENT ( "SYNTAX", product_id:"/":work_center:ymd), "99" )) , 2 )}
+
+{fm("batch = strip (work_center:ymd:inc)":ASCII(10):
+   "work_center = ":work_center:ASCII(10):
+   "ymd = ":ymd:ASCII(10):
+   "inc = ":inc:ASCII(10):ASCII(10):
+   "batch = strip (":work_center:ymd:inc:")")}
+
+{IF inc = 1 THEN
+    inc1 = ""
+ELSE
+    inc1 = "-" : inc
+ENDIF
+
+batch = strip (work_center:ymd:inc1)}
+
+ASSIGN job_header . batch_name = work_center:ymd
+
+return (work_center:ymd)
+{return (batch)}
+
+ENDROUTINE
+
+{*****}
+
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_BATCH_NAME_DISPLAY ( VALUE col        ,
+                                VALUE row        ,
+                                      win_name   ,
+                                VALUE is_display )
+
+   DECLARE batch_name_ok
+
+   DECLARE job_batch_name, lk, can_exit, old_contents , cur_id
+
+   contents = SELECT sample.batch_name
+
+   IF BLANK(contents) THEN
+
+      the_job  = SELECT sample . job_name
+      
+      job_batch_name =  SELECT job_header . batch_name
+                        WHERE ( job_name = the_job )
+
+      IF job_batch_name <> EMPTY THEN
+         contents = job_batch_name
+      ENDIF
+
+      IF is_display THEN
+         DISPLAY contents AT col, row
+                          IN WINDOW win_name
+                          FORMAT    mlp_header
+                          
+      ELSE
+      
+         PROMPT FOR contents AT col, row
+                     IN WINDOW win_name
+                     FORMAT sample.batch_name
+                     WITH (display_only = TRUE)
+                     FORMAT sample.batch_name
+      ENDIF
+      
+      ASSIGN sample . batch_name = contents
+
+   ELSE
+
+
+      IF is_display THEN
+   
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT sample.batch_name
+      ELSE
+   
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only = TRUE )
+                   FORMAT sample.batch_name
+         ASSIGN sample . batch_name = contents
+      ENDIF
+
+   ENDIF
+   
+ENDROUTINE
+{--------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+
+ROUTINE SP_SAMPLING_POINT ( VALUE col        ,
+                            VALUE row        ,
+                                  win_name   ,
+                            VALUE is_display )
+
+{**A0008S**SP_SAMPLING_POINT}
+
+declare samp_point_ok
+declare job_prod_nam
+declare cur_key_nul
+declare prod_sa_point
+declare lk
+declare can_exit
+declare the_mlp_id
+declare the_mlp_ver
+
+   samp_point_ok = TRUE
+
+   cur_contents = SELECT sample . sampling_point
+
+   contents = SELECT sample . sampling_point
+
+   the_job  = SELECT sample . job_name
+
+{**AS 2003R1}
+   the_mlp_id  = SELECT sample . product
+   the_mlp_ver = SELECT max_active_mlp_ver . max_version
+                 WHERE  identity = the_mlp_id
+{**AE 2003R1}
+
+   can_exit = FALSE
+
+   IF is_display  THEN
+
+      DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . sampling_point
+
+   ELSE
+
+      REPEAT
+
+         samp_point_ok = TRUE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                           WITH ( display_only = is_display )
+                      BROWSE ON sample_point
+
+         lk = LASTKEY
+
+         IF lk = "EXIT" THEN
+
+            can_exit = TRUE
+
+         ELSE
+WriteToLog("IF cur_contents <> contents THEN":", cur_contents = ":cur_contents:", contents = ":contents)
+            IF cur_contents <> contents THEN
+
+               job_prod_nam =     SELECT job_header . product_name
+                                  WHERE ( job_name = the_job )
+                                  ORDER ON job_name
+
+{**MS1287 HBe 23/1-01: group_id_on_job restriction included }
+
+               group_id_on_job =  SELECT job_header . group_id
+                                  WHERE ( job_name = the_job )
+                                  ORDER ON job_name
+
+               IF (job_prod_nam <> EMPTY) AND ( group_id_on_job <> EMPTY ) THEN
+                   prod_sa_point = SELECT prod_sched . sampling_point
+                                   WHERE ( product_name    = job_prod_nam )
+                                     AND ( sampling_point  = contents )
+                                     AND ( group_id        = group_id_on_job )
+{**AS 2003R1}
+                                     AND ( product_version = the_mlp_ver)
+{**AE 2003R1}
+{**ME1287}
+
+                  IF prod_sa_point = EMPTY 
+                  THEN
+
+{**MS HBe 29-3-00
+                     CREATE TEXT WINDOW mess_win2 HEIGHT 1 WIDTH 70 BORDER =""
+                     PASTE TEXT WINDOW mess_win2 ON LINE 20 FROM 5
+                     DISPLAY "Sampling Point Specified does not match to":
+                             " specified Partnumber"
+                        ON LINE 1 FROM 2 IN WINDOW mess_win2
+
+                     samp_point_ok = FALSE
+                     pause ()
+                     UNPASTE TEXT WINDOW mess_win2
+}
+
+                     FLASH_MESSAGE("Sampling Point Specified does not match ":
+                     "to specified Partnumber", TRUE)
+
+                     samp_point_ok = FALSE
+
+{**ME HBe 29-3-00}
+                  ELSE
+                     batch_name = SELECT sample . BATCH_NAME
+{**D0008S**
+                     cur_sa_text_id = STRIP(job_prod_nam):"/":
+                                      STRIP(contents):"/":
+                                      STRIP(batch_name)
+**D0008E**}
+
+{**A0008-1S**}
+                     cur_sa_text_id = STRIP(job_prod_nam):"/":
+                                      STRIP(batch_name):"/":
+                                      STRIP(contents)
+
+{**A0008-1E**}
+                     the_table = "SAMPLE"
+                     the_field = "ID_NUMERIC"
+
+                     push_file_descriptor ( the_table, the_field )
+
+                     sa_id = SELECT sample.id_numeric
+                              WHERE (id_text = cur_sa_text_id)
+
+                     pop_file_descriptor ( the_field )
+
+                     IF sa_id <> EMPTY THEN
+
+{**MS HBe 29-3-00
+                        CREATE TEXT WINDOW mess_win3 HEIGHT 1 WIDTH 70 BORDER =""
+                        PASTE TEXT WINDOW mess_win3 ON LINE 20 FROM 5
+                        DISPLAY "Sample with specified Sampling Point already ":
+                                "exist in specified job"
+                           ON LINE 1 FROM 2 IN WINDOW mess_win3
+                        samp_point_ok = FALSE
+                        pause ()
+                        UNPASTE TEXT WINDOW mess_win3
+}
+                        FLASH_MESSAGE("Sample with specified Sampling Point ":
+                        "already exist in specified job",TRUE)
+                        samp_point_ok = FALSE
+
+{**ME HBe 29-3-00}
+                     ENDIF
+                  ENDIF
+               ENDIF
+            ENDIF
+         ENDIF
+      UNTIL (samp_point_ok) OR (can_exit)
+      IF NOT can_exit THEN
+         ASSIGN sample . sampling_point = contents
+      ENDIF
+   ENDIF
+
+{**A0008E**SP_SAMPLING_POINT}
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+{--------------------------------------------------------------------------- }
+
+{**A0032S**}
+ROUTINE SP_SAMPLED_DATE( VALUE col        ,
+                         VALUE row        ,
+                               win_name   ,
+                         VALUE is_display )
+
+declare  job_batch_name, sample_date
+
+{   contents = SELECT sample . sampled_date
+   the_job  = SELECT sample . job_name
+
+   IF is_display THEN
+      DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . sampled_date
+
+   ELSE
+      job_batch_nam =  SELECT job_header.batch_name
+                        WHERE ( job_name = the_job )
+
+      IF job_batch_nam <> EMPTY THEN
+
+         the_table = "SAMPLE"
+         the_field = "SAMPLED_DATE"
+
+         push_file_descriptor ( the_table, the_field )
+
+         sample_date =   SELECT sample.sampled_date
+                          WHERE batch_name = job_batch_nam
+                       ORDER ON batch_name
+
+         pop_file_descriptor ( the_field )
+
+
+     IF sample_date <> EMPTY THEN
+            contents = sample_date
+         ENDIF
+      ENDIF
+      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = is_display )
+                      FORMAT DATETIME
+
+      ASSIGN sample . sampled_date = contents
+   ENDIF }
+
+ENDROUTINE
+{**A0032E**}
+
+{--------------------------------------------------------------------------- }
+GLOBAL ROUTINE enter_this_prompt ( self )
+{=============================================================================}
+{                                                                             }
+{ Function       : Routine called at submission login/modifcation which will  }
+{                  validate the company_name.                                 }
+{                                                                             }
+{ Input Params   : self       - prompt object                                 }
+{ Output Params  : None                                                       }
+{ Function Value : None                                                       }
+{ Local Procs    : None                                                       }
+{ Global Vars    : None                                                       }
+{ Library Procs  : flash_message             - $lib_utils                     }
+{                                                                             }
+{=============================================================================}
+   DECLARE ret_val
+
+   ret_val = TRUE
+   self . then_select = FALSE
+   RETURN ( ret_val )
+ENDROUTINE   { enter_this_prompt }
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE leave_this_prompt ( self   )
+{=============================================================================}
+{                                                                             }
+{ Function       : Routine called at job login/modification which will        }
+{                  validate the entity.                                       }
+{                                                                             }
+{ Input Params   : self       - prompt object                                 }
+{ Output Params  : None                                                       }
+{ Function Value : None                                                       }
+{ Local Procs    : None                                                       }
+{ Global Vars    : None                                                       }
+{ Library Procs  : flash_message             - $lib_utils                     }
+{                                                                             }
+{=============================================================================}
+   DECLARE ret_val
+   DECLARE val
+
+   ret_val = TRUE
+   val     = self . text
+   IF val  = " " THEN
+      self . then_select = FALSE
+      self . value = " "
+   ELSE
+      self . then_select = TRUE
+   ENDIF
+
+   RETURN ( ret_val )
+ENDROUTINE   { leave_this_prompt }
+
+{------------------------------------------------------------------------------}
+ROUTINE SAMPLE_TYPE ( VALUE col,
+                      VALUE line_number ,
+                      VALUE width_prompt ,
+                      window_id ,
+                      VALUE is_display )
+
+ declare contents
+
+ contents = SELECT mlp_header . sample_type
+
+ IF is_display THEN
+
+    DISPLAY contents
+               ON LINE line_number
+               FROM col
+               IN WINDOW window_id
+
+ELSE
+      PROMPT FOR contents
+             ON LINE line_number
+             FROM col
+               IN WINDOW window_id
+             BROWSE ON VALID_PHRASE.SAMP_TYPE
+
+{      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   BROWSE ON VALID_PHRASE.SAMP_TYPE
+                   BROWSE ON VALID_PHRASE.SAMP_TYPE }
+      IF LASTKEY <> "EXIT" THEN
+
+         ASSIGN mlp_header . sample_type = contents
+
+      ENDIF
+ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{**AS1447 HBe 28-3-03}
+
+ROUTINE GENERATE_JOB_BATCH_NO ( VALUE col        ,
+                           VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+
+
+   DECLARE old_batch, val, exists
+
+   old_batch = SELECT job_header . batch_name
+   val       = SELECT job_header . batch_name
+   exists    = FALSE
+
+   IF is_display THEN
+
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+   ELSE
+
+      IF ((STRIP(old_batch) = EMPTY) OR (BLANK(old_batch)))
+      THEN
+         val = STRIP("SM" : STRIP(NUMBER_TO_TEXT ( INCREMENT( "JOB_HEADER", "BATCH_NAME" ), "9999999999" )))
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+      ELSE
+
+            PROMPT FOR val AT col, row
+                     IN WINDOW win_name
+                     WITH ( display_only  = is_display )
+                     BROWSE ON IDENTITY_10
+
+ 
+         {checker automatisk om batch numer eksisterer allerede i job_header eller sample tabel}
+
+      ENDIF
+
+      has_changed = (val <> old_batch)
+
+      IF ( NOT is_display ) AND ( has_changed ) THEN
+
+          ASSIGN job_header . batch_name        = val
+
+
+       ENDIF
+   ENDIF
+
+
+ENDROUTINE { generate_batch_no }
+
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE SP_TESTMIX_ID ( VALUE col        ,
+                         VALUE row        ,
+                               win_name   ,
+                         VALUE is_display )
+
+
+declare contents
+declare batch_name
+declare the_job
+
+   contents =  SELECT sample . testmix_id
+
+   IF BLANK(contents) THEN
+
+      the_job    =  SELECT sample . job_name
+
+      batch_name =  SELECT job_header . batch_name
+                    WHERE ( job_name = the_job )
+
+      IF batch_name <> EMPTY THEN
+
+         contents = batch_name
+
+      ENDIF
+
+      IF is_display THEN
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . testmix_id
+
+      ELSE
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   FORMAT sample.testmix_id
+      ENDIF
+
+      ASSIGN sample . testmix_id  =  contents
+
+   ELSE
+
+      IF is_display THEN
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT sample.testmix_id
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only = TRUE )
+                   FORMAT sample.testmix_id
+
+         ASSIGN sample . testmix_id = contents
+
+      ENDIF
+   ENDIF
+
+
+ENDROUTINE
+
+
+{ --------------------------------------------------------------------------- }
+
+ROUTINE SP_TESTMIX_PRODUCT ( VALUE col        ,
+                             VALUE row        ,
+                             win_name   ,
+                             VALUE is_display )
+
+
+declare contents
+declare batch_name
+declare the_job
+
+   contents     =  SELECT sample . product
+
+
+   IF BLANK(contents) THEN {No product description found}
+
+
+      IF is_display THEN {Display: Show that nothing is there}
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . product
+
+      ELSE {modify mode: Find the corresponding value from the job header and save.}
+
+
+      the_batch       =  SELECT sample . batch_name
+
+      the_product     =  SELECT all_job_headers_view . product_name
+                         WHERE ( batch_name = the_batch )
+
+
+      IF (the_product <> EMPTY) AND (NOT BLANK (the_product)) THEN
+         contents = the_product
+      ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   FORMAT sample.product
+      ENDIF
+
+      ASSIGN sample . product     =  contents
+
+
+   ELSE {Something found, check that it is OK before presenting}
+
+      IF is_display THEN {Just display whatever was there}
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT sample.product
+
+      ELSE {Check that the information is correct, and update if necessary}
+
+         the_batch       =  SELECT sample . batch_name
+         the_product     =  SELECT all_job_headers_view . product_name
+                            WHERE ( batch_name = the_batch )
+
+         has_changed = contents <> the_product
+
+         IF ( NOT is_display ) AND ( has_changed ) THEN
+            FLASH_MESSAGE("Batch was modified, updating product number. From:  " : STRIP(contents) : "  To:  " : STRIP(the_product), TRUE)
+            contents = the_product
+         ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only = TRUE )
+                   FORMAT sample.product
+
+         ASSIGN sample . product     = contents
+
+      ENDIF
+   ENDIF
+
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+
+ROUTINE SP_TESTMIX_DESCRIPTION ( VALUE col        ,
+                                 VALUE row        ,
+                                 win_name   ,
+                                 VALUE is_display )
+
+DECLARE contents
+DECLARE the_batch
+DECLARE the_description
+DECLARE has_changed
+
+
+   contents     =  SELECT sample . description
+
+
+   IF BLANK(contents) THEN {No product description found}
+
+
+      IF is_display THEN {Display: Show that nothing is there}
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . description
+
+      ELSE {modify mode: Find the corresponding value from the job header and save.}
+
+
+      the_batch       =  SELECT sample . batch_name
+
+      the_description =  SELECT all_job_headers_view . product_description
+                         WHERE ( batch_name = the_batch )
+
+
+      IF (the_description <> EMPTY) AND (NOT BLANK (the_description)) THEN
+         contents = the_description
+      ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   FORMAT sample.description
+      ENDIF
+
+      ASSIGN sample . description     =  contents
+
+
+   ELSE {Something found, check that it is OK before presenting}
+
+      IF is_display THEN {Just display whatever was there}
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT sample.description
+
+      ELSE {Check that the information is correct, and update if necessary}
+
+         the_batch       =  SELECT sample . batch_name
+         the_description =  SELECT all_job_headers_view . product_description
+                            WHERE ( batch_name = the_batch )
+
+         has_changed = contents <> the_description
+
+         IF ( NOT is_display ) AND ( has_changed ) THEN
+            FLASH_MESSAGE("Batch was modified, updating product description. From:  " : STRIP(contents) : "  To:  " : STRIP(the_description), TRUE)
+            contents = the_description
+         ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only = TRUE )
+                   FORMAT sample.description
+
+         ASSIGN sample . description     = contents
+
+      ENDIF
+   ENDIF
+
+ENDROUTINE
+
+
+{ --------------------------------------------------------------------------- }
+
+
+ROUTINE SP_TESTMIX_LOGIN_PLANT ( VALUE col        ,
+                                 VALUE row        ,
+                                 win_name   ,
+                                 VALUE is_display )
+
+DECLARE contents
+DECLARE the_batch
+DECLARE the_login_plant
+DECLARE has_changed
+
+
+   contents     =  SELECT sample . login_plant
+
+
+   IF BLANK(contents) THEN {No login plant found}
+
+
+      IF is_display THEN {Display: Show that nothing is there}
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    sample . product
+
+      ELSE {modify mode: Find the corresponding value from the job header and save.}
+
+
+      the_batch       =  SELECT sample . batch_name
+
+      the_login_plant =  SELECT all_job_headers_view . login_plant
+                         WHERE ( batch_name = the_batch )
+
+
+      IF (the_login_plant <> EMPTY) AND (NOT BLANK (the_login_plant)) THEN
+         contents = the_login_plant
+      ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                        WITH ( display_only = TRUE )
+                   FORMAT sample.login_plant
+      ENDIF
+
+      ASSIGN sample . login_plant     =  contents
+
+
+   ELSE {Something found.}
+
+      IF is_display THEN {Just display whatever was there}
+
+         DISPLAY contents AT col, row
+                   IN WINDOW win_name
+                       FORMAT sample.product
+
+      ELSE {Check that the information is correct, and update if necessary}
+
+         the_batch       =  SELECT sample . batch_name
+         the_login_plant =  SELECT all_job_headers_view . login_plant
+                            WHERE ( batch_name = the_batch )
+
+         has_changed = contents <> the_login_plant
+
+         IF ( NOT is_display ) AND ( has_changed ) THEN
+            FLASH_MESSAGE("Batch was modified, updating login plant. From:  " : STRIP(contents) : "  To:  " : STRIP(the_login_plant), TRUE)
+            contents = the_login_plant
+         ENDIF
+
+         PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only = TRUE )
+                   FORMAT sample.description
+         ASSIGN sample . login_plant     = contents
+
+      ENDIF
+   ENDIF
+
+ENDROUTINE
+
+
+{--------------------------------------------------------------------------- }
+
+{Routine to select a batch number from an existing job, different from the job that the actual sample is on}
+
+ROUTINE SP_TESTMIX_BATCH ( VALUE col        ,
+                           VALUE row        ,
+                           win_name   ,
+                           VALUE is_display )
+
+
+
+   DECLARE prod_desc
+   DECLARE old_prod
+
+   old_prod = SELECT sample . batch_name
+   val      = SELECT sample . batch_name
+
+   IF is_display THEN
+
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+   ELSE
+
+      PROMPT FOR val AT col, row
+                     IN WINDOW win_name
+                     WITH ( display_only       = is_display                ,
+                            always_validate    = TRUE                      ,
+{                            enter_prompt_routine = "enter_this_prompt"     ,}
+                            help_routine       = "help_call_product"       ,
+                            vgl_library        = GLOBAL ("CURRENT_LIBRARY"))
+                        BROWSE ON all_job_headers_view.batch_name
+                        THEN SELECT
+
+       has_changed = val <> old_prod
+
+       IF ( NOT is_display ) AND ( has_changed ) THEN
+
+          ASSIGN sample . batch_name          = val
+
+       ENDIF
+   ENDIF
+
+ENDROUTINE
+
+{**AE1447}
+
+{--------------------------------------------------------------------------- }
+
+{**AS1464}
+
+ROUTINE SP_GROUP_ID_NOJOB ( VALUE col        ,
+                            VALUE row        ,
+                            win_name   ,
+                            VALUE is_display )
+
+DECLARE group
+
+contents =  SELECT sample . group_id
+
+IF BLANK(contents) THEN
+
+   group = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+
+   IF group <> EMPTY THEN
+      contents = group
+   ENDIF
+
+   IF is_display THEN
+
+      DISPLAY contents AT        col, row
+                    IN WINDOW win_name
+                    FORMAT    group_header
+   ELSE
+      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                     WITH ( display_only  = TRUE )
+                     BROWSE ON group_header
+   ENDIF
+
+   ASSIGN sample . group_id  =  contents
+
+
+ELSE
+   IF is_display THEN
+
+      DISPLAY contents AT        col, row
+                    IN WINDOW win_name
+                    FORMAT group_header
+
+   ELSE
+
+      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+      ASSIGN sample . group_id  =  contents
+
+   ENDIF
+
+ENDIF
+
+ENDROUTINE
+
+
+ROUTINE SP_LOGIN_PLANT_NOJOB ( VALUE col        ,
+                            VALUE row        ,
+                            win_name   ,
+                            VALUE is_display )
+
+DECLARE login_plant
+
+contents =  SELECT sample . login_plant
+
+IF BLANK(contents) THEN
+
+   IF is_display THEN
+
+      DISPLAY contents AT        col, row
+                    IN WINDOW win_name
+                    FORMAT    group_header
+   ELSE
+   login_plant = SELECT personnel.default_group
+                 WHERE identity = OPERATOR
+
+   IF login_plant <> EMPTY THEN
+      contents = login_plant
+   ENDIF
+      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                     WITH ( display_only  = TRUE )
+                     BROWSE ON group_header
+      ASSIGN sample . login_plant  =  contents
+   ENDIF
+
+
+
+ELSE
+   IF is_display THEN
+
+      DISPLAY contents AT        col, row
+                    IN WINDOW win_name
+                    FORMAT group_header
+
+   ELSE
+
+      PROMPT FOR contents AT col, row
+                   IN WINDOW win_name
+                   WITH ( display_only  = TRUE )
+                   BROWSE ON group_header
+      ASSIGN sample . login_plant  =  contents
+
+   ENDIF
+
+ENDIF
+
+ENDROUTINE
+
+{**AE1464}
+
+{------------------------------------------------------------------------------}
+
+
+{**AS1481 HBe 7-7-03}
+
+ROUTINE SP_ALL_BATCH_NOJOB ( VALUE col        ,
+                   VALUE row        ,
+                   win_name   ,
+                   VALUE is_display )
+
+
+   DECLARE old_batch
+
+   old_batch = SELECT sample . batch_name
+   val       = SELECT sample . batch_name
+
+   IF is_display THEN
+
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+   ELSE
+
+      PROMPT FOR val AT col, row
+                     IN WINDOW win_name
+                     WITH ( display_only       = is_display                ,
+                            always_validate    = TRUE                      ,
+                            help_routine       = "help_call_product"       ,
+                            vgl_library        = GLOBAL ("CURRENT_LIBRARY"))
+                        BROWSE ON all_job_headers_view.batch_name
+                        THEN SELECT
+
+       has_changed = val <> old_batch
+
+       IF ( NOT is_display ) AND ( has_changed ) THEN
+
+          ASSIGN sample . batch_name          = val
+
+       ENDIF
+   ENDIF
+
+ENDROUTINE
+
+{**AE1481}
+{------------------------------------------------------------------------------}
+
+{**AS1551 HBe 25-03-2004}
+
+ROUTINE STAB_JOB_PROD_NAME ( VALUE col        ,
+                   VALUE row        ,
+                   win_name   ,
+                   VALUE is_display )
+
+
+   DECLARE old_product, stab_study_id
+   
+   IF is_display THEN
+   
+      val        = SELECT job_header . product_name
+      
+      DISPLAY val AT        col, row
+                  IN WINDOW win_name
+                  FORMAT    mlp_header
+   ELSE
+   
+
+      val           = SELECT job_header . product_name
+      old_product   = SELECT job_header . product_name
+      stab_study_id = SELECT job_header . job_name       {Study name must be used as job name}
+
+      IF (stab_study_id <> EMPTY ) AND NOT BLANK(stab_study_id) AND ((val = EMPTY) OR BLANK(val)) THEN
+          val = SELECT pds_study.mlp_id
+                WHERE  identity = stab_study_id
+      ENDIF
+
+      PROMPT FOR val AT col, row
+                     IN WINDOW win_name
+                     WITH ( display_only       = TRUE               ,
+                            always_validate    = TRUE                      ,
+                            help_routine       = "help_call_product"       ,
+                            vgl_library        = GLOBAL ("CURRENT_LIBRARY"))
+                        BROWSE ON mlp_header.identity
+                        THEN SELECT
+
+       has_changed = val <> old_product
+
+       IF ( NOT is_display ) AND ( has_changed ) THEN
+       
+          prod_desc = SELECT mlp_header . description
+                      WHERE identity = val
+                      AND product_version =
+                      (SELECT max_active_mlp_ver . max_version
+                       WHERE identity = val)
+
+          ASSIGN job_header . product_name          = val
+          ASSIGN job_header . PRODUCT_DESCRIPTION   = prod_desc
+
+       ENDIF
+   ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE STAB_JOB_BATCH_NAME ( VALUE col        ,
+                   VALUE row        ,
+                   win_name   ,
+                   VALUE is_display )
+
+
+   DECLARE old_batch, stab_study_id
+   
+   IF is_display THEN
+      
+         val        = SELECT job_header . batch_name
+         
+         DISPLAY val AT        col, row
+                     IN WINDOW win_name
+                     FORMAT    mlp_header
+      ELSE
+      
+   
+         val           = SELECT job_header . batch_name
+         old_batch     = SELECT job_header . batch_name
+         stab_study_id = SELECT job_header . job_name       {Study name must be used as job name}
+   
+         IF (stab_study_id <> EMPTY ) AND NOT BLANK(stab_study_id) AND ((val = EMPTY) OR BLANK(val)) THEN
+             val = SELECT pds_study.batch_name
+                   WHERE  identity = stab_study_id
+         ENDIF
+   
+         PROMPT FOR val AT col, row
+                        IN WINDOW win_name
+                        WITH ( display_only       = TRUE)
+                        FORMAT job_header.batch_name
+   
+          has_changed = val <> old_batch
+   
+          IF ( NOT is_display ) AND ( has_changed ) THEN
+   
+             ASSIGN job_header . batch_name          = val
+   
+          ENDIF
+      ENDIF
+   
+ENDROUTINE
+
+{**AE1551}
+{------------------------------------------------------------------------------}
+
+{**AS1615 HBe 4-5-2005}
+
+ROUTINE SP_PROJECT_NAME ( VALUE col        ,
+                          VALUE row        ,
+                                win_name   ,
+                          VALUE is_display )
+
+   DECLARE job_project
+   DECLARE group
+
+   contents =  SELECT sample . project_id
+
+   IF BLANK(contents) THEN
+
+      the_job  =  SELECT sample . job_name
+
+      job_project =  SELECT job_header . project_id
+                     WHERE ( job_name = the_job )
+
+      IF ((job_project = EMPTY) OR BLANK(job_project)) THEN
+         job_project = ""
+      ENDIF
+
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT    group_header
+      ELSE
+
+         IF ((job_project <> EMPTY) AND NOT BLANK(job_project)) THEN
+
+            contents = job_project
+
+         ENDIF
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                      WITH ( display_only  = TRUE )
+                      BROWSE ON project_info
+         ASSIGN sample . project_id  =  contents
+
+      ENDIF
+
+
+   ELSE
+      IF is_display THEN
+
+         DISPLAY contents AT        col, row
+                       IN WINDOW win_name
+                       FORMAT group_header
+
+      ELSE
+
+         PROMPT FOR contents AT col, row
+                      IN WINDOW win_name
+                        WITH ( display_only  = TRUE )
+                   BROWSE ON   project_info
+         ASSIGN sample . project_id  =  contents
+
+      ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+
+{**AE1826}
+
+ROUTINE OPERATOR_LOCATION_ID( VALUE col, VALUE row, win_name, VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE location
+
+   contents =  SELECT sample . location_id
+
+    IF BLANK(contents) THEN
+        location = SELECT personnel.location_id
+                    WHERE identity = OPERATOR
+        IF location <> EMPTY THEN
+            contents = location
+        ENDIF
+        IF is_display THEN
+            DISPLAY contents 
+            AT col, row
+            IN WINDOW win_name
+            FORMAT    location
+        ELSE
+            PROMPT FOR contents 
+            AT col, row
+            IN WINDOW win_name
+            WITH (value = contents)
+            BROWSE ON location
+            ASSIGN sample . location_id  =  contents
+        ENDIF
+    ELSE
+        IF is_display THEN
+            DISPLAY contents 
+            AT col, row
+            IN WINDOW win_name
+            FORMAT location
+        ELSE
+            PROMPT FOR contents AT col, row
+            IN WINDOW win_name
+            WITH (value = contents)
+            BROWSE ON location
+            ASSIGN sample . location_id  =  contents
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE OPERATOR_GROUP_ID( VALUE col, VALUE row, win_name, VALUE is_display )
+
+   DECLARE job_prod_nam
+   DECLARE group
+
+   contents =  SELECT sample . location_id
+
+    IF BLANK(contents) THEN
+        group = SELECT personnel.group_id
+                WHERE identity = OPERATOR
+        IF group <> EMPTY THEN
+            contents = group
+        ENDIF
+        IF is_display THEN
+            DISPLAY contents 
+            AT col, row
+            IN WINDOW win_name
+            FORMAT location
+        ELSE
+            PROMPT FOR contents 
+            AT col, row
+            IN WINDOW win_name
+            WITH (value = contents)
+            BROWSE ON group_id
+            ASSIGN sample.group_id = contents
+        ENDIF
+    ELSE
+        IF is_display THEN
+            DISPLAY contents 
+            AT col, row
+            IN WINDOW win_name
+            FORMAT location
+        ELSE
+            PROMPT FOR contents AT col, row
+            IN WINDOW win_name
+            WITH (value = contents)
+            BROWSE ON group_id
+            ASSIGN sample.group_id = contents
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{**AE1826}
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

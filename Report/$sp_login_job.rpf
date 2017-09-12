@@ -1,0 +1,695 @@
+
+{******************************************************************************
+*
+* Module Name : $SP_LOGIN_JOB
+*
+* Purpose     : Sample plan job login
+*
+* Portability : Not Checked
+*
+* Re-entrant  :
+*
+******************************************************************************}
+
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LOGIN
+JOIN LIBRARY $SAMP_JOB
+JOIN LIBRARY $SP_LOGIN
+JOIN LIBRARY MES_TRANSFER
+JOIN LIBRARY $LOGIN_INTERFACE
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY LIT_EMAIL
+
+{*****************************************************************************}
+{ The main entry point                                                        }
+{*****************************************************************************}
+
+DECLARE start_time, recipient, subject
+
+    IF (NOW > TODAY + INTERVAL("   0 02:00:00")) THEN
+        recipient = "DKTBG"
+        subject = "Delayed start of '":GLOBAL("current_library"):"', (":GLOBAL("INSTANCE"):"@":get_client_machine_name():")"
+        send_mail(recipient, subject)
+    ENDIF
+    
+        { *** Restart sample plan login in 1 hour *** }
+        WriteToLog("")
+        start_time = SELECT timerqueue.start_date FOR UPDATE WHERE report_name = GLOBAL("current_library")
+        start_time = NOW +  INTERVAL ("   0 01:00")
+        START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+        ASSIGN timerqueue.run_time = start_time
+        UPDATE timerqueue
+        COMMIT
+        WriteToLog("Restart sample plan login ":start_time)
+
+    multiple_from_spawn ( )
+
+        recipient = "DKTBG"
+        subject = "'":GLOBAL("current_library"):"' completed, (":GLOBAL("INSTANCE"):"@":get_client_machine_name():")"
+        send_mail(recipient, subject)
+
+        { *** If succeeded, restart sample plan login in next day *** }
+        start_time = SELECT timerqueue.start_date FOR UPDATE WHERE report_name = GLOBAL("current_library")
+        start_time = TODAY + INTERVAL("1") + INTERVAL("0 ":SUBSTRING(start_time, 13, 5))
+        START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+        ASSIGN timerqueue.run_time = start_time
+        UPDATE timerqueue
+        COMMIT
+        WriteToLog("Restart sample plan login ":start_time)
+
+
+EXIT
+
+{*****************************************************************************}
+
+
+
+{***** ROUTINE standard.rpf *****}
+
+ROUTINE standard ( option )
+{
+*     Menu entry point
+*
+******************************************************************************}
+
+      DECLARE login_identity, job_id
+
+IF GET_IDENTITY ( login_identity                             ,
+    GET_USER_MESSAGE ( "SP_LOGIN_JOB_ID", 1 )  ,
+    GET_USER_MESSAGE ( "SP_LOGIN_JOB_HEAD", 1 ),
+    "job_template"                             ,
+    ""                                         ) THEN
+        job_id = sp_login_job ( login_identity, TRUE, TRUE )
+        UpdateSamples(job_id)
+        SET DATE FORMAT "YYYY'_'MZ'_'DZ" {"'_'H24'_'MI" }
+        SET NAME "SMP$LOGFILES:SP_LOGIN_" : STRIP ( NOW ) : ".log" 
+        FLUSH_LITERAL
+        RESTORE DATE FORMAT
+        login_interface_list_job_samples ( job_id )
+ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE edit.rpf *****}
+
+ROUTINE edit ( option )
+{
+*     Menu entry point
+*
+******************************************************************************}
+
+      DECLARE login_identity, new_job_id
+
+      IF GET_IDENTITY ( login_identity    ,
+                        GET_USER_MESSAGE ( "SP_LOGIN_JOB_EDIT_ID", 1 )  ,
+                        GET_USER_MESSAGE ( "SP_LOGIN_JOB_EDIT_HEAD", 1 ),
+                        "job_template"    ,
+                        ""                ) THEN
+            new_job_id = sp_login_job ( login_identity, TRUE, FALSE )
+            UpdateSamples(new_job_id)
+            IF CAN_ACCESS_MENU ( 323 ) THEN
+                  {modify job option}
+                  MENUPROC 323, SUBSTITUTE( new_job_id, " ", "" )
+            ENDIF
+            FLUSH_LITERAL
+      ENDIF
+
+ENDROUTINE
+
+
+{***** ROUTINE copy.rpf *****}
+
+ROUTINE copy ( option )
+{
+*     Menu entry point
+*
+******************************************************************************}
+
+      DECLARE job_template, job_source, job_dest, do_edit, ok, login_details
+
+      ok = TRUE
+
+      IF ok THEN
+
+            ok = ok AND GET_IDENTITY ( job_source                                       ,
+                                       GET_USER_MESSAGE ( "SP_LOGIN_JOB_COPY_ID", 1 )   ,
+                                       GET_USER_MESSAGE ( "SP_LOGIN_JOB_COPY_HEAD", 1 ) ,
+                                       "job_header"                                     ,
+                                       ""                                               )
+      ENDIF
+
+      IF ok THEN
+
+            ok = ok AND GET_IDENTITY ( job_template               ,
+                                       GET_USER_MESSAGE ( "SP_LOGIN_JOB_COPY_TEMP", 1 ) ,
+                                       GET_USER_MESSAGE ( "SP_LOGIN_JOB_COPY_HEAD", 1 ) ,
+                                       "job_template"             ,
+                                       ""                         )
+      ENDIF
+
+      IF ok THEN
+
+            do_edit = TRUE
+
+            samp_job_initialise( )
+
+            CREATE OBJECT SAMP_JOB_JOB_LOGIN_CLASS, login_details
+            login_details . job_template = job_template
+
+            job_dest = login_details . login_a_job( )
+
+            ok = ok AND ( job_dest <> ERROR )
+
+            login_copy_jobs_samples( job_source ,
+                                     job_dest   ,
+                                     do_edit    )
+
+            IF CAN_ACCESS_MENU ( 323 ) THEN
+
+                  {modify job option}
+                  MENUPROC 323, SUBSTITUTE( job_dest, " ", "" )
+
+            ENDIF
+
+      ENDIF
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE multiple(.rpf *****}
+
+GLOBAL ROUTINE multiple( option )
+{
+*     Menu entry point
+*
+******************************************************************************}
+    DECLARE start_time
+    
+        { *** Restart sample plan login in 1 hour *** }
+        WriteToLog("")
+        start_time = SELECT timerqueue.start_date FOR UPDATE WHERE report_name = GLOBAL("current_library")
+        start_time = NOW +  INTERVAL ("   0 01:00")
+        START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+        ASSIGN timerqueue.run_time = start_time
+        UPDATE timerqueue
+        COMMIT
+        WriteToLog("Restart sample plan login ":start_time)
+
+    sp_login_job_multiple( TRUE )
+
+        { *** If succeeded, restart sample plan login in next day *** }
+        start_time = SELECT timerqueue.start_date FOR UPDATE WHERE report_name = GLOBAL("current_library")
+        start_time = TODAY + INTERVAL("1") + INTERVAL("0 ":SUBSTRING(start_time, 13, 5))
+        START WRITE TRANSACTION "Reset '":STRIP(GLOBAL("current_library")):"'"
+        ASSIGN timerqueue.run_time = start_time
+        UPDATE timerqueue
+        COMMIT
+        WriteToLog("Restart sample plan login ":start_time)
+
+
+ENDROUTINE
+
+
+{***** ROUTINE multiple_from_spawn.rpf *****}
+
+ROUTINE multiple_from_spawn
+
+{
+*     Entry point for Spawn
+*
+******************************************************************************}
+
+    SET DATE FORMAT "YYYY'_'MZ'_'DZ" {"'_'H24'_'MI" }
+    SET NAME "SMP$LOGFILES:SP_LOGIN_" : STRIP ( NOW ) : ".log" 
+    RESTORE DATE FORMAT
+
+    sp_login_job_multiple ( TRUE )
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE sp_login_job_multiple(.rpf *****}
+
+GLOBAL ROUTINE sp_login_job_multiple( VALUE is_interactive )
+{
+*
+******************************************************************************}
+
+    DECLARE template_id, job_templates, count, jobs, jobnum, numsamp, LogTxt, check_ok, JobExist, CurrentJob, job_id, description, job_array, i,
+            SampleID, s, sample_array, sampling_point, product, batch
+
+    ARRAY job_array
+    ARRAY sample_array
+    ARRAY job_templates ARRAYSIZE( 0 )
+    ARRAY jobs ARRAYSIZE(0, 5 )
+
+    count = 1
+
+    template_id = SELECT job_template . identity
+            WHERE is_environmental = TRUE
+            AND   removeflag       = FALSE
+            ORDER ON modified_on
+
+    WHILE template_id <> EMPTY DO
+
+        job_templates[count] = template_id
+
+        NEXT job_template
+        template_id = SELECT job_template . identity
+        count = count + 1
+
+    ENDWHILE
+
+    count = 1
+    s = 0
+
+    WHILE count <= size_of_array( job_templates ) DO
+        JobExist = SELECT COUNT job_header WHERE template_id = job_templates[count] AND date_created > SUBSTRING(NOW(),1,11)
+        IF JobExist = 0 THEN
+            CurrentJob = sp_login_job ( STRIP(job_templates[count]), is_interactive, TRUE )
+            IF (NOT BLANK(CurrentJob)) AND (LENGTH(CurrentJob)<200)  THEN
+                WriteToLog("Job created:  ":CurrentJob)
+                description = SELECT job_template . browse_description WHERE identity = job_templates[count]
+                batch       = STRIP(SUBSTRING(CurrentJob, INDEX(CurrentJob, "/") + 1, 20))
+                product     = SELECT job_header . product_name WHERE job_name = CurrentJob
+                job_id      = SELECT job_header . job_name FOR UPDATE WHERE job_name = CurrentJob
+                IF (job_id = CurrentJob) THEN
+                    START WRITE TRANSACTION "Update job_header"
+                    ASSIGN job_header . browse_description = description
+                    ASSIGN job_header . product_description = description
+                    ASSIGN job_header . batch_name = batch
+                    UPDATE job_header
+                    COMMIT
+                ENDIF
+
+                SampleID = SELECT sample . id_numeric WHERE job_name = CurrentJob
+                WHILE SampleID <> EMPTY
+                    s = s + 1
+                    sample_array[s,1] = SampleID
+                    sample_array[s,2] = product
+                    sample_array[s,3] = batch
+                NEXT sample
+                    SampleID = SELECT sample . id_numeric
+                ENDWHILE
+
+            ENDIF
+            jobnum = size_of_array(jobs) + 1
+            jobs [jobnum, 1] = CurrentJob
+        ELSE
+            WriteTolog(STRIP(STRING(JobExist)):" jobs has been logged with template: '":STRIP(job_templates[count]):"' on ":SUBSTRING(NOW(),1,11))
+        ENDIF
+        count = count + 1
+    ENDWHILE
+
+    s = 0
+    WHILE s < SIZE_OF_ARRAY(sample_array)
+        s = s + 1
+        JobID = STRIP(SELECT sample . job_name WHERE id_numeric = sample_array[s,1])
+        sampling_point = STRIP(SELECT sample . sampling_point)
+        sample_array[s,4] = JobID:"/":sampling_point
+
+    ENDWHILE
+
+    s = 0
+    WHILE s < SIZE_OF_ARRAY(sample_array)
+        s = s + 1
+        SampleID = SELECT sample . id_numeric FOR UPDATE WHERE id_numeric = sample_array[s,1]
+        IF (SampleID <> EMPTY) AND (SampleID <> LOCKED) THEN
+            START WRITE TRANSACTION "UPDATE sample"
+            ASSIGN sample . product = sample_array[s,2]
+            ASSIGN sample . batch_name = sample_array[s,3]
+            ASSIGN sample . id_text = sample_array[s,4]
+            UPDATE sample
+            COMMIT
+        ENDIF
+    ENDWHILE
+
+
+    count = 1
+
+    WriteToLog(ASCII(10):"  -->    -->    -->     Processing Environmental Jobs.")
+
+    {job_id = SELECT job_header . job_name WHERE submitter_oper = "LIMS" AND template_id <> "P-BULK_ROS" AND date_created > SUBSTRING(NOW(),1,11) ORDER ON job_name}
+    job_id = SELECT job_header . job_name WHERE node_trigger_path <> " " AND template_id <> "P-BULK_ROS" AND date_created > SUBSTRING(NOW(),1,11) ORDER ON job_name
+
+    i = 0
+    WHILE job_id <> EMPTY DO
+            i = i + 1
+            job_array[i,1] = job_id
+    NEXT job_header
+        job_id = SELECT job_header . job_name
+    ENDWHILE
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(job_array) DO
+        LogTxt = "    "
+        CurrentJob = job_array[i,1]
+
+        DECLARE UpdJob, version
+        UpdJob = SELECT job_header.job_name FOR UPDATE WHERE job_name = CurrentJob
+        IF CurrentJob = UpdJob THEN
+            product = SELECT job_header.product_name
+            version = SELECT max_active_mlp_ver.max_version WHERE identity = product
+            START WRITE TRANSACTION "Update Job Header for Environmental"
+            ASSIGN job_header.product_description = STRIP(SELECT mlp_header.description WHERE identity = product AND product_version = version)
+            UPDATE job_header
+            COMMIT
+        ELSE    
+            {Add some error handling}
+            WriteToLog("Select ":CurrentJob:" for update, returned: ":UpdJob)
+        ENDIF
+
+        NumSamp = SELECT COUNT SAMPLE WHERE JOB_NAME = job_array[i,1]
+        NumSamp = TRUNC(NumSamp)
+        IF (NOT BLANK(CurrentJob)) AND (LENGTH(CurrentJob)<200)  THEN
+            LogTxt = LogTxt:STRIP(job_array[i, 1]):", ":STRIP(NumSamp):" sample(s). "
+        ENDIF
+        IF NumSamp > 0 THEN
+            UpdateSamples(CurrentJob)
+            job_array[i,1]  = PAD(job_array[i,1]," ", 20):" (":STRIP(SELECT job_header . job_status WHERE job_name = job_array[i,1]):") ":STRIP(LogTxt)
+        ELSE
+            START READ TRANSACTION "Cancel Job - no samples"
+            CurrentJob = SELECT job_header.job_name FOR UPDATE
+                         WHERE (job_name = job_array[i,1])
+                         AND ((status = "V") OR (status = "C"))
+            IF CurrentJob = job_array[i,1] THEN
+                START WRITE TRANSACTION "Cancel Job - no samples"
+               {CHANGE JOB STATUS TO "X", check_ok
+                UPDATE job_header }
+                DELETE job_header, check_ok
+                COMMIT
+                array_remove_slice(job_array, 1, i)
+                i = i - 1
+                LogTxt = LogTxt:"Deleted"
+            ELSE
+                LogTxt = LogTxt:"Not deleted, '":CurrentJob:"'"
+            ENDIF
+            IF LEFTSTRING(job_id,3) = "999" THEN
+                CALL_ROUTINE "EnvironmentalSampling"
+                    USING CurrentJob
+                    IN LIBRARY "MES_TRANSFER"
+                LogTxt = LogTxt:"Sent to MES_TRANSFER"
+            ENDIF
+        ENDIF
+        IF LogTxt <> "    " THEN
+            WriteToLog(LogTxt)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    DisplayArray(job_array)
+
+    WriteToLog("Processing Environmental Jobs. Completed")
+
+ENDROUTINE
+
+
+{***** GLOBAL ROUTINE sp_login_job.rpf *****}
+
+GLOBAL ROUTINE sp_login_job ( VALUE job_template   ,
+                       VALUE is_interactive ,
+                       VALUE use_rules      )
+
+{
+*
+******************************************************************************}
+
+      DECLARE batch_login_object, job_id, ok, login_details
+
+      ok = TRUE
+
+      IF ok THEN
+
+            samp_job_initialise( )
+
+            CREATE OBJECT SAMP_JOB_JOB_LOGIN_CLASS, login_details
+            login_details . job_template            = job_template
+
+            job_id = login_details . login_a_job( )
+
+            ok = ok AND ( job_id <> ERROR )
+
+      ENDIF
+
+      IF ok THEN
+
+            batch_login_initialise ( )
+
+            CREATE OBJECT "BATCH_LOGIN" , batch_login_object
+
+            batch_login_object . login_table           = "job_header"
+            batch_login_object . login_identity        = job_id
+            batch_login_object . job                   = job_id
+            batch_login_object . rule_only_based_count = GLOBAL ( "SP_RULES_MODE" )
+            batch_login_object . trigger_max_one_rule  = GLOBAL ( "SP_RULES_MODE" )
+            batch_login_object . output_to_literal     = is_interactive
+            batch_login_object . check_rules           = use_rules
+            batch_login_object . pre_login_edit        = NOT use_rules
+
+            batch_login_object . login ( )
+
+      ENDIF
+
+      RETURN( job_id )
+
+ENDROUTINE
+
+
+{***** ROUTINE SetBatchNameOnJob.rpf *****}
+
+ROUTINE SetBatchNameOnJob (VALUE JobId)
+
+
+
+DECLARE product_id, work_center, ymd, {inc_id, inc, inc1,  }batch
+
+{JOIN LIBRARY $LIB_FLAGS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $LIB_UTILS}
+
+    ENABLE WINDOWS
+
+    SET FORMAT "9999999999"
+    product_id  = SELECT job_header. product_name
+    work_center = SELECT job_header. work_center
+    product_id  = STRIP(product_id)
+    work_center = STRIP(work_center)
+
+    SET DATE FORMAT "YYMZDZ"
+        ymd = STRING(NOW())
+    RESTORE DATE FORMAT
+{
+    inc_id = RIGHTSTRING ( "000000000000" : STRIP (NUMBER_TO_TEXT (INCREMENT ( "SYNTAX", work_center ), "9999999999" )) , 7 )
+    batch = work_center:inc_id
+    inc = RIGHTSTRING ( "00" : STRIP (NUMBER_TO_TEXT (INCREMENT ( "SYNTAX", product_id:"/":work_center:"D":ymd), "99" )) , 2 )
+
+    IF inc = 1 THEN
+        inc1 = ""
+    ELSE
+        inc1 = "-" : inc
+    ENDIF
+ }
+    batch = strip (work_center:"D":ymd{:inc1})
+
+    ASSIGN job_header . batch_name = batch
+
+    return (batch)
+
+
+{DECLARE jn, template, w_center, p_date, id, inc_id, batch
+
+    jn = SELECT JOB_HEADER . JOB_NAME FOR UPDATE
+        WHERE JOB_NAME = JobId
+
+    template = STRIP(SELECT job_header . template_id)
+
+    IF (template = "DEFAULT") OR (INDEX(template, "999") <> 0) THEN
+
+        w_center = strip (SELECT job_header . work_center)
+        SET DATE FORMAT "YYYYMZDZ"
+
+        p_date = string (now)
+        id = w_center
+        inc_id = RIGHTSTRING ( "000000000000" : STRIP (NUMBER_TO_TEXT (INCREMENT ( "SYNTAX", id ), "9999999999" )) , 7 )
+
+        batch = id : inc_id
+
+        RESTORE DATE FORMAT
+
+        ASSIGN job_header . batch_name = batch
+
+        START WRITE TRANSACTION "Update batchname on job"
+
+        UPDATE JOB_HEADER
+        COMMIT
+
+    ENDIF
+}
+ENDROUTINE
+
+
+{***** ROUTINE WriteToLog(VALUE.rpf *****}
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{***** GLOBAL ROUTINE sp_login_job_SAP.rpf *****}
+
+GLOBAL ROUTINE sp_login_job_SAP (VALUE job_id)
+{*************************************************************************
+* Purpose      : enable sample plan login for SAP initiated jobs
+* Parameters   : job_template, is_interactive, use_rules, job_id
+* Return Value : N/A
+**************************************************************************}
+
+      DECLARE batch_login_object, ok, {login_details, job_template, }is_interactive, use_rules
+
+      ok                = TRUE
+      is_interactive    = FALSE
+      use_rules         = TRUE
+
+      WriteToLog("sp_login_job_SAP (VALUE ":job_id:")")
+
+
+{      IF ok THEN
+
+            samp_job_initialise( )
+
+            CREATE OBJECT SAMP_JOB_JOB_LOGIN_CLASS, login_details
+            login_details . job_template            = job_template
+            job_id = login_details . login_a_job( )
+
+            ok = ok AND ( job_id <> ERROR )
+
+      ENDIF
+}
+      IF ok THEN
+
+            batch_login_initialise ( )
+
+            CREATE OBJECT "BATCH_LOGIN" , batch_login_object
+
+            batch_login_object . login_table           = "job_header"
+            batch_login_object . login_identity        = job_id
+            batch_login_object . job                   = job_id
+            batch_login_object . rule_only_based_count = GLOBAL ( "SP_RULES_MODE" )
+            batch_login_object . trigger_max_one_rule  = GLOBAL ( "SP_RULES_MODE" )
+            batch_login_object . output_to_literal     = is_interactive
+            batch_login_object . check_rules           = use_rules
+            batch_login_object . pre_login_edit        = NOT use_rules
+
+            batch_login_object . login ( )
+
+      ENDIF
+
+      RETURN( job_id )
+
+ENDROUTINE
+
+
+{***** ROUTINE UpdateSamples(JobID).rpf *****}
+
+ROUTINE UpdateSamples(JobID)
+{******************************************
+* Update product and batchname for the sample
+* according to the values on job_header
+* Set product_version to max_active_version
+********************************************}
+    DECLARE sample, samples, i, product, prod_ver, batch
+
+    ARRAY samples
+
+    i = 0
+    sample = SELECT sample . id_numeric WHERE job_name = JobID
+    WHILE sample <> EMPTY DO
+        i = i + 1
+        samples[i,1] = sample
+    NEXT sample
+        sample = SELECT sample . id_numeric
+    ENDWHILE
+
+    product = SELECT job_header . product_name WHERE job_name = JobID
+    batch   = SELECT job_header . batch_name
+    prod_ver = SELECT max_active_mlp_ver . max_version WHERE identity = Product
+
+    i = 1
+    WHILE i <= SIZE_OF_ARRAY(samples) DO
+        START WRITE TRANSACTION "Update sample"
+        sample = SELECT sample . id_numeric FOR UPDATE WHERE id_numeric = samples[i,1]
+        IF (SELECT sample . product <> Product) THEN
+            ASSIGN sample . product         =  Product
+            WriteToLog(sample:" Change Product:        ":STRIP(SELECT sample . product):" -> ":STRIP(Product))
+        ENDIF
+        IF (NUMERIC(SELECT sample . product_version) <> NUMERIC(Prod_ver)) THEN
+            WriteToLog(sample:" Change Product version: ":STRIP(SELECT sample . product_version):" -> ":STRIP(Prod_ver))
+            ASSIGN sample . product_version         =  Prod_ver
+        ENDIF
+        IF (SELECT sample . batch_name <> Batch) THEN
+            ASSIGN sample . batch_name         =  Product
+            WriteToLog(sample:" Change Batch:            ":STRIP(SELECT sample . batch_name):" -> ":STRIP(Batch))
+        ENDIF
+        UPDATE sample
+        COMMIT
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE send_mail(VALUE recipient, VALUE subject)
+{*****************************************************************************
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: None
+******************************************************************************}
+
+    DECLARE email
+    define_smtp_mail_class()
+    CREATE OBJECT "SMTP_MAIL_CLASS" , email
+    
+    IF (INDEX(recipient, "@") = 0) THEN
+        recipient = recipient:"@chr-hansen.com"
+    ENDIF
+
+    email.recipient = recipient
+    email.subject   = subject 
+    email.body_text = "This email is automatically generated and can not receive replies."
+
+   {email.email_object    The path of the blat utility         }
+   {email.recipient       Person to send the e-mail to         }
+   {email.sender          Person sending e-mail                
+                          Default servername@chr-hansen.com    }
+   {email.subject         Subject of the e-mail                }
+   {email.attatcht        Text File to be attatched            }
+   {email.attatchb        Binary file to be attatched          }
+   {email.cc_recipient    Address of Carbon Copy recipient     }
+   {email.bcc_recipient   Blind Carbon Copy recipient          }
+   {email.server          Name or IP address of mail server    } 
+   {email.body_text       Name of a file for body text         }
+   {email.port            SMTP usually uses 25 which is default}
+   {email.send_file       File to send string to               }
+
+   {email.send_to_file ()}
+    email.send()
+
+ENDROUTINE { example_of_usage }

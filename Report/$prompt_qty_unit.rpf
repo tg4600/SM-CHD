@@ -1,0 +1,284 @@
+{******************************************************************************
+*
+* Module Name   : $PROMPT_QTY_UNIT
+*
+* Purpose       : Prompt to handle direct entry of values and units. All values
+*                 should be expressed in 'base_unit' and all values entered by 
+*                 the user will be converted into 'base_unit'. 'display_unit'
+*                 property is the unit to use when displaying values to the 
+*                 user and will be set to the unit used to enter the value
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_TEXT
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $OPTIONAL_MESSAGE
+
+CONSTANT REAL_FORMAT_BEFORE = "999999999.999"
+CONSTANT REAL_FORMAT_AFTER  = "999999999.999"
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE prompt_qty_unit_initialisation
+{
+* Defines the 'Prompt quantity and unit' prompt
+*
+*******************************************************************************}
+
+	DEFINE CLASS "PROMPT_QTY_UNIT"
+
+		INHERIT "STD_PROMPT_TEXT"
+
+		INITIALISATION
+	
+		PROPERTIES
+			"display_unit"        , { unit to display in/unit entered by user }
+			"base_unit"           , { unit used for all values                }
+			"minimum_value"       , { minimum allowed value in base units     }
+			"error_too_low"       , { text to display if too low val entered  }
+			"value_entered"       , { quantity actually entered by the user   }
+			"hide_units"            { if true, units will normally be hidden  }
+
+		ACTIONS
+			"start_prompt"        ,
+			"format_before"       ,
+			"format_after"        ,
+			"browse"              ,
+			"validation"
+
+	END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_class_initialisation( self )
+{
+* Prompt qty unit class initialisation
+*
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+	self . zap_on_first  = TRUE
+
+	self . display_unit   = EMPTY
+	self . base_unit      = EMPTY
+	self . minimum_value  = 0
+	self . error_too_low  = ""
+	self . value_entered  = EMPTY
+	self . hide_units     = FALSE
+	self . value          = 0
+	self . status_text    = "Quantity Prompt. Enter an amount and unit"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_action_start_prompt( self )
+{
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+	IF self . display_unit = EMPTY THEN
+	
+		IF self . base_unit <> EMPTY THEN
+		
+			self . display_unit = self . base_unit
+		
+		ELSE
+		
+			self . display_only = TRUE
+		
+		ENDIF
+	
+	ENDIF
+
+	self . std_prompt_text :: start_prompt( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_action_format_before( self )
+{
+* Called to format the value when user is about to edit
+*
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+	DECLARE qty_reporting, error_message, old_format
+
+	IF ( self . base_unit <> EMPTY ) AND ( self . display_unit <> EMPTY ) THEN
+	
+		qty_reporting = unit_convert ( self . value        ,
+		                               self . base_unit    ,
+		                               self . display_unit ,
+		                               error_message       )
+
+		IF error_message <> EMPTY THEN
+	
+			self . text = ""
+
+		ELSE
+
+			old_format = GLOBAL ( "FORMAT_TEXT" )
+
+			SET FORMAT REAL_FORMAT_BEFORE
+
+			self . text = STRIP( qty_reporting )
+
+			SET FORMAT old_format
+
+			self . text = self . text : " " : self . display_unit
+	
+		ENDIF
+		
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_action_format_after( self )
+{
+* Called to format the value after it's been entered
+*
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+	DECLARE qty_reporting, error_message, old_format
+
+	IF ( self . base_unit <> EMPTY ) AND ( self . display_unit <> EMPTY ) THEN
+
+		qty_reporting = unit_convert ( self . value        ,
+		                               self . base_unit    ,
+		                               self . display_unit ,
+		                               error_message       )
+
+		IF error_message <> EMPTY THEN
+
+			self . text = message_get_text( error_message, 1 )
+
+		ELSE
+
+			old_format = GLOBAL ( "FORMAT_TEXT" )
+
+			SET FORMAT REAL_FORMAT_AFTER
+
+			self . text = STRIP( qty_reporting )
+
+			SET FORMAT old_format
+			
+			IF NOT self . hide_units THEN
+			
+				self . text = self . text : " " : self . display_unit
+				
+			ENDIF
+
+		ENDIF
+	
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_action_browse( self )
+{
+* Do nothing. The default prompt text browse copies the text to the value: bad
+*
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE prompt_qty_unit_action_validation( self )
+{
+* Prompt validation
+*
+* Parameters : self , Prompt qty unit object
+*
+*******************************************************************************}
+
+	DECLARE value_entered, unit_entered, qty, error_message, text, valid
+
+	valid = FALSE
+	
+	self . text = lib_text_replace( self . text, " ", "" )
+	
+	unit_split_result ( self . text, value_entered, unit_entered )
+
+	
+	IF NOT NUMTEXT( value_entered ) THEN
+	
+		flash_message( value_entered : " is not a valid value. Please enter a number", TRUE )
+	
+	ELSE
+
+		IF BLANK( unit_entered ) AND NOT BLANK( self . base_unit ) THEN
+
+			text = "No unit entered. Assuming value is expressed in " : self . base_unit
+
+			optional_message ( ""                 ,
+			                   text               ,
+			                   FORM_BUTTON_OK     ,
+			                   "PROMPT_QTY_UNIT"  ,
+			                   "NO_UNIT_USE_BASE" )
+
+			unit_entered = self . base_unit
+
+		ENDIF
+
+		qty = unit_convert ( value_entered    ,
+		                     unit_entered     ,
+		                     self . base_unit ,
+		                     error_message    )
+
+		IF error_message <> EMPTY THEN
+
+			flash_message( message_get_text( error_message, 1 ), TRUE )
+
+		ELSE
+
+			IF ( qty ) < self . minimum_value THEN
+
+				flash_message( self . error_too_low : ASCII( 13 ) :
+				               "You cannot reduce the quantity to " :
+				               STRIP( value_entered ) : " " : unit_entered, TRUE )
+
+			ELSE
+
+				self . value         = qty
+				self . value_entered = value_entered
+				self . display_unit  = unit_entered
+
+				valid = TRUE
+
+			ENDIF
+
+		ENDIF
+		
+	ENDIF
+
+	RETURN( valid )
+
+ENDROUTINE

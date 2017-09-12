@@ -1,0 +1,720 @@
+{Compared 20140123 /DKTBG}
+{******************************************************************************
+*
+* Module Name   :
+*
+* Purpose       :
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY std_class
+JOIN STANDARD_LIBRARY std_utils
+
+JOIN LIBRARY $lib_mlps
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $mlps_const
+JOIN LIBRARY $prompt_list
+
+CONSTANT LIB_RE_MLP_CLASS = "LIB_RE_MLP_CLASS"
+CONSTANT LIB_RE_MLP_VALUE = "LIB_RE_MLP_VALUE"
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_initialise
+
+	IF NOT GLOBAL ( "LIBRARY_INITIALISED" ) THEN
+
+		DEFINE CLASS LIB_RE_MLP_CLASS
+
+			PROPERTIES
+				"MLP_OPERATION" ,
+				"WINDOW"
+
+			ACTIONS
+				"CHECK_IN_SPEC"
+
+		END CLASS
+
+		SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+		lib_mlps_initialise ()
+		set_up_std_prompt_list_class ()
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_re_mlp_exists ( result_object )
+
+{*
+*	Determine if mlp limits exist for this result
+*
+*******************************************************************************}
+
+	DECLARE exists
+
+        exists = VARIABLE_IS_ASSIGNED ( result_object . mlp_object )
+
+	RETURN ( exists )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_re_mlp_set_visible (       result_context ,
+	                                 VALUE is_visible     )
+
+{*
+*	Set the visibility property of the mlp screen
+*
+*******************************************************************************}
+
+	DECLARE was_visible
+
+	was_visible = result_context . mlp_form . visible
+
+	result_context . mlp_form . prompt_objects [ 1 ] . set_visible ( is_visible )
+	result_context . mlp_form . set_visible ( is_visible )
+
+	RETURN ( was_visible )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_re_mlp_create_mlp_form ( result_context )
+
+{*
+*	Routine to set up the audit form for gui display
+*
+*******************************************************************************}
+
+	DECLARE list
+
+	{ Create the form }
+
+	CREATE OBJECT PROMPT_CLASS_FORM , result_context . mlp_form
+
+	result_context . mlp_form . height = 5
+    result_context . mlp_form . width  = -8 {30}
+
+	result_context . mlp_form . row    = 1
+	result_context . mlp_form . column = GLOBAL ( "GUI_WIDTH" ) -
+	                             result_context . mlp_form . width - 2
+
+	result_context . mlp_form . header =
+	         GET_USER_MESSAGE ( "RESULT_ENTRY_MLP_LIMITS", 1 )
+	result_context . mlp_form . proportional = TRUE
+	result_context . mlp_form . button_style = FORM_BUTTON_NONE
+
+	{ result_context . mlp_form . prompt_id = "$LIB_RE_MLP_MAIN" }
+
+	{ Create the lst control }
+
+	CREATE OBJECT PROMPT_LIST_CLASS, list
+
+	list . row    = 1
+	list . column = 1
+	list . width  = result_context . mlp_form . width
+	list . height = result_context . mlp_form . height
+	list . full_screen = TRUE
+	list . style       = list . style + LIST_STYLE_GRIDLINES
+
+	result_context . mlp_form . add_prompt ( list )
+
+	{ Define the list control }
+
+	list . add_column (
+	        GET_USER_MESSAGE ( "RESULT_ENTRY_MLP_SCREEN_HEADER_N_GUI", 1),
+	        9                                                            )
+	list . add_column (
+	        GET_USER_MESSAGE ( "RESULT_ENTRY_MLP_SCREEN_HEADER_N_GUI", 2),
+	        10                                                          )
+	list . add_column (
+	        GET_USER_MESSAGE ( "RESULT_ENTRY_MLP_SCREEN_HEADER_N_GUI", 3),
+	        10                                                           )
+
+	ARRAY list . user_info
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_build_limits_line (       format_object ,
+				       VALUE window_line   )
+
+        DECLARE limits_line   ,
+		temp
+
+	limits_line = format_object . levels [ window_line ] : " "
+
+	IF format_object . limits [ window_line , 1 ] <> EMPTY THEN
+
+		temp = PAD ( format_object . limits [ window_line , 1 ] ,
+			     " "                                        ,
+			     10                                         )
+
+		limits_line = limits_line :
+			      temp        :
+			      " "
+
+
+	ENDIF
+
+	IF format_object . limits [ window_line , 2 ] <> EMPTY THEN
+
+		limits_line = limits_line :
+			      format_object . limits [ window_line , 2 ]
+
+	ENDIF
+
+        RETURN ( limits_line )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_build_limits_array (       format_object ,
+					      list_array    ,
+					VALUE window_line   )
+
+	list_array [window_line, 1] = format_object . levels [ window_line   ]
+	list_array [window_line, 2] = format_object . limits [ window_line,1 ]
+	list_array [window_line, 3] = format_object . limits [ window_line,2 ]
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE mlp_display_limits_gui ( result_object , result_context_object )
+
+	DECLARE window_line       ,
+		list              ,
+		format_object     ,
+		level_count       ,
+		limits_present    ,
+	        old_cache_context ,
+		mlp_operation
+
+	old_cache_context = result_context_object . set_result_cache ( )
+
+	list = result_context_object . mlp_form . prompt_objects [ 1 ]
+
+	list . start_rebuild ( )
+
+	list . remove_all_items ( )
+
+	IF lib_re_mlp_exists ( result_object )  THEN
+
+		mlp_operation = result_object . mlp_object . mlp_operation
+
+		mlp_operation . calling_context = result_context_object
+		mlp_operation . format ()
+		format_object  = mlp_operation . format_object
+		mlp_operation . calling_context = EMPTY
+
+		level_count    = format_object . total
+		limits_present = level_count > 0
+
+	ELSE
+
+		limits_present = FALSE
+
+	ENDIF
+
+	IF limits_present THEN
+
+		window_line = 0
+
+		WHILE window_line < level_count DO
+
+			window_line = window_line + 1
+
+			list . insert_item (
+			          STRIP ( format_object . levels [ window_line ] ),
+			          -1                                              )
+			list . set_item (
+			          2                                                  ,
+			          STRIP ( format_object . limits [ window_line, 1 ] ))
+			list . set_item (
+			          3                                                  ,
+			          STRIP ( format_object . limits [ window_line, 2 ] ))
+
+		ENDWHILE
+
+	ENDIF
+
+	list . rebuild ( )
+
+	result_context_object . restore_result_cache ( old_cache_context )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_class_action_check_in_spec ( mlp_object            ,
+						result_context_object ,
+                                                result_object         ,
+                                                result_text           ,
+                                                value_allowed         )
+
+	DECLARE mlp_operation ,
+	        old_cache_context ,
+		in_spec
+
+	IF ( result_context_object <> EMPTY ) THEN
+	    old_cache_context = result_context_object . set_result_cache ( )
+	ENDIF
+
+	mlp_operation = mlp_object . mlp_operation
+
+	mlp_operation . calling_context = result_context_object
+    	mlp_operation . result_value    = result_text
+	mlp_operation . compare ()
+	mlp_operation . calling_context = EMPTY
+
+	value_allowed = NOT mlp_operation . disallow
+	in_spec       =     mlp_operation . final_status = MLP_CONST_PASS
+
+	IF ( result_context_object <> EMPTY ) THEN
+    	result_context_object . restore_result_cache ( old_cache_context )
+	ENDIF
+
+	RETURN ( in_spec )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_highest_version ( VALUE product_id )
+
+        RETURN ( SELECT MAX mlp_versions . product_version
+                        WHERE identity = product_id )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_valid_product_version ( sample_object )
+
+        DECLARE product_id, product_version, ret_value
+
+        product_id = SELECT sample . product IN OBJECT sample_object
+        product_version = SELECT sample . product_version
+                                                IN OBJECT sample_object
+
+	ret_value = FALSE
+
+        IF product_id <> " " THEN
+
+                IF product_version = " " THEN
+
+                        product_version = lib_re_mlp_highest_version ( product_id )
+
+			IF product_version <> EMPTY THEN
+
+	                        ASSIGN sample . product_version
+	                                IN OBJECT sample_object = product_version
+
+		                ret_value = TRUE
+
+			ENDIF
+
+                ENDIF
+
+        ENDIF
+
+        RETURN ( ret_value )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE lib_re_mlp_mlp_initialise ( result_object )
+
+	DECLARE mlp_operation    ,
+		sample_object    ,
+		test_object      ,
+		mlp_object
+
+
+	IF NOT result_object . mlp_initialised THEN
+
+		lib_re_mlp_valid_product_version (
+		        result_object . test_object . sample_object )
+
+		test_object   = result_object . test_object
+		sample_object = test_object . sample_object
+
+		CREATE OBJECT MLP_OPERATION_CLASS , mlp_operation
+
+		mlp_operation . mlp_identity = SELECT sample . product
+		                                 IN OBJECT sample_object
+		mlp_operation . mlp_version = SELECT sample . product_version
+		                                IN OBJECT sample_object
+
+		mlp_operation . dynamic_identity = SELECT sample . dynamic_product
+		                                     IN OBJECT sample_object
+
+		mlp_operation . analysis =  SELECT test . analysis
+		                              IN OBJECT test_object
+		mlp_operation . component = SELECT result . component_name
+		                               IN OBJECT result_object
+		mlp_operation . grade_code = SELECT sample . grade_code
+					       IN OBJECT sample_object
+
+    		mlp_operation . perform_level_operations = TRUE
+
+		object_assign_uncounted ( mlp_operation . result_row ,
+				          result_object              )
+
+		object_assign_uncounted ( mlp_operation . sample_row ,
+					  sample_object              )
+
+		object_assign_uncounted ( mlp_operation .test_row    ,
+				          test_object                )
+
+		mlp_operation . build ()
+
+		IF mlp_operation . number_of_limits > 0  THEN
+
+	                CREATE OBJECT LIB_RE_MLP_CLASS, mlp_object
+
+			mlp_object . mlp_operation = mlp_operation
+	      		result_object . mlp_object = mlp_object
+
+		ENDIF
+
+		result_object . mlp_initialised = TRUE
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{                                                                              }
+{ Actions invoked from the result object                                       }
+{                                                                              }
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_paste ( result_object         ,
+                                      result_context_object )
+
+	lib_re_mlp_mlp_initialise ( result_object )
+
+	{ Display the limits if any to display }
+
+	IF result_context_object . limits_box_on THEN
+
+		mlp_display_limits_gui ( result_object         ,
+		                         result_context_object )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_unpaste ( result_object )
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_in_spec ( result_object         ,
+					result_context_object ,
+                                        result_text           ,
+                                        value_allowed         )
+
+        DECLARE in_spec ,
+	        old_cache_context
+
+	IF ( result_context_object <> EMPTY ) THEN
+    	old_cache_context = result_context_object . set_result_cache ( )
+	ENDIF
+
+	lib_re_mlp_mlp_initialise ( result_object )
+
+	IF lib_re_mlp_exists ( result_object ) THEN
+
+                in_spec = result_object . mlp_object .
+                                        check_in_spec ( result_context_object ,
+							result_object         ,
+                                                        result_text           ,
+                                                        value_allowed         )
+
+        ELSE
+
+                in_spec = TRUE
+                value_allowed = TRUE
+
+        ENDIF
+
+	IF ( result_context_object <> EMPTY ) THEN
+		result_context_object . restore_result_cache ( old_cache_context )
+	ENDIF
+
+        RETURN ( in_spec )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_update ( result_object )
+
+	IF lib_re_mlp_exists ( result_object ) THEN
+
+		result_object . mlp_object . mlp_operation . update ()
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_set_up (       result_object            ,
+                                             result_context_object    ,
+                                             mlp_operation            ,
+                                       VALUE mlp_identity             ,
+                                       VALUE mlp_version              ,
+                                       VALUE mlp_level                ,
+                                       VALUE perform_level_operations )
+
+	DECLARE test_object   ,
+	        sample_object
+
+	test_object   = result_object . test_object
+	sample_object = test_object . sample_object
+
+	IF mlp_identity = EMPTY THEN
+
+		mlp_operation . mlp_identity = SELECT sample . product
+		                                   IN OBJECT sample_object
+
+	ELSE
+
+		mlp_operation . mlp_identity = mlp_identity
+
+	ENDIF
+
+	IF mlp_version = EMPTY THEN
+
+		mlp_operation . mlp_version = SELECT sample . product_version
+		                                      IN OBJECT sample_object
+
+	ELSE
+
+		mlp_operation . mlp_version = mlp_version
+
+	ENDIF
+
+	IF mlp_operation . mlp_version = 0 THEN
+
+		mlp_operation . mlp_version =
+		        lib_re_mlp_highest_version ( mlp_operation . mlp_identity )
+
+	ENDIF
+
+	IF mlp_level = EMPTY THEN
+
+		mlp_operation . grade_code = SELECT sample . grade_code
+		                                      IN OBJECT sample_object
+
+	ELSEIF blank ( mlp_level ) THEN
+
+		mlp_operation . grade_code = ""
+
+	ELSE
+
+		mlp_operation . grade_code              = mlp_level
+		mlp_operation . compare_only_grade_code = TRUE
+
+	ENDIF
+
+	mlp_operation . analysis  = SELECT test . analysis
+	                                IN OBJECT test_object
+	mlp_operation . component = SELECT result . component_name
+	                                IN OBJECT result_object
+
+	mlp_operation . perform_level_operations = perform_level_operations
+
+	object_assign_uncounted ( mlp_operation . result_row ,
+	                          result_object              )
+
+	object_assign_uncounted ( mlp_operation . sample_row ,
+	                          sample_object              )
+
+	object_assign_uncounted ( mlp_operation .test_row    ,
+	                          test_object                )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_has_mlp_limits (       result_object ,
+                                           VALUE mlp_identity  ,
+                                           VALUE mlp_version   ,
+                                           VALUE mlp_level     )
+
+	DECLARE mlp_operation         ,
+	        result_context_object ,
+	        answer
+
+
+	CREATE OBJECT MLP_OPERATION_CLASS , mlp_operation
+
+	result_object . mlp_set_up ( result_context_object ,
+		                     mlp_operation         ,
+		                     mlp_identity          ,
+		                     mlp_version           ,
+		                     mlp_level             ,
+		                     FALSE                 )
+
+	mlp_operation . build ()
+
+	answer = ( mlp_operation . number_of_limits > 0 )
+
+	RETURN ( answer )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_compare (       result_object            ,
+                                              result_context_object    ,
+                                        VALUE mlp_identity             ,
+                                        VALUE mlp_version              ,
+                                        VALUE mlp_level                ,
+                                        VALUE perform_level_operations )
+
+	DECLARE mlp_operation ,
+	        old_cache_context ,
+	        answer
+
+	old_cache_context = result_context_object . set_result_cache ( )
+
+	CREATE OBJECT MLP_OPERATION_CLASS , mlp_operation
+
+	result_object . mlp_set_up ( result_context_object ,
+		                     mlp_operation         ,
+		                     mlp_identity          ,
+		                     mlp_version           ,
+		                     mlp_level             ,
+		                     FALSE                 )
+
+	mlp_operation . calling_context = result_context_object
+       	mlp_operation . result_value    = result_object . result_str
+
+	mlp_operation . compare ()
+
+	mlp_operation . calling_context = EMPTY
+
+	answer = mlp_operation . final_status
+
+	result_context_object . restore_result_cache ( old_cache_context )
+
+	RETURN ( answer )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_format_limits_context (       result_object ,
+							    context       ,
+                                                      VALUE mlp_identity  ,
+                                                      VALUE mlp_version   ,
+                                                      VALUE mlp_level     )
+
+	DECLARE mlp_operation ,
+	        old_cache_context
+
+	old_cache_context = context . set_result_cache ( )
+
+	CREATE OBJECT MLP_OPERATION_CLASS , mlp_operation
+
+	result_object . mlp_set_up ( context        ,
+	                             mlp_operation  ,
+	                             mlp_identity   ,
+	                             mlp_version    ,
+	                             mlp_level      ,
+	                             FALSE          )
+
+
+	IF context <> EMPTY THEN
+
+		mlp_operation . calling_context = context
+
+	ELSE
+
+		mlp_operation . calling_context = EMPTY
+
+
+	ENDIF
+
+	mlp_operation . format_append_units = FALSE
+
+	mlp_operation . format ()
+
+	context . restore_result_cache ( old_cache_context )
+
+	RETURN ( mlp_operation . format_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_re_mlp_action_mlp_format_limits (       result_object ,
+                                              VALUE mlp_identity  ,
+                                              VALUE mlp_version   ,
+                                              VALUE mlp_level     )
+
+	DECLARE limits  ,
+	        context
+
+	context = EMPTY
+
+	limits = result_object . mlp_format_limits_context ( context      ,
+					                     mlp_identity ,
+					                     mlp_version  ,
+					                     mlp_level    )
+
+	RETURN ( limits )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

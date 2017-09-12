@@ -1,0 +1,138 @@
+{----------------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                              }
+{----------------------------------------------------------------------------------------}
+{**A0010-1      261094  LPE     Generate Sample Text ID =                                }
+{                               Partnumber+"/"+Batchname+"/"+Sampling Point              }
+{**MS           300300  HBe     Window not working in SM4.1, FLASH_MESSAGE used          }
+{**1537       18022004  HBE     Generate Sample Text ID for use with sample              }
+{                               plan login  = Partnumber+"/"+Batchname+"/"+Sampling Point}
+{----------------------------------------------------------------------------------------}
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN LIBRARY $SAMP_USER
+JOIN LIBRARY $LIB_UTILS
+
+
+ROUTINE syntax
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_FLAGS
+JOIN LIBRARY $LIB_UTILS
+
+ENABLE WINDOWS
+
+SET FORMAT "9999999999"
+
+cur_job_id = SELECT sample.job_name
+IF cur_job_id = EMPTY THEN
+    cur_job_id = SELECT job_header.job_name
+ENDIF
+
+{**M1537 HBe 19-2-2004: If product- or batch name on sample is blank (as in sampleplan login), use job header info}
+
+product_id = SELECT sample.product_name
+IF (product_id = EMPTY ) OR (BLANK(product_id)) OR (LEFTSTRING(product_id, 6) = "------") THEN
+    product_id = SELECT job_header.product_name WHERE  job_name = cur_job_id
+ENDIF
+
+batch_name = SELECT sample.batch_name
+IF (batch_name = EMPTY) OR (BLANK(batch_name)) OR (LEFTSTRING(batch_name, 6) = "------") THEN
+    batch_name = SELECT job_header.batch_name WHERE  job_name = cur_job_id
+ENDIF
+
+samp_pt_id = SELECT sample.sampling_point
+IF samp_pt_id  = EMPTY THEN
+    samp_pt_id = "DEFAULT"
+ENDIF
+
+IF (STRIP(product_id) = "") OR (STRIP(batch_name) = "") THEN
+    return_line = STRIP(cur_job_id):"/":STRIP(samp_pt_id)
+ELSE
+    return_line = STRIP(product_id):"/":STRIP(batch_name):"/":STRIP(samp_pt_id)
+ENDIF
+
+{*** Modify syntax to use count of samples rather than increment, as increment in some cases   ***
+ *** generate id_text with more than 30 characters                                             ***}
+ 
+count =         SELECT COUNT all_sample     WHERE id_text LIKE return_line:"%"
+count = count + SELECT COUNT r_sample       WHERE id_text LIKE return_line:"%"
+count = count + SELECT COUNT archive_sample WHERE id_text LIKE return_line:"%"
+
+IF count > 0 THEN
+    return_line = STRIP(product_id):"/":STRIP(batch_name):"/":STRIP(samp_pt_id):"/":STRIP(count)
+ENDIF
+
+{*** Verify that the ID_TEXT created does not violate previous ID_TEXT ***}
+{***  ***}
+
+WHILE ((SELECT COUNT all_sample     WHERE id_text LIKE return_line) > 0)
+   OR ((SELECT COUNT r_sample       WHERE id_text LIKE return_line) > 0)
+   OR ((SELECT COUNT archive_sample WHERE id_text LIKE return_line) > 0)
+   OR ((SELECT COUNT all_sample     WHERE id_text LIKE return_line:"/":STRIP(count)) > 0)
+   OR ((SELECT COUNT r_sample       WHERE id_text LIKE return_line:"/":STRIP(count)) > 0)
+   OR ((SELECT COUNT archive_sample WHERE id_text LIKE return_line:"/":STRIP(count)) > 0)
+
+    count = count + 1
+    return_line = STRIP(product_id):"/":STRIP(batch_name):"/":STRIP(samp_pt_id):"/":STRIP(count)
+ENDWHILE
+
+return (return_line)
+
+EXIT
+
+
+the_table = "SAMPLE"
+the_field = "ID_NUMERIC"
+
+push_file_descriptor ( the_table, the_field )
+
+samp_exist = EMPTY
+
+samp_exist = SELECT sample.id_numeric
+                WHERE id_text = return_line
+
+{M**1537 HBe 19-2-2004: Also check for id-text in committed data}
+IF samp_exist = EMPTY THEN
+     samp_exist = SELECT c_sample.id_numeric
+                  WHERE id_text = return_line
+
+  ENDIF
+
+pop_file_descriptor ( the_field )
+
+IF samp_exist <> EMPTY THEN
+   FLASH_MESSAGE("ID Text: " : return_line : " already exists.", TRUE)
+
+
+{**AS1537 HBe 19-2-2004: If id-text exists don't dump. Create another ID text instead (inspired from default syntax) }
+
+   SET FORMAT "9999999999"
+
+   sample_synt = GLOBAL ( "CURRENT_LIBRARY" )
+   inc_sample_synt = "/":STRIP ( INCREMENT ( "SYNTAX", sample_synt ) )
+   inc_samp_synt_val_1 = inc_sample_synt
+
+   return_line = return_line : inc_samp_synt_val_1
+
+   ret_value = STRIP ( return_line ) # " "
+
+   WHILE ( ret_value <> return_line ) DO
+           return_line = ret_value
+           ret_value = return_line # " "
+   ENDWHILE
+
+   RETURN ( return_line )
+
+{**AE1537}
+
+
+
+{**ME HBe 31-3-00}
+   exit
+ELSE
+
+   return (return_line)
+
+ENDIF
+
+ENDROUTINE

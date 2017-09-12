@@ -1,0 +1,348 @@
+{******************************************************************************
+* Module Name   : biz_status.rpf
+* Purpose       : Change status of BizTalk interface
+*                 Background Activate <-> Deactivate
+*                 Interactive with confirmation, if changed future WDT entries are suspended.
+* Specification :
+* Re-entrant    :
+********************************************************************************}
+{ Change log:                                                                   }
+{                                                                               }
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "DISPLAY"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_UTILS 
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+DECLARE BZT, use_BZT, new_value, message_id, status, TQ, tq_stop, tq_start, stop_time, start_time, BzTlkActive,
+        DOWN_DATE, THIS_DATE, userfiles, cmd, source, s_file, destin, c_time  
+
+SET DATE FORMAT "DZ-MON-YYYY H24:MI"
+c_time = STRING(NOW)
+RESTORE DATE FORMAT
+WriteToLog("")
+
+BzTlkActive = GLOBAL("BIZTALK_ACTIVE")
+WriteToLog("BzTlkActive: ":BzTlkActive)
+
+IF GLOBAL("MODE") = "INTERACTIVE" THEN
+
+    DECLARE SetBztlk
+    CREATE OBJECT PROMPT_CLASS_FORM, SetBztlk
+
+        tq_stop     = SELECT timerqueue.entry_number WHERE report_name = "BIZ_STATUS" ORDER ON entry_number
+        stop_time   = SELECT timerqueue.run_time {WHERE entry_number = tq_stop}
+        tq_start    = SELECT timerqueue.entry_number WHERE report_name = "BIZ_STATUS" AND entry_number <> tq_stop
+        start_time  = SELECT timerqueue.run_time {WHERE entry_number = tq_start}
+        IF NOT(BzTlkActive) THEN
+            stop_time   = c_time
+            start_time  = c_time
+        ENDIF
+        SET DATE FORMAT "DZ-MON-YYYY H24:MI"
+{**************************************************************************************************************
+        stop_time   = NOW + INTERVAL("   0 00:01")
+        start_time  = NOW + INTERVAL("   0 00:02") 
+***************************************************************************************************************}        
+        RESTORE DATE FORMAT
+
+        SetBztlk.header    = "Set interval for disabling Biztalk interface ..."
+        SetBztlk.column    =  5
+        SetBztlk.row       = 10
+        SetBztlk.height    =  6
+        SetBztlk.width     = 45
+        SetBztlk.add_display("Disable/Enable transfer to BizTalk", 2, 1, PROMPT_RENDITION_BOLD)
+        IF (BzTlkActive) THEN
+            SetBztlk.add_display("Disable: ", 2, 3, PROMPT_RENDITION_BOLD)
+        ELSE
+            SetBztlk.add_display("Biztalk is currently disabled", 2, 3, PROMPT_RENDITION_BOLD)
+        ENDIF
+        SetBztlk.add_display("Enable: " , 2, 5, PROMPT_RENDITION_BOLD)
+        SetBztlk.start_prompt ( )
+        IF (BzTlkActive) THEN
+            PROMPT OBJECT stop_time
+               BROWSE ON DATETIME
+                   AT 10, 3
+                   WITH  (VALUE = stop_time)
+        ENDIF 
+        
+        PROMPT OBJECT start_time
+           BROWSE ON DATETIME
+               AT 10, 5
+               WITH  (VALUE = start_time)
+
+    REPEAT
+        IF (BzTlkActive) THEN
+            SetBztlk.add_prompt (stop_time)    
+            SetBztlk.active_prompt = 3
+        ENDIF
+        SetBztlk.add_prompt (start_time)
+        SetBztlk.active_prompt = 3
+        SetBztlk.wait_prompt ( )
+        start_time = start_time.text
+        IF (BzTlkActive) THEN
+            stop_time = stop_time.text
+        ELSE 
+            stop_time = c_time
+        ENDIF
+        IF (start_time = "") THEN
+             {fm("No end-time") }
+        ELSEIF ( (SetBztlk.get_last_key() = "DO") AND ((DATE(stop_time) > DATE(start_time)))) THEN
+             fm("Time to enable Bitalk,":ASCII(10):
+                "must be later than time to disable.")
+        ENDIF
+    UNTIL ((SetBztlk.get_last_key() = "EXIT") OR
+          ((SetBztlk.get_last_key() = "DO") AND (DATE(stop_time) <= DATE(start_time)))) OR
+          ((SetBztlk.get_last_key() = "DO") AND (start_time = ""))
+    SetBztlk.end_prompt ( )
+       
+    IF SetBztlk.get_last_key() = "DO" THEN
+        IF (stop_time >= c_time) OR (start_time >= c_time) THEN
+           {IF stop_time < NOW THEN
+                stop_time = NOW
+            ENDIF}
+            WriteToLog("Stop interface to BizTalk from ":{ASCII(10): }
+                stop_time:" to ":start_time)
+
+            status = SELECT timerqueue.entry_number FOR UPDATE WHERE entry_number = tq_stop
+            IF status = LOCKED THEN
+                WriteToLog("The record in Watchdog Timer was locked.":ASCII(10):
+                   "Program is being aborted!")
+                EXIT   
+            ELSEIF status <> EMPTY
+                START WRITE TRANSACTION "Disable Biztalk"
+                IF tq_stop >= c_time THEN
+                    ASSIGN timerqueue.suspended = TRUE
+                ELSE
+                    ASSIGN timerqueue.suspended = FALSE
+                ENDIF
+                ASSIGN timerqueue.run_time = stop_time
+                ASSIGN timerqueue.number_of_occurences = 1
+                UPDATE timerqueue
+                COMMIT
+            ENDIF
+
+            IF (start_time <> "") THEN
+                status = SELECT timerqueue.entry_number FOR UPDATE WHERE entry_number = tq_start
+                IF status = LOCKED THEN
+                    WriteToLog("The record in Watchdog Timer was locked.":ASCII(10):
+                       "Program is being aborted!")
+                    EXIT   
+                ELSEIF status <> EMPTY
+                    START WRITE TRANSACTION "Enable Biztalk"
+                    IF tq_start >= c_time THEN
+                        ASSIGN timerqueue.suspended = TRUE
+                    ELSE
+                        ASSIGN timerqueue.suspended = FALSE
+                    ENDIF
+                    ASSIGN timerqueue.run_time = start_time
+                    ASSIGN timerqueue.number_of_occurences = 1
+                    UPDATE timerqueue
+                    COMMIT
+                ENDIF
+            ELSE
+                fm(" OBS !!!    OBS !!!    OBS !!!":ASCII(10):ASCII(10):
+                   "     No end time was set.":ASCII(10):
+                   "Interface will remain disabled")
+            ENDIF
+        ELSE
+            fm("No changes, dates and times set were in the past!")
+        ENDIF 
+        
+        IF c_time >= DATE(start_time) THEN
+            SET GLOBAL("BIZTALK_ACTIVE") TO TRUE
+        ELSEIF c_time >= DATE(stop_time) THEN
+            SET GLOBAL("BIZTALK_ACTIVE") TO FALSE
+        ENDIF
+    
+        IF (BzTlkActive <> GLOBAL("BIZTALK_ACTIVE")) THEN
+            status = SELECT config_header.identity FOR UPDATE WHERE identity = "BIZTALK_ACTIVE"
+            IF status = LOCKED THEN
+                WriteToLog("The configuration item 'BIZTALK_ACTIVE' was locked.":ASCII(10):
+                   "Program is being aborted!")
+                EXIT   
+            ELSEIF status <> EMPTY
+                START WRITE TRANSACTION "Change BIZTALK status"
+                ASSIGN config_header.value = GLOBAL("BIZTALK_ACTIVE") 
+                UPDATE config_header
+                COMMIT
+            ENDIF    
+        ENDIF
+    
+    ENDIF
+
+    EXIT {*****  When running as interactively  *****}    
+
+ENDIF
+
+{*****  When running as background  *****}    
+
+    tq_stop     = SELECT timerqueue.entry_number WHERE report_name = "BIZ_STATUS" ORDER ON RUN_TIME, entry_number
+    stop_time   = SELECT timerqueue.run_time {WHERE entry_number = tq_stop}
+    tq_start    = SELECT timerqueue.entry_number WHERE report_name = "BIZ_STATUS" AND entry_number <> tq_stop
+    start_time  = SELECT timerqueue.run_time {WHERE entry_number = tq_start}
+    WriteToLog("Disable" :tq_stop:" on ":stop_time)
+    WriteToLog("Enable ":tq_start:" on ":start_time)
+
+    IF NOW <= DATE(stop_time) THEN
+        WriteToLog("NOW <= DATE(stop_time),  Set to TRUE")
+        SET GLOBAL("BIZTALK_ACTIVE") TO TRUE
+        SPAWN "sc stop  smp_vgsm11prod_bgr_service", status QUIETLY
+        SLEEP FOR INTERVAL("   0 00:00:10")
+        SPAWN "sc start smp_vgsm11prod_bgr_service", status QUIETLY
+    ELSEIF NOW <= DATE(start_time) THEN
+        WriteToLog("NOW >= DATE(start_time), Set to FALSE")
+        SET GLOBAL("BIZTALK_ACTIVE") TO FALSE
+        SPAWN "sc stop  smp_vgsm11prod_bgr_service", status QUIETLY
+        SLEEP FOR INTERVAL("   0 00:00:10")
+        SPAWN "sc start smp_vgsm11prod_bgr_service", status QUIETLY
+    ELSE
+        WriteToLog("NOW >= DATE(start_time), Set to TRUE")
+        SET GLOBAL("BIZTALK_ACTIVE") TO TRUE
+    ENDIF
+
+    WriteToLog("(BzTlkActive <> GLOBAL('BIZTALK_ACTIVE'))":(BzTlkActive <> GLOBAL("BIZTALK_ACTIVE")))
+    IF (BzTlkActive <> GLOBAL("BIZTALK_ACTIVE")) THEN
+        status = SELECT config_header.identity FOR UPDATE WHERE identity = "BIZTALK_ACTIVE"
+        IF status = LOCKED THEN
+            WriteToLog("The configuration item 'BIZTALK_ACTIVE' was locked.":ASCII(10):
+               "Program is being aborted!")
+            EXIT   
+        ELSEIF status <> EMPTY
+            WriteToLog("START WRITE TRANSACTION")
+            START WRITE TRANSACTION "Change BIZTALK status"
+            ASSIGN config_header.value = GLOBAL("BIZTALK_ACTIVE") 
+            UPDATE config_header
+            COMMIT
+            WriteToLog("COMMIT")
+        ENDIF    
+    ENDIF
+
+    IF GLOBAL("BIZTALK_ACTIVE") THEN
+        SET DATE FORMAT "YYYYMZDZ"
+        DOWN_DATE = SELECT timerqueue.run_time WHERE report_name = GLOBAL("CURRENT_LIBRARY") ORDER ON run_time
+        THIS_DATE   = TODAY
+        THIS_DATE = TRUNC(NUMERIC(STRING(THIS_DATE)))
+        IF DOWN_DATE = EMPTY THEN
+            DOWN_DATE = THIS_DATE - 1
+        ELSE
+            DOWN_DATE = TRUNC(NUMERIC(STRING(DOWN_DATE)))
+        ENDIF
+        WriteToLog("Restore unprocessed xml-files, from ":DOWN_DATE:" to ":THIS_DATE)
+        userfiles = LOGICAL("smp$userfiles")
+        IF INDEX(userfiles, ";") > 0 THEN
+            userfiles = LEFTSTRING(userfiles, INDEX(userfiles, ";") - 1)
+        ENDIF
+        WHILE DOWN_DATE < THIS_DATE
+            source = ASCII(34):userfiles:"\BizTalk\Backup\":STRIP(DOWN_DATE):ASCII(34)
+            s_file = ASCII(34):userfiles:"\BizTalk\Backup\":STRIP(DOWN_DATE):"\*.limsml":ASCII(34)
+            destin = ASCII(34):userfiles:"\BizTalk":ASCII(34)
+            cmd = "if exist ":source:" move ":sfile:" ":destin
+            WriteToLog(cmd)
+            SPAWN cmd QUIETLY
+            DOWN_DATE = DOWN_DATE + 1
+        ENDWHILE
+        RESTORE DATE FORMAT
+    ENDIF
+
+EXIT
+
+{ ****  OLD VARIANT TO BE REPLACED ??? **** }
+
+use_BZT = GLOBAL("BIZTALK_ACTIVE")
+
+IF use_BZT THEN
+    new_value = BZT:"_INVALID"
+    message_id = "Deactivate transfer to BizTalk?":ASCII(10):ASCII(10):"For web service: '":BZT:"'"
+    status = "Transfer to BizTalk: DEACTIVATED."
+ELSE
+    new_value = LEFTSTRING(BZT, INDEX(BZT,"_INVALID") - 1)
+    message_id = "Activate transfer to BizTalk?":ASCII(10):ASCII(10):"For web service: '":new_value:"'"
+    status = "Transfer to BizTalk: ACTIVATED."
+ENDIF
+
+IF (GLOBAL("MODE") = "INTERACTIVE") THEN
+    IF (confirm_with_message(message_id)) THEN
+        IF (BZT = SELECT config_header.value FOR UPDATE WHERE identity = "BIZTALK_WEBSERVICE") THEN
+        START WRITE TRANSACTION "Change BizTalk status"
+            ASSIGN config_header.value = new_value
+        UPDATE config_header
+        COMMIT
+            WriteToLog(status)
+            TQ = SELECT timerqueue.entry_number FOR UPDATE WHERE report_name = GLOBAL("CURRENT_LIBRARY") AND suspended <> TRUE
+            IF TQ <> EMPTY THEN
+                WHILE TQ <> EMPTY
+                    START WRITE TRANSACTION "Suspend BizTalk status"
+                    ASSIGN timerqueue.suspended = TRUE
+                    UPDATE timerqueue
+                    COMMIT
+                    TQ = SELECT timerqueue.entry_number FOR UPDATE WHERE report_name = GLOBAL("CURRENT_LIBRARY") AND suspended <> TRUE
+                ENDWHILE
+                status = status:ASCII(10):ASCII(10):"Future changes via WDT, has been suspended!"
+            ENDIF
+        ENDIF
+    ELSE
+        IF (status = "Transfer to BizTalk: DEACTIVATED.") THEN
+            status = "Transfer to BizTalk: ACTIVATED."
+        ELSE
+                status = "Transfer to BizTalk: DEACTIVATED."
+        ENDIF
+    ENDIF
+ELSE
+    START WRITE TRANSACTION "Deactivate transfer to BizTalk"
+    BZT = SELECT config_header.value FOR UPDATE WHERE identity = "BIZTALK_WEBSERVICE"
+    ASSIGN config_header.value = new_value
+    UPDATE config_header
+    COMMIT
+    WriteToLog(status)
+ENDIF
+fm(status)
+
+use_BZT = GLOBAL("BIZTALK_ACTIVE")
+
+IF use_BZT THEN
+
+    SET DATE FORMAT "YYYYMZDZ"
+    DOWN_DATE = SELECT timerqueue.run_time WHERE report_name = GLOBAL("CURRENT_LIBRARY") ORDER ON run_time
+    THIS_DATE   = TODAY
+    THIS_DATE = TRUNC(NUMERIC(STRING(THIS_DATE)))
+    IF DOWN_DATE = EMPTY THEN
+        DOWN_DATE = THIS_DATE - 1
+    ELSE
+        DOWN_DATE = TRUNC(NUMERIC(STRING(DOWN_DATE)))
+    ENDIF
+    WriteToLog("Restore unprocessed xml-files, from ":DOWN_DATE:" to ":THIS_DATE)
+    userfiles = LOGICAL("smp$userfiles")
+    IF INDEX(userfiles, ";") > 0 THEN
+        userfiles = LEFTSTRING(userfiles, INDEX(userfiles, ";") - 1)
+    ENDIF
+    WHILE DOWN_DATE < THIS_DATE
+        source = ASCII(34):userfiles:"\BizTalk\Backup\":STRIP(DOWN_DATE):ASCII(34)
+        s_file = ASCII(34):userfiles:"\BizTalk\Backup\":STRIP(DOWN_DATE):"\*.limsml":ASCII(34)
+        destin = ASCII(34):userfiles:"\BizTalk":ASCII(34)
+        cmd = "if exist ":source:" move ":sfile:" ":destin
+        WriteToLog(cmd)
+        SPAWN cmd QUIETLY
+        DOWN_DATE = DOWN_DATE + 1
+    ENDWHILE
+    RESTORE DATE FORMAT
+ENDIF
+
+EXIT
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+

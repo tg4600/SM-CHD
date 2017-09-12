@@ -1,0 +1,1572 @@
+{******************************************************************************
+*
+* Module Name   : $NOTE_RET
+*
+* Purpose       : SMP report to retrieve notes
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+
+mainroutine(FALSE)
+
+
+{****************************************************************************}
+GLOBAL ROUTINE normal_routine(dummy)
+
+    mainroutine(FALSE)
+
+ENDROUTINE
+
+{****************************************************************************}
+GLOBAL ROUTINE modify_routine(dummy)
+
+    mainroutine(TRUE )
+
+ENDROUTINE
+{****************************************************************************}
+
+
+{***************************MAINROUTINE*********************************}
+
+ROUTINE mainroutine(VALUE note_modify)
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_FLAGS
+JOIN LIBRARY $NOTE_LIB
+JOIN LIBRARY $NOTE_CNF
+JOIN LIBRARY $BROWSE
+
+SET FORMAT "9999"
+SET NAME "DISPLAY/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+
+    CONSTANT keysize = 5       { Arbitary limit of keywords }
+
+    initialise()
+    window_setup()
+
+    REPEAT
+        user_prompt1()
+        IF (LASTKEY = "EXIT") AND (key_operand <> "VOID") THEN
+            UNPASTE TEXT WINDOW w_main
+            RETURN
+        ENDIF
+
+        IF key_operand <> "VOID" THEN
+            process_options()
+            IF LASTKEY = "EXIT" THEN
+                RETURN
+            ENDIF
+            check_info(note_info)
+            IF LASTKEY = "EXIT" THEN
+                RETURN
+            ENDIF
+            display_note()
+        ELSE                    { ** Clear out Arrays ** }
+            IF key_count > 0 THEN
+                key_count = 0
+                counter = 1
+                WHILE counter <= keysize DO
+                    keywords[counter] = ""
+                    counter = counter + 1
+                ENDWHILE
+
+                field_var[1] = ""
+                field_var[2] = ""
+            ENDIF
+        ENDIF
+
+    UNTIL (NOT general_var) AND (key_operand = "VOID")
+
+ENDROUTINE{mainroutine}
+
+{=======================================================================}
+{***************************INITIALISE**********************************}
+
+ROUTINE initialise
+    ARRAY the_tables ARRAYSIZE (100, 3)   {  The array used by $NOTE.CNF  }
+    ARRAY field  ARRAYSIZE(4) = ""
+    ARRAY field_var ARRAYSIZE(4) = ""
+    ARRAY the_lines
+    vision_on = FALSE
+
+    ARRAY keywords ARRAYSIZE(keysize)     { Arbitary limit of keywords }
+
+    structure_assigns(the_tables)
+
+    field[1]  = "SUBJECT"
+    field[2]  = "SUBJECT_ITEM"
+
+    field_var[1] = ""
+    field_var[2] = ""
+    field_var[3] = ""
+    field_var[4] = ""
+
+    key_count    = 0
+    key_operand  = " "
+
+    num = 1
+    general_var = FALSE
+
+    ARRAY display_line ARRAYSIZE(200)
+
+ENDROUTINE {initialise}
+
+{==============================================================================}
+{********************************WINDOW_SETUP*******************************}
+
+ROUTINE window_setup
+
+    DECLARE choice_foot_txt
+
+    CREATE TEXT WINDOW w_main
+        HEIGHT 10
+        WIDTH  40
+        BORDER
+	HELP CONTEXT = "$NOTE_RET_MAIN"
+
+    CREATE TEXT WINDOW w_note
+        HEIGHT 4
+        WIDTH  68
+        BORDER
+	HELP CONTEXT = "$NOTE_RET_NOTE"
+
+    CLEAR SCREEN IN WINDOW w_main
+    display_screen()
+
+    PASTE TEXT WINDOW  w_main AT 15,10
+
+    CREATE TEXT WINDOW choice
+        HEIGHT 19
+        WIDTH 70
+        BORDER
+	HELP CONTEXT = "$NOTE_RET_CHOICE"
+
+    CREATE TEXT WINDOW note_disp
+        HEIGHT 8
+        WIDTH 60
+        border
+	HELP CONTEXT = "$NOTE_RET_DISPLAY"
+
+    CREATE TEXT WINDOW operand
+        HEIGHT 5
+        WIDTH 42
+        BORDER
+	HELP CONTEXT = "$NOTE_RET_OPERAND"
+
+    Display_top_line (GET_USER_MESSAGE("NOTE_RET_DISPLAY_1" ,1), choice, 68)
+    IF note_modify THEN
+        choice_foot_txt = GET_USER_MESSAGE("NOTE_RET_DISPLAY_2" ,1)
+    ELSE
+        choice_foot_txt = GET_USER_MESSAGE("NOTE_RET_DISPLAY_3" ,1)
+    ENDIF
+    display_bottom_line(choice_foot_txt,choice,70,19,false)
+
+ENDROUTINE{window_setup}
+
+{****************************************************************************}
+ROUTINE display_screen
+
+    display_top_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_4" ,1), w_main, 40)
+    display_bottom_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_5" ,1), w_main,
+                        40, 10, FALSE)
+    DISPLAY " "  ON LINE 1  FROM 1  TO  1 IN WINDOW w_main INVERSE BOLD
+    DISPLAY " "  ON LINE 1  FROM 40 TO 40 IN WINDOW w_main INVERSE BOLD
+
+    CLEAR LINE 3 FROM 19 IN WINDOW w_main
+    CLEAR LINE 4 FROM 19 IN WINDOW w_main
+    CLEAR LINE 6 FROM 19 IN WINDOW w_main
+    CLEAR LINE 7 FROM 1 IN WINDOW w_main
+    CLEAR LINE 8 FROM 1 IN WINDOW w_main
+
+    DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_6" ,1)ON LINE 3 FROM 3 IN WINDOW w_main
+    DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_7" ,1)ON LINE 4 FROM 3 IN WINDOW w_main
+    DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_8" ,1)ON LINE 6 FROM 3 IN WINDOW w_main
+
+ENDROUTINE  {  display_screen }
+
+{===================================================================}
+{                                                                   }
+{   Routine to check that a selection of some sort has been made.   }
+{   One of the two fields AND/OR keyword(s).                        }
+{                                                                   }
+{   If more than keyword has been selected, then prompt to see      }
+{   whether ALL or ANY of the keywords are to be matched.           }
+{                                                                   }
+{*******************************ACE*********************************}
+
+ROUTINE ace
+
+    num_items = 0
+    count = 1
+    ARRAY position
+
+    WHILE count <= 2
+        IF STRIP(field_var[count]) <> ""
+            num_items           = num_items + 1
+            position[num_items] = count
+        ENDIF
+        count = count + 1
+    ENDWHILE
+
+    IF (num_items = 0) AND (key_count = 0) THEN
+        flash_message(GET_USER_MESSAGE("NOTE_RET_DISPLAY_9" ,1),TRUE)
+        user_prompt1()
+    ELSE                { ** A selection has been made ** }
+        IF key_count > 1 THEN
+            key_operand = key_oper()
+        ELSE
+            key_operand = "ALL"
+        ENDIF
+
+        RETURN
+    ENDIF
+
+ENDROUTINE
+
+{========================================================================}
+{*************************KEY_OPER***************************************}
+
+ROUTINE key_oper
+
+    DECLARE oper
+
+    PASTE TEXT WINDOW operand AT 10,16
+
+    display_top_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_10" ,1), operand, 42)
+    display_bottom_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_11" ,1), operand, 42, 5, FALSE)
+
+    oper = "ALL"
+
+    REPEAT
+        DISPLAY " ":oper:" " ON LINE 3 FROM 17 BOLD INVERSE IN WINDOW operand
+
+        input = GETKEY
+        IF input = "EXIT" THEN
+            oper = "VOID"
+            RETURN(oper)
+        ELSEIF (input = "DO") OR (input = "RETURN") THEN
+            RETURN(oper)
+        ELSEIF input = " " THEN
+            IF oper = "ALL" THEN
+                oper = "ONE"
+            ELSE
+                oper = "ALL"
+            ENDIF
+        ENDIF
+
+    UNTIL FALSE
+
+    UNPASTE TEXT WINDOW operand
+
+ENDROUTINE  { key_oper }
+
+{========================================================================}
+{********************** USER_PROMPT1 ************************************}
+
+ROUTINE user_prompt1
+
+    DECLARE key_exists, do_exit, count, prompt_no
+
+    do_exit      = TRUE
+    count        = 1
+    prompt_no    = 0
+
+    REPEAT
+        action = " "
+        IF count = 1 THEN
+           DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_6" ,1)ON LINE 3 FROM 3 IN WINDOW w_main BOLD
+           DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_7" ,1)ON LINE 4 FROM 3 IN WINDOW w_main
+           DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_8" ,1)ON LINE 6 FROM 3 IN WINDOW w_main
+           PROMPT FOR field_var[1] ON LINE 3 FROM 19
+                        IN WINDOW w_main BOLD
+                        BROWSE ON phrase_id.note_type
+           IF field_var[1] = EMPTY
+              field_var[1] = ""
+           ENDIF
+           field_var[1] = STRIP (TOUPPER(field_var[1]))
+           DISPLAY field_var[1] ON LINE 3 FROM 19 TO 30 IN WINDOW w_main
+
+        ELSEIF count = 2
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_6" ,1)ON LINE 3 FROM 3 IN WINDOW w_main
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_7" ,1)ON LINE 4 FROM 3 IN WINDOW w_main BOLD
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_8" ,1)ON LINE 6 FROM 3 IN WINDOW w_main
+            IF (field_var[1] <> "") AND (field_var[1] <> EMPTY) THEN
+               prompt_no = special_prompt(field_var[1], the_tables)
+            ENDIF
+            IF (prompt_no > 0) THEN
+               field_var[2] = do_special_prompt(field_var[1],
+                                                  prompt_no, 19, 4, w_main,
+                                                  the_tables)
+               action = "RETURN"
+               field_var[2] = STRIP(field_var[2])
+           ELSE
+               PROMPT FOR field_var[2] ON LINE 4 FROM 19 IN WINDOW w_main BOLD
+                  FORMAT TEXT10
+               field_var[2] = TOUPPER(field_var[2])
+
+               IF LASTKEY = "FIND" THEN
+                  IF BROWSE("first_find_item", "next_find_item",
+                                     "$note_ret", 15, field_var[2]) THEN
+                     action = "RETURN"
+                  ENDIF
+               ENDIF
+            ENDIF
+            IF field_var [2] = EMPTY THEN
+	       field_var [2] = ""
+	    ENDIF
+            DISPLAY field_var[2] ON LINE 4 FROM 19 TO 30 IN WINDOW w_main
+
+        ELSEIF count = 3
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_6" ,1)ON LINE 3 FROM 3 IN WINDOW w_main
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_7" ,1)ON LINE 4 FROM 3 IN WINDOW w_main
+            DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_8" ,1)ON LINE 6 FROM 3 IN WINDOW w_main BOLD
+            keyword = ""
+            PROMPT FOR keyword ON LINE 6 FROM 19 IN WINDOW w_main BOLD
+                    FORMAT TEXT20
+            keyword = TOUPPER(keyword)
+
+            IF LASTKEY = "FIND" THEN
+                IF browse("FIRST_FIND", "SECOND_FIND",
+                                 "$NOTE_LIB",  20, keyword) THEN
+                    action = "RETURN"
+                ENDIF
+            ENDIF
+
+            IF LASTKEY = "REMOVE" THEN     { Zap Keys already selected }
+                IF key_count > 0 THEN
+                    key_count = 0
+                    counter = 1
+                    WHILE counter <= keysize DO
+                        keywords[counter] = ""
+                        counter = counter + 1
+                    ENDWHILE
+                    CLEAR LINE 6 FROM 19 IN WINDOW w_main
+                    CLEAR LINE 7 FROM 1 IN WINDOW w_main
+                    CLEAR LINE 8 FROM 1 IN WINDOW w_main
+                    CLEAR LINE 9 FROM 1 IN WINDOW w_main
+                ENDIF
+            ELSEIF (LASTKEY = "RETURN") OR (LASTKEY = "DO")  THEN
+                key_exists = EMPTY
+                IF keyword <> "" THEN
+                    key_exists = SELECT notekey.key_word
+                                 WHERE  key_word = keyword
+                ENDIF
+
+                IF key_exists <> EMPTY THEN     { i.e. kosher keyword }
+                    key_count = add_key(STRIP (key_exists))
+                ENDIF
+            ENDIF
+        ENDIF
+        IF action <> "RETURN" THEN
+  	   action = LASTKEY
+        ENDIF
+      {** End of Prompt loop **}
+
+
+        IF (field_var[1] <> "") OR (field_var[2] <> "") OR (key_count > 0) THEN
+           do_exit = FALSE
+        ELSE
+           do_exit = TRUE
+        ENDIF
+
+        IF (action = "EXIT") AND NOT do_exit THEN
+            field_var[1] = ""
+            field_var[2] = ""
+            key_count = 0
+            keywords[1] = ""
+            keywords[2] = ""
+            keywords[3] = ""
+            keywords[4] = ""
+            keywords[5] = ""
+            display_screen()
+	    count = 1
+        ENDIF
+
+        IF (action = "UP") THEN
+            IF count > 1 THEN
+                count = count - 1
+            ENDIF
+        ELSEIF (action = "DOWN") OR (action = "RETURN") THEN
+            IF count < 3 THEN
+                count = count + 1
+            ENDIF
+        ENDIF
+
+    UNTIL  (action = "DO") OR (do_exit AND (action = "EXIT"))
+
+    IF action = "EXIT" THEN
+        RETURN
+    ENDIF
+
+    IF action = "DO"
+        ace()
+        UNPASTE TEXT WINDOW operand
+    ENDIF
+
+
+ENDROUTINE{user_prompt1}
+
+{============================================================================}
+{****************************************************************************}
+
+ROUTINE add_key(VALUE new_key)
+
+    IF key_count < keysize THEN
+        IF NOT(key_present(new_key)) THEN
+            key_count = key_count + 1
+            keywords[key_count] = new_key
+            key_display(key_count)
+        ENDIF
+    ELSE
+        flash_message(GET_USER_MESSAGE("NOTE_RET_DISPLAY_12" ,1), FALSE)
+    ENDIF
+    RETURN(key_count)
+
+ENDROUTINE  { add_key }
+
+{============================================================================}
+{****************************************************************************}
+
+ROUTINE key_present (new_key)
+
+    DECLARE check, check_count
+    check = FALSE
+    check_count = 1
+
+    WHILE check_count <= key_count DO
+        IF keywords[check_count] = new_key THEN
+            check = TRUE
+        ENDIF
+        check_count = check_count + 1
+    ENDWHILE
+
+    RETURN (check)
+
+ENDROUTINE  { key_present  }
+
+{============================================================================}
+{****************************************************************************}
+
+ROUTINE key_display (count_key)
+
+    counter = 1
+    key_x   = 7
+    key_y   = 7
+    limits  = 37
+
+    WHILE counter <= count_key DO
+        IF key_x + LENGTH(keywords[counter]) + 2 <= limits THEN
+            DISPLAY keywords[counter] ON LINE key_y FROM key_x
+                    IN WINDOW w_main
+            key_x = key_x + LENGTH(keywords[counter]) + 2
+        ELSE
+            key_x = 7
+            key_y = key_y + 1
+            DISPLAY keywords[counter] ON LINE key_y FROM key_x
+                    IN WINDOW w_main
+            key_x = key_x + LENGTH(keywords[counter]) + 2
+        ENDIF
+
+        counter = counter + 1
+    ENDWHILE
+
+ENDROUTINE  { key_display }
+
+{============================================================================}
+{****************************************************************************}
+
+ROUTINE user_prompt2(num_items)
+
+
+ oper_pos_1 = position[2] - 1
+ PASTE TEXT WINDOW oper[oper_pos_1] AT 30,(4 * oper_pos_1)  + 6
+ oper_pos = oper_pos_1
+
+ IF (num_items = 3) OR (num_items = 4)
+    oper_pos_2 = position[3] - 1
+    PASTE TEXT WINDOW oper[oper_pos_2] AT 30,(4 * oper_pos_2)  + 6
+ ENDIF
+
+ IF (num_items = 4)
+    oper_pos_3 = position[4] - 1
+    PASTE TEXT WINDOW oper[oper_pos_3] AT 30,(4 * oper_pos_3)  + 6
+ ENDIF
+
+REPEAT
+
+   PROMPT FOR resp[oper_pos] ON LINE 1 FROM 2
+   IN WINDOW oper[oper_pos] BOLD
+   CHOOSE OUTOF ans
+
+IF INDEX("DOWN-RETURN",LASTKEY) <> 0
+      IF  num_items = 4  THEN
+          IF oper_pos = oper_pos_1 THEN
+             oper_pos = oper_pos_2
+          ELSEIF oper_pos = oper_pos_2 THEN
+                oper_pos = oper_pos_3
+          ELSEIF oper_pos = oper_pos_3 THEN
+             oper_pos = oper_pos_1
+          ENDIF
+      ELSEIF num_items = 3 THEN
+          IF oper_pos = oper_pos_1 THEN
+             oper_pos = oper_pos_2
+          ELSEIF oper_pos = oper_pos_2 THEN
+             oper_pos = oper_pos_1
+          ENDIF
+      ENDIF
+ELSEIF INDEX("UP",LASTKEY) <> 0
+      IF (num_items = 4) THEN
+          IF oper_pos = oper_pos_1 THEN
+             oper_pos = oper_pos_3
+          ELSEIF oper_pos = oper_pos_2 THEN
+             oper_pos = oper_pos_1
+          ELSEIF oper_pos = oper_pos_3 THEN
+             oper_pos = oper_pos_2
+          ENDIF
+      ELSEIF (num_items = 3)  THEN
+          IF oper_pos = oper_pos_1  THEN
+             oper_pos = oper_pos_2
+          ELSEIF oper_pos = oper_pos_2  THEN
+                oper_pos = oper_pos_1
+          ENDIF
+      ENDIF
+ELSEIF INDEX ("EXIT",LASTKEY) <> 0
+   RETURN
+ENDIF
+
+UNTIL  INDEX("EXIT-DO",LASTKEY)  <> 0
+
+IF LASTKEY = "EXIT"
+   RETURN
+ENDIF
+
+ENDROUTINE
+
+{============================================================================}
+{***************************CHECK_INFO***************************************}
+
+ROUTINE check_info(note_info)
+
+    DECLARE count, count1, fname
+
+    count = 0
+    count1 = 0
+    general_var = FALSE
+
+    ARRAY note_list
+
+    WHILE count1 <= num_selected  DO
+
+	count1 = count1 + 1
+
+        fname = SELECT NOTES.FILE_NAME
+                WHERE NOTEKEY = note_info[count1]
+                ORDER ON NOTEKEY
+
+        IF fname <> EMPTY THEN
+
+            count = count + 1
+	    note_list [count, 5] = SELECT notes.file_name
+            the_lines[count, 1] = SELECT notes.line1
+            the_lines[count, 2] = SELECT notes.line2
+            the_lines[count, 3] = SELECT notes.line3
+            the_lines[count, 4] = SELECT notes.line4
+            the_lines[count, 5] = SELECT notes.file_used
+
+            note_list[count, 1] = SELECT notes.subject
+            note_list[count, 3] = SELECT notes.subject_item
+
+            note_list[count,2] = SELECT  notes.header_text
+            note_list[count,2] = PAD(LEFTSTRING(note_list[count,2], 20)," ",30)
+            note_list[count,4] = SELECT  notes.note_number
+            note_list[count,4] = STRIP(note_list[count,4])
+
+            display_line[count] = note_list[count,2] : note_list[count,1]
+                    : note_list[count,3] : "    ":note_list[count,4]
+        ENDIF
+
+    ENDWHILE
+
+
+    IF num_notes > 0 THEN
+        note_choice()
+    ELSE
+        flash_message(GET_USER_MESSAGE("NOTE_RET_DISPLAY_13" ,1),
+                TRUE)
+    ENDIF
+
+    RETURN(general_var)
+
+
+ENDROUTINE  { check_info }
+
+{=============================================================================}
+{***************************NOTE_CHOICE***************************************}
+
+ROUTINE note_choice
+
+    IF STRIP(field_var[1]) = "" THEN
+        field_var[1] = "    N/A    "
+    ENDIF
+
+    IF STRIP(field_var[2]) = "" THEN
+        field_var[2] = "    N/A    "
+    ENDIF
+
+    CLEAR SCREEN IN WINDOW choice
+    CLEAR SCREEN IN WINDOW note_disp
+
+    display_top_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_14" ,1), choice, 70)
+    IF note_modify THEN
+        choice_foot_txt = GET_USER_MESSAGE("NOTE_RET_DISPLAY_2" ,1)
+    ELSE
+        choice_foot_txt = GET_USER_MESSAGE("NOTE_RET_DISPLAY_3" ,1)
+    ENDIF
+    display_bottom_line(choice_foot_txt,choice,70,19,false)
+    display_bottom_line(GET_USER_MESSAGE("NOTE_RET_DISPLAY_15" ,1),choice,70,18,false)
+
+    DISPLAY " " ON LINE 1 FROM  1 TO  1 IN WINDOW choice INVERSE BOLD
+    DISPLAY " " ON LINE 1 FROM 70 TO 70 IN WINDOW choice INVERSE BOLD
+
+    DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_6" ,1):field_var[1] ON LINE 3 FROM 2
+            IN WINDOW choice
+    DISPLAY GET_USER_MESSAGE("NOTE_RET_DISPLAY_7" ,1):field_var[2] ON LINE 3 FROM 32
+            IN WINDOW choice
+
+    display GET_USER_MESSAGE("NOTE_RET_DISPLAY_16" ,1)ON LINE 4 FROM  6 IN WINDOW choice BOLD
+    display GET_USER_MESSAGE("NOTE_RET_DISPLAY_17" ,1)ON LINE 4 FROM 36 IN WINDOW choice BOLD
+    display GET_USER_MESSAGE("NOTE_RET_DISPLAY_18" ,1)ON LINE 4 FROM 48 IN WINDOW choice BOLD
+    display GET_USER_MESSAGE("NOTE_RET_DISPLAY_19" ,1)ON LINE 4 FROM 57 IN WINDOW choice BOLD
+
+    PASTE TEXT WINDOW choice AT 4,5
+    PASTE TEXT WINDOW note_disp AT 8,10
+
+ENDROUTINE
+{=====================================================================}
+{*********************DISPLAY_NOTE************************************}
+
+ROUTINE display_note
+
+    IF num_notes < 1 THEN
+        general_var = TRUE
+    ENDIF
+
+    IF general_var THEN
+        RETURN (TRUE)
+    ENDIF
+
+    CREATE TEXT WINDOW diag
+        HEIGHT 4
+        WIDTH 40
+        BORDER
+	HELP CONTEXT = "$NOTE_RET_DIAG"
+
+    max_line = 8
+
+    lin = 1
+    current_note = 1
+    top_line_changed = FALSE
+    scroll_req = FALSE
+    top_line     = 1
+
+    prev_line = 1
+    curr_line = 1
+    offset    = 0
+
+    draw_screen()
+
+    REPEAT
+        { #SUSAND Check something to display first }
+        IF display_line[curr_line + offset] = EMPTY THEN
+	   curr_line = curr_line - 1
+           IF display_line[curr_line + offset] = EMPTY THEN
+              flash_message(GET_USER_MESSAGE("NOTE_RET_DISPLAY_20" ,1),
+                TRUE)
+	      action = "EXIT"
+           ENDIF
+        ENDIF
+        IF action <> "EXIT" THEN
+           DISPLAY display_line[curr_line + offset] ON LINE curr_line
+                FROM 1 IN WINDOW note_disp INVERSE
+
+           action = GETKEY
+        ENDIF
+
+        scroll_req = FALSE
+        prev_line  = curr_line
+        old_offset = offset
+
+        old_lin  = lin
+        old_note = current_note
+
+        IF action = "DO"  THEN
+            IF note_modify THEN
+                file_modify(curr_line + offset)
+            ELSE
+                file_output(curr_line + offset)
+            ENDIF
+
+            action = " "
+        ELSEIF action = "REMOVE" THEN
+            IF confirm() THEN
+                delete_entry(curr_line + offset)
+                draw_screen()
+            ENDIF
+        ELSEIF action = "FIND"  THEN
+            print_the_note(note_info[curr_line + offset],
+                    note_list[(curr_line + offset), 5])
+        ELSEIF (action = "DOWN") OR (action = "RETURN") THEN
+
+            curr_line = curr_line + 1
+
+            IF curr_line > max_line THEN
+                IF curr_line + offset > num_notes THEN
+                    curr_line = curr_line - 1
+                ELSEIF curr_line > max_line THEN
+                    curr_line = curr_line - 1
+                    offset = offset + 1
+                    scroll_req = TRUE
+                ENDIF
+            ELSEIF curr_line + offset > num_notes THEN
+                curr_line = curr_line - 1
+            ENDIF
+
+            IF prev_line <> curr_line THEN
+                DISPLAY display_line[prev_line + offset] ON LINE prev_line
+                        FROM 1 IN WINDOW note_disp
+            ENDIF
+
+            IF scroll_req THEN
+                DISPLAY display_line[curr_line + offset - 1] ON LINE curr_line
+                        FROM 1 IN WINDOW note_disp
+                SCROLL IN WINDOW note_disp BY 1
+                DIRECTION "UP"
+            ENDIF
+
+        ELSEIF action = "UP" THEN
+                     {LINE COUNTER SECTION}
+
+            curr_line = curr_line - 1
+
+            IF curr_line < 1 THEN
+                IF offset > 0 THEN
+                    old_offset = offset
+                    offset = offset - 1
+                    scroll_req = TRUE
+                ENDIF
+
+                curr_line = 1
+            ENDIF
+
+            IF prev_line <> curr_line THEN
+                DISPLAY display_line[prev_line + old_offset] ON LINE prev_line
+                        FROM 1 IN WINDOW note_disp
+            ENDIF
+
+            IF scroll_req THEN
+                DISPLAY display_line[curr_line + offset + 1] ON LINE curr_line
+                        FROM 1 IN WINDOW note_disp
+                SCROLL IN WINDOW note_disp BY 1
+                DIRECTION "DOWN"
+            ENDIF
+
+        ELSEIF action = "NEXT SCREEN" THEN
+            IF (curr_line + offset + 7) < num_notes THEN
+                offset = offset + 7
+                curr_line = 1
+                CLEAR SCREEN IN WINDOW note_disp
+                draw_screen()
+            ENDIF
+
+        ELSEIF action = "PREVIOUS SCREEN" THEN
+            IF offset >= 1 THEN
+                offset = offset - 7
+                IF offset < 0 THEN
+                    offset = 0
+                ENDIF
+                curr_line = 1
+                CLEAR SCREEN IN WINDOW note_disp
+                draw_screen()
+            ENDIF
+
+        ELSEIF action = "EXIT" THEN
+            general_var = TRUE
+            ARRAY resp ARRAYSIZE (3) = ""
+            ARRAY note_info ARRAYSIZE(500,5) = "" {REINIT ARRAY FOR TIME BEING}
+            UNPASTE TEXT WINDOW choice
+            UNPASTE TEXT WINDOW note_disp
+
+            IF vision_on THEN
+                UNPASTE TEXT WINDOW w_note
+            ENDIF
+
+            j = 1
+            WHILE j < 3 DO
+                field_var[j] = ""
+                j = j + 1
+            ENDWHILE
+
+            key_count = 0
+            keywords[1] = ""
+            keywords[2] = ""
+            keywords[3] = ""
+            keywords[4] = ""
+            keywords[5] = ""
+            display_screen()
+
+            RETURN (TRUE)
+        ELSEIF action = "INSERT HERE" THEN
+            general_var = TRUE
+            UNPASTE TEXT WINDOW choice
+            UNPASTE TEXT WINDOW note_disp
+            ARRAY resp ARRAYSIZE (3) = ""
+            ARRAY note_info ARRAYSIZE(500,5) = "" {REINIT ARRAY FOR TIME BEING}
+
+            IF vision_on THEN
+                UNPASTE TEXT WINDOW w_note
+            ENDIF
+
+            J = 1
+            WHILE J < 4 DO
+                IF field_var[J] = "    N/A    " THEN
+                    field_var[J] = ""
+                ENDIF
+                J = J+1
+            ENDWHILE
+
+            RETURN (TRUE)
+        ELSEIF action = "SELECT"  THEN
+            IF vision_on THEN
+                UNPASTE TEXT WINDOW w_note
+                vision_on = FALSE
+            ELSE
+                CLEAR SCREEN IN WINDOW w_note
+                PASTE TEXT WINDOW w_note AT 5,19
+                vision_on = TRUE
+            ENDIF
+        ENDIF
+
+        draw_note(curr_line + offset)
+
+
+        SET FORMAT "99"
+
+    UNTIL INDEX("EXIT",action) <> 0
+
+ENDROUTINE{display_note}
+
+{===========================================================================}
+{*************************DELETE_ENTRY**************************************}
+
+ROUTINE delete_entry(VALUE the_line)
+
+    DECLARE marker, the_file, status, the_record, dum_stat
+
+    marker = the_line
+
+  {** Delete the file containing the note **}
+
+    { Make filename lowercase for Unix }
+
+    the_file = TOLOWER( STRIP( note_list[the_line, 5] ) )
+
+    FILE DELETE the_file, dum_stat
+
+  {** Delete the note in the database **}
+
+    the_record = SELECT notes.notekey FOR UPDATE
+                 WHERE notekey = note_info[the_line]
+    START WRITE TRANSACTION "Delete notes"
+    DELETE notes, status
+    IF status = EMPTY THEN
+        COMMIT
+    ELSE
+        ROLLBACK
+        flash_message(status, FALSE)
+    ENDIF
+
+  {** Delete all the Keywords referring to that note **}
+    the_record = SELECT notekey.search_key FOR UPDATE
+                 WHERE note_key = note_info[the_line]
+    WHILE the_record <> EMPTY DO
+        START WRITE TRANSACTION "Erasing the keywords"
+        DELETE notekey, status
+        IF status = EMPTY THEN
+            COMMIT
+            the_record = SELECT notekey.search_key FOR UPDATE
+                         WHERE note_key = note_info[the_line]
+        ELSE
+            ROLLBACK
+            flash_message(status, FALSE)
+        ENDIF
+
+    ENDWHILE
+
+  {** Zap the note itself **}
+    WHILE marker <= num_notes DO
+        note_list[marker, 1] = note_list[(marker + 1), 1]
+        note_list[marker, 2] = note_list[(marker + 1), 2]
+        note_list[marker, 3] = note_list[(marker + 1), 3]
+        note_list[marker, 4] = note_list[(marker + 1), 4]
+        note_list[marker, 5] = note_list[(marker + 1), 5]
+
+        the_lines[marker, 1] = the_lines[(marker + 1), 1]
+        the_lines[marker, 2] = the_lines[(marker + 1), 2]
+        the_lines[marker, 3] = the_lines[(marker + 1), 3]
+        the_lines[marker, 4] = the_lines[(marker + 1), 4]
+        the_lines[marker, 5] = the_lines[(marker + 1), 5]
+
+        note_info[marker] = note_info[marker + 1]
+        display_line[marker] = display_line[marker + 1]
+
+        marker = marker + 1
+    ENDWHILE
+
+    num_notes = num_notes - 1
+
+ENDROUTINE  {  the_line  }
+
+{===========================================================================}
+{****************************DRAW_SCREEN************************************}
+ROUTINE draw_screen
+
+    DECLARE counter
+
+    counter = 1
+    CLEAR SCREEN IN WINDOW note_disp
+
+    WHILE counter <= max_line DO
+        IF ((counter + offset) <= num_notes) AND
+		(display_line [counter + offset] <> EMPTY) THEN
+            DISPLAY display_line[counter + offset] ON LINE counter
+                    FROM 1 IN WINDOW note_disp
+        ENDIF
+
+        counter = counter + 1
+    ENDWHILE
+
+    IF (num_notes - max_line - offset) > 0 THEN
+        DISPLAY "^" ON LINE 18 FROM 68 IN WINDOW choice INVERSE
+    ELSE
+        DISPLAY " " ON LINE 18 FROM 68 IN WINDOW choice INVERSE
+    ENDIF
+
+    draw_note(1)
+
+ENDROUTINE  { draw_screen }
+
+{=====================================================================}
+{*********************************************************************}
+ROUTINE draw_note (VALUE pos)
+
+    CLEAR LINE 1 FROM 3 IN WINDOW w_note
+    CLEAR LINE 2 FROM 3 IN WINDOW w_note
+    CLEAR LINE 3 FROM 3 IN WINDOW w_note
+    CLEAR LINE 4 FROM 3 IN WINDOW w_note
+
+    DISPLAY "1:" : the_lines[pos, 1] ON LINE 1 FROM 1 IN WINDOW w_note
+    DISPLAY "2:" : the_lines[pos, 2] ON LINE 2 FROM 1 IN WINDOW w_note
+    DISPLAY "3:" : the_lines[pos, 3] ON LINE 3 FROM 1 IN WINDOW w_note
+    DISPLAY "4:" : the_lines[pos, 4] ON LINE 4 FROM 1 IN WINDOW w_note
+
+ENDROUTINE  {  draw_note  }
+
+{-----------------------------------------------------------------------------}
+{                                                                             }
+{-----------------------------------------------------------------------------}
+ROUTINE file_modify (VALUE line_no)
+
+    DECLARE status, the_file, the_note, count
+    ARRAY new_line ARRAYSIZE(4)
+
+    { Make filename lowercase for Unix }
+
+    the_file = TOLOWER( STRIP( note_list[line_no, 5] ) )
+
+    FILE SEND the_file, "EDIT/", status
+
+    the_note = SELECT notes.notekey FOR UPDATE
+               WHERE notekey = note_info[line_no]
+
+    IF the_note <> EMPTY THEN
+        FILE OPEN the_file, status
+        IF status = EMPTY THEN
+            FILE READ the_file, new_line[1], status
+            FILE READ the_file, new_line[2], status
+            FILE READ the_file, new_line[3], status
+            FILE READ the_file, new_line[4], status
+
+            count = 1
+            WHILE count <= 4 DO
+                IF new_line[count] = EMPTY THEN
+                    new_line[count] = ""
+                ENDIF
+                count = count + 1
+            ENDWHILE
+
+            ASSIGN notes.line1 = new_line[1]
+            ASSIGN notes.line2 = new_line[2]
+            ASSIGN notes.line3 = new_line[3]
+            ASSIGN notes.line4 = new_line[4]
+
+            START WRITE TRANSACTION "Update Note from file"
+             UPDATE notes
+            COMMIT
+
+            the_lines[line_no, 1] = new_line[1]
+            the_lines[line_no, 2] = new_line[2]
+            the_lines[line_no, 3] = new_line[3]
+            the_lines[line_no, 4] = new_line[4]
+        ELSE
+            flash_message(status, FALSE)
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+{                                                                             }
+{-----------------------------------------------------------------------------}
+ROUTINE file_output (VALUE line_no)
+
+	DECLARE status
+
+	SET NAME "DISPLAY/"
+	FILE OPEN note_list[line_no,5],status
+	IF status = EMPTY THEN
+		REPEAT
+			FILE READ note_list[line_no,5],line_in_file,stat
+			IF stat = EMPTY
+LITERAL
+$line_in_file__________________________________________________________________
+$ENDLITERAL
+			ENDIF
+		UNTIL stat <> EMPTY
+		FLUSH_LITERAL
+		FILE CLOSE  note_list[line_no,5]
+	ELSE
+		flash_message(status, TRUE)
+	ENDIF
+
+ENDROUTINE
+
+{===========================================================================}
+{                                                                           }
+{   This routine replaces the original Search and Selection routines.       }
+{                                                                           }
+{***************************************************************************}
+
+ROUTINE process_options
+
+    ARRAY note_info
+    ARRAY note_output
+    ARRAY display_line
+    ARRAY field_new
+    ARRAY field_var_new
+    count = 1
+    num_fields = 0
+
+
+        { This will result in an array (FIELD_NEW) containing the name }
+        { of the field, and an array (FIELD_VAR_NEW) containing the }
+        { entry of that field to be searched for. }
+
+    WHILE count <= 2          {** Number range of 1 - 2 **}
+        IF STRIP(field_var[count]) <> ""
+            num_fields = num_fields + 1
+            field_new[num_fields] = field[count]
+            field_var_new[num_fields] = field_var[count]
+        ENDIF
+        count = count + 1
+    ENDWHILE
+
+
+    IF (num_fields > 0) AND (key_count > 0) THEN   {* KEYS & FIELDS selected *}
+        search()
+        compare_keys()
+    ELSEIF (num_fields > 0) AND (key_count = 0) THEN
+        search()
+    ELSEIF (num_fields = 0) AND (key_count > 0) THEN
+        keys_search()
+    ENDIF
+
+
+ENDROUTINE{process_options}
+
+{************************************************************************}
+
+ROUTINE keys_search
+
+ { ** There must be at least ONE keyword selected for this ** }
+ { ** routine to be reached. ** }
+
+    DECLARE count1, count2
+    DECLARE some_empty, some_full
+    DECLARE the_note
+
+    count1 = 0
+    count2 = 0
+    num_selected = 0
+
+    IF key_operand = "ONE" THEN
+
+        WHILE count2 < key_count DO
+            count1 = count1 + 1
+            count2 = count2 + 1
+            the_note = SELECT notekey.note_key
+                       WHERE key_word = keywords[count1]
+            WHILE the_note <> EMPTY DO
+                IF not_selected(num_selected, the_note) THEN
+                    num_selected = num_selected + 1
+                    note_info[num_selected] = the_note
+                ENDIF
+                NEXT notekey
+                the_note = SELECT notekey.note_key
+            ENDWHILE
+
+        ENDWHILE
+
+    ELSEIF key_operand = "ALL" THEN
+
+        count1 = 1
+        the_note = SELECT notekey.note_key
+                   WHERE key_word = keywords[1]
+
+        WHILE the_note <> EMPTY DO                    {* - *}
+            count2 = count2 + 1                       {* Select all the      *}
+            note_info[count2] = the_note              {* notes which have    *}
+            num_selected = num_selected + 1           {* the first keyword   *}
+            NEXT notekey                              {* at least associated *}
+            the_note = SELECT notekey.note_key        {* with them.          *}
+        ENDWHILE                                      {* - *}
+
+        IF key_count > 1 THEN       {** I.E. there's more than one keyword **}
+            REPEAT
+                count2 = 1
+                REPEAT
+
+                    IF note_info[count2] <> EMPTY THEN
+                        the_note = SELECT notekey.note_key
+                                   WHERE key_word = note_info[count2]
+                        note_info[count2] = the_note
+                    ENDIF
+
+                    count2 = count2 + 1
+                UNTIL count2 >= num_selected
+                count1 = count1 + 1
+            UNTIL count1 = key_count
+        ENDIF
+
+    ENDIF
+
+    num_selected = ripple_down(num_selected)
+
+    num_notes = num_selected
+
+ENDROUTINE  {  keys_search  }
+
+{************************************************************************}
+
+ROUTINE ripple_down (total)
+
+    DECLARE counter, loop_var
+
+    counter = 0
+    loop_var = total
+    REPEAT
+        counter = counter + 1
+        IF note_info[counter] = EMPTY THEN          { ** Ripple this one ! ** }
+            loopey = counter
+            WHILE loopey < loop_var DO
+                note_info[loopey] = note_info[loopey + 1]
+                loopey = loopey + 1
+            ENDWHILE
+
+            loop_var = loop_var - 1
+        ENDIF
+
+    UNTIL counter >= loop_var
+
+    RETURN(loop_var)
+
+ENDROUTINE  {  ripple_down  }
+
+{************************************************************************}
+
+ROUTINE not_selected (total, the_note)
+
+    DECLARE counter, return_var
+
+    return_var = TRUE
+    counter = 0
+
+    WHILE counter < total DO
+        counter = counter + 1
+        IF the_note = note_info[counter] THEN
+            return_var = FALSE
+        ENDIF
+    ENDWHILE
+
+    RETURN(return_var)
+
+ENDROUTINE  {  not_selected  }
+
+{************************************************************************}
+
+ROUTINE compare_keys
+
+    DECLARE count1, count2
+    DECLARE some_empty, some_full
+    DECLARE the_key
+
+    count1 = 0
+    count2 = 0
+
+    WHILE count1 < num_selected DO
+        count1     = count1 + 1
+        count2     = 0
+        some_empty = FALSE
+        some_full  = FALSE
+
+        WHILE count2 < key_count
+            count2 = count2 + 1
+            the_key = SELECT notekey.search_key
+                      WHERE (note_key = note_info[count1])
+                      AND (key_word = keywords[count2])
+            IF the_key = EMPTY THEN
+                some_empty = TRUE
+            ELSE
+                some_full = TRUE
+            ENDIF
+        ENDWHILE
+
+        IF key_operand = "ALL" THEN
+            IF some_empty THEN         {** i.e. some keywords didn't match **}
+                note_info[count1] = ""
+                num_notes = num_notes - 1
+            ENDIF
+        ELSEIF NOT(some_full) THEN     {** i.e. at least one keyword matched**}
+                note_info[count1] = ""
+                num_notes = num_notes - 1
+        ENDIF
+    ENDWHILE
+
+ENDROUTINE  {  compare_keys  }
+
+{************************************************************************}
+
+ROUTINE search
+
+{ Things that are used here :
+                                num_fields
+                                key_operand
+                                key_count
+                                ARRAY keywords
+                                CONSTANT keysize
+                                field_new
+                                field_var_new
+}
+    DECLARE the_note
+
+    num_selected = 0
+
+    IF num_fields = 1 THEN
+        the_note = SELECT notes.notekey
+                   WHERE 'field_new[1]' = field_var_new[1]
+    ELSEIF num_fields = 2 THEN
+        the_note = SELECT notes.notekey
+                   WHERE ('field_new[1]' = field_var_new[1])
+                   AND   ('field_new[2]' = field_var_new[2])
+    ELSEIF num_fields = 3 THEN
+        the_note = SELECT notes.notekey
+                   WHERE ('field_new[1]' = field_var_new[1])
+                   AND   ('field_new[2]' = field_var_new[2])
+                   AND   ('field_new[3]' = field_var_new[3])
+    ENDIF
+
+    WHILE the_note <> EMPTY DO
+        num_selected = num_selected + 1
+        note_info[num_selected] = the_note
+
+        NEXT notes
+        the_note = SELECT notes.notekey
+    ENDWHILE
+
+    num_notes = num_selected
+
+ENDROUTINE { search }
+{************************************************************************}
+
+
+ROUTINE search_two
+ENDROUTINE { search_two }
+
+{************************************************************************}
+
+ROUTINE search_three
+ENDROUTINE { search_three }
+
+{************************************************************************}
+
+ROUTINE options_0
+
+count = 1
+
+IF STRIP(field_var[4] <> "") THEN
+
+   note_info[count,1] = SELECT NOTEKEY.NOTE_KEY
+                        WHERE SEARCH_KEY = field_var[4]
+                        ORDER ON SEARCH_KEY
+
+      WHILE note_info[count,1] <> EMPTY
+         count = count + 1
+         NEXT NOTEKEY
+         note_info[count,1] = SELECT NOTEKEY.NOTE_KEY
+      ENDWHILE
+
+ENDIF
+
+num_notes = count - 1
+
+ENDROUTINE {options_0}
+{************************************************************************}
+
+ROUTINE options_1
+
+    count = 1
+
+    note_info[count,1] = SELECT NOTES.NOTEKEY
+                         WHERE 'field_new[1]' = field_var_new[1]
+                         ORDER ON NOTEKEY
+
+    WHILE note_info[count,1] <> EMPTY
+        count = count + 1
+        NEXT NOTES
+        note_info[count,1] = SELECT NOTES.NOTEKEY
+    ENDWHILE
+
+    num_notes = count - 1
+
+ENDROUTINE {options_1}
+
+{*************************************************************************}
+{*********************************OPTIONS_2*******************************}
+
+ROUTINE options_2
+
+	IF field_new[1] = "BOOK_REF" THEN
+		IF resp[1] = "AND" THEN
+			count = 1
+			note_info[count,1] = SELECT NOTES.NOTEKEY
+				WHERE ('field_new[1]' = field_var_new[1]) AND
+				      ('field_new[2]' = field_var_new[2])
+				ORDER ON NOTEKEY
+			WHILE note_info[count,1] <> EMPTY DO
+				count = count + 1
+				NEXT NOTES
+				note_info[count,1] = SELECT NOTES.NOTEKEY
+			ENDWHILE
+		ELSE
+			count = 1
+			note_info[count,1] = SELECT NOTES.NOTEKEY
+				WHERE ('field_new[1]' = field_var_new[1]) OR
+				      ('field_new[2]' = field_var_new[2])
+				ORDER ON NOTEKEY
+
+			WHILE note_info[count,1] <> EMPTY
+				count = count + 1
+				NEXT NOTES
+				note_info[count,1] = SELECT NOTES.NOTEKEY
+			ENDWHILE
+ 		ENDIF
+	ELSE
+		IF resp[2] = "AND" THEN
+			count = 1
+			note_info[count,1] = SELECT NOTES.NOTEKEY
+				WHERE ('field_new[1]' = field_var_new[1]) AND
+				      ('field_new[2]' = field_var_new[2])
+				ORDER ON NOTEKEY
+
+			WHILE note_info[count,1] <> EMPTY
+				count = count + 1
+				NEXT NOTES
+				note_info[count,1] = SELECT NOTES.NOTEKEY
+			ENDWHILE
+		ELSE
+			count = 1
+			note_info[count,1] = SELECT NOTES.NOTEKEY
+				WHERE ('field_new[1]' = field_var_new[1]) OR
+				      ('field_new[2]' = field_var_new[2])
+				ORDER ON NOTEKEY
+
+			WHILE note_info[count,1] <> EMPTY
+				count = count + 1
+				NEXT NOTES
+				note_info[count,1] = SELECT NOTES.NOTEKEY
+			ENDWHILE
+		ENDIF
+
+	ENDIF
+	num_notes = count - 1
+
+ENDROUTINE {options_2}
+
+{********************************************}
+
+ROUTINE options_3
+
+  IF ((resp[oper_pos_1] = "AND" ) AND  (resp[oper_pos_2] = "AND")) THEN
+     count = 1
+     note_info[count,1] = SELECT NOTES.NOTEKEY
+        WHERE ('field_new[1]' = field_var_new[1]) AND ('field_new[2]' = field_var_new[2])
+        AND ('field_new[3]'  = field_var_new[3])
+        ORDER ON NOTEKEY
+
+WHILE note_info[count,1] <> EMPTY
+   count = count + 1
+
+   NEXT NOTES
+
+   note_info[count,1] = SELECT NOTES.NOTEKEY
+
+ENDWHILE
+
+
+  ELSEIF  (resp[oper_pos_1] = "AND" ) AND  (resp[oper_pos_2] = "OR")
+        count = 1
+
+        note_info[count,1] = SELECT NOTES.NOTEKEY
+                             WHERE ('field_new[1]' = field_var_new[1]) AND
+                                   ('field_new[2]' = field_var_new[2]) OR
+                                   ('field_new[3]' = field_var_new[3])
+                             ORDER ON NOTEKEY
+
+WHILE note_info[count,1] <> EMPTY
+
+   count = count + 1
+
+   NEXT NOTES
+
+   note_info[count,1] = SELECT NOTES.NOTEKEY
+
+ENDWHILE
+
+
+  ELSEIF (resp[oper_pos_1] = "OR" ) AND  (resp[oper_pos_2] = "AND")
+        count = 1
+
+        note_info[count,1] = SELECT NOTES.FILE_NAME
+                             WHERE ('field_new[1]' = field_var_new[1]) OR
+                                   ('field_new[2]' = field_var_new[2]) AND
+                                   ('field_new[3]' = field_var_new[3])
+                             ORDER ON NOTEKEY
+
+        WHILE note_info[count,1] <> EMPTY
+            count = count + 1
+            NEXT NOTES
+            note_info[count,1] = SELECT NOTES.NOTEKEY
+        ENDWHILE
+    ELSEIF (resp[oper_pos_1] = "OR" ) AND  (resp[oper_pos_2] = "OR")
+        count = 1
+        note_info[count,1] = SELECT NOTES.NOTEKEY
+                             WHERE ('field_new[1]' = field_var_new[1]) OR
+                                   ('field_new[2]' = field_var_new[2]) OR
+                                   ('field_new[3]' = field_var_new[3])
+                             ORDER ON NOTEKEY
+
+        WHILE note_info[count,1] <> EMPTY
+            count = count + 1
+            NEXT NOTES
+            note_info[count,1] = SELECT NOTES.NOTEKEY
+        ENDWHILE
+    ENDIF
+
+    num_notes = count - 1
+
+ENDROUTINE {options_3}
+{**************************************************************************}
+
+ROUTINE first_find
+
+    DECLARE new_temp
+
+    new_temp = SELECT notekey.key_word
+	    WHERE key_word > " "
+	    ORDER ON key_word
+
+    browse_entry(new_temp, " ")
+
+ENDROUTINE  { first_find }
+
+{**************************************************************************}
+
+ROUTINE second_find
+
+    DECLARE dup1
+
+    dup1 = SELECT notekey.key_word
+
+    REPEAT
+        NEXT notekey
+    UNTIL (dup1 <> SELECT notekey.key_word)
+
+    browse_entry(SELECT notekey.key_word, " ")
+
+ENDROUTINE  { second_find }
+
+{======================================================================}
+{*****************************FIRST FIND*******************************}
+ROUTINE first_find_item
+
+   browse_entry(SELECT notes.subject_item WHERE subject = field_var[1], " ")
+
+ENDROUTINE{first_find_item}
+
+{=======================================================================}
+{******************************NEXT FIND********************************}
+ROUTINE next_find_item
+
+    DECLARE dup1
+
+    dup1 = SELECT notes.subject_item
+
+    REPEAT
+        NEXT notes
+    UNTIL (dup1 <> SELECT notes.subject_item)
+
+    browse_entry(SELECT notes.subject_item, " ")
+
+ENDROUTINE{next_find_item}
+
+{========================================================================}
+{*****************************FIRST_FIND_ONE*****************************}
+ROUTINE first_find_one
+
+DECLARE subject
+
+   subject = SELECT PHRASE.PHRASE_ID
+             WHERE PHRASE_TYPE = "SUBJECTS"
+             ORDER ON PHRASE_TYPE
+
+   browse_entry(subject, SELECT PHRASE.PHRASE_TEXT)
+
+ENDROUTINE{first_find_one}
+
+{=======================================================================}
+{**************************NEXT_FIND_ONE********************************}
+ROUTINE next_find_one
+
+    NEXT PHRASE
+    browse_entry(SELECT PHRASE.PHRASE_ID,SELECT PHRASE.PHRASE_TEXT)
+
+ENDROUTINE{next_find_one}
+

@@ -1,0 +1,102 @@
+
+{ This definition is required at the top of all calculations }
+GLOBAL ROUTINE calculation(current_sample,
+			   current_test_number,
+			   current_component_name)
+
+{ Routine to make calculations for Natriumformiat               }
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+
+ARRAY   result_array
+ARRAY   solution_array
+ARRAY   calc_solution_array
+ARRAY   reference_array
+ARRAY   measure_array
+ARRAY   calc_array
+ARRAY   std_comp_arr
+
+constant_factor = ((1.22*68.01)/(6.3*1*0.8))
+
+calcresult = EMPTY
+
+std_check = check_on_standards( current_test_number )
+
+IF get_endstring_parameters( current_component_name,1,TRUE,
+{**AS1046 4/6/97 }
+                             TRUE,
+{**AE1046 4/6/97 }
+                             std_comp_arr ) AND
+  (std_check = standard_is_ok)
+THEN
+ IF find_results( current_test_number,
+                result_array, number_of_res )
+ THEN
+  IF all_results_entered( current_component_name,
+                          result_array, number_of_res )
+  THEN
+   IF   result_data_group("Sol", "F", EMPTY, result_array, number_of_res,
+                                 solution_array, number_of_sol, sol_cols ) AND
+        result_data_group("Ref", "F", EMPTY, result_array, number_of_res,
+                                 reference_array, number_of_ref, ref_cols) AND
+        result_data_group("Mes", "F", EMPTY, result_array, number_of_res,
+                                 measure_array, number_of_meas, meas_cols)
+   THEN
+        IF   (ref_cols <> 1) OR (number_of_ref <> 2)
+        THEN flash_message("ERROR: Wrong setup of reference in analysis",TRUE)
+        ELSE
+          IF   (sol_cols <> meas_cols)
+          THEN flash_message("ERROR: Number of Solutions and measurements ":
+                             "must be the same",TRUE)
+          ELSE
+            IF   (number_of_meas <> 2)
+            THEN flash_message("ERROR: Number of measurements must be 2",TRUE)
+            ELSE
+              IF   calc_solution( solution_array, number_of_sol, sol_cols,
+                                  calc_solution_array, mess)
+              THEN
+                calcresult = 0
+                diff_ref  = reference_array[2,1] - reference_array[1,1]
+                meas_count = 0
+                WHILE meas_count < meas_cols
+                   meas_count = meas_count + 1
+                   sol = calc_solution_array[meas_count]
+                   flash_message("Notice: Calculated solution:":STRIP(sol),TRUE)
+                   diff_meas = measure_array[ 2, meas_count ] -
+                               measure_array[ 1, meas_count ]
+                   calc_array[ meas_count ] =
+                          ((constant_factor*(diff_meas-diff_ref))*sol)/10000
+                ENDWHILE
+
+                IF   calc_std(calc_array,number_of_meas,
+                              std_comp_arr[1,1],std,mean_value)
+                THEN calcresult = mean_value
+                ELSE calcresult = "NEWTEST"
+                     reason_code = "VARIANS"
+                ENDIF
+
+              ELSE flash_message(mess,TRUE)
+              ENDIF
+            ENDIF
+          ENDIF
+        ENDIF
+   ELSE flash_message("ERROR: Inproper analysis setup", TRUE )
+   ENDIF
+  ENDIF
+ ENDIF
+ELSEIF std_check = standard_not_ok
+THEN   calcresult = "NEWTEST"
+       reason_code = EMPTY
+ENDIF
+
+IF   calcresult = "NEWTEST"
+THEN IF   NOT (do_newtest( current_test_number,
+                           current_component_name, calcresult, reason_code ))
+     THEN calcresult = EMPTY
+     ENDIF
+ENDIF
+
+{ The next two lines are required at the end of the calculation }
+return(calcresult) { The calculated result is returned here }
+ENDROUTINE

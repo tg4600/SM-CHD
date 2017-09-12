@@ -1,0 +1,281 @@
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN LIBRARY $LIB_UTILS
+
+GLOBAL ROUTINE MEAN_CONT_CALC ( current_sample,
+			       current_test_number,
+			       current_component_name)
+			     
+DECLARE analysis, analysis_ver, comp, result, dilution_factor, res, max_res, max_dilution, result_a, res_dilution, res_check,
+  j, dil, comp_name, versioned_component_a, res_sum, max_dilution_count, dilution_text, agar, test_n, flag, test_c, max_dilution_text,
+  e, g, l, r
+	
+analysis = select test.analysis where test_number = current_test_number
+analysis_ver = select test.analysis_version where test_number = current_test_number
+
+comp = SELECT result . name 
+       WHERE (test_number = current_test_number) 
+         AND (name LIKE STRIP(current_component_name) : "%")
+         AND (name <> STRIP(current_component_name))
+
+e = 0 {Result prefix "-" or "+"}
+g = 0 {Result prefix ">"}
+j = 0 {Count result where dilution_factor is the same}
+l = 0 {Result prefix "<"}
+r = 0 {Count of results}
+res = 0
+max_res = 0
+res_sum = 0
+max_dilution = 0
+res_dilution =0
+
+WHILE comp <> EMPTY DO
+	push_file_descriptor ("RESULT", result_a)
+	result = select result . text where (test_number = current_test_number) and (name = comp)
+
+	r = r +1
+
+	IF GET_CHARACTER_AT (result,1) = "<" THEN
+		l = l + 1
+	ENDIF
+	IF GET_CHARACTER_AT (result,1) = ">" THEN
+		g = g + 1
+	ENDIF
+        IF (GET_CHARACTER_AT (result,1) = "-") OR 
+           (GET_CHARACTER_AT (result,1) = "+") THEN
+		e = e + 1
+	ENDIF	
+	pop_file_descriptor (result_a)
+
+	next result
+
+	comp = select result . name
+
+ENDWHILE
+
+IF (r <> l) and (r <> g) and (r <> e) and (r <> g + e) THEN
+
+    comp = SELECT result . name 
+       WHERE (test_number = current_test_number) 
+         AND (name LIKE STRIP(current_component_name) : "%")
+         AND (name <> STRIP(current_component_name))
+
+WHILE comp <> EMPTY DO
+
+	push_file_descriptor ("RESULT", result_a)
+
+        result          = SELECT result . text 
+                           WHERE (test_number = current_test_number) 
+			and (name = comp)
+	dilution_text = select versioned_component . dilution_factor 
+					where (analysis = analysis) 
+					and (analysis_version=analysis_ver) 
+					and (name = comp)
+        dil             = dilution_text
+        dilution_factor = numeric(dilution_text)
+
+        IF (GET_CHARACTER_AT (result,1) <> "<") AND 
+           (GET_CHARACTER_AT (result,1) <> ">") AND 
+           (GET_CHARACTER_AT (result,1) <> "+") AND 
+           (GET_CHARACTER_AT (result,1) <> " ") AND 
+           (GET_CHARACTER_AT (result,1) <> "-") AND 
+           (numtext (result) = TRUE) THEN
+		result = numeric (result)
+		res = result / dilution_factor
+		IF res >= max_res THEN
+			max_res = res
+			res_dilution= dil
+		ENDIF	
+		IF dilution_factor > max_dilution THEN
+			max_dilution = dilution_factor
+			max_dilution_text = dilution_text
+		ENDIF	
+	ENDIF	
+	pop_file_descriptor (result_a)
+
+	next result
+
+	comp = select result . name
+
+ENDWHILE
+
+IF max_res <> 0 THEN
+    comp_name = SELECT versioned_component.name 
+                WHERE (analysis = analysis) 
+                  AND (analysis_version=analysis_ver) 
+                  AND (name LIKE STRIP(current_component_name) : "%") 
+                  AND (name <> STRIP(current_component_name))
+                  AND (dilution_factor = res_dilution)
+	
+	WHILE comp_name <> EMPTY DO
+		push_file_descriptor ("versioned_component", versioned_component_a)
+		result = select result . text where (test_number = current_test_number) and (name = comp_name)
+            IF (GET_CHARACTER_AT (result,1) <> "<") AND 
+               (GET_CHARACTER_AT (result,1) <> ">") AND 
+               (GET_CHARACTER_AT (result,1) <> "+") AND 
+               (GET_CHARACTER_AT (result,1) <> " ") AND 
+               (GET_CHARACTER_AT (result,1) <> "-") AND 
+               (numtext (result) = TRUE) THEN
+                dilution_factor = NUMERIC(SELECT versioned_component.dilution_factor 
+                                           WHERE analysis = analysis 
+                                             AND analysis_version=analysis_ver 
+                                             AND name = comp_name)
+			res = result / dilution_factor
+			res_sum = res_sum + res
+			j = j + 1
+		ENDIF	
+		pop_file_descriptor (versioned_component_a)
+		next versioned_component
+		comp_name = select versioned_component.name
+	ENDWHILE
+	max_res = res_sum / j
+ENDIF
+
+
+IF max_res = 0 THEN
+
+    max_dilution_count = SELECT count versioned_component 
+						where (analysis = analysis) 
+						and (analysis_version=analysis_ver) 
+						and (name like strip (current_component_name) : "%") 
+                            AND (name <> strip(current_component_name))
+						and (dilution_factor = max_dilution_text)
+
+	max_res = "<": 1 / (max_dilution * max_dilution_count) 
+
+ENDIF
+
+{TBG added 2009-04-30}
+    agar    = SELECT result.text 
+           WHERE test_number = current_test_number 
+             AND name like "Control of agar" : "%"
+    flag    = SELECT versioned_component.rep_control 
+           WHERE analysis = analysis
+             AND analysis_version = analysis_ver
+             AND name like "Control of agar" : "%"
+
+IF (agar = "Impure") and (flag <> "NNT") THEN
+    res_check   = SELECT result.text 
+                   WHERE test_number = current_test_number 
+                     {AND name =current_component_name}
+                     AND text = "NEW_TEST"
+  IF res_check <> "NEW_TEST" THEN
+    test_n = NEW_TEST (current_sample, analysis)
+      flash_message ("New Test ID ":test_n,true)
+  ENDIF
+  max_res = "NEW_TEST"
+ENDIF 
+
+{TBG added 2009-04-30}
+
+return (max_res )
+
+ELSEIF (r = l) THEN
+
+ELSEIF (r = g) THEN
+
+    comp = SELECT result . name 
+            WHERE (test_number = current_test_number) 
+              AND (name LIKE STRIP(current_component_name) : "%")
+              AND (name <> STRIP(current_component_name))
+
+WHILE comp <> EMPTY DO
+
+	push_file_descriptor ("RESULT", result_a)
+            result          = SELECT result.text 
+                               WHERE test_number = current_test_number 
+                                 AND name = comp
+            dilution_text   = SELECT versioned_component.dilution_factor 
+                               WHERE (analysis = analysis) 
+                                 AND (analysis_version=analysis_ver) 
+                                 AND (name = comp)
+            dil             = dilution_text
+            dilution_factor = NUMERIC(dilution_text)
+	result = numeric (result)
+	res = result / dilution_factor
+		
+	IF res >= max_res THEN
+		max_res = res
+		res_dilution= dil
+	ENDIF	
+	pop_file_descriptor (result_a)
+
+	next result
+
+	comp = select result . name
+
+ENDWHILE
+
+max_res = strip (">":max_res)
+
+return (max_res )
+
+
+ELSEIF (r = e) THEN
+
+    res_check   = SELECT result.text 
+                   WHERE test_number = current_test_number 
+                     {AND name =current_component_name}
+                     AND text = "NEW_TEST"
+    IF res_check <> "NEW_TEST" THEN
+        test_c = SELECT test.test_count
+                  WHERE sample = current_sample
+                    AND analysis = analysis
+                    AND test_number > current_test_number
+        IF (test_c = EMPTY) 
+        OR (confirm_with_text("Do you wan't to add a NEW_TEST?")) THEN
+	test_n = NEW_TEST (current_sample, analysis)
+        flash_message ("New Test ID ":test_n,true)
+        ENDIF
+    ENDIF
+  	max_res = "NEW_TEST"
+  	return (max_res )
+  	
+ELSEIF (r = g + e)THEN 
+
+    comp = SELECT result . name 
+        WHERE test_number = current_test_number
+          AND name LIKE STRIP(current_component_name) : "%"
+          AND name <> STRIP(current_component_name)
+
+WHILE comp <> EMPTY DO
+
+	push_file_descriptor ("RESULT", result_a)
+            result          = SELECT result.text 
+                               WHERE test_number = current_test_number
+                                 AND name = comp
+            dilution_text   = SELECT versioned_component.dilution_factor 
+                               WHERE analysis = analysis
+                                 AND analysis_version=analysis_ver
+                                 AND name = comp
+            dil             = dilution_text
+            dilution_factor = NUMERIC(dilution_text)
+	IF (GET_CHARACTER_AT (result,1) <> "-") and (numtext (result) = TRUE) THEN
+		result = numeric (result)
+		res = result / dilution_factor
+		IF res >= max_res THEN
+			max_res = res
+			res_dilution= dil
+		ENDIF	
+	ENDIF	
+
+	pop_file_descriptor (result_a)
+
+	next result
+
+	comp = select result . name
+
+ENDWHILE
+
+max_res = strip (">":max_res)
+
+return (max_res )
+
+ENDIF
+	
+
+ENDROUTINE
+
+{*********************************************************************}
+

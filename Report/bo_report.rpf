@@ -1,0 +1,180 @@
+{***********************************************************************
+* Module Name   : BO_REPORT
+* Purpose       : Call a report in Business Objects and present for user
+* Document Ref  : 
+* Specification : 
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2015-02-02      Tommy Bøgeskov      Created
+************************************************************************}
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_DDE
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN LIBRARY $LIB_UTILS
+DECLARE option
+
+option = 1044
+SINGLE_PROMPT (option)
+
+EXIT
+
+ROUTINE SINGLE_PROMPT (option)
+DECLARE bo_server, bo_pdf, parameter, i, iDoc_ID, parameters, tbl_name, fieldname, bo_link, form_header, PromptText, prompts
+ARRAY parameters
+
+    bo_server   = GLOBAL("BO_SERVER")  
+    bo_pdf      = GLOBAL("BO_PDF")
+    parameter   = SELECT master_menu.parameters WHERE procedure_num = option AND removeflag = FALSE
+
+    IF STRIP(parameter) = ""
+        fm("Expected parameter(s) not found.")
+        EXIT
+    ELSEIF parameter = EMPTY
+        fm("Master menu ":STRIP(option):" not valid.")
+    ENDIF
+
+    i   = INDEX(parameter, ",")
+    IF i > 0 THEN
+        iDoc_ID     = STRIP(LEFTSTRING(parameter, i - 1))
+        parameter   = STRIP(SUBSTRING(parameter, i + 1, LENGTH(parameter)))
+    ENDIF
+
+    REPEAT
+        i   = INDEX(parameter, ".")
+        tbl_name    = STRIP(LEFTSTRING(parameter, i - 1))
+        parameter   = STRIP(SUBSTRING(parameter, i + 1, LENGTH(parameter)))
+        i   = INDEX(parameter, ",")
+        fieldname   = STRIP(SUBSTRING(parameter, i + 1, LENGTH(parameter)))
+        parameters[size_of_array(parameters) + 1, 1] = tbl_name
+        parameters[size_of_array(parameters)    , 2] = fieldname
+{
+        ELSE
+            fm("Expected format of 'table_name.fieldname' parameter not found in ":tmpstring)
+        ENDIF
+}
+        i   = INDEX(parameter, ",")
+    UNTIL (i = 0)
+
+    i = 1
+    prompts = ""
+    WHILE i <= size_of_array(parameters)
+
+        prompt_text = tbl_name:".":fieldname:": "
+        form_header = "Select value ..."
+{        
+        parameters[i, 1] = tbl_name
+        parameters[i, 2] = fieldname
+}
+        prompt_for_field_value(PromptText    ,
+                       prompt_text ,
+                       form_header ,
+                       parameters[i, 1]       ,
+                       parameters[i, 2]       )
+
+{
+        IF prompts = "" THEN
+            prompts = parameters[i, 1]:".":parameters[i, 2]:"=":ASCII(34):STRIP(PromptText):ASCII(34)
+        ELSE
+            prompts = prompts:parameters[i, 1]:".":parameters[i, 2]:"=":ASCII(34):STRIP(PromptText):ASCII(34)
+        ENDIF
+}
+
+        IF prompts = "" THEN
+            prompts = parameters[i, 1]:".":parameters[i, 2]:"=":STRIP(PromptText)
+        ELSE
+            prompts = prompts:parameters[i, 1]:".":parameters[i, 2]:"=":STRIP(PromptText)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    bo_link = bo_server:idoc_id:bo_pdf:prompts
+        
+    {'http://dkhoebo01.global.chgroup.net:8080/BOE/OpenDocument/opendoc/openDocument.jsp?iDocID=
+      Af_VKCJFpp9KrCS2_1SCzpI
+      &sIDType=CUID&sType=wid&sOutputFormat=P&sRefresh=Y&lsS
+      Worksheet.Identity="2-DPH-01_293"'}
+
+    GoToWebPage(bo_link)
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    GoToWebPage
+Purpuse:    Finds value for specfic field in xml and returns it
+Parameter:  LinkToFollow    string  link that will be open in IE
+*************************************************************************}
+ROUTINE GoToWebPage(VALUE LinkToFollow)
+DECLARE ie_path, send_path, status
+
+    ie_path = client_get_app_path ("iexplore.exe")
+    send_path = ie_path : " " : LinkToFollow
+    {dde_winexec_wait (send_path, "SW_SHOW"}
+    dde_winexec (send_path, "SW_SHOW", status)
+
+    RETURN(status)        
+
+ENDROUTINE
+
+ROUTINE prompt_for_field_value(identity, VALUE prompt_text, VALUE form_header, VALUE table, VALUE field)
+{*****************************************************************************
+*   Prompts for a value from the passed field and table using prompt_text as
+*   the prompt, form_header as the form header and returning the selected
+*   identity in 'PrompText'.
+*   Returns TRUE if the user pressed OK, FALSE otherwise
+*
+******************************************************************************}
+
+    DECLARE form, prompt_width, field_prompt, link_table, link_field
+
+    GET_FIELD_DETAILS 'table' . 'field' , "LINK_TABLE" , link_table
+    GET_FIELD_DETAILS 'table' . 'field' , "LINK_FIELD" , link_field
+
+    IF link_table <> EMPTY THEN
+        table = link_table
+        field = link_field
+    ENDIF
+
+    GET_FIELD_DETAILS 'table' . 'field' , "FIELD_SIZE" , prompt_width
+
+    CREATE OBJECT "STD_FORM" , form
+    form . header = form_header
+    form . width = LENGTH ( prompt_text ) + prompt_width + 4
+    form . height = 1
+    form . column = ( GLOBAL ( "GUI_WIDTH" )  - form . width  ) / 2
+    form . row    = ( GLOBAL ( "GUI_HEIGHT" ) - form . height ) / 2
+
+    form . prompt_id = "$DATATREE_FIELD_PROMPT_" : STRIP( table : "_" : field )
+
+    form . add_display ( prompt_text , 1 , 1 , PROMPT_RENDITION_NORMAL )
+
+    PROMPT OBJECT field_prompt
+        BROWSE ON 'table' . 'field'
+
+    field_prompt . row    = 1
+    field_prompt . column = LENGTH ( prompt_text ) + 1
+    field_prompt . width  = prompt_width
+
+    form . add_prompt ( field_prompt )
+
+    form . start_prompt ( )
+
+    form . active_prompt = field_prompt . tag
+
+    form . wait_prompt ( )
+    form . end_prompt ( )
+
+    identity = field_prompt . value
+
+    RETURN ( form . get_lastkey() = "DO" )
+
+ENDROUTINE

@@ -1,0 +1,1003 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_TRAINING_RECORDS
+*
+* Purpose       : Training Record caching and checking code
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+JOIN STANDARD_LIBRARY STD_UTILS
+
+JOIN LIBRARY          $INCIDENT_LOGIN
+JOIN LIBRARY          $LIB_UTILS
+JOIN LIBRARY          $ROLE_LIB
+
+{* CONSTANTS ******************************************************************}
+
+CONSTANT LIB_TR_CLUSTER_NAME     = "LIB_TR_CLUSTER_NAME"
+CONSTANT LIB_TR_OPERATOR         = "LIB_TR_OPERATOR"
+CONSTANT LIB_TR_DATE             = "LIB_TR_DATE"
+CONSTANT LIB_TR_COLLECTION_OPER  = "LIB_TR_COLLECTION_OPER"
+CONSTANT LIB_TR_COLLECTION_ANAL  = "LIB_TR_COLLECTION_ANAL"
+CONSTANT LIB_TR_COLLECTION_INST  = "LIB_TR_COLLECTION_INST"
+CONSTANT LIB_TR_COLLECTION_PREP  = "LIB_TR_COLLECTION_PREP"
+
+CONSTANT LIB_TR_ITEM_OPER        = "LIB_TR_ITEM_OPER"
+CONSTANT LIB_TR_HEADER_ENTITY    = "LIB_TR_HEADER_ENTITY"
+CONSTANT LIB_TR_ITEM             = "LIB_TR_ITEM"
+CONSTANT LIB_TR_OVERRIDE_REC     = "LIB_TR_OVERRIDE_REC"
+
+{* VARIABLES ******************************************************************}
+
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_declare_collection
+
+{
+*	Define the classes for the Training Record collection.
+*
+*******************************************************************************}
+
+	DEFINE CLASS LIB_TR_ITEM_OPER
+
+		INHERIT "STD_COLLECTED"
+
+		PROPERTIES
+			"TRAINING_COURSE",
+			"COMPETENCE",
+			"DATE_COMPLETED",
+			"RETEST_INTERVAL",
+			"RETEST_GRACE_PERIOD_INTERVAL"
+
+	END CLASS
+
+	DEFINE CLASS LIB_TR_HEADER_ENTITY
+
+		INHERIT "STD_COLLECTED"
+
+		PROPERTIES
+			"KEY0",
+			"TRAINING_RECORDS"
+
+	END CLASS
+
+	DEFINE CLASS LIB_TR_ITEM
+
+		INHERIT "STD_COLLECTED"
+
+		PROPERTIES
+			"TRAINING_COURSE",
+			"MINIMUM_COMPETENCE"
+
+	END CLASS
+
+	DEFINE CLASS LIB_TR_OVERRIDE_REC
+
+		INHERIT "STD_COLLECTED"
+
+		PROPERTIES
+			"KEY0"     ,
+			"OVERRIDE" ,
+			"REASON"
+
+	END CLASS
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_setup_environment
+
+{
+*	Setup the caching mechanism - reset if necessary
+*
+*******************************************************************************}
+
+	DECLARE cluster_date, cluster_operator, empty_var
+
+	cluster_date     = TODAY
+	cluster_operator = GLOBAL ( "OPERATOR" )
+	empty_var = EMPTY
+
+	IF NOT ( user_cluster_exists ( LIB_TR_CLUSTER_NAME )) THEN
+
+		lib_tr_declare_collection ( )
+
+		add_global_cluster ( LIB_TR_CLUSTER_NAME )
+
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_OPERATOR )
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_DATE )
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_COLLECTION_OPER )
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_COLLECTION_ANAL )
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_COLLECTION_INST )
+		add_user_global ( LIB_TR_CLUSTER_NAME    ,
+		                  LIB_TR_COLLECTION_PREP )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_OPERATOR ,
+		                    cluster_operator       )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_DATE ,
+		                    cluster_date           )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_OPER ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_ANAL ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_INST ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_PREP ,
+		                    empty_var              )
+
+	ELSEIF ( read_user_global ( LIB_TR_CLUSTER_NAME    ,
+	                            LIB_TR_DATE ) <  cluster_date )     OR
+	       ( read_user_global ( LIB_TR_CLUSTER_NAME    ,
+	                            LIB_TR_OPERATOR ) <> cluster_operator ) THEN
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_OPERATOR ,
+		                    cluster_operator       )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_DATE ,
+		                    cluster_date           )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_OPER ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_ANAL ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_INST ,
+		                    empty_var              )
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_PREP ,
+		                    empty_var              )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_check_approval ( oper_training   ,
+	                                target_training )
+
+{
+*	Check if the user i sapproved to access this record.
+*	oper_training is the current operators training record
+*	target_training is the training record for the entity to access
+*
+*******************************************************************************}
+
+	DECLARE trained,
+	        oper_rec,
+	        date_now
+
+	date_now = NOW
+	trained  = TRUE
+	
+	target_training . set_first ( )
+
+	WHILE (( target_training . current <> EMPTY ) AND ( trained )) DO
+
+		oper_rec = oper_training . get_by_index ( "TRAINING_COURSE",
+		                                          target_training . current . training_course )
+
+		IF oper_rec = EMPTY THEN
+
+			trained = FALSE
+
+		ELSEIF ( oper_rec . competence < target_training . current . minimum_competence ) THEN
+		
+			trained = FALSE
+
+		ENDIF
+		
+		IF trained AND (  oper_rec . retest_interval <> INTERVAL ( 0 )) THEN
+		
+			trained = ( date_now <= oper_rec . date_completed + 
+			                        oper_rec . retest_interval + 
+			                        oper_rec . retest_grace_period_interval )
+
+		ENDIF
+
+		target_training . set_next ( )
+
+	ENDWHILE
+
+	RETURN ( trained )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_make_anal_key0 ( VALUE anal_id   ,
+	                                VALUE anal_vers )
+
+{
+*	Make a padded key0 from the passed ids
+*
+*******************************************************************************}
+
+	DECLARE fld_size,
+	        key0
+
+	GET_FIELD_DETAILS versioned_analysis . identity , "FIELD_SIZE" , fld_size
+	key0 = PAD ( STRIP ( anal_id ) , " " , fld_size )
+
+	GET_FIELD_DETAILS versioned_analysis . analysis_version , "FIELD_SIZE" , fld_size
+	key0 = key0 : PAD ( STRIP ( anal_vers ) , " " , fld_size )
+
+	RETURN ( key0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_locate_analysis_training ( VALUE anal_id   ,
+	                                          VALUE anal_vers )
+
+{
+*	Locate training records for the specified analysis.
+*	Uses a cache.
+*
+*******************************************************************************}
+
+	DECLARE anal_tr,
+	        anal_key0,
+	        anal_item,
+	        anal_tr_item,
+	        train_rec
+
+	anal_tr = read_user_global ( LIB_TR_CLUSTER_NAME, LIB_TR_COLLECTION_ANAL )
+	
+	IF anal_tr = EMPTY THEN
+	
+		CREATE OBJECT "STD_COLLECTION", anal_tr
+		
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_ANAL ,
+		                    anal_tr                )
+
+		anal_tr . add_index ( "KEY0" )
+
+	ENDIF
+	
+	anal_key0 = lib_tr_make_anal_key0 ( anal_id, anal_vers )
+	
+	anal_item = anal_tr . get_by_index ( "KEY0", anal_key0 )
+	
+	IF anal_item = EMPTY THEN
+
+		CREATE OBJECT LIB_TR_HEADER_ENTITY, anal_item
+		
+		anal_item . key0 = anal_key0
+
+		CREATE OBJECT "STD_COLLECTION", anal_item . training_records
+
+		train_rec = SELECT versioned_analysis_training . versioned_analysis
+		            WHERE versioned_analysis = anal_id AND
+		                  analysis_version = anal_vers
+		            ORDER ON training_course
+
+		WHILE train_rec <> EMPTY DO
+	
+			CREATE OBJECT LIB_TR_ITEM, anal_tr_item
+		
+			anal_tr_item . training_course    = SELECT versioned_analysis_training . training_course
+			anal_tr_item . minimum_competence = SELECT versioned_analysis_training . minimum_competence
+		
+			anal_item . training_records . add ( anal_tr_item )
+		
+			NEXT versioned_analysis_training
+			train_rec = SELECT versioned_analysis_training . versioned_analysis
+		
+		ENDWHILE
+	
+		anal_tr . add ( anal_item )
+
+	ENDIF
+		
+	RETURN ( anal_item . training_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_locate_instrument_training ( VALUE inst_id )
+
+{
+*	Locate training records for the specified instrument
+*	Uses a cache.
+*
+*******************************************************************************}
+
+	DECLARE inst_tr,
+	        inst_item,
+	        inst_tr_item,
+	        train_rec
+
+	inst_tr = read_user_global ( LIB_TR_CLUSTER_NAME, LIB_TR_COLLECTION_INST )
+	
+	IF inst_tr = EMPTY THEN
+	
+		CREATE OBJECT "STD_COLLECTION", inst_tr
+		
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_INST ,
+		                    inst_tr                )
+
+		inst_tr . add_index ( "KEY0" )
+
+	ENDIF
+	
+	inst_item = inst_tr . get_by_index ( "KEY0", inst_id )
+	
+	IF inst_item = EMPTY THEN
+
+		CREATE OBJECT LIB_TR_HEADER_ENTITY, inst_item
+		
+		inst_item . key0 = inst_id
+
+		CREATE OBJECT "STD_COLLECTION", inst_item . training_records
+
+		train_rec = SELECT instrument_training . instrument
+		            WHERE instrument = inst_id
+		            ORDER ON training_course
+
+		WHILE train_rec <> EMPTY DO
+	
+			CREATE OBJECT LIB_TR_ITEM, inst_tr_item
+		
+			inst_tr_item . training_course    = SELECT instrument_training . training_course
+			inst_tr_item . minimum_competence = SELECT instrument_training . minimum_competence
+		
+			inst_item . training_records . add ( inst_tr_item )
+		
+			NEXT instrument_training
+			train_rec = SELECT instrument_training . instrument
+		
+		ENDWHILE
+	
+		inst_tr . add ( inst_item )
+
+	ENDIF
+		
+	RETURN ( inst_item . training_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_locate_preparation_training ( VALUE prep_id )
+
+{
+*	Locate training records for the specified preparation
+*	Uses a cache.
+*
+*******************************************************************************}
+
+	DECLARE prep_tr,
+	        prep_item,
+	        prep_tr_item,
+	        train_rec
+
+	prep_tr = read_user_global ( LIB_TR_CLUSTER_NAME, LIB_TR_COLLECTION_PREP )
+	
+	IF prep_tr = EMPTY THEN
+	
+		CREATE OBJECT "STD_COLLECTION", prep_tr
+		
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_PREP ,
+		                    prep_tr                )
+
+		prep_tr . add_index ( "KEY0" )
+
+	ENDIF
+	
+	prep_item = prep_tr . get_by_index ( "KEY0", prep_id )
+	
+	IF prep_item = EMPTY THEN
+
+		CREATE OBJECT LIB_TR_HEADER_ENTITY, prep_item
+		
+		prep_item . key0 = prep_id
+
+		CREATE OBJECT "STD_COLLECTION", prep_item . training_records
+
+		train_rec = SELECT preparation_training . preparation
+		            WHERE preparation = prep_id
+		            ORDER ON training_course
+
+		WHILE train_rec <> EMPTY DO
+	
+			CREATE OBJECT LIB_TR_ITEM, prep_tr_item
+		
+			prep_tr_item . training_course    = SELECT preparation_training . training_course
+			prep_tr_item . minimum_competence = SELECT preparation_training . minimum_competence
+		
+			prep_item . training_records . add ( prep_tr_item )
+		
+			NEXT preparation_training
+			train_rec = SELECT preparation_training . preparation
+		
+		ENDWHILE
+	
+		prep_tr . add ( prep_item )
+
+	ENDIF
+		
+	RETURN ( prep_item . training_records )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_locate_operator_training
+
+{
+*	Locate training records for the current operator.
+*	Uses a cache.
+*
+*******************************************************************************}
+
+	DECLARE oper_tr, 
+	        oper_tr_item,
+	        train_rec,
+	        group_checking
+
+	oper_tr = read_user_global ( LIB_TR_CLUSTER_NAME, LIB_TR_COLLECTION_OPER )
+	
+	IF ( oper_tr = EMPTY ) THEN
+
+		group_checking = global ( "CHECK_GROUPS" )
+		SET SECURITY FALSE
+
+		CREATE OBJECT "STD_COLLECTION", oper_tr
+		oper_tr . add_index ( "TRAINING_COURSE" )
+
+		train_rec = SELECT personnel_training . personnel
+		            WHERE personnel = GLOBAL ( "OPERATOR" )
+		            ORDER ON training_course
+
+		WHILE train_rec <> EMPTY DO
+	
+			CREATE OBJECT LIB_TR_ITEM_OPER, oper_tr_item
+		
+			oper_tr_item . training_course = SELECT personnel_training . training_course
+			oper_tr_item . competence      = SELECT personnel_training . competence
+			oper_tr_item . date_completed  = SELECT personnel_training . date_completed
+
+			train_rec = SELECT training_course . identity
+			            WHERE identity = oper_tr_item . training_course
+
+			IF train_rec <> EMPTY THEN
+
+				oper_tr_item . retest_interval              = SELECT training_course . retest_interval
+				oper_tr_item . retest_grace_period_interval = SELECT training_course . retest_grace_period_interval
+
+			ENDIF		
+
+			oper_tr . add ( oper_tr_item )
+		
+			NEXT personnel_training
+			train_rec = SELECT personnel_training . personnel
+		
+		ENDWHILE
+	
+		SET SECURITY group_checking
+
+		user_global_write ( LIB_TR_CLUSTER_NAME    ,
+		                    LIB_TR_COLLECTION_OPER ,
+		                    oper_tr                )
+
+	ENDIF
+		
+	RETURN ( oper_tr )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_already_overriden (       tr_cache  ,
+	                                   VALUE cache_key ,
+	                                         override  ,
+	                                         reason    )
+
+{
+*	Check if the specified item has already been overriden
+*
+*******************************************************************************}
+
+	DECLARE in_cache ,
+	        item
+	
+	in_cache = FALSE
+
+	IF tr_cache <> EMPTY THEN
+	
+		item = tr_cache . get_by_index ( "KEY0", cache_key )
+	
+		IF item <> EMPTY THEN
+
+			in_cache = TRUE
+			override = item . override
+			reason   = item . reason
+
+		ENDIF
+
+	ENDIF
+		
+	RETURN ( in_cache )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_cache_override (       tr_cache  ,
+	                                VALUE cache_key ,
+	                                VALUE override  ,
+	                                VALUE reason    )
+
+{
+*	Add the current override to the cache
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF tr_cache = EMPTY THEN
+	
+		CREATE OBJECT "STD_COLLECTION", tr_cache
+		tr_cache . add_index ( "KEY0" )
+
+	ENDIF
+
+	CREATE OBJECT LIB_TR_OVERRIDE_REC, item
+		
+	item . key0 = cache_key
+	item . override = override
+	item . reason = reason
+	
+	tr_cache . add ( item )
+		
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE lib_tr_confirm_override ( VALUE table       ,
+	                                  VALUE id          ,
+	                                        reason_text )
+
+{
+*	Ask the user if they want to override the training record restriction,
+*	Builds up the prompt form.
+*
+*******************************************************************************}
+
+	DECLARE override, 
+	        can_leave,
+	        confirm_form,
+	        reason,
+	        button_yes,
+	        button_no,
+	        table_prompt,
+	        id_prompt
+
+	CREATE OBJECT "STD_FORM" , confirm_form
+
+        confirm_form . height       = 6
+        confirm_form . width        = 70
+        confirm_form . row          = 10
+        confirm_form . column       = 10
+        confirm_form . header       = "Confirm Training Override"
+	confirm_form . button_style = FORM_BUTTON_NONE
+
+        confirm_form . add_frame ("" , 1 , 1 , 3, confirm_form . width )
+
+        confirm_form . add_display ( "Table name" , 2 , 1 ,
+                                     PROMPT_RENDITION_NORMAL )
+
+        PROMPT OBJECT table_prompt
+        	FORMAT TEXT
+                ON LINE 1 FROM 25 TO confirm_form . width - 1
+                WITH ( lowered = TRUE,
+                       value = table )
+                
+        confirm_form . add_display ( table_prompt )
+
+        confirm_form . add_display ( "Identity" , 2 , 2 ,
+                                     PROMPT_RENDITION_NORMAL )
+
+        PROMPT OBJECT id_prompt
+        	FORMAT TEXT
+                ON LINE 2 FROM 25 TO confirm_form . width - 1
+                WITH ( lowered = TRUE ,
+                       value   = id   )
+                
+        confirm_form . add_display ( id_prompt )
+
+        confirm_form . add_display ( "Reason" , 2 , 3 ,
+                                     PROMPT_RENDITION_NORMAL )
+
+        PROMPT OBJECT reason
+                ON LINE 3 FROM 25 TO confirm_form . width - 1
+                FORMAT TEXT255
+
+        confirm_form . add_prompt ( reason )
+
+	PROMPT OBJECT button_yes
+		CLASS "STD_PROMPT_BUTTON"
+		FROM 17 TO 27
+		ON LINE 5
+		WITH ( caption        = "Confirm" ,
+		       enabled        = TRUE  ,
+		       send_lastkey   = "DO"  )
+
+        confirm_form . add_prompt ( button_yes )
+
+	PROMPT OBJECT button_no
+		CLASS "STD_PROMPT_BUTTON"
+		FROM 44 TO 54
+		ON LINE 5
+		WITH ( caption        = "Cancel" ,
+		       enabled        = TRUE  ,
+		       send_lastkey   = "EXIT"  )
+
+        confirm_form . add_prompt ( button_no )
+
+        confirm_form . start_prompt ( )
+
+	REPEAT
+
+	        confirm_form . wait_prompt ( )
+
+		IF ( confirm_form . get_lastkey ( ) <> "EXIT" ) THEN
+			reason_text = reason . value
+			can_leave   = NOT BLANK ( reason_text )
+			override    = TRUE
+		ELSE
+			can_leave = TRUE
+			override  = FALSE
+		ENDIF
+
+	UNTIL can_leave
+
+        confirm_form . end_prompt ( )
+
+	RETURN ( override )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_analysis_approved ( VALUE anal_id   ,
+	                                   VALUE anal_vers )
+
+{
+*	Returns a boolean saying whether or not the operator
+*	is approved to perform the given analysis.
+*
+*******************************************************************************}
+
+	DECLARE oper_training,
+	        anal_training
+
+	lib_tr_setup_environment ( )
+
+	oper_training = lib_tr_locate_operator_training ( )
+	
+	anal_training = lib_tr_locate_analysis_training ( anal_id, anal_vers )
+
+	RETURN ( lib_tr_check_approval ( oper_training, anal_training ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_instrument_approved ( VALUE inst_id )
+
+{
+*	Returns a boolean saying whether or not the operator
+*	is approved to use the given instrument.
+*
+*******************************************************************************}
+
+	DECLARE oper_training,
+	        inst_training,
+	        approved
+
+	IF BLANK ( inst_id ) THEN
+	
+		approved = TRUE
+
+	ELSE
+
+		lib_tr_setup_environment ( )
+
+		oper_training = lib_tr_locate_operator_training ( )
+	
+		inst_training = lib_tr_locate_instrument_training ( inst_id )
+
+		approved = lib_tr_check_approval ( oper_training, inst_training )
+
+	ENDIF
+
+	RETURN ( approved )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_preparation_approved ( VALUE prep_id )
+
+{
+*	Returns a boolean saying whether or not the operator
+*	is approved to perform the given preparation.
+*
+*******************************************************************************}
+
+	DECLARE oper_training,
+	        prep_training,
+	        approved
+
+	IF BLANK ( prep_id ) THEN
+	
+		approved = TRUE
+
+	ELSE
+
+		lib_tr_setup_environment ( )
+
+		oper_training = lib_tr_locate_operator_training ( )
+	
+		prep_training = lib_tr_locate_preparation_training ( prep_id )
+
+		approved = lib_tr_check_approval ( oper_training, prep_training )
+		
+	ENDIF
+
+	RETURN ( approved )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_preparation_sample_approved ( VALUE prep_id )
+
+{
+*	Returns a boolean saying whether or not the operator
+*	is approved - allows override.
+*
+*******************************************************************************}
+
+	DECLARE approved,
+	        reason,
+	        incident_template,
+	        empty_var,
+	        incident_array
+
+	approved = lib_tr_preparation_approved ( prep_id )
+
+	IF NOT approved AND 
+	   role_lib_has_privilege ( ROLE_LIB_TRAINING_OVERRIDE ) AND
+	   ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+		approved = lib_tr_confirm_override ( "Preparation",
+		                                     STRIP ( prep_id ),
+	                                             reason )
+
+		IF approved THEN
+
+			incident_template = GLOBAL ( "TRAINING_INCIDENT_PREPSAMP" )
+
+			IF ( NOT BLANK ( incident_template )) THEN
+
+				empty_var = EMPTY
+				ARRAY incident_array ARRAYSIZE ( 0 )
+
+				incidents_login_background ( incident_template        ,
+							     SELECT sample.id_numeric ,
+							     incident_array           ,
+							     empty_var                )
+
+				ASSIGN incidents . description 
+				       IN OBJECT incident_array 
+				                   [ size_of_array (incident_array)] = reason
+
+				UPDATE incidents
+				       IN OBJECT incident_array [ size_of_array (incident_array)]
+
+				ASSIGN sample . has_incidents = TRUE
+
+			ENDIF
+		ENDIF
+
+	ENDIF
+
+	RETURN ( approved )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_preparation_test_approved ( VALUE prep_id )
+
+{
+*	Returns a boolean saying whether or not the operator
+*	is approved - allows override.
+*
+*******************************************************************************}
+
+	DECLARE approved,
+	        reason,
+	        incident_template,
+	        empty_var,
+	        incident_array
+
+	approved = lib_tr_preparation_approved ( prep_id )
+
+	IF NOT approved AND 
+	   role_lib_has_privilege ( ROLE_LIB_TRAINING_OVERRIDE ) AND
+	   ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+		approved = lib_tr_confirm_override ( "Preparation",
+		                                     STRIP ( prep_id ),
+	                                             reason )
+
+		IF approved THEN
+
+			incident_template = GLOBAL ( "TRAINING_INCIDENT_PREPTEST" )
+
+			IF ( NOT BLANK ( incident_template )) THEN
+
+				empty_var = EMPTY
+				ARRAY incident_array ARRAYSIZE ( 0 )
+
+				incidents_login_background ( incident_template       ,
+							     SELECT test.test_number ,
+							     incident_array          ,
+							     empty_var               )
+
+				ASSIGN incidents . description 
+				       IN OBJECT incident_array 
+				                   [ size_of_array (incident_array)] = reason
+
+				UPDATE incidents
+				       IN OBJECT incident_array [ size_of_array (incident_array)]
+
+				ASSIGN test . has_incidents = TRUE
+
+			ENDIF
+		ENDIF
+
+	ENDIF
+
+	RETURN ( approved )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_override_anal (       tr_cache  ,
+	                               VALUE anal_id   ,
+	                               VALUE anal_vers ,
+	                                     reason    )
+
+{
+*	Ask the user if they want to override the training record restriction,
+*	ask for a reason if they do.
+*
+*******************************************************************************}
+
+	DECLARE override ,
+	        cache_key
+
+	cache_key = "ANAL" : anal_id : anal_vers
+
+	IF NOT lib_tr_already_overriden ( tr_cache, cache_key, override, reason ) THEN
+	
+		reason = ""
+
+		override = lib_tr_confirm_override ( "Analysis",
+		                                     STRIP ( anal_id ) : "/" : STRIP ( anal_vers ),
+	                                             reason )
+
+		IF override THEN
+			lib_tr_cache_override ( tr_cache, cache_key, override, reason )
+		ENDIF
+
+	ENDIF
+
+	RETURN ( override )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE lib_tr_override_inst (       tr_cache  ,
+	                               VALUE inst_id   ,
+	                                     reason    )
+
+{
+*	Ask the user if they want to override the training record restriction,
+*	ask for a reason if they do.
+*
+*******************************************************************************}
+
+	DECLARE override ,
+	        cache_key
+
+	cache_key = "INST" : inst_id
+
+	IF NOT lib_tr_already_overriden ( tr_cache, cache_key, override, reason ) THEN
+	
+		reason = ""
+
+		override = lib_tr_confirm_override ( "Instrument",
+		                                     STRIP ( inst_id ),
+		                                     reason )
+
+		IF override THEN
+			lib_tr_cache_override ( tr_cache, cache_key, override, reason )
+		ENDIF
+
+	ENDIF
+
+	RETURN ( override )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}
+

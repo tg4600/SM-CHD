@@ -1,0 +1,662 @@
+{******************************************************************************
+*
+* Module Name   : $TABLE_SAVER
+*
+* Purpose       : To save database tables to CSV files
+*
+* Document Ref. : SE/T/TVGL-WORK-INSTALL/1/13
+*
+* Specification : SE/T/TVGL-WORK-INSTALL/1/10
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : No
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_TRANSFER
+
+JOIN LIBRARY $CRITERIA_EDIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIST_BOX
+JOIN LIBRARY $TABLE_LOAD_SAVE_LIB
+
+ENABLE WINDOWS
+
+{* CONSTANTS ******************************************************************}
+
+
+{* VARIABLES ******************************************************************}
+
+DECLARE global_table_names
+
+{******************************************************************************}
+
+IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+	inter_initialise ( )
+	inter_table_to_csv_file ( "" )
+ELSE
+	batch_initialise ( )
+	batch_table_to_csv_file ( )
+ENDIF
+
+
+{* INITIALISATION ROUTINES ****************************************************}
+
+{******************************************************************************}
+
+	ROUTINE inter_initialise
+
+{
+*       Initialisation routine - install the list box class and read table
+*	names
+*
+*******************************************************************************}
+
+	set_up_list_box_class ( )
+
+	ARRAY global_table_names ARRAYSIZE ( 0 , 2 )
+
+	get_table_names ( global_table_names )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE batch_initialise
+
+{
+*       Initialisation routine - do nothing
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+
+{* GLOBAL ROUTINES ************************************************************}
+
+{******************************************************************************}
+
+	GLOBAL
+
+	ROUTINE table_saver_specific_table ( VALUE passed_table_name )
+
+{
+*       Main entry point
+*
+*******************************************************************************}
+
+	inter_initialise ( )
+
+	RETURN ( inter_table_to_csv_file ( passed_table_name ))
+	
+ENDROUTINE
+
+{* LOCAL ROUTINES *************************************************************}
+
+	ROUTINE inter_table_to_csv_file ( VALUE passed_table_name )
+
+{
+*       The main save routine - prompts for all necessary information then
+*	calls routines to save the data.
+*
+*******************************************************************************}
+
+	DECLARE save_form , table_prompt , table_object , file_prompt ,
+		file_object , field_select_prompt , field_select_object ,
+		record_select_prompt , record_select_object , prompt_width ,
+		can_exit , list_of_fields , table_name_len , selection_array ,
+		mandatory_array , exit_key , real_exit , start_column ,
+	        next_line , cs_object , return_status,
+	        return_message
+
+	return_status = FALSE
+
+	{ Create the form }
+
+	CREATE OBJECT PROMPT_CLASS_FORM , save_form
+
+	save_form . width            = 70
+	save_form . row              = 11
+	save_form . column           =
+		( ( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) DIV 2 )
+	save_form . border           = TRUE
+	save_form . header           =
+		GET_USER_MESSAGE ( "TABLE_SAVER_FORM_HEADER" , 1 )
+	save_form . footer           =
+		GET_USER_MESSAGE ( "TABLE_SAVER_FORM_FOOTER" , 1 )
+	save_form . confirm_required = FALSE
+	save_form . return_behaviour = FORM_RETURN_WRAP
+	save_form . help_context     = "$TABLE_SAVER_FORM_PROMPT"
+	save_form . prompt_id        = "$TABLE_SAVER_FORM_PROMPT"
+
+	{ Prepare the prompts }
+
+	GET_FIELD_DETAILS criteria . table_name , "FIELD_SIZE" , table_name_len
+
+	table_prompt         = GET_USER_MESSAGE ( "TABLE_SAVER_TABLE_PR" , 1 )
+	file_prompt          = GET_USER_MESSAGE ( "TABLE_SAVER_FILE_PR" , 1 )
+	field_select_prompt  = GET_USER_MESSAGE ( "TABLE_SAVER_SEL_FLD_PR" , 1 )
+	record_select_prompt = GET_USER_MESSAGE ( "TABLE_SAVER_SEL_REC_PR" , 1 )
+
+	prompt_width = find_max_number ( LENGTH ( table_prompt ) ,
+	                                 LENGTH ( file_prompt  ) )
+
+	prompt_width = find_max_number ( prompt_width                   ,
+	                                 LENGTH ( field_select_prompt ) )
+
+	prompt_width = find_max_number ( prompt_width                    ,
+	                                 LENGTH ( record_select_prompt ) )
+
+
+	table_prompt         = PAD ( table_prompt , " " , prompt_width )
+	file_prompt          = PAD ( file_prompt  , " " , prompt_width )
+	field_select_prompt  = PAD ( field_select_prompt , " " , prompt_width )
+	record_select_prompt = PAD ( record_select_prompt , " " , prompt_width )
+
+	IF global ( "TERMTYPE" ) = "GUI" THEN
+		save_form . height = 7
+		prompt_width = prompt_width + 1
+		start_column = 2
+	ELSE
+		save_form . height   = 5
+		prompt_width         = prompt_width + 3
+		start_column         = 1
+		table_prompt         = table_prompt : " : "
+		file_prompt          = file_prompt : " : "
+		field_select_prompt  = field_select_prompt : " : "
+		record_select_prompt = record_select_prompt : " : "
+	ENDIF
+
+	save_form . add_display ( table_prompt            ,
+	                          start_column            ,
+	                          1                       ,
+	                          PROMPT_RENDITION_RAISED +
+	                          PROMPT_RENDITION_BOLD   )
+
+	IF blank ( passed_table_name ) THEN
+
+		PROMPT OBJECT table_object
+		        CHOOSE OUTOF global_table_names
+			ON LINE 1 FROM ( start_column + prompt_width )
+			WITH ( always_validate = TRUE,
+		               leave_prompt_routine = "TABLE_LEAVE_ROUTINE",
+   		               vgl_library = GLOBAL ( "CURRENT_LIBRARY" ))
+
+
+	ELSE
+
+		PROMPT OBJECT table_object
+		        BROWSE ON DISPLAY
+			ON LINE 1 FROM ( start_column + prompt_width )
+			WITH ( value = passed_table_name )
+
+	ENDIF
+
+	save_form . add_prompt ( table_object )
+
+	IF global ( "TERMTYPE" ) = "GUI" THEN
+
+		save_form . add_display ( file_prompt           ,
+		                          start_column          ,
+		                          3                     ,
+		                          PROMPT_RENDITION_RAISED +
+		                          PROMPT_RENDITION_BOLD   )
+
+		PROMPT OBJECT file_object
+			FORMAT FILE
+			ON LINE 3
+			FROM ( start_column + prompt_width )
+			TO save_form . width - 3
+  			WITH ( file_directory  = DEFAULT_CLIENT_CSV_FILE_DIR ,
+	     		       file_extension  = DEFAULT_CLIENT_CSV_FILE_EXTN,
+		               client_file     = TRUE                        ,
+		               may_browse      = FALSE                       ,
+		               user_info       = TRUE                        )
+
+		PROMPT OBJECT cs_object
+			BROWSE ON BOOLEAN
+			ON LINE 2 FROM ( start_column + prompt_width )
+			WITH ( toggled_routine = "CLIENT_TOGGLED"            ,
+			       value           = TRUE                        ,
+   		               vgl_library     = GLOBAL ( "CURRENT_LIBRARY" ),
+   		               user_info       = file_object                 ,
+		               is_check        = TRUE                        ,
+		               caption = GET_USER_MESSAGE ( "TABLE_LOADER_CLIENT_PR" , 1 ))
+
+		save_form . add_prompt ( cs_object )
+		save_form . add_prompt ( file_object )
+
+		save_form . add_frame ( "", 1, 1, 3, save_form . width )
+
+		next_line = 6
+
+	ELSE
+
+		save_form . add_display ( file_prompt           ,
+		                          start_column          ,
+		                          2                     ,
+		                          PROMPT_RENDITION_RAISED +
+		                          PROMPT_RENDITION_BOLD   )
+
+		PROMPT OBJECT file_object
+			FORMAT FILE
+			ON LINE 2
+			FROM ( start_column + prompt_width )
+			TO save_form . width
+			WITH ( file_directory = DEFAULT_CSV_FILE_DIR  ,
+			       file_extension = DEFAULT_CSV_FILE_EXTN ,
+		               client_file    = FALSE                 ,
+		               may_browse     = FALSE                 ,
+		               user_info      = FALSE                 )
+
+		save_form . add_prompt ( file_object )
+
+		next_line = 4
+
+	ENDIF
+
+	save_form . add_display ( field_select_prompt     ,
+	                          start_column            ,
+	                          next_line               ,
+	                          PROMPT_RENDITION_RAISED +
+	                          PROMPT_RENDITION_BOLD   )
+
+	PROMPT OBJECT field_select_object
+		BROWSE ON BOOLEAN
+		ON LINE next_line FROM ( start_column + prompt_width )
+		WITH
+		 ( true_word  = GET_USER_MESSAGE ( "TABLE_SAVER_SEL_FLD" , 1 ) ,
+		   false_word = GET_USER_MESSAGE ( "TABLE_SAVER_ALL_FLD" , 1 ) )
+
+	field_select_object  . value = FALSE
+
+	save_form . add_prompt ( field_select_object )
+
+	save_form . add_display ( record_select_prompt    ,
+	                          start_column            ,
+	                          next_line + 1           ,
+	                          PROMPT_RENDITION_RAISED +
+	                          PROMPT_RENDITION_BOLD   )
+
+	PROMPT OBJECT record_select_object
+		BROWSE ON BOOLEAN
+		ON LINE next_line + 1 FROM ( start_column + prompt_width )
+		WITH
+		 ( true_word  = GET_USER_MESSAGE ( "TABLE_SAVER_SEL_REC" , 1 ) ,
+		   false_word = GET_USER_MESSAGE ( "TABLE_SAVER_ALL_REC" , 1 ) )
+
+	record_select_object . value = FALSE
+
+	save_form . add_prompt ( record_select_object )
+
+	save_form . add_frame ( "", 1, next_line,
+	                            2, save_form . width )
+
+	REPEAT
+		save_form . start_prompt ( )
+
+		REPEAT
+			save_form . wait_prompt ( )
+
+			IF ( save_form . get_lastkey ( ) = "EXIT" ) THEN
+
+				can_exit = TRUE
+
+			ELSEIF BLANK ( table_object . text ) THEN
+
+				save_form . active_prompt = 1
+				can_exit = FALSE
+
+			ELSEIF BLANK ( file_object . value ) THEN
+
+				IF global ( "TERMTYPE" ) = "GUI" THEN
+					save_form . active_prompt = 3
+				ELSE
+					save_form . active_prompt = 2
+				ENDIF
+				can_exit = FALSE
+			ELSE
+				IF ( field_select_object . value ) OR
+				   ( record_select_object . value ) THEN
+
+					can_exit = TRUE
+				ELSE
+
+					can_exit = confirm ( )
+				ENDIF
+			ENDIF
+
+		UNTIL can_exit
+
+		exit_key = save_form . get_lastkey ( )
+
+		save_form . end_prompt ( )
+
+		IF ( exit_key = "EXIT" ) THEN
+
+			real_exit = TRUE
+
+		ELSE
+			real_exit = FALSE
+
+			ARRAY list_of_fields ARRAYSIZE ( 0 )
+
+			get_field_names_without_aliases ( table_object . text ,
+			                                  list_of_fields      )
+
+			IF ( field_select_object . value ) THEN
+
+				get_field_selection ( table_object . text ,
+				                      list_of_fields      )
+
+				exit_key = LASTKEY
+
+			ELSE
+
+				table_load_save_lib_filter_fields ( table_object . text ,
+				                                    list_of_fields      )
+
+			ENDIF
+
+			IF ( exit_key <> "EXIT" ) AND
+			   ( size_of_array ( list_of_fields ) > 0 ) THEN
+
+				ARRAY selection_array
+
+				IF ( record_select_object . value ) THEN
+
+					ARRAY mandatory_array
+
+					SET CONFIRM FALSE
+
+					criteria_edit ( table_object . text ,
+					                selection_array     ,
+					                mandatory_array     ,
+					                TRUE                ,
+					                TRUE                )
+
+					SET CONFIRM TRUE
+
+				ELSE
+
+					table_load_save_lib_default_select ( table_object . text ,
+					                                     selection_array     )
+
+				ENDIF
+
+				IF ( exit_key <> "EXIT" ) THEN
+
+					DECLARE temp_name, status
+
+					IF file_object . user_info THEN
+						temp_name = strip (
+						             file_object.value)
+ 						file_object.value =
+						       "smp$userfiles:temp" :
+						       global ( "PROCESS_ID" ) :
+						       ".csv"
+					ENDIF
+
+					return_status = output_csv_file( STRIP( file_object . value ) ,
+					                                 table_object . text          ,
+					                                 list_of_fields               ,
+					                                 selection_array              ,
+					                                 TRUE                         ,
+					                                 return_message               )
+
+					IF file_object . user_info THEN
+						transfer_from_server (
+						              file_object.value,
+					                      temp_name )
+						FILE DELETE file_object . value,
+						            status
+						file_object . value = temp_name
+					ENDIF
+					
+					real_exit = NOT BLANK ( passed_table_name )
+					
+				ENDIF
+			ENDIF
+		ENDIF
+
+	UNTIL real_exit
+	
+	RETURN ( return_status )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE get_field_selection ( VALUE name_of_table     ,
+	                                    full_field_array  )
+
+{
+*       Allows the user to edit a list of fields.
+*
+*******************************************************************************}
+
+	DECLARE field_list_box , selection_list , size_of_list , mess_ptr ,
+		count
+
+	CREATE OBJECT "STD_LIST_BOX" , field_list_box
+
+	size_of_list = size_of_array ( full_field_array )
+
+	ARRAY selection_list ARRAYSIZE ( size_of_list )
+
+	count = 0
+
+	WHILE count < size_of_list DO
+
+		count = count + 1
+		selection_list [ count ] = TRUE
+
+	ENDWHILE
+
+	message_fetch ( "TABLE_SAVER_FIELD_LIST" , mess_ptr )
+	message_add_parameter ( mess_ptr , STRIP ( name_of_table ) )
+
+	field_list_box . display_list     = full_field_array
+	field_list_box . select_list      = selection_list
+	field_list_box . width            = 60
+	field_list_box . height           = 10
+	field_list_box . row              =  9
+	field_list_box . column           =
+		( GLOBAL ( "SCREEN_WIDTH" ) - 60 ) DIV 2
+	field_list_box . header           =
+		GET_USER_MESSAGE ( "TABLE_SAVER_LIST_HEADER" , 1 )
+	field_list_box . list_title       = message_get_text ( mess_ptr , 1 )
+	field_list_box . footer           =
+		GET_USER_MESSAGE ( "TABLE_SAVER_LIST_FOOTER" , 1 )
+	field_list_box . help_context     = "$TABLE_LOAD_FIELD_LIST"
+	field_list_box . confirm_required = FALSE
+
+	field_list_box . start_prompt ( )
+	field_list_box . wait_prompt ( )
+	field_list_box . end_prompt ( )
+
+	IF ( LASTKEY <> "EXIT" ) THEN
+
+		count = size_of_list
+
+		WHILE count > 0 DO
+
+			IF ( NOT selection_list [ count ] ) THEN
+
+				array_remove_slice ( full_field_array ,
+				                     1                ,
+				                     count            )
+			ENDIF
+
+			count = count - 1
+
+		ENDWHILE
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE table_leave_routine ( self )
+
+{
+*       Table Name Leave Prompt Routine
+*
+*******************************************************************************}
+
+	DECLARE file_prompt, file_name, pointer
+
+	pointer = self . tag + 1
+	IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+		pointer = self . tag + 2
+	ENDIF
+
+	file_prompt = self . parent_prompt . prompt_objects [ pointer ]
+
+	file_name = STRIP ( file_prompt . file_directory ) :
+	            STRIP ( self . text ) : "." :
+	            STRIP ( file_prompt . file_extension )
+	file_name = TOLOWER ( file_name )
+	
+	file_prompt . set_text ( file_name )
+
+ENDROUTINE { table_leave_routine }
+
+{******************************************************************************}
+
+	ROUTINE client_toggled ( self )
+
+{
+*       Client Toggle Routine
+*
+*******************************************************************************}
+
+	DECLARE table_prompt, name_prompt
+
+	name_prompt  = self . parent_prompt . prompt_objects [ self . tag + 1 ]
+	table_prompt = self . parent_prompt . prompt_objects [ self . tag - 1 ]
+
+	IF self . value THEN
+
+		name_prompt . file_directory = DEFAULT_CLIENT_CSV_FILE_DIR
+		name_prompt . file_extension = DEFAULT_CLIENT_CSV_FILE_EXTN
+		self . user_info . user_info = TRUE
+
+	ELSE
+		
+		name_prompt . file_directory = DEFAULT_CSV_FILE_DIR
+		name_prompt . file_extension = DEFAULT_CSV_FILE_EXTN
+		self . user_info . user_info = FALSE
+
+	ENDIF
+
+	table_prompt = self . parent_prompt . prompt_objects [ self . tag - 1 ]
+	table_leave_routine ( table_prompt )
+
+ENDROUTINE { client_toggled }
+
+{******************************************************************************}
+
+	ROUTINE batch_table_to_csv_file
+
+{
+*       The main batch save routine - reads for all necessary information then
+*	calls routines to save the data.
+*
+*******************************************************************************}
+
+	DECLARE name_of_table , file_name , error_message , error_occured ,
+		mess_ptr , list_of_fields , selection_array , return_message
+
+	error_occured = FALSE
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		PROMPT FOR name_of_table
+
+		name_of_table = TOUPPER ( name_of_table )
+
+	ELSE
+		error_message = "TABLE_SAVER_NO_PARS"
+		error_occured = TRUE
+	ENDIF
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		PROMPT FOR file_name
+
+	ELSE
+		file_name = DEFAULT_CSV_FILE_NAME
+
+		send_message ( "TABLE_SAVER_USING_DEF_CSV" ,
+		               TABLE_SAVER                 ,
+		               FALSE                       )
+	ENDIF
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		error_message = "TABLE_SAVER_TOO_MANY_PAR"
+		error_occured = TRUE
+	ENDIF
+
+	IF ( NOT error_occured ) THEN
+
+		IF ( NOT valid_table ( name_of_table ) ) THEN
+
+			message_fetch ( "TABLE_SAVER_ILL_TBL_NAME" , mess_ptr )
+			message_add_parameter ( mess_ptr , name_of_table )
+			error_message = message_get_text ( mess_ptr , 1 )
+			error_occured = TRUE
+		ENDIF
+	ENDIF
+
+	IF ( NOT error_occured ) THEN
+
+		ARRAY list_of_fields ARRAYSIZE ( 0 )
+
+		get_field_names_without_aliases ( name_of_table  ,
+		                                  list_of_fields )
+
+		IF ( size_of_array ( list_of_fields ) > 0 ) THEN
+
+			ARRAY selection_array
+
+			message_fetch ( "TABLE_SAVER_NAME_CSV" , mess_ptr )
+			message_add_parameter ( mess_ptr , name_of_table )
+			message_add_parameter ( mess_ptr , file_name )
+
+			send_message ( message_get_text ( mess_ptr , 1 ) ,
+			               TABLE_SAVER                       ,
+			               FALSE                             )
+
+			output_csv_file ( STRIP ( file_name )     ,
+			                  STRIP ( name_of_table ) ,
+			                  list_of_fields          ,
+			                  selection_array         ,
+					  TRUE                    ,
+			                  return_message          )
+		ELSE
+			send_message ( "TABLE_SAVER_NO_FIELDS" ,
+			               TABLE_SAVER             ,
+			               FALSE                   )
+		ENDIF
+	ELSE
+		send_message ( error_message , TABLE_SAVER , FALSE )
+		send_message ( "TABLE_SAVER_ABORTED" , TABLE_SAVER , FALSE )
+	ENDIF
+
+	send_message ( "TABLE_SAVER_FINISHED" , TABLE_SAVER , FALSE )
+
+ENDROUTINE

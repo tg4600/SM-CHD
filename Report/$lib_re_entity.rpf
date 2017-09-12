@@ -1,0 +1,246 @@
+{******************************************************************************
+*
+* Module Name   :
+*
+* Purpose       :
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : Yes
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+
+JOIN LIBRARY $CRITERIA_SAVED
+JOIN LIBRARY $LIB_DB
+JOIN LIBRARY $LIB_UTILS
+
+CONSTANT LIB_RE_ENTITY_PROMPT_CLASS = "LIB_RE_ENTITY_PROMPT_CLASS"
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+ROUTINE lib_re_entity_initialise
+
+    DEFINE CLASS "LIB_RE_RESULT_E"
+
+        INHERIT
+            "LIB_RE_RESULT"
+
+        ACTIONS
+            "GET_BROWSE_STRING",
+            "PROMPT_FOR_TYPE"  ,
+            "ENTER_FOR_TYPE"
+
+    END CLASS
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_e_action_get_browse_string ( result_object )
+
+{   DECLARE comments}
+
+    IF NOT result_object . browse_built THEN
+
+        message_fetch ( "RESULT_ENTRY_ENTITY_BROWSE",
+                        result_object . browse_string )
+        message_add_parameter ( result_object . browse_string,
+                                strip ( SELECT result . calculation
+                                        IN OBJECT result_object ))
+
+        result_object . browse_built = TRUE
+
+{       comments = SELECT result . comments IN OBJECT result_object
+
+        IF ( comments <>  NULL ) AND ( NOT BLANK ( comments )) THEN
+
+            result_object . browse_string = result_object . browse_string :
+                                            " | " :
+                                            comments
+
+        ENDIF
+}
+    ENDIF
+
+    RETURN ( result_object . browse_string )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_e_action_prompt_for_type (       result_object,
+                                                 VALUE cell_column,
+                                                 VALUE cell_row,
+                                                       window,
+                                                 VALUE column,
+                                                 VALUE row,
+                                                 VALUE cell_width,
+                                                 VALUE cell_height,
+                                                 VALUE display_only ,
+                                                 VALUE blink_mode ,
+                                                       result_context )
+
+    DECLARE table, 
+            error_text, 
+            original_text,
+            criteria,
+            select_array
+
+    table = SELECT result . calculation IN OBJECT result_object
+
+    result_context . display_message ( strip ( result_object . get_browse_string ( )), TRUE )
+
+    original_text = result_object . result_str
+
+    IF VALID_TABLE ( table ) THEN
+
+        ARRAY select_array ARRAYSIZE ( 0, 3 )
+
+        criteria = SELECT result . entity_criteria IN OBJECT result_object
+
+        IF NOT BLANK ( criteria ) THEN
+
+            criteria_saved_load_populated_db ( table        ,
+                                               criteria     ,
+                                               select_array )
+
+        ENDIF
+        
+        IF table = "SAMPLE" THEN
+
+            SET SAMPLE_STATUS ""
+
+        ENDIF
+
+        PROMPT FOR result_object . result_str
+                ON LINE row FROM column TO ( column + cell_width - 1 )
+                IN WINDOW window
+                BROWSE ON 'table' THEN SELECT
+                WITH ( user_info         = result_object                  ,
+                       double_entry      = global ( "RES_EXTENDED_BLIND_ENTRY" ) AND
+                                           global ( "RES_SUPPRESS_ECHO" ),
+                       display_only      = display_only ,
+                       blinking          = blink_mode ,
+                       strikethrough     = blink_mode ,
+                       mandatory_array   = select_array ,
+                       vgl_library       = GLOBAL ( "CURRENT_LIBRARY" ) ,
+                       not_found_routine = "lib_re_result_e_not_found_routine" )
+
+    ELSE
+
+        message_fetch ( "LIB_RE_ENTITY_INVALID_ENTITY", error_text )
+        message_add_parameter ( error_text, STRIP ( table ))
+
+        FLASH_MESSAGE ( message_get_text ( error_text, 1 ), TRUE )
+
+        PROMPT FOR result_object . result_str
+                ON LINE row FROM column TO ( column + cell_width - 1 )
+                IN WINDOW window
+                WITH ( user_info     = result_object                  ,
+                       double_entry  = global ( "RES_EXTENDED_BLIND_ENTRY" ) AND
+                                       global ( "RES_SUPPRESS_ECHO" ),
+                       display_only  = display_only ,
+                       blinking      = blink_mode ,
+                       strikethrough = blink_mode )
+
+    ENDIF
+
+    IF ( result_object . result_str <> original_text ) AND
+       ( BLANK ( result_object . result_str )        ) THEN
+
+        IF GLOBAL ( "RES_ALLOW_BLANK" ) THEN
+
+            result_object . blank_out_result ( result_object . grid )
+
+        ENDIF
+
+    ENDIF
+
+    result_context . display_message ( "", FALSE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_e_action_enter_for_type (       result_object  ,
+                                                VALUE result_val     ,
+                                                      result_context )
+
+    DECLARE table        ,
+            return_value ,
+            file_desc
+
+    table = SELECT result . calculation IN OBJECT result_object
+
+    IF VALID_TABLE ( table ) THEN
+
+        PUSH_FILE_DESCRIPTOR ( table, file_desc )
+
+        IF lib_db_select_padded ( table      ,
+                                  result_val ,
+                                  FALSE      ) THEN
+
+            result_object . result_str = result_val
+
+            return_value = EMPTY
+
+        ELSE
+
+            return_value = "RPC_K_INVALRESL"
+
+        ENDIF
+
+        POP_FILE_DESCRIPTOR ( file_desc )
+
+    ELSE
+
+        return_value = "LIB_RE_ENTITY_INVALID_ENTITY"
+
+    ENDIF
+
+    return ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_re_result_e_not_found_routine ( self )
+
+    DECLARE ok
+
+    ok = FALSE
+
+    IF BLANK ( self . text ) THEN
+
+        IF ( GLOBAL ( "RES_ALLOW_BLANK" ) ) OR 
+           ( BLANK ( self . original_text ) ) THEN
+
+            ok = TRUE
+
+        ENDIF
+
+    ELSE
+
+        flash_message ( get_user_message ( "SMP_K_IDNONEX" , 1 ) , TRUE )
+
+    ENDIF
+
+    RETURN ( ok )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}

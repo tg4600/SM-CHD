@@ -1,0 +1,279 @@
+{******************************************************************************}
+{******************************************************************************}
+
+JOIN STANDARD_LIBRARY std_prompt
+
+JOIN LIBRARY $lib_utils
+JOIN LIBRARY $stb_glbl
+JOIN LIBRARY $stb_pull_labels
+
+ENABLE WINDOWS
+
+SET COMPILE_OPTION DECLARE
+SET PRINTER_CODES TRUE
+
+{******************************************************************************}
+
+CONSTANT Column_prompt_text =  2
+CONSTANT Column_prompt      = 21
+CONSTANT Prompt_text_width  = Column_prompt - Column_prompt_text - 1
+
+CONSTANT Row_prompt_sample  = 1
+CONSTANT Row_prompt_printer = 2
+CONSTANT Row_prompt_copies  = 3
+
+CONSTANT Q  = ASCII(34)
+CONSTANT QC = ASCII(34) : ","
+
+{******************************************************************************}
+
+stb_sample_label( "" )
+
+EXIT
+
+{******************************************************************************}
+
+ROUTINE stb_sample_label( VALUE menu_option )
+
+  DECLARE form
+  DECLARE report_id
+  DECLARE parameter
+
+  initialise( form )
+
+  form.start_prompt()
+  form.wait_prompt()
+
+  IF ( form.get_lastkey() = "DO" ) THEN
+
+
+    read_study( SELECT sample.stab_study_id IN OBJECT form.prompt_objects[1],
+                report_id
+              )
+
+    IF ( report_id = GLOBAL( "current_library" ) ) THEN
+
+      print_labels( form )
+
+    ELSE
+
+      parameter = Q : report_id : QC :
+                  Q : form.prompt_objects[1].value : QC :
+                  Q : form.prompt_objects[2].value : QC :
+                  Q : form.prompt_objects[3].value : Q
+
+      MENUPROC MENU_OPTION_RUN_REPORT, parameter
+
+    ENDIF
+
+  ENDIF
+
+  form.end_prompt()
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE initialise( form )
+
+  DECLARE sample_prompt_object
+  DECLARE printer_prompt_object
+  DECLARE copies_prompt_object
+
+  CREATE OBJECT "std_form", form
+
+  form.height = 4
+  form.width  = 50
+  form.row    = 10
+  form.column = 20
+  
+  IF NOT GLOBAL( "PARAM_ACTIVE" ) THEN
+  
+    form.return_behaviour = FORM_RETURN_STAY
+    
+  ENDIF
+  
+  form.header = GET_USER_MESSAGE( "stb_label_print_sample_title", 1 )
+
+  form.add_display(
+          PAD( GET_USER_MESSAGE( "stb_label_sample_prompt", 1 ), " ", Prompt_text_width ),
+          Column_prompt_text,
+          Row_prompt_sample,
+          PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD
+          )
+
+  form.add_display(
+          PAD( GET_USER_MESSAGE( "stb_label_printer_prompt", 1 ), " ", Prompt_text_width ),
+          Column_prompt_text,
+          Row_prompt_printer,
+          PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD
+          )
+
+  form.add_display(
+          PAD( GET_USER_MESSAGE( "stb_label_copies_prompt", 1 ), " ", Prompt_text_width ),
+          Column_prompt_text,
+          Row_prompt_copies,
+          PROMPT_RENDITION_RAISED + PROMPT_RENDITION_BOLD
+          )
+
+  PROMPT OBJECT sample_prompt_object
+          ON LINE Row_prompt_sample
+          FROM Column_prompt
+          BROWSE ON sample
+          WITH ( always_validate = TRUE,
+                 then_select = TRUE,
+                 vgl_library = GLOBAL( "current_library" ),
+                 validation_routine = "sample_validation"
+               )
+
+  PROMPT OBJECT printer_prompt_object
+          ON LINE Row_prompt_printer
+          FROM Column_prompt
+          BROWSE ON printer
+          WITH ( value = GLOBAL( "label_id" ),
+                 always_validate = TRUE,
+                 vgl_library = GLOBAL( "current_library" ),
+                 validation_routine = "printer_validation"
+               )
+
+  PROMPT OBJECT copies_prompt_object
+          ON LINE Row_prompt_copies
+          FROM Column_prompt
+          BROWSE ON integer
+          WITH ( value = 1,
+                 minimum = 1,
+                 maximum = LABEL_MAXIMUM_COPIES,
+                 always_validate = TRUE,
+                 vgl_library = GLOBAL( "current_library" ),
+                 validation_routine = "copies_validation"
+               )
+
+  form.add_prompt( sample_prompt_object)
+  form.add_prompt( printer_prompt_object)
+  form.add_prompt( copies_prompt_object)
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE sample_validation ( prompt_object )
+
+  RETURN( NOT blank( prompt_object.value ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE printer_validation ( prompt_object )
+
+  RETURN( NOT blank( prompt_object.value ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE copies_validation ( prompt_object )
+
+  RETURN( ( prompt_object.value >= 1 ) AND
+          ( prompt_object.value <= LABEL_MAXIMUM_COPIES )
+        )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_labels( form )
+
+  DECLARE printer_id
+  DECLARE number_of_copies
+
+  printer_id = form.prompt_objects[2].value
+  number_of_copies = form.prompt_objects[3].value
+
+  WHILE ( number_of_copies > 0 ) DO
+
+    SET NAME "printer/" : printer_id
+
+    print_label( form )
+
+    FLUSH_LITERAL
+
+    number_of_copies = number_of_copies - 1
+
+  ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE print_label( form )
+
+  DECLARE id_numeric
+  DECLARE id_text
+  DECLARE sample_date
+  DECLARE barcode
+  DECLARE description
+  DECLARE job_id
+
+  DECLARE prompt_id_numeric
+  DECLARE prompt_id_text
+  DECLARE prompt_sample_date
+  DECLARE prompt_description
+  DECLARE prompt_job_id
+
+  DECLARE temp
+
+  SET BARCODE VARIABLE barcode
+
+
+  id_numeric  = SELECT sample.id_numeric   IN OBJECT form.prompt_objects[1]
+  id_text     = SELECT sample.id_text      IN OBJECT form.prompt_objects[1]
+  sample_date = SELECT sample.sampled_date IN OBJECT form.prompt_objects[1]
+  description = SELECT sample.description  IN OBJECT form.prompt_objects[1]
+  job_id      = SELECT sample.job_name     IN OBJECT form.prompt_objects[1]
+
+  id_numeric  = STRIP( id_numeric )
+  sample_date = STRIP( LEFTSTRING( sample_date, 17 ) )
+  job_id      = contract( job_id )
+  barcode     = id_numeric
+
+  prompt_id_numeric   = GET_USER_MESSAGE( "stb_label_id_numeric", 1 )
+  prompt_id_text      = GET_USER_MESSAGE( "stb_label_id_text", 1 )
+  prompt_sample_date  = GET_USER_MESSAGE( "stb_label_sample_date", 1 )
+  prompt_description  = GET_USER_MESSAGE( "stb_label_description", 1 )
+  prompt_job_id       = GET_USER_MESSAGE( "stb_label_job_name", 1 )
+
+LITERAL
+
+$prompt_id_numeric_: $id_numeric
+$prompt_id_text____: $id_text______________________
+$ENDLITERAL
+
+
+  REPEAT
+
+    temp = SPLITWORDS( description, 48 )
+
+LITERAL
+$prompt_description: $temp____________________________________________
+$ENDLITERAL
+
+    description = description # temp
+    description = STRIP( description )
+    prompt_description = PAD( " ", " ", 19 )
+
+  UNTIL blank( description )
+
+
+
+LITERAL
+$prompt_job_id_____: $job_id_____________
+$prompt_sample_date: $sample_date_____
+
+$barcode
+$barcode
+
+$ENDLITERAL
+
+ENDROUTINE
+

@@ -1,0 +1,535 @@
+{******************************************************************************
+*
+* Module Name   : $BATCH_TEMPLATE.RPF
+*
+* Purpose       : Edit details of a template apart from the list
+*
+* Document Ref. : 
+*
+* Specification : SE/T/VGSM320-WORK-BATCH
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : 
+*
+*******************************************************************************}
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_USER_GLOBAL
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_SQUIRL
+
+JOIN LIBRARY $BATCH_UTILS
+JOIN LIBRARY $BATCH_USER
+JOIN LIBRARY $BATCH_TEMPLATE_ENT
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $CRITERIA_EDIT
+
+{* CONSTANTS ******************************************************************}
+
+CONSTANT DIRECTORY     = "smp$textfiles:"
+CONSTANT EXTENSION     = "bat"
+
+{* VARIABLES ******************************************************************}
+
+DECLARE batch_template_select_array
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_initialise
+
+{
+*	Initialise the batch template module
+*
+*******************************************************************************}
+
+	IF NOT global ( "LIBRARY_INITIALISED" ) THEN
+
+		batch_template_define_class ()
+		SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_define_class
+
+{
+*	Define the batch template classes
+*
+*******************************************************************************}
+
+	DEFINE CLASS STD_BATCH_TEMPLATE_BASE
+
+		PROPERTIES
+
+				"CRITERIA"  ,
+				"USER_INFO"
+
+		ACTIONS
+
+				"READ_FOR_BATCH"   ,
+				"GET_WORK_PROFILE" ,
+				"GET_ANALYSIS"     ,
+				"GET_COMPONENTS"   ,
+				"GET_BATCH_CLASS"  ,
+				"GET_LIMIT"        ,
+				"GET_SYNTAX"       ,
+				"GET_RANDOM"       ,
+				"GET_FIELD"        ,
+				"ADD_CRITERIA"     ,
+				"GET_CRITERIA"     ,
+				"EDIT_CRITERIA"
+
+		TABLES
+
+				BATCH_TMPL_HEADER
+
+		INITIALISATION
+
+	END CLASS
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_class_initialisation ( self )
+
+{
+*	Class initialisation
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_read_for_batch (       self     ,
+                                                        VALUE identity )
+
+{
+*	Create the object for a given batch template - the header for this
+*	batch should already have been read in.
+*
+*******************************************************************************}
+
+	IF SELECT batch_tmpl_header . identity = identity THEN
+
+		object_copy_current_table (  self                ,
+		                             "BATCH_TMPL_HEADER" )
+
+	ELSE
+
+		identity = SELECT batch_tmpl_header . identity
+			   IN OBJECT self
+			   WHERE identity = identity
+
+	ENDIF
+
+	batch_template_criteria_read ( identity        ,
+				       self . criteria )	
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_edit_criteria ( self )
+
+{
+*	Edit the criteria for the batch
+*
+*
+*******************************************************************************}
+
+	DECLARE mandatory_array ,
+	        curr_help
+
+	IF SELECT batch_tmpl_header . edit_criteria IN OBJECT self THEN
+
+		ARRAY mandatory_array
+
+		curr_help = GLOBAL ( "STD_EDITOR_HELP" )
+		SET GLOBAL "STD_EDITOR_HELP" TO "$BATCH_TMPL_CRITERIA"
+
+		criteria_edit_criteria ( "SAMP_TEST_VIEW" ,
+		                         self . criteria ,
+		                         mandatory_array ,
+		                         TRUE            ,
+		                         TRUE            )
+
+		SET GLOBAL "STD_EDITOR_HELP" TO curr_help
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_add_criteria ( self           ,	
+                                                      mandatory_array )
+
+{
+*	Add any criteria required by the batch to the prompt object
+*
+*******************************************************************************}
+
+	array_copy ( mandatory_array , self . criteria )
+
+	array_select_add (  mandatory_array                         ,
+			    ARRAY_SELECT_EQ                         ,
+			   "ANALYSIS"         		            ,
+			    SELECT batch_tmpl_header . analysis
+			           IN OBJECT self                   )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_criteria ( self     ,	
+                                                      criteria )
+
+{
+*	Return the criteria for the test
+*
+*******************************************************************************}
+
+	DECLARE analysis
+
+	analysis = SELECT batch_tmpl_header . analysis IN OBJECT self 
+
+	array_select_add (  criteria          ,
+			    ARRAY_SELECT_EQ   ,
+			   "ANALYSIS"         ,
+			    analysis          )
+
+	array_select_concat ( criteria        ,
+			      self . criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_work_profile ( self )
+
+{
+*	Return the work profile of the batch template
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . identity IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_analysis ( self )
+
+{
+*	Return the analysis of the batch template
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . analysis IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_components ( self       ,
+							components )
+
+{
+*	Return the components of the batch template
+*
+*******************************************************************************}
+
+	DECLARE name      ,
+		count     ,
+		analysis  ,
+		comp_list
+
+	ARRAY components
+
+	analysis  = SELECT batch_tmpl_header . analysis IN OBJECT self 
+	comp_list = SELECT batch_tmpl_header . identity IN OBJECT self 
+
+	count = 1
+
+	name = SELECT comp_list_entry . name
+	       WHERE  ( analysis     = analysis  ) AND
+		      ( comp_list    = comp_list ) AND
+		      ( result_entry = TRUE      )
+
+	WHILE name <> EMPTY DO
+
+		components [ count ] = name
+
+		NEXT comp_list_entry
+
+		name = SELECT comp_list_entry . name
+
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_batch_class ( self )
+
+{
+*	Return the class for the batch
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . batch_class IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_limit ( self )
+
+{
+*	Return the limit of the batch template
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . limits IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_syntax ( self )
+
+{
+*	Return the syntax of the batch template
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . syntax IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_random ( self           ,
+						    random_control ,
+						    random_class   ,
+						    random_number  )
+
+{
+*	Return the required random stuff of the batch template
+*
+*******************************************************************************}
+
+	DECLARE standard
+
+	standard = SELECT batch_tmpl_header . random_control
+                                        IN OBJECT self
+
+	IF NOT Blank ( standard ) THEN
+
+		CREATE OBJECT STD_BATCH_TEMPLATE_ENTRY , random_control
+
+		random_control . initialise ( BATCH_ENTRY_CONTROL           ,
+					      BATCH_TEMPLATE_REPEAT_SECTION )
+
+					
+		random_control . standard = standard
+
+		random_class  = random_control . get_class ()
+		random_number = SELECT batch_tmpl_header . random_number 
+					IN OBJECT self 
+
+	ELSE
+
+		random_control = EMPTY 
+
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE std_batch_template_base_action_get_field (       self       ,
+                                                   VALUE field_name )
+{
+*	Return the required field of the batch template
+*
+*******************************************************************************}
+
+	RETURN ( SELECT batch_tmpl_header . 'field_name' IN OBJECT self )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_criteria_read ( VALUE identity     ,
+					     select_array )
+
+{
+*	Read the criteria from a squirrel.
+*
+*
+******************************************************************************}
+
+	DECLARE filename  ,
+		squirrel  ,
+		status
+
+	filename = TOLOWER ( DIRECTORY : "BATCH"
+			: STRIP ( identity ) : "." : EXTENSION )
+
+	status = squirrel_open ( filename , squirrel )
+
+	IF ( status = EMPTY ) THEN
+
+		status = squirrel_read ( select_array ,
+					 squirrel     )
+
+		status = squirrel_release ( squirrel )
+
+	ELSE
+
+		ARRAY select_array
+
+	ENDIF
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE batch_template_criteria_write ( VALUE identity     ,
+					      select_array )
+
+{
+*	Write the criteria into a squirrel.
+*
+*
+******************************************************************************}
+
+	DECLARE filename  ,
+		squirrel  ,
+		status
+
+	filename = TOLOWER ( DIRECTORY : "BATCH"
+			: STRIP ( identity ) : "." : EXTENSION )
+
+	status = squirrel_create ( filename , squirrel )
+
+	IF status = EMPTY THEN
+
+		squirrel_write ( select_array , squirrel )
+
+		squirrel_release ( squirrel )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_criteria_edit ( VALUE identity      ,
+				       VALUE copy_identity ,
+				       VALUE operation     )
+
+{
+*	Labtable entry point for criteria editing
+*
+*******************************************************************************}
+
+	DECLARE mandatory_array ,
+		curr_help
+
+	ARRAY mandatory_array
+
+	SET CONFIRM FALSE
+
+	batch_template_initialise ()
+
+	IF ( operation = "ADD" )              OR
+	   ( operation = "READ_FOR_DISPLAY" ) OR
+	   ( operation = "READ_FOR_MODIFY"  ) THEN
+
+		batch_template_criteria_read ( identity                    ,
+					       batch_template_select_array )
+
+	ELSEIF operation = "COPY" THEN
+
+		batch_template_criteria_read ( copy_identity               ,
+					       batch_template_select_array )
+
+	ELSEIF operation = "MODIFY" THEN
+
+		curr_help = GLOBAL ( "STD_EDITOR_HELP" )
+		SET GLOBAL "STD_EDITOR_HELP" TO "$BATCH_TMPL_CRITERIA"
+
+		criteria_edit_criteria ( "SAMP_TEST_VIEW"            ,
+		                         batch_template_select_array ,
+		                         mandatory_array             ,
+		                         TRUE                        ,
+		                         TRUE                        )
+
+		SET GLOBAL "STD_EDITOR_HELP" TO curr_help
+
+	ELSEIF operation = "DISPLAY" THEN
+
+		curr_help = GLOBAL ( "STD_EDITOR_HELP" )
+		SET GLOBAL "STD_EDITOR_HELP" TO "$BATCH_TMPL_CRITERIA"
+
+		criteria_edit_criteria ( "SAMP_TEST_VIEW"            ,
+		                         batch_template_select_array ,
+		                         mandatory_array             ,
+		                         FALSE                       ,
+		                         FALSE                       )
+
+		SET GLOBAL "STD_EDITOR_HELP" TO curr_help
+
+	ELSEIF operation = "SAVE" THEN
+
+		batch_template_criteria_write ( identity                    ,
+					        batch_template_select_array )
+
+	ENDIF
+
+	SET CONFIRM TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE batch_template_criteria_write_stored ( VALUE identity )
+
+{
+*   Write the criteria into a squirrel.
+*
+*
+******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

@@ -1,0 +1,574 @@
+{  ********************************************************************************** }
+{                                                                                     }
+{  Module Name : CH_ANAL_MOD.RPF                                                      }
+{                                                                                     }
+{  Purpose     : Manipulate multiple anyses assigned to all samples on th same job.   }
+{                                                                                     }
+{  Requirements: The job must be in status aVailable.            .                    }
+{                The samples must be in status aVaialble or Unavailable.              }
+{                The tests must be in status aVaialble or Unavailable.                }
+{                The function in those cases can replace one analysis by another      }
+{                for all occurrences of a specified analysis on the samples           }
+{                assigned to a defined job.                                           }
+{                                                                                     }
+{  Author      : Henrik Behrndt / 29-JUL-2005                                         }
+{                                                                                     }
+{  ********************************************************************************** }
+{  Modification history:                                                              }
+{  AS 1630 New program, HBe                                                                                   }
+{                                                                                     }
+{                                                                                     }
+{  ********************************************************************************** }
+
+ENABLE WINDOWS
+SET NAME "DISPLAY/"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+SET COMPILE_OPTION DECLARE
+
+
+DECLARE changed_job, the_action, action_descr, current_anal, new_anal, current_anal_arr, no_inserts
+ARRAY   current_anal_arr
+
+no_inserts = EMPTY
+
+WHILE job_for_change (changed_job, the_action, action_descr)
+   WHILE select_analyses (changed_job, current_anal_arr, current_anal, new_anal, the_action, action_descr, no_inserts)
+      PREPARE_ACTION ( the_action, changed_job, current_anal, new_anal, no_inserts)
+   ENDWHILE
+ENDWHILE   
+
+
+
+{------------------------------------------- JOB_FOR_CHANGE --------------------------------------------------}
+
+ROUTINE job_for_change (changed_job, the_action, action_descr)
+
+
+DECLARE job_selection, job_prompt, action_prompt, lk, go_on, v_job, test_action
+
+ARRAY v_job
+ARRAY test_action
+
+CREATE OBJECT "STD_FORM", job_selection
+
+{setup defaults}
+
+v_job[1,1] = ARRAY_SELECT_EQ
+v_job[1,2] = "JOB_STATUS"
+v_job[1,3] = "V"
+
+test_action[1,1] = "None"
+test_action[1,2] = "N"
+test_action[2,1] = "Substitute"
+test_action[2,2] = "S"
+test_action[3,1] = "Insert"
+test_action[3,2] = "I"
+test_action[4,1] = "Cancel"
+test_action[4,2] = "X"
+
+
+job_selection. header	= "Select Job For Analysis Manipulation"
+job_selection. footer = "Escape to cancel"
+job_selection. row	=  7
+job_selection. column	=  4
+job_selection. width	= 60
+job_selection. height	=  7
+job_selection. return_behaviour = FORM_RETURN_STAY
+
+job_selection. add_display ("Job Name: ", 15, 2, prompt_rendition_bold )
+
+PROMPT OBJECT job_prompt
+   BROWSE ON job_header.job_name
+   AT 15,3
+   WITH (MANDATORY_ARRAY = v_job)  
+job_selection . add_prompt (job_prompt)   
+
+job_selection. add_display ("Choose Action: ", 15, 5, prompt_rendition_bold )
+
+PROMPT OBJECT action_prompt
+   CHOOSE OUTOF test_action
+   AT 15,6
+job_selection . add_prompt (action_prompt)   
+
+
+IF variable_is_assigned ( changed_job ) THEN
+   job_prompt . value = changed_job
+ENDIF
+
+IF variable_is_assigned ( the_action ) THEN
+   action_prompt . value = the_action
+ENDIF
+
+
+
+job_selection . start_prompt ()
+job_selection . wait_prompt ()
+job_selection . end_prompt ()
+
+lk = job_selection . get_lastkey () 
+
+IF lk = "EXIT" THEN 
+   go_on = FALSE
+ELSEIF lk = "ENTER" THEN 
+   go_on = TRUE
+ELSEIF lk = "DO" THEN 
+   go_on = TRUE
+ELSE
+   go_on = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk),TRUE)
+ENDIF
+
+changed_job = job_prompt    . value
+the_action  = action_prompt . value
+
+
+IF     the_action = "I" THEN action_descr = "Insert"
+ELSEIF the_action = "S" THEN action_descr = "Substitute"
+ELSEIF the_action = "X" THEN action_descr = "Remove"
+ELSE   action_descr = "ERROR"
+ENDIF
+
+IF (go_on) AND (changed_job <> EMPTY) AND (NOT BLANK(changed_job))
+           AND (the_action  <> EMPTY) AND (NOT BLANK(the_action)) AND (the_action <> "N") THEN
+   RETURN(TRUE)
+ELSE
+   RETURN(FALSE)
+ENDIF
+
+
+ENDROUTINE
+
+
+{------------------------------------------- SELECT_ANALYSES --------------------------------------------------}
+
+ROUTINE select_analyses (changed_job, current_anal_arr, current_anal, the_new_anal, VALUE the_action, VALUE action_descr, no_inserts)
+
+find_cur_anals (changed_job, the_action, current_anal_arr)
+
+DECLARE ana_selection, current_analysis_prompt, new_analysis_prompt, no_inserts_prompt, lk, go_on
+
+
+current_anal = EMPTY
+the_new_anal = EMPTY
+
+CREATE OBJECT "STD_FORM", ana_selection
+
+{setup defaults}
+
+
+ana_selection. header	= "Select Analysis to " : STRIP(action_descr) : " for job " : STRIP(changed_job) : "."
+ana_selection. footer = "Escape to cancel"
+ana_selection. row	=  7
+ana_selection. column	=  4
+ana_selection. width	= 60
+ana_selection. height	=  9
+ana_selection. return_behaviour = FORM_RETURN_STAY
+
+
+
+IF (the_action = "X") OR (the_action = "S") THEN
+   ana_selection. add_display ("Select Current Analysis to be ": STRIP(action_descr) : "d.", 15, 2, prompt_rendition_bold )
+ENDIF
+
+PROMPT OBJECT current_analysis_prompt
+   CHOOSE OUTOF current_anal_arr
+   AT 15,3
+IF (the_action = "X") OR (the_action = "S") THEN
+   ana_selection . add_prompt (current_analysis_prompt)   
+ENDIF
+
+IF (the_action = "I") THEN
+   ana_selection. add_display ("Enter Number of Tests (Replicates) to be added per Sample: ", 15, 2, prompt_rendition_bold )
+ENDIF
+
+PROMPT OBJECT no_inserts_prompt
+   BROWSE ON INTEGER WITH (MINIMUM = 1, MAXIMUM = 100)
+   AT 15,3
+
+IF (the_action = "I") THEN
+   ana_selection . add_prompt (no_inserts_prompt)   
+ENDIF
+
+
+IF (the_action = "I") OR (the_action = "S") THEN
+   ana_selection. add_display ("Select Indentity of New Analysis: ", 15, 5, prompt_rendition_bold )
+ENDIF
+
+PROMPT OBJECT new_analysis_prompt
+   BROWSE ON versioned_analysis . identity
+   AT 15,6
+
+IF (the_action = "I") OR (the_action = "S") THEN
+   ana_selection . add_prompt (new_analysis_prompt)   
+ENDIF
+
+
+IF (the_action = "X") THEN
+   ana_selection. add_display ("Cancelling of Tests is ONLY made for samples in status V or P", 10, 6, prompt_rendition_bold )
+   ana_selection. add_display ("Tests on Unrecieved samples will NOT be cancelled!", 10, 7, PROMPT_RENDITION_BOLD + PROMPT_RENDITION_INVERSE )
+ENDIF
+
+IF variable_is_assigned ( no_inserts ) THEN
+   no_inserts_prompt . value = no_inserts
+ELSE
+   no_inserts = 1
+ENDIF
+
+{IF variable_is_assigned ( current_anal ) THEN
+   current_analysis_prompt . value = current_anal
+ENDIF
+
+IF variable_is_assigned ( the_new_anal ) THEN
+   new_analysis_prompt . value = the_new_anal
+ENDIF}
+
+
+ana_selection . start_prompt ()
+ana_selection . wait_prompt ()
+ana_selection . end_prompt ()
+
+lk = ana_selection . get_lastkey () 
+
+IF lk = "EXIT" THEN
+   go_on = FALSE
+ELSEIF lk = "ENTER" THEN 
+   go_on = TRUE
+ELSEIF lk = "DO" THEN 
+   go_on = TRUE
+ELSE
+   go_on = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk),TRUE)
+ENDIF
+
+current_anal = current_analysis_prompt . value
+the_new_anal = new_analysis_prompt     . value
+no_inserts   = no_inserts_prompt       . value
+
+IF (go_on) 
+AND 
+    (     ((the_action = "X") AND (current_anal <> EMPTY) AND (NOT BLANK(current_anal)))
+      OR  ((the_action = "S") AND (current_anal <> EMPTY) AND (NOT BLANK(current_anal)) AND (the_new_anal <> EMPTY) AND (NOT BLANK(the_new_anal)))
+      OR  ((the_action = "I") AND (the_new_anal <> EMPTY) AND (NOT BLANK(the_new_anal)))
+    ) THEN
+   RETURN(TRUE)
+ELSE
+   RETURN(FALSE)
+ENDIF
+
+
+ENDROUTINE
+
+{------------------------------------------- FIND_CURRENT_ANALYSES --------------------------------------------------}
+
+ROUTINE find_cur_anals (changed_job, VALUE the_action, current_anal_arr)
+
+DECLARE sample_id, analysis_id, s_counter, a_counter, recount, existing
+
+s_counter = 0
+a_counter = 1
+
+current_anal_arr[1,1] = " SELECT"
+current_anal_arr[1,2] =  EMPTY
+
+IF the_action = "X" THEN
+   sample_id = SELECT sample.id_numeric WHERE job_name = changed_job AND ((STATUS = "V") OR (STATUS = "C"))
+ELSEIF the_action = "S" THEN
+   sample_id = SELECT sample.id_numeric WHERE job_name = changed_job AND ((STATUS = "U") OR (STATUS = "V"))
+ELSEIF the_action = "I" THEN
+   sample_id = SELECT sample.id_numeric WHERE job_name = changed_job AND ((STATUS = "U") OR (STATUS = "V") OR (STATUS = "C"))   
+ELSE
+   FLASH_MESSAGE("Program Error, Exiting", TRUE)
+   EXIT
+ENDIF
+
+WHILE sample_id <> EMPTY
+   s_counter = s_counter + 1
+
+   IF the_action = "X" THEN {Allow cancelling oftests that are available, in progress or complete}
+      analysis_id = SELECT test.analysis
+                    WHERE sample = sample_id
+                    AND ((STATUS = "V") OR (STATUS = "P") OR (STATUS = "C"))
+   ELSE                     {Only allow substitution on tests, whare the analhytical work has not been initiated. Insert not relevant!}
+      analysis_id = SELECT test.analysis
+                    WHERE sample = sample_id
+                    AND ((STATUS = "U") OR (STATUS = "V"))
+   ENDIF   
+                
+   WHILE analysis_id <> EMPTY
+      recount = 0
+      existing = FALSE
+      WHILE (recount < a_counter) AND (NOT existing)
+         recount = recount + 1
+         IF current_anal_arr[recount,1] = analysis_id THEN
+            existing = TRUE
+         ENDIF
+      ENDWHILE
+
+      IF NOT existing THEN      
+         a_counter = a_counter + 1
+         current_anal_arr[a_counter,1] = analysis_id
+         current_anal_arr[a_counter,2] = analysis_id
+      ENDIF
+
+      NEXT test
+      analysis_id = SELECT test.analysis
+   ENDWHILE
+   NEXT sample
+   sample_id = SELECT sample.id_numeric
+ENDWHILE
+
+array_sort ( current_anal_arr , ARRAY_SORT_ASCENDING )
+
+
+
+IF (a_counter > 0 ) OR (the_action = "I") THEN
+   RETURN(TRUE)   {Return true, if at least one test in status aVailable was found, or if working in Insert mode}
+ELSE
+   RETURN(FALSE)
+ENDIF
+
+ENDROUTINE
+
+
+{----------------------------------------- PREPARE_ACTION ------------------------------------------------}
+
+ROUTINE PREPARE_ACTION ( VALUE the_action, VALUE changed_job, VALUE current_anal, VALUE new_anal, VALUE no_inserts)
+
+DECLARE count_samples, the_sample, sample_array
+count_samples = 0
+
+ARRAY sample_array
+
+
+IF the_action = "I" THEN
+   the_sample = SELECT sample.id_numeric
+                WHERE job_name = changed_job
+                AND (((status = "U") OR status = "V") OR (status = "C"))
+                AND (job_name <> EMPTY)
+   WHILE ((the_sample <> EMPTY) AND (count_samples < 500))
+      count_samples = count_samples + 1
+      sample_array[count_samples] = the_sample
+      NEXT sample
+      the_sample = SELECT sample.id_numeric
+   ENDWHILE
+   DO_INSERT(sample_array, count_samples, new_anal, no_inserts)
+ELSEIF the_action = "X" THEN
+   the_sample = SELECT sample.id_numeric
+                WHERE job_name = changed_job
+                AND ((status = "V") OR (status = "C"))
+                AND (job_name <> EMPTY)
+   
+   WHILE ((the_sample <> EMPTY) AND (count_samples < 500))
+      count_samples = count_samples + 1
+      sample_array[count_samples] = the_sample
+      NEXT sample
+      the_sample = SELECT sample.id_numeric
+   ENDWHILE
+   DO_REMOVE(sample_array, count_samples, current_anal)
+ELSEIF the_action = "S" THEN
+   the_sample = SELECT sample.id_numeric
+                WHERE job_name = changed_job
+                AND (((status = "U") OR status = "V"))
+                AND (job_name <> EMPTY)
+   WHILE ((the_sample <> EMPTY) AND (count_samples < 500))
+      count_samples = count_samples + 1
+      sample_array[count_samples] = the_sample
+      NEXT sample
+      the_sample = SELECT sample.id_numeric
+   ENDWHILE
+   DO_SUBST (sample_array, count_samples, current_anal, new_anal)
+ELSE
+   flash_message("No action selected", TRUE)
+ENDIF
+
+ENDROUTINE
+
+
+{------------------------------------------- DO_INSERT --------------------------------------------------}
+
+ROUTINE DO_INSERT( sample_array, VALUE samples, VALUE new_anal, VALUE no_inserts )
+
+DECLARE count_samples, count_tests
+count_samples = 0
+count_tests = 0
+
+
+WHILE ((count_samples < samples) AND (count_samples < 500))
+   count_samples = count_samples + 1
+   count_tests = 0
+   WHILE ((count_tests < no_inserts) AND (count_tests < 500))
+      count_tests = count_tests + 1
+      NEWTEST(sample_array[count_samples], new_anal)
+   ENDWHILE
+ENDWHILE
+
+FLASH_MESSAGE("Added analysis " : STRIP(new_anal) : " " : STRIP(no_inserts) : " times to " : STRIP(count_samples) : " Samples on job " : STRIP(changed_job) : ".", TRUE)
+
+ENDROUTINE
+
+
+{------------------------------------------- DO_REMOVE --------------------------------------------------}
+
+ROUTINE DO_REMOVE( sample_array, VALUE samples, VALUE current_anal)
+
+
+SET NOTPROTECTED
+
+
+DECLARE count_samples, test_number, count_tests, do_counter, check_ok
+DECLARE test_array, altered_samples, altered_tests, altered
+
+ARRAY test_array
+
+START READ TRANSACTION "Authorise"
+
+count_samples   = 0
+altered_samples = 0
+altered_tests   = 0
+
+WHILE ((count_samples < samples) AND (count_samples < 500))
+   count_samples = count_samples + 1
+   count_tests = 0
+   altered = FALSE
+   test_number = SELECT test.test_number
+                 WHERE sample = sample_array[count_samples]
+                 AND analysis = current_anal
+                 AND ((status="V") OR (status = "P") OR (status = "C"))
+   WHILE test_number <> EMPTY
+      IF NOT altered THEN
+         altered = TRUE
+         altered_samples = altered_samples + 1
+      ENDIF
+      count_tests = count_tests + 1
+      test_array[count_tests] = test_number
+      NEXT test
+      test_number = SELECT test.test_number
+   ENDWHILE
+
+   do_counter = 0   
+   WHILE do_counter < count_tests
+      do_counter = do_counter + 1
+      test_number = SELECT test . test_number FOR UPDATE
+                    WHERE test_number = test_array[do_counter]
+      START WRITE TRANSACTION "Cancel test"
+      CHANGE TEST STATUS TO "X" , check_ok
+      UPDATE test
+      COMMIT
+      IF check_ok <> EMPTY THEN
+         FLASH_MESSAGE(check_ok, TRUE)
+      ENDIF
+      altered_tests = altered_tests + 1
+   ENDWHILE
+   
+ENDWHILE
+
+FLASH_MESSAGE ("Cancelled " : STRIP(altered_tests) : " occurrences of Analysis " : STRIP(current_anal) : " From " : STRIP(altered_samples) : " Samples.", TRUE)
+
+ENDROUTINE
+
+{---------------------------------------- DO_SUBSTITUTION -----------------------------------------------}
+
+ROUTINE DO_SUBST ( sample_array, VALUE samples, VALUE current_anal, VALUE new_anal)
+
+
+DECLARE the_sample, count_samples, select_array, test_collection, tests_on_sample, handling_test, new_tests
+DECLARE altered_samples, altered_tests
+
+
+ARRAY select_array
+
+select_array[1,1] = ARRAY_SELECT_EQ
+select_array[1,2] = EMPTY
+select_array[1,3] = EMPTY
+
+
+select_array[2,1] = ARRAY_SELECT_AND
+select_array[2,2] = EMPTY
+select_array[2,3] = EMPTY
+
+select_array[3,1] = ARRAY_SELECT_EQ
+select_array[3,2] = "ANALYSIS"
+select_array[3,3] = current_anal
+
+select_array[4,1] = ARRAY_SELECT_AND
+select_array[4,2] = EMPTY
+select_array[4,3] = EMPTY
+
+select_array[5,1] = ARRAY_SELECT_PUSH 
+select_array[5,2] = EMPTY
+select_array[5,3] = EMPTY
+
+
+select_array[6,1] = ARRAY_SELECT_EQ
+select_array[6,2] = "STATUS"
+select_array[6,3] = "V"
+
+select_array[7,1] = ARRAY_SELECT_OR
+select_array[7,2] = EMPTY
+select_array[7,3] = EMPTY
+
+
+select_array[8,1] = ARRAY_SELECT_EQ
+select_array[8,2] = "STATUS"
+select_array[8,3] = "U"
+
+select_array[9,1] = ARRAY_SELECT_POP 
+select_array[9,2] = EMPTY
+select_array[9,3] = EMPTY
+
+
+count_samples   = 0
+altered_tests   = 0
+altered_samples = 0
+
+
+WHILE ((count_samples < samples) AND (count_samples < 500))
+   count_samples = count_samples + 1
+   the_sample = sample_array[count_samples]
+   
+
+   select_array[1,1] = ARRAY_SELECT_EQ
+   select_array[1,2] = "SAMPLE"
+   select_array[1,3] = the_sample
+
+   CREATE OBJECT "STD_OBJECT_DATABASE", test_collection
+   test_collection . initialise ( "TEST")
+   test_collection . select_for_update (select_array)
+
+   tests_on_sample = test_collection . size ( )
+
+   IF tests_on_sample > 0 THEN
+      altered_samples = altered_samples + 1
+   ENDIF
+   
+   handling_test = 0
+   test_collection . set_first ( )
+   
+   WHILE ((handling_test < tests_on_sample) AND (handling_test < 500))
+      handling_test = handling_test + 1
+      test_collection . current . delete ( )
+      test_collection . set_next ( ) 
+   ENDWHILE
+
+   START WRITE TRANSACTION "Update tests"
+   test_collection . invoke_all ( "UPDATE" )
+   COMMIT
+
+
+   new_tests = 0
+   
+   WHILE ((new_tests < tests_on_sample) AND (new_tests < 500))
+      new_tests = new_tests + 1
+      NEWTEST(the_sample, new_anal)
+   ENDWHILE
+   altered_tests = altered_tests + new_tests
+ENDWHILE
+
+FLASH_MESSAGE ("Substituted " : STRIP(altered_tests) : " Tests from " : STRIP(current_anal) : " to " : STRIP(new_anal) : " on " : STRIP(altered_samples) : " Samples.", TRUE)
+
+ENDROUTINE

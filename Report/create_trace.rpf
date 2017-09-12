@@ -1,0 +1,132 @@
+{***********************************************************************
+* Module Name   : CREATE_TRACE
+* Purpose       : Create Batche Trace Detail FOR TESTING ONLY
+* Document Ref  :
+* Specification : N/a
+*
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-05-15  Tommy Bøgeskov  Copy from MES_SEND_JOB
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_UTILS
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+{*************************************************************************
+*For testing
+*************************************************************************}
+CreateBatchTrace()
+{*************************************************************************
+END For testing
+*************************************************************************}
+
+GLOBAL ROUTINE CreateBatchTrace
+{*************************************************************************
+* Purpose       : Main routine. Request a form and handles result.
+* Parameters    : None
+* Return Value  : None
+*************************************************************************}
+DECLARE form, field_length, key0, mat_type, status 
+
+    form = CreateForm ()
+
+    REPEAT
+        form.start_prompt()
+        form.wait_prompt()
+        form.end_prompt()
+
+            key0 = ""
+            IF (form.get_last_key() = "DO") AND
+               (form.prompt_objects[1].value <> "") AND
+               (form.prompt_objects[2].value <> "") THEN
+
+                GET_FIELD_DETAILS batch_trace.batch_name_master,   "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.batch_name
+                                WHERE job_name = form.prompt_objects[1].value, " ", field_length)
+
+                GET_FIELD_DETAILS batch_trace.product_name_master, "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.product_name, " ", field_length) 
+
+                mat_type = SELECT mlp_header.material_type 
+                            WHERE identity = (SELECT job_header.product_name)
+                            ORDER ON product_version DESCENDING
+
+                GET_FIELD_DETAILS batch_trace.batch_name_child, "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.batch_name
+                                WHERE job_name = form.prompt_objects[2].value, " ", field_length)
+
+                GET_FIELD_DETAILS batch_trace.product_name_child,  "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.product_name, " ", field_length) 
+
+                RESERVE ENTRY batch_trace, key0, status
+                IF status = EMPTY THEN
+                    START WRITE TRANSACTION "Create Batch Trace"
+                    ASSIGN batch_trace.material_type = mat_type
+                    ASSIGN batch_trace.sap_update = NOW
+                    UPDATE batch_trace
+                    COMMIT
+                ELSE
+                    fm("Batch trace already exist for":ASCII(10):ASCII(10):
+                       "Master Job: ":form.prompt_objects[1].value:ASCII(10):
+                       "Child  Job: ":form.prompt_objects[2].value)
+                ENDIF
+
+                form.prompt_objects[1].value = form.prompt_objects[2].value
+                form.prompt_objects[2].value = ""
+            ELSEIF (form.get_last_key() = "DO") THEN
+                fm("You must enter a valid job_name in each field.")
+            ENDIF
+
+    UNTIL form.get_last_key ( ) = "EXIT"
+
+ENDROUTINE
+
+ROUTINE CreateForm
+{*************************************************************************
+* Purpose       : Creates a from and returns it.
+* Parameters    : None
+* Return Value  : Form as object
+*************************************************************************}
+DECLARE master_job, child_job, form, prompt_col
+
+    CREATE OBJECT PROMPT_CLASS_FORM,form
+
+    form.height =  4
+    form.width  = 40
+    form.row    =  2
+    form.column =  5
+    form.border = TRUE
+    form.header = "Create batch trace..."
+    form.footer = "Press <Exit> to quit"
+
+    prompt_col = 13
+
+    PROMPT OBJECT master_job
+    BROWSE ON JOB_HEADER.JOB_NAME
+    ON LINE 1 FROM prompt_col
+
+    form.add_prompt(master_job)
+    form.add_display("Master Job: ", 1, 1, PROMPT_RENDITION_BOLD)
+
+    PROMPT OBJECT child_job
+    BROWSE ON JOB_HEADER.JOB_NAME
+    ON LINE 3 FROM prompt_col
+
+    form.add_prompt(child_job)
+    form.add_display("Child Job: ", 1, 3, PROMPT_RENDITION_BOLD)
+
+    RETURN (form)
+
+ENDROUTINE
+
+{*************************************************************************}
+

@@ -1,0 +1,251 @@
+{*****************************************************************************
+* Module Name   : LIT_EMAIL
+* Purpose       : Basic object oriented routines for general e-mail handling
+* Document Ref. : CS/T/
+* Specification : 
+******************************************************************************
+* Modification History
+* 
+* Version   Date        Author           Modify Details
+******************************************************************************
+* 
+******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+
+ENABLE WINDOWS
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY std_class
+JOIN STANDARD_LIBRARY std_array
+JOIN STANDARD_LIBRARY std_transfer
+{JOIN LIBRARY $LIB_UTILS }
+
+CONSTANT MAIL_FILE = "smp$userfiles:mail.txt"
+CONSTANT REG_KEY_COMPUTER_NAME_KEY = "SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName"
+CONSTANT REG_KEY_COMPUTER_NAME_VAL = "ComputerName"
+
+    example_of_usage()
+
+EXIT
+
+{*****************************************************************************
+ *                            GLOBAL ROUTINES                                *
+ *****************************************************************************}
+
+GLOBAL ROUTINE define_smtp_mail_class
+{*****************************************************************************
+*
+* Defines the smtp mail class
+* Parameters:  None
+* Return Value: None
+*
+******************************************************************************}
+
+    DEFINE CLASS "SMTP_MAIL_CLASS"
+
+        INITIALISATION
+        
+        PROPERTIES
+
+            "email_object"      ,  {The path of the blat utility           }
+            "recipient"         ,  {Person to send the e-mail to           }
+            "sender"            ,  {Person sending e-mail                  }
+            "subject"           ,  {Subject of the e-mail                  }
+            "attatcht"          ,  {Text File to be attatched              }
+            "attatchb"          ,  {Binary file to be attatched            }
+            "cc_recipient"      ,  {Address of Carbon Copy recipient       }
+            "bcc_recipient"     ,  {Blind Carbon Copy recipient            }
+            "server"            ,  {Name or IP address of mail server      } 
+            "body_text"         ,  {Name of a file for body text           }
+            "port"              ,  {SMTP usually uses 25 which is default  }
+            "send_file"            {File to send string to                 }
+
+        ACTIONS
+
+            "send"              ,  {Send the mail                 }
+            "send_to_file" ,        {Send to batch file            }
+            "return_string"   {Returns mail command as string}
+
+    END CLASS
+
+ENDROUTINE
+
+{*****************************************************************************
+ *                            NORMAL ROUTINES                                *
+ *****************************************************************************}
+
+ROUTINE smtp_mail_class_class_initialisation ( self )
+{*****************************************************************************
+*
+* Initialises the values for the mail class
+* Used to set the default values
+* Parameters: self - the mail object
+* Return Value: None
+*
+******************************************************************************}
+
+    self.email_object      = "smp$userfiles:blat\blat.exe"
+    self.email_object      = "blat.exe"
+    self.cc_recipient      = ""
+    self.bcc_recipient     = ""
+    self.attatcht          = ""
+    self.attatchb          = ""
+    self.body_text         = "\default_file.txt" {make sure this file is in place!}
+    self.sender            = get_client_machine_name():"@chr-hansen.com" {Preferably an address they can reply to}
+    self.server            = "mail.chr-hansen.com" {The mail server can be set to any Unix box with default mail enabled}
+
+    self.send_file         = MAIL_FILE
+
+   
+ENDROUTINE
+
+ROUTINE smtp_mail_class_action_send ( self )
+{*****************************************************************************
+*
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: None
+*
+******************************************************************************}
+
+DECLARE spawn_string, status {, log_file_name }
+
+    spawn_string = create_mail ( self )
+
+    SPAWN spawn_string, status QUIETLY 
+    
+    {log_file_name = "smp$logfiles:blat.log"
+    lib_utils_spawn_with_log (spawn_string, log_file_name ) }
+
+
+ENDROUTINE { mail_class_action_send }
+
+ROUTINE smtp_mail_class_action_send_to_file ( self )
+{*****************************************************************************
+*
+* Sends the e-mail to a file - in this case neccesary for running in batch
+* Parameters:  self - the mail object
+* Return Value: None
+*
+******************************************************************************}
+
+DECLARE spawn_string, status, send_file
+
+    send_file = self.send_file
+    spawn_string = create_mail ( self )
+
+    IF FILE EXISTS ( send_file ) THEN
+        FILE EXTEND send_file, status
+    ELSE
+        FILE CREATE send_file, status
+    ENDIF
+
+    FILE WRITE send_file, spawn_string, status
+    FILE CLOSE send_file, status
+
+ENDROUTINE
+
+ROUTINE smtp_mail_class_action_return_string ( self )
+{*****************************************************************************
+*
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: spawn_string
+*
+******************************************************************************}
+
+DECLARE spawn_string
+
+    spawn_string = create_mail ( self )
+    RETURN ( spawn_string )
+
+ENDROUTINE { mail_class_action_send }
+
+ROUTINE create_mail ( self )
+{*****************************************************************************
+*
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: None
+*
+******************************************************************************}
+
+DECLARE spawn_string
+
+    self.body_text = ASCII(34):self.body_text:ASCII(34)
+    spawn_string = self.email_object : " -body " : self.body_text : " -from " : self.sender
+    spawn_string = spawn_string : " -to " : STRIP ( self.recipient ) : " -server " : STRIP ( self.server )
+    self.subject = ASCII(34): self.subject : ASCII(34)
+    spawn_string = spawn_string : " -subject " : self.subject 
+
+    IF ( self.cc_recipient <> "" ) THEN 
+        spawn_string = spawn_string : " -c " : STRIP ( self.cc_recipient )
+    ENDIF
+
+    IF ( self.bcc_recipient <> "" ) THEN
+        spawn_string = spawn_string : " -b " :  STRIP ( self.bcc_recipient )
+    ENDIF
+
+    IF ( self.attatcht <> "" ) THEN
+        spawn_string = spawn_string : " -attacht " :  STRIP ( self.attatcht )
+    ENDIF
+
+    IF ( self.attatchb <> "" ) THEN
+        spawn_string = spawn_string : " -attach " :  STRIP ( self.attatchb )
+    ENDIF
+    
+    {spawn_string = spawn_string : " -noh2 "}
+
+    RETURN ( spawn_string )
+
+ENDROUTINE
+
+GLOBAL ROUTINE get_client_machine_name
+{*****************************************************************************
+*   Returns client machine name
+******************************************************************************}
+
+    RETURN (client_registry_get_value (HKEY_LOCAL_MACHINE, REG_KEY_COMPUTER_NAME_KEY, REG_KEY_COMPUTER_NAME_VAL))
+
+ENDROUTINE {get_client_machine_name }
+
+ROUTINE example_of_usage
+{*****************************************************************************
+* Sends the e-mail
+* Parameters:  self - the mail object
+* Return Value: None
+******************************************************************************}
+
+    {JOIN LIBRARY LIT_EMAIL}
+    DECLARE email
+    
+    define_smtp_mail_class()
+
+    CREATE OBJECT "SMTP_MAIL_CLASS" , email
+
+    email.recipient = "dktbg@chr-hansen.com"
+    email.subject   = "Sent using VGL from ":GLOBAL("INSTANCE")
+    email.body_text = "This email is automatically generated and can not receive replies."
+
+    {email.email_object    The path of the blat utility         }
+    {email.recipient       Person to send the e-mail to         }
+    {email.sender          Person sending e-mail                
+                           Default servername@chr-hansen.com    }
+    {email.subject         Subject of the e-mail                }
+    {email.attatcht        Text File to be attatched            }
+    {email.attatchb        Binary file to be attatched          }
+    {email.cc_recipient    Address of Carbon Copy recipient     }
+    {email.bcc_recipient   Blind Carbon Copy recipient          }
+    {email.server          Name or IP address of mail server    } 
+    {email.body_text       Name of a file for body text         }
+    {email.port            SMTP usually uses 25 which is default}
+    {email.send_file       File to send string to               }
+
+    {email.send_to_file ( ) }
+    email.send()
+
+ENDROUTINE { example_of_usage }
+

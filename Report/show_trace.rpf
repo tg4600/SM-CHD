@@ -1,0 +1,440 @@
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY ROS_CSMLP
+
+ARRAY empty_arr
+
+batch_name = EMPTY
+
+levels = "2"
+
+WHILE prompt_user ( "INTEGER", "Enter number of levels to show trace for",
+                    EMPTY, FALSE, "Levels:", empty_arr, levels, the_key )
+   WHILE prompt_user ( "BATCH_TRACE", "Enter batch name to show trace for",
+                    EMPTY, TRUE, "Batch name:", empty_arr, batch_name, the_key ) DO
+      print_init()
+      handle_batch_tree ( batch_name, levels )
+   ENDWHILE
+ENDWHILE
+
+EXIT 
+
+GLOBAL ROUTINE trace_levels(VALUE batch_name_0, levels)
+
+    print_init()
+    handle_batch_tree(batch_name_0, levels)
+
+ENDROUTINE
+
+ROUTINE  handle_batch_tree ( VALUE batch_name_0, levels )
+    prod_id      = SELECT all_job_header.product_name WHERE job_name = batch_name_0
+    IF prod_id <> EMPTY THEN
+        batch_name_0 = SELECT all_job_header.batch_name
+        prod_id  = select batch_trace_view . product_name_master
+                   where  batch_name_master = batch_name_0
+                     and  product_name_master = prod_id
+    ELSE
+        prod_id  = select batch_trace_view . product_name_master
+                   where  batch_name_master = batch_name_0
+                   order  on product_name_master
+    ENDIF
+    print_header()
+    old_prod = EMPTY
+    WHILE prod_id <> EMPTY DO
+        IF prod_id <> old_prod THEN
+            trace_level = 0
+            next_block  = 0
+            print_batch_tree ( batch_name_0, prod_id, levels )
+            old_prod = prod_id
+        ENDIF
+        NEXT batch_trace_view
+        prod_id = select batch_trace_view . product_name_master
+    ENDWHILE
+
+LITERAL
+
+                 End Of Batch Tree Report
+$ENDLITERAL
+
+   FLUSH_LITERAL
+
+ENDROUTINE
+
+ROUTINE  print_batch_tree ( VALUE l_batch_name, VALUE l_prod_id, VALUE levels )
+
+   DECLARE  sel_arr, the_block, rc, subs, sub, s_batch_name, s_prod_id
+   ARRAY    sel_arr
+   ARRAY    com_arr
+
+   trace_level = trace_level + 1
+
+{**AS1665 HBe 7-12-2005: A record in batch_trace with same material- and batch number in master and child created an indefinite loop. (Batch : 2650363)}
+   IF trace_level > 20 THEN
+      FLASH_MESSAGE("Traced 20 levels back, there is a problem with the BATCH_TRACE data from SAP. Exiting", TRUE)
+      EXIT
+   ENDIF
+{**AE1665}
+
+{MS1225 HBe 19-8-99}
+   IF trace_level <= levels THEN
+      print_batch( l_batch_name, l_prod_id, trace_level )
+   ENDIF
+{ME1225 HBe 19-8-99}
+
+   next_block = next_block + 1
+   the_block = "Trace Block " : strip(next_block)
+   rc = block_row_initialise( the_block, "batch_trace_view" )
+   IF rc <> EMPTY THEN
+      flash_message("Error in initialise top job block:":rc,TRUE)
+      return
+   ENDIF
+
+   sel_arr[1,1] = ARRAY_SELECT_EQ
+   sel_arr[1,2] = "BATCH_NAME_MASTER"
+   sel_arr[1,3] = l_batch_name
+
+   sel_arr[2,1] = ARRAY_SELECT_EQ
+   sel_arr[2,2] = "PRODUCT_NAME_MASTER"
+   sel_arr[2,3] = l_prod_id
+
+   rc = block_row_select ( the_block, sel_arr, FALSE )
+   IF NOT rc THEN
+      flash_message("Error in block select",TRUE)
+      return
+   ENDIF
+
+{  Step through tree one by one               }
+   subs = block_row_size ( the_block )
+   sub = 0
+   WHILE sub < subs DO
+
+      sub = sub + 1
+      rc = block_row_find_number ( the_block, sub )
+
+      s_batch_name = STRIP(block_row_field_select ( the_block, "BATCH_NAME_CHILD" ))
+      s_prod_id    = STRIP(block_row_field_select ( the_block, "PRODUCT_NAME_CHILD" ))
+
+{**AS1654 HBe 14-10-2004: Strip off leading 0's}
+      STRIP_LEADING_0 ( s_batch_name )
+{**AE1654}
+
+{**MS1665 HBe 7-12-2005: IF statement added. A record in batch_trace with same material- and batch number in master and child created an indefinite loop. (Batch : 2650363)}
+      IF trace_level < levels THEN
+         print_batch_tree ( s_batch_name, s_prod_id, levels )
+      ENDIF
+{**ME1665}
+
+   ENDWHILE
+
+   rc = block_row_release ( the_block )
+
+   trace_level = trace_level - 1
+
+ENDROUTINE
+
+ROUTINE  print_batch ( VALUE l_batch, VALUE l_prod, VALUE trace_level )
+
+   DECLARE field_length, length_loop, l_batch2
+   p_lev   = strip(trace_level)
+
+{DS1223 HBe 170899
+   p_batch = strip(l_prod):"/":strip(l_batch)
+ DE1223 HBe 170899}
+
+{AS1223 HBe 170899}
+{**MS1505 HBe 9/12-2003: Also select on batch names with "0"'s as a prefix - to compensate for SAP error...}
+{**MS1654 HBe 14-10-2004: Avoiding wildcard in selection, to avoid problems with French batch numbers!}
+         job_mps = select job_headers_view . mps_status
+            where  (batch_name = l_batch)
+            and    (product_name = l_prod)
+         IF ((job_mps = EMPTY) OR (job_mps = "")) THEN
+            GET_FIELD_DETAILS job_header.batch_name, "FIELD_SIZE", field_length
+            l_batch2 = l_batch
+            length_loop = length(l_batch2)
+            WHILE ((job_mps = EMPTY) AND (length_loop < field_length))
+               l_batch2 = "0":l_batch2
+               length_loop = length(l_batch2)
+               job_mps = SELECT job_headers_view . mps_status
+                         WHERE  (batch_name = l_batch2)
+                         AND    (product_name = l_prod)
+            ENDWHILE
+
+            IF (job_mps = EMPTY) 
+                job_mps = "   "
+            ELSEIF (job_mps = "") THEN
+                job_mps = "..."
+            ENDIF
+         ENDIF
+{**ME1654}
+
+{**AS 2003R1: Find the product_version for correct description. Attempting to use the newest authorised descrition available}
+
+         prod_ver = SELECT MAX mlp_header.product_version
+                    WHERE identity = STRIP(l_prod)
+                    AND approval_status = "A"
+
+
+         IF (prod_ver = EMPTY) OR BLANK(prod_ver) THEN
+            prod_ver = 1
+         ENDIF
+
+         prod_descr = SELECT mlp_header.description
+                      WHERE identity = STRIP(l_prod)
+                      AND product_version = prod_ver
+         IF ((prod_descr = EMPTY) OR (strip(prod_descr) = "") OR (BLANK(prod_descr))) THEN
+             prod_descr = SELECT sap_matmas.description
+                          WHERE gin = STRIP(l_prod)
+                          ORDER ON uniqueid DESCENDING
+             IF ((prod_descr = EMPTY) OR (strip(prod_descr) = "") OR (BLANK(prod_descr))) THEN
+                prod_descr = "... Material unknown in LIMS"
+             ELSE
+                prod_descr = STRIP(prod_descr):" (Not active in LIMS)"
+             ENDIF
+         ENDIF
+
+
+   job = SELECT job_headers_view.job_name
+   work_center = STRIP(SELECT all_job_header.work_center WHERE job_name = strip(l_prod):"/":strip(l_batch))
+   IF (work_center = EMPTY) OR (work_center = "") OR (LEFTSTRING(work_center,3) = "---" ) THEN
+        work_center = ""
+   ELSE
+        work_center = "(":work_center:")"
+   ENDIF
+
+   p_batch_inf = pad(pad(strip(l_prod):"/":strip(l_batch):work_center,"",26):strip(job_mps)," ",34):prod_descr
+
+{AE1223 HBe 170899}
+
+{  p_batch = pad(""," ",trace_level*3) : p_batch }
+
+LITERAL
+      $p_lev $p_batch_inf_________________________________________________________________________
+$ENDLITERAL
+
+{**MS1505 HBe 9/12-2003: Also select on batch names with "0"'s as a prefix - to compensate for SAP error...}
+{**M1654 HBe 14-10-2004: Eliminating where clause, cursor already positioned}
+   the_job = select job_headers_view . job_name
+{             where  batch_name   = l_batch2
+             and    product_name = l_prod}
+
+   IF the_job <> EMPTY THEN
+      smp_id = select all_samples_view . id_numeric
+               where  job_name = the_job
+               order  on id_numeric
+      smp_s  = select all_samples_view . status
+      WHILE smp_id <> EMPTY DO
+         aut_com = strip(select all_samples_view . AUTHORISATION_NOTES)
+         smp_com = strip(select all_samples_view . sample_comment)
+         print_comment ( "Authorisation Comments", aut_com )
+         print_comment ( "Sample Comment"        , smp_com )
+         NEXT all_samples_view
+         smp_id = select all_samples_view . id_numeric
+         smp_s  = select all_samples_view . status
+      ENDWHILE
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  PRINT_COMMENT ( VALUE the_title, VALUE the_comment )
+
+         IF (the_comment <> EMPTY) AND (NOT BLANK(the_comment)) THEN
+
+            coms = 1
+            split_lines ( the_comment, 35, com_arr, coms )
+            com_str = com_arr[1]
+
+LITERAL
+                          $smp_id____  $smp_s  $the_title_______________________
+$ENDLITERAL
+            the_com = 0
+            WHILE the_com < coms DO
+               the_com = the_com + 1
+               com_str = com_arr[the_com]
+LITERAL
+                                               $com_str_________________________
+$ENDLITERAL
+            ENDWHILE
+         ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  print_init
+
+   SET FORMAT "99"
+   {SET DATE FORMAT   "DD/MM/YYYY" }
+   SET LENGTH 60
+   current_date   =  TODAY
+   the_user       =  OPERATOR
+
+   pc = 0
+
+   ON NEW PAGE
+      print_header()
+   ENDON
+
+ENDROUTINE
+
+ROUTINE  print_header
+
+   pc = pc + 1
+
+{M1225 HBe 19-8-99: Levels included in header}
+
+LITERAL
+Date: $current_date   Print of Batch Tree                          Page : $pc
+User: $the_user       Batch : $batch_name____ Levels selected : $levels
+
+      Level  Product/Batch     Smp Id  Status  Notes and Comments
+      ------ ----------------------------------------------------------
+$ENDLITERAL
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Present batch trace for a single job in LIMS
+*                This routine should be called from Display Job header 
+* Parameters   : job_id, the job_name to trace
+* Return Value : Text
+**************************************************************************}
+
+GLOBAL ROUTINE SHOW_TRACE (VALUE job_id)
+
+DECLARE levels
+
+    batch_name = SELECT all_job_header.batch_name WHERE job_name = job_id
+    product_name = SELECT all_job_header.product_name
+    
+    IF (0 = (SELECT COUNT batch_trace_view WHERE product_name_master = product_name AND batch_name_master = batch_name)) THEN
+        fm("No trace information available for '":STRIP(job_id):"'")
+        RETURN
+    ENDIF
+    
+    ARRAY empty_arr
+    levels = "5"
+    prompt_user ( "INTEGER", "Enter number of levels to show trace for",
+                EMPTY, FALSE, "Levels:", empty_arr, levels, the_key )
+    print_init()
+    WriteToLog("handle_batch_tree(":job_id:", ":levels:")")
+    handle_batch_tree ( job_id, levels )
+
+ENDROUTINE
+
+GLOBAL ROUTINE CreateBatchTrace(VALUE dummy)
+{*************************************************************************
+* Purpose       : Insert records  in BATCH_TRACE for testing of transfer
+* Parameters    : Dummy
+* Return Value  : None
+*************************************************************************}
+DECLARE form, field_length, key0, mat_type, status 
+
+    form = CreateForm ()
+
+    REPEAT
+        form.start_prompt()
+        form.wait_prompt()
+        form.end_prompt()
+
+            key0 = ""
+            IF (form.get_last_key() = "DO") AND
+               (form.prompt_objects[1].value <> "") AND
+               (form.prompt_objects[2].value <> "") THEN
+
+                GET_FIELD_DETAILS batch_trace.batch_name_master,   "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.batch_name
+                                WHERE job_name = form.prompt_objects[1].value, " ", field_length)
+
+                GET_FIELD_DETAILS batch_trace.product_name_master, "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.product_name, " ", field_length) 
+
+                mat_type = SELECT mlp_header.material_type 
+                            WHERE identity = (SELECT job_header.product_name)
+                            ORDER ON product_version DESCENDING
+
+                GET_FIELD_DETAILS batch_trace.batch_name_child, "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.batch_name
+                                WHERE job_name = form.prompt_objects[2].value, " ", field_length)
+
+                GET_FIELD_DETAILS batch_trace.product_name_child,  "FIELD_SIZE", field_length
+                key0 = key0:PAD(SELECT job_header.product_name, " ", field_length) 
+
+                RESERVE ENTRY batch_trace, key0, status
+                IF status = EMPTY THEN
+                    START WRITE TRANSACTION "Create Batch Trace"
+                    ASSIGN batch_trace.material_type = mat_type
+                    ASSIGN batch_trace.sap_update = NOW
+                    UPDATE batch_trace
+                    COMMIT
+                    WriteToLog("Parent Job: ":STRIP(form.prompt_objects[1].value):" <- Child  Job: ":STRIP(form.prompt_objects[2].value))
+                ELSE
+                    fm("Batch trace already exist for":ASCII(10):ASCII(10):
+                       "Parent Job: ":form.prompt_objects[1].value:ASCII(10):
+                       "Child  Job: ":form.prompt_objects[2].value)
+                ENDIF
+
+                form.prompt_objects[1].value = form.prompt_objects[2].value
+                form.prompt_objects[2].value = ""
+            ELSEIF (form.get_last_key() = "DO") THEN
+                fm("You must enter a valid job_name in each field.")
+            ENDIF
+
+    UNTIL form.get_last_key ( ) = "EXIT"
+
+ENDROUTINE
+
+ROUTINE CreateForm
+{*************************************************************************
+* Purpose       : Creates a from and returns it.
+* Parameters    : None
+* Return Value  : Form as object
+*************************************************************************}
+DECLARE master_job, child_job, form, prompt_col
+
+    CREATE OBJECT PROMPT_CLASS_FORM,form
+
+    form.height =  4
+    form.width  = 40
+    form.row    =  2
+    form.column =  5
+    form.border = TRUE
+    form.header = "Create batch trace..."
+    form.footer = "Press <Exit> to quit"
+
+    prompt_col = 13
+
+    PROMPT OBJECT master_job
+    BROWSE ON JOB_HEADER.JOB_NAME
+    ON LINE 1 FROM prompt_col
+
+    form.add_prompt(master_job)
+    form.add_display("Parent Job: ", 1, 1, PROMPT_RENDITION_BOLD)
+
+    PROMPT OBJECT child_job
+    BROWSE ON JOB_HEADER.JOB_NAME
+    ON LINE 3 FROM prompt_col
+
+    form.add_prompt(child_job)
+    form.add_display("Child Job: ", 1, 3, PROMPT_RENDITION_BOLD)
+
+    RETURN (form)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

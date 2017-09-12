@@ -1,0 +1,6075 @@
+{ ******************************************************************************
+*
+* Module Name   : $LIB_LIST_VIEWER
+*
+* Purpose       : View Table Contents via a list.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+{Change log: 
+Change marked "*** RT *** 30-10-2008 ***" added to SM92TEST
+by DKTBG on 20090209}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_VGL
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $AUX_LIB
+JOIN LIBRARY $CRITERIA_CACHE
+JOIN LIBRARY $CRITERIA_LIB
+JOIN LIBRARY $EXPLORER_UTILS
+JOIN LIBRARY $FAVOURITES
+JOIN LIBRARY $INFOMAKER_REPORT
+JOIN LIBRARY $LAB
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_TEXT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_FOR_TEXT
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $PROMPT_TOOLBAR
+JOIN LIBRARY $ROLE_LIB
+JOIN LIBRARY $USER_SETTING
+
+
+ENABLE WINDOWS
+
+{*******************************************************************************
+*                           C O N S T A N T S
+*******************************************************************************}
+
+GLOBAL CONSTANT LIST_VIEWER_CLASS = "LIST_VIEWER"
+GLOBAL CONSTANT LIST_VIEWER_FORM  = "LIST_VIEWER_FORM"
+
+{ Redefinition of class to prevent compilation loops }
+
+CONSTANT PROPERTY_SHEET_EX_CLASS     = "PROPERTYEX" 
+CONSTANT LIB_PROPERTY_SHEET          = "$LIB_PROPERTY_SHEET"
+CONSTANT PROPERTY_SHEET_DEFINE_CLASS = "PROPERTY_SHEET_DEFINE_CLASS"
+
+CONSTANT ADD_OPTION_NUM                 =   1
+CONSTANT COPY_OPTION_NUM                =   2
+CONSTANT MODIFY_OPTION_NUM              =   3
+CONSTANT DISPLAY_OPTION_NUM             =   4
+CONSTANT PRINT_OPTION_NUM               =   5
+CONSTANT LIST_OPTION_NUM                =   6
+CONSTANT REMOVE_OPTION_NUM              =   7
+CONSTANT RESTORE_OPTION_NUM             =   8
+CONSTANT TEST_OPTION_NUM                =   9
+CONSTANT DEBUG_OPTION_NUM               =   10
+
+CONSTANT MAX_COLUMNS                    =   5022353
+
+{*******************************************************************************
+*                           M A I N   C O D E 
+*******************************************************************************}
+
+example_of_usage ( )
+
+{*******************************************************************************
+*                       G L O B A L   R O U T I N E S
+*******************************************************************************}
+
+GLOBAL
+ROUTINE define_list_viewer_class 
+
+{
+* Define the List Viewer Class.
+*
+*******************************************************************************}
+
+IF NOT GLOBAL ( "LIBRARY_INITIALISED" ) THEN
+
+	SET GLOBAL "LIBRARY_INITIALISED" TO TRUE
+
+	CALL_ROUTINE PROPERTY_SHEET_DEFINE_CLASS
+	  IN LIBRARY LIB_PROPERTY_SHEET
+
+	setup_popup_class            ( )
+	criteria_cache_initialise    ( )
+	set_up_std_prompt_list_class ( )       { For the List Control.         }
+	prompt_toolbar_initialise    ( )
+
+	DEFINE CLASS LIST_VIEWER_CLASS
+
+		INHERIT PROMPT_LIST_CLASS
+		INITIALISATION
+			
+		PROPERTIES
+
+			"header"                   , { Header Message                      }
+			"columns_changed"          , { User has changed the columns        }
+			"clear_locks"              , { Clear Locks using a rollback        }
+			"read_lock"                , { Read Lock Records                   }
+			"autosize"                 , { Autosize the Columns                }
+			"auto_status_icon"         , { Automatic Status Icons              }
+			"display_limit"            , { Maximum Number of Recs              }
+			"display_max"              , { Maximum Number of Recs, Display All }
+			"some_left"                , { Some Left to display?               }
+			"some_left_to_load"        , { Some left to load?                  }
+			"number_loaded"            , { no. of items loaded                 }
+			"number_displayed"         , { no of items displayed               }
+			"plugin"                   , { General Place Holder                }
+			"table_object"             , { Table Object Information            }
+			"changed"                  , { Updates made.                       }
+			"unique_no"                , { Unique No for Identity              }
+			"form"                     , { Must be LIST_VIEWER_FORM derivative }
+			"labtable"                 , { Lab Table Object.                   }
+			"menu_criteria"            , { Show the Menu Criteria              }
+			"menu_auto_criteria"       , { Show Menu Auto Criteria             }
+			"menu_property"            , { Show the Menu Property              }
+			"menu_view"                , { Show the Menu View                  }
+			"menu_labtable"            , { Show the Menu Labtable              }
+			"menu_refresh"             , { Show the Menu Refresh               }
+			"menu_toggle_removed"      , { Show show/hide removed              }
+			"menu_columns"             , { Can we Edit the Columns?            }
+			"menu_standard"            , { Show table standard menu?           }
+			"menu_favourites"          , { Show 'Favourites' options           }
+			"criteria"                 , { Raw Selection Criteria              }
+			"unevaluated_criteria"     , { Copy of original criteria           }
+			"auto_criteria"            , { Auto Filter Criteria                }
+			"odb"                      , { Object Database                     }
+			"position"                 , { Array of Positions                  }
+			"prompt_details"           , { Prompt Details Array                }
+			"property_details"         , { Property Details.                   }
+			"custom_rmb"               , { Custom RMB Menu.                    }
+			"new_rmb"                  , { Custom RMB for New Stuff            }
+			"icon_number"              , { Icon Number.                        }
+			"default_action"           , { Default Action to Call              }
+			"default_callback"         , { Default Callback                    }
+			"rmb_callback"             , { RMB Callback                        }
+			"icon_callback"            , { Routine to get the Icon             }
+			"sub_icon_callback"        , { get sub item icon                   }
+			"create_callback"          , { Callback on Create Entry            }
+			"criteria_callback"        , { Criteria Callback.                  }
+			"data_callback"            , { Go Away and Build ODB               }
+			"more_data_callback"       , { Load the next set of records        }
+			"insert_callback"          , { Callback on Row Insert              }
+			"finish_callback"          , { Callback on Form Exit               }
+			"criteria_key_callback"    , { Callback on CRITERIA key            }
+			"build_key_callback"       , { Callback on BUILD key               }
+			"browse_key_callback"      , { Callback on BROWSE key              }
+			"select_key_callback"      , { Callback on SELECT key              }
+			"insert_key_callback"      , { Callback on INSERT key              }
+			"remove_key_callback"      , { Callback on REMOVE key              }
+			"show_removed"             , { Show Removed Records                }
+			"editable"                 , { Property sheet changes              }
+			"table"                    , { The Table Name                      }
+			"distinct_field"           , { Set to filter duplicates            }
+			"default_view"             , { default list view                   }
+			"selected_objects"         , { the currently selected objects      }
+			"last_hit_field"           , { The field in column last clicked on }
+			"no_records_text"          , { Text shown when no items in list    }
+			"load_on_start"            , { Should the data load immediately?   }
+			"total_available"            { Number of items can display         }
+
+		ACTIONS
+		
+			"go"                       , { Main Action                         }
+			"set_criteria"             , { Sets the criteria                   }
+			"get_selected_objs"        , { Get Selected Objects                }
+			"get_labtable"             , { Get hold of the LabTable            }
+			"commit_changes"           , { Commit DB Changes.                  }
+			"labtable_rmb"             , { Labtable RMB                        }
+			"labtable_item"            , { Add a Lab Table Item                }
+			"get_element"              , { Get an Element.                     }
+			"autosize"                 , { Autosize columns                    }
+			"auto_define_cols"         , { Define the Report Cols              }
+			"auto_browse_cols"         , { Define the Browse Cols              }
+			"auto_table_cols"          , { Define table standard col           }
+			"auto_user_table_cols"     , { define user table cols              }
+			"custom_cols"              , { Get Custom columns                  }
+			"validate_table"           , { Validate the Table                  }
+			"create_form"              , { Create a Form.                      }
+			"create_toolbar"           , { Create a toolbar                    }
+			"release_form"             , { Release a Form.                     }
+			"create_list"              , { Create a List Object                }
+			"column_build"             , { Build the Columns Up.               }
+			"column_save"              , { Save Column Information             }
+			"column_save_to_db"        , { Save to EXPLORER_COLUMN             }
+			"column_save_user_table"   , { Save cols for user+table            }
+			"column_remove"            , { Remove a Column                     }
+			"column_swap"              , { Swap two Columns                    }
+			"column_edit"              , { Edit a Column                       }
+			"column_insert"            , { Insert a Column                     }
+			"column_insert_blank"      , { Insert a blank column               }
+			"column_count"             , { Return num cols in prompt_details   }
+			"get_callback"             , { Get Rout and Lib.                   }
+			"get_icon"                 , { Get an Icon                         }
+			"get_sub_icon"             , { Get a sub item icon                 }
+			"get_row"                  , { Get a Row                           }
+			"load_data"                , { Load the Data into it.              }
+			"load_first_data"          , { Load first chunk of records to obdb }
+			"load_more_data"           , { Load subsequent chunks of records   }
+			"display_data"             , { Put the Data in the List            }
+			"get_item_style"           , { Returns the style to use for item   }
+			"load_row"                 , { Load a Row.                         }
+			"reload_selected"          , { Reload the Selected..               }
+			"save_changes"             , { Save Changes to the DB              }
+			"get_select_criteria"      , { Return selection criteria           }
+			"build_criteria"           , { Build the Criteria                  }
+			"edit_criteria"            , { Edit the Criteria                   }
+			"display_criteria"         , { Display Criteria                    }
+			"edit_properties"          , { Bring up the Properties             }
+			"finish"                   , { Finalisation Callbacks              }
+			"filter"                   , { Filter out the Data.                }
+			"field_in_autofilter"      , { field in auto criteria ?            }
+			"refresh"                  , { Reloads and display data            }
+			"refresh_display"          , { Redisplays data                     }
+			"more"                     , { Load next lot of data               }
+			"display_all"              , { All data using criteria             }
+			"initialise_odb"           , { initialise obj. database            }
+			"set_view_for_user"        , { set user's prefered view            }
+			"read_view"                , { Returns the user's prefered view    }
+			"read_display_limit"       , { Returns the user's prefered limit   }
+			"write_view"               , { saves view mode                     }
+			"get_last_item"            , { returns last item in list           }
+			"right_mouse_click"        , { Right-mouse callback                }
+			"double_click"             , { Double-click callback               }
+			"column_click"             , { Called on column click              }
+			"criteria"                 , { Called on Criteria key              }
+			"build"                    , { Called on Build key                 }
+			"select"                   , { Called on Select key                }
+			"insert"                   , { Called on Insert key                }
+			"remove"                   , { Called on Remove key                }
+			"add_menu_items_refresh"      , { Adds Refresh menu options        }
+			"add_menu_items_data_window"  , { Adds Data Window menu options    }
+			"add_menu_items_custom"       , { Adds custom options              }
+			"add_menu_items_entity"       , { Adds entity specific options     }
+			"add_menu_items_reporting"    , { Adds entity specific reporting   }
+			"add_menu_items_callback"     , { Adds options using a callback    }
+			"add_menu_items_auto_labtable", { Adds auto labtable options       }
+			"add_menu_items_favourites"   , { Adds favourite changing options  }
+			"add_menu_items_criteria"     , { Adds criteria changing options   }
+			"add_menu_items_autofilter"   , { Adds autofilter menu options     }
+			"add_menu_items_view"         , { Adds view menu options           }
+			"add_menu_items_properties"   , { Adds view properties options     }
+			"build_context_menu"       , { Builds context menu                 }
+			"process_context_menu"     , { Processes context menu              }
+			"add_toolbuttons"          , { Add buttons to toolbar              }
+			"add_toolbuttons_refresh"  , { Add refresh toolbuttons             }
+			"add_toolbuttons_data_window",{ Add data window toolbuttons        }
+			"add_toolbuttons_settings" , { Add settings toolbuttons            }
+			"add_toolbuttons_criteria" , { Add criteria toolbuttons            }
+			"add_toolbuttons_view"     , { Add view toolbuttons                }
+			"add_toolbuttons_properties",{ Add properties toolbuttons          }
+			"add_toolbuttons_help"     , { Add help toolbuttons                }
+			"insert_column_field"      , { Inserts a field column              }
+			"add_column_field"         , { Adds a field column at the end      }
+			"toggle_column_field"      , { Toggles the field visibility        }
+			"add_autofilter"           , { Adds criteria to the autofilter     }
+			"add_autofilter_contains"  , { Adds a prompted value to autofilter }
+			"set_icon_view"            , { Sets View                           }
+			"invoke_report"            , { displays an infomaker report        }
+			"option_clear_autofilter"  , { Clear autofilter User Option        }
+			"option_column_edit"       , { Edits current column                }
+			"option_column_insert"     , { Inserts at current column           }
+			"option_column_remove"     , { Removes current column              }
+			"option_column_move_left"  , { Moves current column left           }
+			"option_column_move_right" , { Moves current column right          }
+			"option_add_favourite"     , { Adds the selected item(s) to faves  }
+			"option_remove_favourite"  , { Removes selected item(s) from faves }
+			"option_edit_criteria"     , { Edit Criteria User Option           }
+			"option_display_criteria"  , { Display Criteria User Option        }
+			"option_more"              , { Display More Records User Option    }
+			"option_display_all"       , { Display All Records User Option     }
+			"option_modify_settings"   , { Lets user change browse settings    }
+			"option_properties"        , { Property Sheet User Option          }
+			"option_refresh"           , { Refresh User Option                 }
+			"option_toggle_removed"    , { Toggle Removed User Option          }
+			"can_clear_autofilter"     , { Returns true if can clear autofilter}
+			"can_add_favourite"        , { Returns true if can add favourite   }
+			"can_remove_favourite"     , { Returns true if can remove favourite}
+			"can_edit_criteria"        , { Returns true if can edit criteria   }
+			"can_display_criteria"     , { Returns true if can display criteria}
+			"can_set_view"             , { Returns true if can set list view   }
+			"can_more"                 , { Returns true if can display more    }
+			"can_display_all"          , { Returns true if can display all     }
+			"can_properties"           , { Returns true if can display property}
+			"can_refresh"              , { Returns true if can refresh records }
+			"can_toggle_removed"       , { Returns true if can toggle removed  }
+			"can_set_autofilter"       , { Returns true if can set autofilter  }
+			"can_modify_settings"      , { Returns true if can modify settings }
+			"can_column_remove"        , { Returns true if can remove column   }
+			"can_column_insert"        , { Returns true if can insert column   }
+			"can_column_edit"          , { Returns true if can edit column     }
+			"can_column_move_left"     , { Returns true if can move col. left  }
+			"can_column_move_right"    , { Returns true if can move col. right }
+			"can_column_toggle"        , { Returns true if can toggle column   }
+			"show_refresh"             , { True if refresh option visible      }
+			"show_properties"          , { True if properties option visible   }
+			"show_toggle_removed"      , { True if show/hide removed visible   }
+			"show_add_favourite"       , { True if add favourites visible      }
+			"show_remove_favourite"    , { True if remove favourites visible   }
+			"show_edit_criteria"       , { True if edit criteria visible       }
+			"show_display_criteria"    , { True if display criteria visible    }
+			"show_clear_autofilter"    , { True if clear autofilter visible    }
+			"show_set_autofilter"      , { True if set autofilter visible      }
+			"show_set_view"            , { True if set view visible            }
+			"show_more"                , { True if display more visible        }
+			"show_display_all"         , { True if display all visible         }
+			"start_prompt"             , { Starts the prompt                   }
+			"end_prompt"               , { Ends the prompt                     }
+			"update_screen_state"      , { Updates the enabled state of buttons}
+			"set_last_hit_field"       , { Sets the last_hit_field property    }
+			"field_exists"             , { Returns true if column exists       }
+			"field_find"               , { Returns position of field in column }
+			"selected"                 , { Called when item is selected in list}
+			"options_form_create"      , { Creates the options form            }
+			"options_form_save"        , { Saves the contents of options form  }
+			"remove_control_items"     , { Removes data window control items   }
+			"add_more_item"            , { Adds the 'More' control item        }
+			"is_more_item"             , { True if passed item is control item }
+			"apply_column_definition"    { Apply the users column definitions  }
+
+	
+	END CLASS
+	
+
+	DEFINE CLASS LIST_VIEWER_FORM
+	
+		INHERIT "STD_FORM"
+	
+		INITIALISATION
+	
+		PROPERTIES
+			"list"                  ,
+			"toolbar"               
+		
+		ACTIONS
+			"start_prompt"          ,
+			"end_prompt"            ,
+			"down"                  ,
+			"up"
+
+	END CLASS
+
+	DEFINE CLASS "LIST_VIEWER_OPTIONS"
+
+		INHERIT "STD_FORM"
+
+		INITIALISATION
+
+		PROPERTIES
+			"display_limit"        ,
+			"prompt_display_limit" ,
+			"prompt_count"
+
+		ACTIONS
+			"go"             ,
+			"save"           ,
+			"create_prompts"
+
+	END CLASS
+
+ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE lib_list_viewer_get_fields ( VALUE table )
+
+{
+* Build up a list of columns for the specified table.
+*
+*
+*******************************************************************************}
+
+	DECLARE count, fields, field, name, output, out_count
+	ARRAY fields
+	ARRAY output
+	
+	output [ 1, 1 ] = ""
+	output [ 1, 2 ] = ""
+	count     = 1
+	out_count = 1
+
+	get_field_names ( table, fields )
+
+	WHILE fields [ count, 1 ] <> EMPTY DO
+
+		field = fields [ count, 1 ]
+
+		IF criteria_cache_field_valid ( table, field ) THEN
+
+			out_count = out_count + 1
+
+			name = criteria_cache_field_title ( table, field )
+
+			output [ out_count, 1 ] = name
+			output [ out_count, 2 ] = field
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+	
+	array_sort ( output , ARRAY_SORT_ASCENDING )
+
+	RETURN ( output )
+
+ENDROUTINE
+
+{*******************************************************************************
+*                      L I S T  V I E W E R  C L A S S                         *
+*******************************************************************************}
+
+ROUTINE list_viewer_class_initialisation ( self )
+
+{
+* List Viewer Class initialisation
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	ARRAY self . property_details
+	ARRAY self . prompt_details
+	ARRAY self . criteria
+	ARRAY self . unevaluated_criteria
+	ARRAY self . auto_criteria
+	ARRAY self . position
+
+	self . selected_objects      = EMPTY
+	self . last_hit_field        = EMPTY
+	self . no_records_text       = ""
+	self . load_on_start         = TRUE
+	self . total_available       = -1
+	self . default_view          = LIST_REPORT_VIEW
+	self . clear_locks           = FALSE
+	self . read_lock             = TRUE
+	self . value                 = EMPTY
+	self . some_left             = FALSE
+	self . some_left_to_load     = FALSE
+	self . display_limit         = GLOBAL ( "EXPLORER_MORE_AMOUNT" )
+	self . display_max           = GLOBAL ( "EXPLORER_MAX_ROWS"    )
+	self . number_loaded         = 0
+	self . number_displayed      = 0
+	self . autosize              = FALSE
+	self . plugin                = EMPTY
+	self . table_object          = EMPTY
+	self . labtable              = EMPTY
+	self . unique_no             = EMPTY
+	self . changed               = FALSE
+ 	self . custom_rmb            = EMPTY
+	self . new_rmb               = EMPTY
+	self . table                 = EMPTY
+	self . odb                   = EMPTY
+	self . columns_changed       = FALSE
+	self . form                  = EMPTY
+	self . icon_number           = -1
+	self . header                = GET_USER_MESSAGE ( "LIST_HEADER", 1 ) 
+	self . menu_property         = TRUE
+	self . menu_view             = FALSE
+	self . menu_criteria         = TRUE
+	self . menu_auto_criteria    = TRUE
+	self . menu_refresh          = TRUE
+	self . menu_toggle_removed   = TRUE
+	self . menu_labtable         = TRUE
+	self . menu_columns          = FALSE
+	self . menu_standard         = TRUE
+	self . menu_favourites       = TRUE
+	self . default_action        = "OPTION_PROPERTIES"
+	self . default_callback      = EMPTY
+	self . rmb_callback          = EMPTY
+	self . icon_callback         = EMPTY
+	self . sub_icon_callback     = EMPTY
+	self . create_callback       = EMPTY
+	self . criteria_callback     = EMPTY
+	self . data_callback         = EMPTY
+	self . more_data_callback    = EMPTY
+	self . insert_callback       = EMPTY
+	self . finish_callback       = EMPTY
+	self . criteria_key_callback = EMPTY
+	self . build_key_callback    = EMPTY
+	self . browse_key_callback   = EMPTY
+	self . select_key_callback   = EMPTY
+	self . insert_key_callback   = EMPTY
+	self . remove_key_callback   = EMPTY
+
+	self . auto_status_icon      = FALSE
+	self . editable              = FALSE
+	self . width                 = 0
+	self . show_removed          = FALSE
+	self . style                 = LIST_STYLE_REPORT        +
+	                               LIST_STYLE_SHOWSELALWAYS + 
+	                               LIST_STYLE_AUTOARRANGE   +
+	                               LIST_STYLE_FULLROWSELECT +
+	                               LIST_STYLE_SUBITEMIMAGES
+
+	self . distinct_field        = EMPTY
+
+	self . vgl_library           = GLOBAL ( "CURRENT_LIBRARY" )
+	self . browse_key_routine    = STRIP( GLOBAL ( "CURRENT_LIBRARY" ) ) :
+	                               "/list_viewer_browse_routine"
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_start_prompt( self )
+{
+* Starts the List viewer
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	IF self . criteria <> EMPTY THEN
+
+		ARRAY_COPY( self . unevaluated_criteria, self . criteria )
+		criteria_lib_populate_prompt_unknowns( self . table, self . criteria )
+
+	ENDIF
+
+	self . std_prompt_list :: start_prompt( )
+		
+	self . started = TRUE
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_end_prompt( self )
+{
+* Ends the List viewer prompt
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	self . form = EMPTY
+
+	self . std_prompt_list :: end_prompt( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_set_criteria( self, criteria )
+{
+* Sets the criteria to use to select records to view
+* 
+* Parameters : self     , List Viewer Object
+*              criteria , Select array containing criteria to filter by
+*
+*******************************************************************************}
+
+	ARRAY_COPY( self . criteria, criteria )
+	
+	IF self . number_loaded <> 0 THEN
+		self . refresh( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_field_find ( self, VALUE field )
+
+{ 
+* Returns position of the passed field if it exists in the prompt details.
+* -1 is returned if not found
+*
+* Parameters : self  , List Viewer Object
+*              field , Field to find position of
+*
+*******************************************************************************}
+
+	DECLARE found_pos, pos
+
+	found_pos = -1
+
+	pos = 1
+	WHILE ( pos <= self . column_count( ) ) AND
+	      ( found_pos = -1                ) DO
+	      
+		IF ( TOUPPER( self . prompt_details[pos, 4] ) = TOUPPER( field ) ) THEN
+			found_pos = pos
+		ELSE
+			pos = pos + 1
+		ENDIF
+		
+	ENDWHILE
+
+	RETURN( found_pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_field_exists ( self, VALUE field )
+
+{ 
+* Returns true if the passed field exists in the prompt details
+*
+* Parameters : self  , List Viewer Object
+*              field , Field to test the existance
+*
+*******************************************************************************}
+
+	RETURN( self . field_find( field ) <> -1 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_insert_column_field(       self       ,
+                                                VALUE column     ,
+                                                VALUE field_name )
+{
+* Adds a field column with the passed column name
+* 
+* Parameters : self       , List Viewer Object
+*              column     , column number to insert after
+*              field_name , the name of the field to add
+*
+*******************************************************************************}
+
+	self . column_insert_blank( column )
+
+	explorer_utils_set_detail_field ( self . table          ,
+	                                  field_name            ,
+	                                  self . prompt_details ,
+	                                  self . display_only   ,
+	                                  column                )
+
+	IF self . started THEN
+	
+		self . column_build ( TRUE )
+		self . refresh_display( )
+		
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE list_viewer_action_apply_column_definition ( self )
+
+{
+*	Filter the current prompt details based on the users
+*	column definition settings.
+*	If the user has no column definition the leave it alone.
+*
+*******************************************************************************}
+
+	DECLARE count
+
+	count = 1
+	
+	WHILE count <= size_of_array ( self . prompt_details ) DO
+	
+		IF criteria_cache_field_valid ( self . table, self . prompt_details [ count, FIELD_NAME_POSITION ]) THEN
+
+			self . prompt_details [ count, MESSAGE_POSITION ] = 
+			         criteria_cache_field_title ( self . table,
+			                                      self . prompt_details [ count, FIELD_NAME_POSITION ])
+
+			count = count + 1
+
+		ELSE
+
+			array_remove_slice ( self . prompt_details, 1, count )
+
+		ENDIF
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_column_field( self, VALUE field_name )
+{
+* Adds a field column with the passed column name
+* 
+* Parameters : self       , List Viewer Object
+*              field_name , the name of the field to add
+*
+*******************************************************************************}
+
+    self . insert_column_field( self . column_count( ) + 1, field_name )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_toggle_column_field( self, VALUE field_name )
+{
+* Toggles column visibility
+* 
+* Parameters : self       , List Viewer Object
+*              field_name , the name of the field to add
+*
+*******************************************************************************}
+
+	DECLARE column_num
+
+	column_num = self . field_find( field_name )
+
+	IF column_num <> -1 THEN
+	
+		self . column_remove( column_num )
+	
+	ELSE
+		
+		self . insert_column_field( self . current_column + 1, field_name )
+		
+	ENDIF
+
+	self . columns_changed = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_auto_define_cols ( self, VALUE table )
+
+{
+* Automatically Define all Columns for the passed Table.
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	ARRAY self . prompt_details
+	self . table = table
+
+	explorer_utils_all_columns ( table                 , 
+	                             self . prompt_details ,
+	                             self . editable       )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_auto_browse_cols ( self, VALUE table )
+
+{
+* Automatically define columns from browse fields for the passed Table.
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	ARRAY self . prompt_details
+	self . table = table
+
+	explorer_utils_browse_columns ( table                 ,
+	                                self . prompt_details ,
+	                                self . editable       )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE list_viewer_action_auto_user_table_cols ( self, VALUE table )
+
+{
+* Automatically Define Columns from standard table setup for the passed Table
+* and current user. If not defined then use default for the table
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE folder_number
+
+	ARRAY self . prompt_details
+
+	folder_number = SELECT explorer_folder . folder_number
+	                    WHERE cabinet    = "TABLE_DETAILS"
+	                    AND   table_name = TOUPPER( table )
+	                    ORDER ON folder_number
+
+	IF folder_number <> EMPTY THEN
+		self . custom_cols ( "TABLE_DETAILS" : "$" : OPERATOR, folder_number )
+	ENDIF
+	
+	IF self . column_count( ) = 0 THEN
+		self . auto_browse_cols ( self . table )
+	ENDIF
+	
+	self . apply_column_definition ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+ROUTINE list_viewer_action_auto_table_cols ( self, VALUE table )
+
+{
+* Automatically Define Columns from standard table setup for the passed Table.
+* If not defined use the table's display_browse fields
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE folder_number
+
+	ARRAY self . prompt_details
+
+	folder_number = SELECT explorer_folder . folder_number
+					  WHERE cabinet    = "TABLE_DETAILS"
+					  AND   table_name = TOUPPER( table )
+					  ORDER ON folder_number
+
+	IF folder_number <> EMPTY THEN
+		self . custom_cols ( "TABLE_DETAILS", folder_number )
+	ENDIF
+	
+	IF self . column_count( ) = 0 THEN
+		self . auto_browse_cols ( self . table )
+	ENDIF
+
+	self . apply_column_definition ( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_viewer_action_custom_cols (       self          ,
+                                         VALUE cabinet       ,
+                                         VALUE folder_number )
+
+{
+*
+* Parameters : self , List Viewer Object
+*
+******************************************************************************}
+
+	self . prompt_details = explorer_utils_get_user_columns ( cabinet, folder_number )
+
+	IF self . column_count( ) = 0 THEN
+		self . auto_browse_cols ( self . table )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_refresh ( self, toolbar )
+
+{
+* Add toolbar buttons to refresh 
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_refresh( ) THEN
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "OPTION_REFRESH"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_REFRESH", 1 ) : " (F5)"
+		item . set_action( self, "OPTION_REFRESH" )
+		item . set_icon( "INT_REFRESH" )
+
+		toolbar . add_item( item )
+
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_data_window ( self, toolbar )
+
+{
+* Add toolbar buttons to modify the data view window
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+	item . identity = "OPTION_MORE"
+	item . caption  = "More"
+	item . width    = 7
+	item . set_action( self, "OPTION_MORE" )
+	item . set_icon( "INT_BROWSE_MORE" )
+
+	toolbar . add_item( item )
+
+	CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+	item . identity = "OPTION_DISPLAY_ALL"
+	item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_ALL", 1 )
+	item . set_action( self, "OPTION_DISPLAY_ALL" )
+	item . set_icon( "INT_BROWSE_DISPLAY_ALL" )
+
+	toolbar . add_item( item )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_settings ( self, toolbar )
+
+{
+* Add toolbar buttons to modify the look or behaviour of the list
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+	
+	DECLARE item
+
+	CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+	item . identity = "OPTION_MODIFY_SETTINGS"
+	item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_CHANGE_SETTINGS", 1 )
+	item . set_action( self, "OPTION_MODIFY_SETTINGS" )
+	item . set_icon( "INT_SETTINGS" )
+
+	toolbar . add_item( item )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_criteria ( self, toolbar )
+
+{
+* Add toolbar buttons to modify/display criteria
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_display_criteria( ) THEN
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "OPTION_DISPLAY_CRITERIA"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_DISP_CRITERIA", 1 ) : " (F8)"
+		item . set_action( self, "OPTION_DISPLAY_CRITERIA" )
+		item . set_icon( "INT_CRITERIA" )
+
+		toolbar . add_item( item )
+
+	ENDIF
+
+	IF self . show_edit_criteria( ) THEN
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "OPTION_EDIT_CRITERIA"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_EDIT_CRITERIA", 1 )
+		item . set_action( self, "OPTION_EDIT_CRITERIA" )
+		item . set_icon( "INT_CRITERIA_EDIT" )
+
+		toolbar . add_item( item )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_view ( self, toolbar )
+
+{
+* Add toolbar buttons to that change the view of the data
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_set_view( ) THEN
+	
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "SET_VIEW_LARGE_ICON"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_VIEW_LARGE", 1 )
+		item . is_check = TRUE
+
+		item . set_action( self, "SET_ICON_VIEW" )
+		
+		item . add_action_parameter( LIST_ICON_VIEW )
+		
+		item . set_icon( "INT_VIEW_LARGE_ICONS" )
+		
+		toolbar . add_item ( item )
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "SET_VIEW_SMALL_ICON"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_VIEW_SMALL", 1 )
+		item . is_check = TRUE
+
+		item . set_action( self, "SET_ICON_VIEW" )
+		
+		item . add_action_parameter( LIST_SMALL_ICON_VIEW )
+		
+		item . set_icon( "INT_VIEW_SMALL_ICONS" )
+		
+		toolbar . add_item ( item )
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "SET_VIEW_LIST"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_VIEW_LIST", 1 )
+		item . is_check = TRUE
+
+		item . set_action( self, "SET_ICON_VIEW" )
+		
+		item . add_action_parameter( LIST_LIST_VIEW )
+		
+		item . set_icon( "INT_VIEW_LIST" )
+		
+		toolbar . add_item ( item )
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "SET_VIEW_DETAILS"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_VIEW_DETAILS", 1 )
+		item . is_check = TRUE
+
+		item . set_action( self, "SET_ICON_VIEW" )
+		
+		item . set_icon( "INT_VIEW_REPORT" )
+		
+		item . add_action_parameter( LIST_REPORT_VIEW )
+		
+		toolbar . add_item ( item )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_properties ( self, toolbar )
+
+{
+* Add toolbar buttons to view properties
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_properties( ) THEN
+
+		CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+		item . identity = "OPTION_PROPERTIES"
+		item . tooltip  = GET_USER_MESSAGE( "BROWSER_TT_PROPERTIES", 1 )
+		item . set_action( self, "OPTION_PROPERTIES" )
+		item . set_icon  ( "INT_PROPERTIES" )
+
+		toolbar . add_item ( item )
+	
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons_help ( self, toolbar )
+
+{
+* Add toolbar buttons to show help
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	CREATE OBJECT TOOLBAR_BUTTON_CLASS , item
+	item . identity  = "HELP"
+	item . tooltip   = GET_USER_MESSAGE( "BROWSER_TT_HELP", 1 ) : " (F1)"
+	item . send_last_key = "HELP"
+	item . set_icon( "INT_HELP_BUBBLE" )
+
+	toolbar . add_item ( item )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_toolbuttons ( self, toolbar )
+
+{
+* Add toolbar buttons.
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	self . add_toolbuttons_refresh( toolbar )
+
+	toolbar . add_separator( )
+
+	self . add_toolbuttons_data_window( toolbar )
+
+	toolbar . add_separator( )
+
+	self . add_toolbuttons_criteria( toolbar )
+		
+	toolbar . add_separator( )
+	
+	self . add_toolbuttons_view( toolbar )
+	
+	toolbar . add_separator( )
+	
+	self . add_toolbuttons_properties( toolbar )
+	
+	toolbar . add_separator( )
+	
+	self . add_toolbuttons_settings( toolbar )
+	
+	toolbar . add_separator( )
+	
+	self . add_toolbuttons_help( toolbar )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_update_screen_state ( self )
+
+{ 
+* Updates the enabled state of toolbar items
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE toolbar, item
+
+	IF self . form <> EMPTY THEN
+	
+		toolbar = self . form . toolbar
+
+		toolbar . set_item_state( "OPTION_REFRESH"      ,
+		                          self . can_refresh( ) )
+		                          
+		toolbar . set_item_state( "OPTION_DISPLAY_CRITERIA"      ,
+		                          self . can_display_criteria( ) )
+		                          
+		toolbar . set_item_state( "OPTION_EDIT_CRITERIA"      ,
+		                          self . can_edit_criteria( ) )
+		                          
+		toolbar . set_item_state( "OPTION_PROPERTIES"      ,
+		                          self . can_properties( ) )
+		                          
+		toolbar . set_item_state( "OPTION_MORE"      ,
+		                          self . can_more( ) )
+		                          
+		toolbar . set_item_state( "OPTION_DISPLAY_ALL"      ,
+		                          self . can_display_all( ) )
+
+		toolbar . set_item_state( "OPTION_MODIFY_SETTINGS"      ,
+		                          self . can_modify_settings( ) )
+
+		item = toolbar . get_item_by_identity( "OPTION_MORE" )
+
+		item . set_tooltip( GET_USER_MESSAGE( "BROWSER_TT_MORE", 1 ) :
+		                    STRIP( self . display_limit ) :
+		                    GET_USER_MESSAGE( "BROWSER_TT_MORE", 2 ) : " (F6)" )
+	
+		item = toolbar . get_item_by_identity( "SET_VIEW_LARGE_ICON" )
+
+		IF item <> EMPTY THEN
+			item . set_check ( self . get_view() = LIST_ICON_VIEW )
+		ENDIF
+		
+		item = toolbar . get_item_by_identity( "SET_VIEW_SMALL_ICON" )
+		
+		IF item <> EMPTY THEN
+			item . set_check ( self . get_view() = LIST_SMALL_ICON_VIEW )
+		ENDIF
+		
+		item = toolbar . get_item_by_identity( "SET_VIEW_LIST" )
+		IF item <> EMPTY THEN
+			item . set_check ( self . get_view() = LIST_LIST_VIEW )
+		ENDIF
+		
+		item = toolbar . get_item_by_identity( "SET_VIEW_DETAILS" )
+		
+		IF item <> EMPTY THEN
+			item . set_check ( self . get_view() = LIST_REPORT_VIEW )
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE list_viewer_action_create_toolbar ( self )
+
+{ 
+* Create Toolbar
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE toolbar
+
+	CREATE OBJECT TOOLBAR_CLASS , toolbar
+
+	self . form . toolbar = toolbar
+	self . form . toolbar . column = self . column
+	self . form . toolbar . height = 0.9
+
+	self . add_toolbuttons( toolbar )
+
+	self . form . add_prompt ( toolbar )
+	
+	self . form . add_prompt( self . form . toolbar )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_create_form ( self )
+
+{ 
+* Create Form
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	CREATE OBJECT LIST_VIEWER_FORM, self . form
+
+	OBJECT_ASSIGN_UNCOUNTED( self . form . list, self )
+
+	self . form . header  = self . header
+
+	self . form . icon = explorer_utils_get_table_default_icon ( self . table )
+
+	IF self . width = 0 THEN
+
+		self . form . width   = ROUND ( GLOBAL ( "GUI_WIDTH"  ) * 0.8 )
+		self . form . height  = ROUND ( GLOBAL ( "GUI_HEIGHT" ) * 0.8 ) 
+		self . form . column  = ROUND ( GLOBAL ( "GUI_WIDTH"  ) * 0.1 )
+		self . form . row     = 3
+
+	ELSE
+
+		self . form . width   = self . width  + 2
+		self . form . height  = self . height + 2
+
+	ENDIF
+
+	self . form . add_prompt ( self )
+
+	self . create_toolbar( )
+
+	self . column    = 1
+	self . row       = 2
+	self . width     = self . form . width 
+	self . height    = self . form . height - self . row - 0.5
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_release_form ( self )
+
+{ 
+* Release Form. This used to be to free up memory. This is now done in the
+* form's end_prompt routine.
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	{do nothing}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_create_list ( self )
+
+{ 
+* Create a List Object
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	self . set_image_resource ( 0 ) 
+	self . use_images ( EMPTY, 0 )
+
+	ARRAY self . items_smw          = ""
+	ARRAY self . images_smw         = LIST_NO_IMAGE
+	ARRAY self . column_text_smw    ARRAYSIZE ( 0 ) = ""
+	ARRAY self . column_widths_smw  ARRAYSIZE ( 0 ) = 10
+
+	self . column_build ( FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_go ( self )
+
+{ 
+* Main Action
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE ok
+
+	IF ( self . prompt_details [ 1, MESSAGE_POSITION ] = EMPTY ) THEN
+
+		IF self . validate_table ( self . table ) THEN
+
+			self . auto_define_cols ( self . table )
+		ELSE
+			flash_message ( "LIST_BADTAB", TRUE )
+		ENDIF
+
+	ENDIF
+
+	{**********************************************************************}
+	{* Lets get on with it then.                                          *}
+	{**********************************************************************}
+
+	IF ( self . prompt_details [ 1, MESSAGE_POSITION ] <> EMPTY ) THEN
+
+		self . get_labtable ( )
+		self . create_list  ( )
+		self . create_form  ( )
+
+		ok = TRUE
+
+		IF ( self . criteria = EMPTY           ) OR 
+		   ( self . criteria [ 1, 1 ] = EMPTY  ) OR
+		   ( self . criteria_callback <> EMPTY ) THEN
+
+			ok = self . build_criteria ( )
+
+		ENDIF
+
+		IF ok THEN
+
+			self . form . start_prompt ( )
+
+			REPEAT
+				self . form . wait_prompt ( )
+			UNTIL self . finish ( ) <> FALSE
+
+			SET GLOBAL "LASTKEY" TO self . form . get_lastkey ( )
+
+			self . form . end_prompt  ( )
+			
+		ELSE
+
+			flash_message ( "LIST_BADCRIT", TRUE )
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_validate_table ( self, VALUE table )
+
+{
+* Validate the Table.
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE key, ok
+	ok = FALSE
+
+	IF valid_table ( table ) THEN 
+
+		GET_TABLE_DETAILS 'table' "KEY0_FIELD", key	
+		ok = ( table <> "BLOB_VALUES" )
+
+	ENDIF
+
+	RETURN ( ok )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_element ( self, row, VALUE count )
+
+{
+* Get an Element Value. Calling a Routine if Necessary
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE field, element, rout, lib, message, mt, detail, datatype
+	
+	mt      = EMPTY
+	element = ""
+
+	IF self . prompt_details [ count, TYPE_POSITION ] = "ROUTINE" THEN
+
+		rout = self . prompt_details [ count, ROUTINE_POSITION ]
+		lib  = self . prompt_details [ count, LIBRARY_POSITION ]
+
+		IF vgl_validate_routine ( lib, rout ) THEN
+	
+			{**************************************************}
+			{ Additional Parameters to allow support for Grid  }
+			{ Type list editor prompt routines.                }                        
+			{**************************************************}
+
+			CALL_ROUTINE    rout 
+			    IN LIBRARY lib
+			    USING      row, 
+			               mt, mt, mt, mt, mt, mt, mt, mt
+			    RETURNING  element
+
+		ELSE
+
+			detail = STRIP ( lib ) : "/" : STRIP ( rout )
+			message_fetch ( "LIST_BADROUT", message )
+			message_add_parameter ( message, detail )
+			message = message_get_text ( message, 1 )
+
+			fatal_error ( message )
+
+		ENDIF
+
+	ELSE
+
+		field = self . prompt_details [ count, FIELD_NAME_POSITION ] 
+
+		IF valid_field ( self . table, field ) THEN
+		
+			element = SELECT 'self . table' . 'field' 
+			          IN OBJECT row
+
+			GET_FIELD_DETAILS 'self . table' . 'field', "DATA_TYPE", datatype
+
+			IF datatype = "Date" THEN
+
+				SET DATE FORMAT GLOBAL ( "DEFAULT_DATE_FORMAT" )		
+
+				FORMAT element FROM element USING 'self . table' . 'field'
+
+				element = DATE( element )
+
+				RESTORE DATE FORMAT
+
+			ELSE
+
+				FORMAT element FROM element USING 'self . table' . 'field'
+
+				IF datatype = "Text" THEN
+					element = STRIP( STRING( element ) )
+
+				ELSEIF datatype = "Integer" THEN
+					  element = TRUNC( NUMERIC( element ) )
+
+				ELSEIF datatype = "Real" THEN
+					  element = NUMERIC( element )
+
+				ELSEIF datatype = "Packed decimal" THEN
+					  element = PACKED_DECIMAL( element )
+
+				ELSEIF datatype = "Interval" THEN
+					  element = INTERVAL( element )
+
+				ENDIF
+
+			ENDIF
+		ELSE
+		
+			element = ERROR
+			
+		ENDIF
+	
+	ENDIF
+
+	RETURN ( element )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_load_first_data ( self )
+
+{ 
+* Populates object database with the first chunk of data
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout, criteria, read_only, lock_mode
+	
+	IF self . data_callback <> EMPTY THEN
+
+		{**************************************************************}
+		{* Go and use the Callback to Build the Object Database.      *}
+		{**************************************************************}
+		
+		IF self . get_callback ( self . data_callback, lib, rout ) THEN
+
+			CALL_ROUTINE    rout
+			    IN LIBRARY lib
+			    USING      self, self . odb
+			    NEW CONTEXT
+
+		ENDIF
+		
+		IF NOT self . some_left_to_load THEN
+			self . total_available = self . odb . size( )
+		ENDIF
+
+	ELSE
+	
+		criteria = self . get_select_criteria( )
+	
+		GET_TABLE_DETAILS 'self . table', "READ_ONLY", read_only
+		
+		IF ( NOT self . read_lock ) OR ( read_only ) THEN
+			lock_mode = ARRAY_SELECT_LOCK_NONE
+		ELSE
+			lock_mode = ARRAY_SELECT_LOCK_READ
+		ENDIF
+
+		ARRAY_SELECT_LOCK_IN_OBJECT ( self . odb   ,
+		                              self . table ,
+		                              lock_mode    ,
+		                              criteria     )
+
+		self . total_available = TRUNC( ARRAY_SELECT_COUNT( self . table ,
+		                                                    criteria     ) )
+
+		self . some_left_to_load = TRUE
+		
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_load_more_data ( self )
+
+{
+* Load the next set of records into the object database
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE val, obj, fields, count, select_field, select_distinct, old_val
+	DECLARE lib, rout
+	
+	IF ( self . more_data_callback <> EMPTY ) THEN
+
+		{**************************************************************}
+		{* Go and use the Callback to Build the Object Database.      *}
+		{**************************************************************}
+		
+		IF self . get_callback ( self . more_data_callback, lib, rout ) THEN
+
+			CALL_ROUTINE   rout
+			    IN LIBRARY lib
+			    USING      self, self . odb
+			    NEW CONTEXT
+
+		ENDIF
+		
+		self . number_loaded = self . odb . size ( )
+
+		IF NOT self . some_left_to_load THEN
+			self . total_available = self . number_loaded
+		ENDIF
+
+	ELSE
+
+		IF valid_field( self . table, self . distinct_field ) THEN
+			select_field = self . distinct_field
+			select_distinct = TRUE
+		ELSE
+			get_unordered_field_names ( self . table, fields )
+			select_field = fields [ 1, 1 ]
+			select_distinct = FALSE
+		ENDIF
+
+		old_val = NULL
+
+		count = 0
+		val = SELECT 'self . table' . 'select_field' IN OBJECT self . odb
+
+		WHILE ( val <> EMPTY                         ) AND
+		      ( ( count <  self . display_limit ) OR
+		        (  self . display_limit = 0     )    ) DO
+
+			IF NOT select_distinct OR ( old_val <> val ) THEN
+				
+				CREATE OBJECT "STD_OBJECT_RECORD", obj
+				obj . table = self . table
+
+				OBJECT_ADD_TABLE_FROM_OBJECT ( obj, self . odb, self . table )
+
+				self . odb . add ( obj )
+
+				count = count + 1
+				
+				old_val = val
+				
+			ENDIF
+
+			NEXT 'self . table' IN OBJECT self . odb
+				
+			val = SELECT 'self . table' . 'select_field' IN OBJECT self . odb
+
+		ENDWHILE
+
+		self . some_left_to_load = ( val <> EMPTY )
+		self . number_loaded = self . number_loaded + count
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_load_data ( self )
+
+{
+* Load Data
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE message, item, state
+	
+	message = GET_USER_MESSAGE ( "LIST_WAIT", 1 ) 
+	window_set_status ( message )
+
+	{**********************************************************************}
+	{* Rollback the READ Locks if we are updating data.                   *}
+	{**********************************************************************}
+
+	IF ( NOT transaction_is_write ( ) ) AND 
+	   ( self . clear_locks           ) THEN
+
+		ROLLBACK
+
+	ENDIF
+	
+	self . initialise_odb( )
+	
+	self . some_left_to_load = FALSE
+	
+	self . load_first_data( )
+
+	self . number_loaded = self . odb . size( )
+
+	self . some_left = TRUE	
+	
+	self . refresh_display ( )
+	
+
+	{* Highlight first item in list *}	
+	IF ( self . get_first_selected ( item ) = EMPTY ) AND
+	   ( self . number_loaded > 0                   ) THEN
+		
+		state = LIST_ITEM_SELECTED
+		self . set_item_state ( 0, state, state )
+		
+		{* Must explicitly call selected callback because *}
+		{* state change is not enough in itself           *}
+			
+		self . selected( )
+		
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_set_view_for_user ( self )
+
+{
+* Sets the prefered view for the current user based on the current table.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	self . set_view ( self . read_view( ) )
+
+	self . display_limit = self . read_display_limit( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_read_display_limit ( self )
+
+{
+* Returns the prefered display limit for the current user based on the
+* current table.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE display_limit
+
+	display_limit = user_setting_read( "ENTITY"             ,
+	                                   self . table         ,
+	                                   "MORE_AMOUNT"        ,
+	                                   self . display_limit )
+	
+	display_limit = TRUNC( NUMERIC( display_limit ) )
+	
+	RETURN( display_limit )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_read_view ( self )
+
+{
+* Returns the prefered view for the current user based on the current table.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE view_mode
+
+	view_mode = user_setting_read( "ENTITY"            ,
+	                               self . table        ,
+	                               "VIEW_MODE"         ,
+	                               self . default_view )
+	
+	view_mode = TRUNC( NUMERIC( view_mode ) )
+	
+	RETURN( view_mode )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_write_view ( self, VALUE view_mode )
+
+{
+* Saves the prefered view for the current user based on the current table.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	user_setting_write( "ENTITY", self . table , "VIEW_MODE", view_mode )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_initialise_odb ( self )
+
+{
+* Initialise Object Database
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", self . odb
+	self . odb . initialise  ( self . table )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_labtable ( self )
+
+{
+* Display the Data
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE count, labs_array, num_labs, found, message
+	found = ( self . labtable <> EMPTY )
+
+	IF self . labtable = EMPTY THEN
+
+		message = GET_USER_MESSAGE ( "LIST_LOAD_LAB", 1 ) 
+		window_set_status ( message )
+
+	        lab_read_tables_array ( labs_array, num_labs )
+
+		count = 1
+
+		WHILE ( count <= num_labs ) AND ( NOT found ) DO
+
+			found = ( STRIP ( labs_array [ count ] . table_id ) 
+			                                       = self . table )
+			count = count + 1
+	
+		ENDWHILE
+
+		IF found THEN
+
+			self . labtable = labs_array [ count - 1 ]
+
+		ENDIF
+
+		message = ""
+		window_set_status ( message )
+
+	ENDIF
+
+	RETURN ( found )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_field_in_autofilter ( self, VALUE field )
+
+{
+* Returns True if the passed field is involved in the auto criteria select
+* array
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE pos, field_in_filter, test_field, test_operator
+
+	field_in_filter = FALSE
+
+	pos = 1
+	WHILE ( pos <= size_of_array( self . auto_criteria ) ) AND
+	      ( field_in_filter = FALSE                      ) DO
+	
+		test_operator = self . auto_criteria[pos, 1]
+		test_field    = self . auto_criteria[pos, 2]
+	
+		IF ( test_field = field ) AND ( test_operator <> ARRAY_SELECT_ORDER ) THEN
+			field_in_filter = TRUE
+		ENDIF
+	
+		pos = pos + 1
+		
+	ENDWHILE
+
+	RETURN( field_in_filter )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_select_criteria ( self )
+
+{ 
+* Returns the criteria to use to determine which records are to be shown in the
+* list. The criteria is a combination of the evaluated criteria and the auto
+* filter criteria. The evaluated criteria is the original provided criteria that
+* has no unknown values. i.e the user has already provided prompted values.
+* The auto filter criteria is the current temporary auto filter criteria applied
+* by the user (i.e the thing that makes a column turn blue)
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE criteria, remove_field, non_remove_criteria
+
+	ARRAY criteria
+	ARRAY_SELECT_CONCAT( criteria, self . auto_criteria )
+	ARRAY_SELECT_CONCAT( criteria, self . criteria      )
+
+	GET_TABLE_DETAILS 'self . table', "REMOVE_FIELD", remove_field
+
+	IF ( NOT self . show_removed ) AND ( remove_field <> EMPTY ) THEN
+
+		ARRAY non_remove_criteria
+
+		ARRAY_SELECT_ADD( non_remove_criteria ,
+		                  ARRAY_SELECT_EQ     ,
+		                  remove_field        ,
+		                  FALSE               )
+
+		ARRAY_SELECT_CONCAT( criteria, non_remove_criteria )
+
+	ENDIF
+
+	RETURN( criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_more_item( self )
+{ 
+* Add the 'More' control item
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE more_ptr, more_text, pos, percent_text, old_format
+
+	IF self . total_available <> -1 THEN
+	
+		old_format = GLOBAL ( "FORMAT_TEXT" )
+
+		SET FORMAT "99.9"
+
+		percent_text = STRIP( 100 - ( ( self . number_displayed * 100 ) /
+		                                  self . total_available ) ) : "%"
+
+		SET FORMAT old_format
+
+		MESSAGE_FETCH ( "LIST_CLICK_MORE_AMOUNT", more_ptr )
+		MESSAGE_ADD_PARAMETER ( more_ptr, percent_text )
+
+		more_text = MESSAGE_GET_TEXT ( more_ptr, 1 )
+
+	ELSE
+	
+		more_text = GET_USER_MESSAGE ( "LIST_CLICK_MORE", 1 )
+	
+	ENDIF
+
+	self . set_more_flag_text ( more_text )
+
+	pos = self . add_more_flag ( )
+	
+	self . position[pos] = self . number_displayed
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_display_data ( self )
+
+{ 
+* Display the Data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE row, count, nomax, item, message, pos, column, field
+	nomax = ( self . display_limit = 0 )
+	count = 0
+
+	message = GET_USER_MESSAGE ( "LIST_LOAD", 1 ) 
+	window_set_status ( message )
+
+	self . start_rebuild()
+
+	{**********************************************************************}
+	{* Load more data into object database if necessary                   *}
+	{**********************************************************************}
+
+	IF ( self . some_left_to_load ) THEN
+			
+		self . load_more_data ( )
+			
+	ENDIF
+
+	{**********************************************************************}
+	{* Display Data in the List.                                          *}
+	{**********************************************************************}
+
+	item  = count  + self . number_displayed +  1
+
+	WHILE ( item <= self . odb . size ( )                           ) AND 
+	      (( nomax ) OR ( count < self . display_limit )            ) AND 
+	      (( self . number_displayed + count ) < self . display_max ) DO
+
+		self . odb . set_by_number ( item )
+
+		row = self . odb . current
+		self . current_item = count
+
+		pos = self . load_row ( row, TRUE )
+
+		IF pos <> EMPTY THEN
+		
+			self . position [ pos ] = ( item - 1 )
+			
+		ENDIF
+
+		IF count MOD 10 = 0 THEN
+		
+			message = GET_USER_MESSAGE ( "LIST_LOAD", 1 ) :
+			          " (" : STRIP( self . number_displayed + count ) : ")"
+			self . status_text = message
+			window_set_status ( message )
+			
+		ENDIF
+
+		count = count + 1
+		item  = count  + self . number_displayed +  1
+
+	ENDWHILE
+
+	self . rebuild()
+
+	self . number_displayed = self . number_displayed + count
+	
+
+	IF self . number_displayed = 0 THEN
+
+		self . set_empty_text( self . no_records_text )
+
+	ELSE
+	
+		self . set_empty_text( "" )
+	
+	ENDIF
+
+	{**********************************************************************}
+	{* Highlight the columns that have an auto criteria applied           *}
+	{**********************************************************************}
+
+	column = 1
+	WHILE column <= self . column_count( ) DO 
+		
+		field = self . prompt_details[column, FIELD_NAME_POSITION]
+		
+		IF self . field_in_autofilter( field ) THEN
+			self . set_column_back_colour( column, prompt_colour_rgb ( 192 , 192 , 255 ) )
+		ELSE
+			self . set_column_back_colour( column, EMPTY )
+		ENDIF
+		
+		column = column + 1
+		
+	ENDWHILE
+	
+	{**********************************************************************}
+	{* Are there any more records to display?                             *}
+	{**********************************************************************}
+
+	self . some_left = ( self . some_left_to_load                       ) OR
+	                   ( self . number_displayed < self . number_loaded )
+	
+	IF ( self . some_left                              ) AND 
+	   ( self . number_displayed >= self . display_max ) THEN
+
+		flash_message ( "LIST_MAXIMUM_ROWS_REACHED", TRUE )
+
+	ELSEIF self . some_left THEN
+	
+		self . add_more_item( )
+	
+	ENDIF
+	
+	IF ( count > 0 ) AND ( self . autosize ) THEN
+
+		self . autosize ( )
+
+	ENDIF
+	
+	{**********************************************************************}
+	{* Set an appropriate message.                                        *}
+	{**********************************************************************}
+
+	message = STRIP ( self . number_displayed ) :
+	          GET_USER_MESSAGE ( "LIST_LOADED", 1 ) 
+
+	IF self . some_left AND ( self . total_available <> -1 ) THEN
+
+		message = message :
+		          " (" : STRIP( self . total_available - self . number_displayed ) :
+		          " " : GET_USER_MESSAGE( "LIST_MORE_AVAIL", 1 ) : ")"
+		
+	ENDIF
+
+	self . update_screen_state( )
+
+	self . status_text = message
+	window_set_status ( message )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_item_style ( self, row )
+
+{
+* Returns the list item style to use for the passed in row object
+* Make Removed Records look different
+* 
+* Parameters : self , List Viewer Object
+*              row  , The object record to load into the list
+*
+*******************************************************************************}
+
+	DECLARE remove_field, state
+
+	state = 0
+	
+	GET_TABLE_DETAILS 'self . table', "REMOVE_FIELD", remove_field
+
+	IF ( remove_field <> EMPTY ) THEN
+
+		IF ( SELECT 'self . table' . 'remove_field' IN OBJECT row = TRUE ) THEN
+		
+			state = LIST_ITEM_CUT
+			
+		ENDIF
+
+	ENDIF
+
+	RETURN( state )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_load_row ( self, row, VALUE new )
+
+{
+* Load some data into the Form.
+* 
+* Parameters : self , List Viewer Object
+*              row  , The object record to load into the list
+*              new  , is this item new to the list?
+*
+*******************************************************************************}
+
+	DECLARE icon, column_num, element, lib, rout, pos, sub_icon, item_style
+
+	icon = self . get_icon ( row )
+	
+	IF new THEN
+
+		element = self . get_element ( row, 1 )
+		pos     = self . insert_item ( element, icon )
+
+	ELSE
+
+		pos = self . current_item
+		self . set_image ( icon )
+
+	ENDIF
+
+	item_style = self . get_item_style( row )
+
+	self . set_item_state ( pos - 1, item_style, item_style )
+
+	{**************************************************************}
+	{* Call the Insert callback to allow the user to set styles   *}
+	{**************************************************************}
+
+	IF self . get_callback ( self . insert_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+			IN LIBRARY lib
+			USING      self, row, pos
+			NEW CONTEXT
+
+	ENDIF
+
+	{**************************************************************}
+	{* Go through and allow the rest of the values to be updated. *}
+	{**************************************************************}
+	column_num = 2
+	WHILE column_num <= self . column_count( ) DO 
+
+		element = self . get_element ( row, column_num )
+
+		sub_icon = self . get_sub_icon ( row, column_num ) 
+
+		self . set_sub_item ( column_num, element, sub_icon )
+		
+		column_num = column_num + 1
+
+	ENDWHILE
+
+	RETURN ( pos )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_autosize ( self )
+
+{
+* Autosize Columns based on the data contents and header.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	self . autosize_column ( 0, LIST_COLUMN_AUTOSIZE_USEHEADER )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_build_criteria ( self )
+
+{ 
+* Builds a default criteria to use if one has not been provided.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout, key_0, count, down
+
+	IF self . get_callback ( self . criteria_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self, self . criteria
+		    NEW CONTEXT
+
+	ENDIF
+
+	IF ( self . criteria = EMPTY          ) OR 
+	   ( self . criteria [ 1, 1 ] = EMPTY ) THEN
+
+		GET_TABLE_DETAILS 'self . table', "KEY0_FIELD", key_0
+		
+		ARRAY self . criteria
+		
+		count = 1		
+		WHILE key_0 [ count ] <> EMPTY DO
+
+			GET_FIELD_DETAILS 'self . table' . 'key_0 [ count ]', 
+			                  "DESCENDING", down
+
+			IF down THEN
+
+				ARRAY_SELECT_ADD ( self . criteria         , 
+				                   ARRAY_SELECT_ORDER      ,
+				                   key_0 [ count ]         ,
+				                   ARRAY_SELECT_DESCENDING )
+
+			ELSE
+
+				ARRAY_SELECT_ADD ( self . criteria        ,
+				                   ARRAY_SELECT_ORDER     ,
+				                   key_0 [ count ]        ,
+				                   ARRAY_SELECT_ASCENDING )
+			ENDIF
+
+			count = count + 1
+
+		ENDWHILE
+		
+	ENDIF
+
+	RETURN ( TRUE )
+	 
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_edit_criteria ( self )
+
+{
+* Filter the Data using the Criteria.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE mandy_array, true_var, done
+
+	ARRAY mandy_array
+
+	true_var = TRUE
+
+	CALL_ROUTINE "criteria_edit"
+	             IN LIBRARY "$criteria_edit"
+	             USING      self . table    ,
+	                        self . criteria ,
+	                        mandy_array     ,
+	                        true_var        ,
+	                        true_var
+	             RETURNING done
+
+	IF done THEN
+
+		self . refresh ( )
+		
+	ENDIF
+	
+	RETURN( done )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_display_criteria ( self )
+
+{
+* Display the Current Criteria
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE message
+	
+	message = GET_USER_MESSAGE ( "LIST_NOCRITERIA", 1 )
+
+	criteria_lib_display ( self . criteria            ,
+	                       self . table               ,
+	                       "$CRITERIA_EDIT_MANDATORY" ,
+	                       message                    ,
+	                       "$CRITERIA_EDIT_MANDATORY" )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_save_changes ( self, VALUE message )
+
+{
+* Save the Changes
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE object, loked, in_trans, success
+	in_trans = TRUE	
+	success  = TRUE
+
+	IF ( self . changed ) AND ( confirm_with_text ( message ) ) THEN
+
+		IF NOT transaction_is_write () THEN
+
+			in_trans = FALSE
+			message = GET_USER_MESSAGE ( "LIST_TRAN_UPDATE", 1 ) 
+			START WRITE TRANSACTION message 
+
+		ENDIF
+	
+		IF object_check_action ( self . odb, "SAVECHANGES" ) THEN
+
+			{ Allow Custom Save Actions... }
+
+			self . odb . save_changes ( )
+
+		ELSE
+
+			self . odb . set_first ( ) 
+			object = self . odb . current
+
+			WHILE object <> EMPTY DO
+
+				loked = lock_state_object ( self . table,
+				                            object      )
+
+				IF ( loked = "SELECTED_WRITE" ) OR 
+				   ( loked = "RESERVED_WRITE" ) THEN
+
+					object . update ( )
+
+				ENDIF
+
+				self . odb . set_next ( )
+				object = self . odb . current 
+	
+			ENDWHILE
+
+		ENDIF
+
+		IF NOT in_trans THEN
+			COMMIT
+		ENDIF
+
+		message = GET_USER_MESSAGE ( "LIST_DONE", 1 ) 
+		window_set_status ( message ) 
+
+	ELSEIF ( self . changed ) THEN
+		
+		IF NOT in_trans THEN
+			ROLLBACK
+		ENDIF
+
+		success = FALSE
+		message = GET_USER_MESSAGE ( "LIST_ABAND", 1 ) 
+		window_set_status ( message ) 
+
+	ENDIF
+
+	self . changed = FALSE
+
+	RETURN ( success )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_selected_objs ( self, VALUE lock )
+
+{
+* Get hold of the Selected Objects
+* 
+* Parameters : self , List Viewer Object
+*              lock , Should the returned records be locked?
+*
+*******************************************************************************}
+
+	DECLARE current, odb, text, row
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", odb
+	
+	odb . table = self . table
+	
+	current = self . get_first_selected ( text )
+			
+	WHILE current <> EMPTY DO
+
+		row = self . get_row ( current, lock )
+
+		IF row <> EMPTY THEN
+
+			odb . add ( row )
+		
+		ENDIF
+		
+		current = self . get_next_selected  ( text )
+
+	ENDWHILE
+
+	RETURN ( odb )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_edit_properties ( self )
+
+{
+* Edit the Item Properties.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE details, odb, property, message, automatic, modifiable, is_view
+	
+	GET_TABLE_DETAILS 'self . table', "IS_VIEW", is_view
+	
+	modifiable =     ( NOT self . display_only )
+	             AND ( NOT is_view             )
+	             AND ( self . editable         )
+	
+	automatic = FALSE
+
+	odb = self . get_selected_objs ( modifiable )
+
+	IF odb . size ( ) > 0 THEN
+
+		details = self . prompt_details
+
+		IF ( self . property_details <> EMPTY              ) AND
+		   ( SIZE_OF_ARRAY ( self . property_details ) > 0 ) THEN
+ 
+			details = self . property_details
+
+		ELSE
+			automatic = TRUE
+		ENDIF
+
+		{**************************************************************}
+		{* Create the Property Sheet Object                           *}
+		{**************************************************************}
+
+		CREATE OBJECT PROPERTY_SHEET_EX_CLASS, property
+		property . max_mode     = FALSE
+		property . add_table    = FALSE
+		property . display_only = NOT modifiable
+
+		property . initialise ( )
+
+		message = GET_USER_MESSAGE ( "LIST_DETAILS", 1 ) 
+
+		{**************************************************************}
+		{* Load the Correct Information                               *}
+		{**************************************************************}
+
+		IF automatic THEN
+
+			property . container = odb
+
+			property . automatic ( )
+			
+		ELSE
+		
+			IF odb . size ( ) = 1 THEN
+		
+				odb . set_first ( )
+				property . container = odb . current
+		
+				property . add_line_page ( message, details )
+			
+			ENDIF
+			
+		ENDIF
+
+		{**************************************************************}
+		{* Send it on its merry way.                                  *}
+		{**************************************************************}
+	 
+		property . user_info = self . user_info
+
+		IF property . go ( ) AND modifiable THEN
+		
+			self . reload_selected ( FALSE )
+			
+			self . changed = TRUE
+			
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_reload_selected ( self, VALUE revert )
+
+{
+* Return the DB Record for the row.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE current, row, item
+
+	current = self . get_first_selected ( item )
+
+	WHILE current <> EMPTY DO
+
+		row = self . get_row ( current, FALSE )
+		
+		IF ( revert ) AND ( NOT self . display_only ) THEN
+
+			IF object_check_action ( row, "RESET" ) THEN
+
+				row . reset ( )
+
+			ENDIF
+
+		ENDIF
+
+		self . current_item = current
+		self . load_row ( row, FALSE )
+
+		current = self . get_next_selected ( item )
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_row ( self, VALUE current_pos, VALUE lock )
+
+{
+* Return the DB Record for the passed row position.
+* 
+* Parameters : self        , List Viewer Object
+*              current_pos , The current position within the list
+*              lock        , Should the returned row be locked for update
+*
+*******************************************************************************}
+
+	DECLARE flag, row_object, row_pos, original_pos
+
+	row_object = EMPTY
+
+	original_pos = self . get_original_position ( current_pos )
+
+	{* This NUMTEXT check is a non-elegent way to ensure smw doesn't crash if *}
+	{* a key is held down in the list. The crash is due to loss of            *}
+	{* synchronisation between client and server causing the action           *}
+	{* get_original_pos to return a boolean instead of an integer             *}
+	
+	IF NUMTEXT( original_pos ) THEN
+
+		row_pos = self . position [ original_pos + 1 ]
+
+		IF row_pos <> EMPTY THEN
+
+			self . odb . set_by_number ( row_pos + 1 )
+
+			IF lock THEN
+
+				lock_upgrade_object ( self . table, self . odb . current, flag )
+
+			ENDIF
+
+			row_object = self . odb . current 
+
+		ENDIF
+
+	ENDIF
+
+	RETURN ( row_object )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_create_callback ( self, row )
+
+{
+* Create Row Callback
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . create_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self, row
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_build ( self, VALUE rebuild )
+
+{
+* Build a Set of Columns
+* 
+* Parameters : self    , List Viewer Object
+*              rebuild , are we rebuilding or creating for first time?
+*
+*******************************************************************************}
+
+	DECLARE count, name, wid
+
+	IF rebuild THEN
+		self . clear_columns ( )
+	ENDIF
+
+	count = 1
+
+	WHILE count <= self . column_count( ) DO
+
+		name = self . prompt_details [ count, MESSAGE_POSITION       ]
+
+		IF self . autosize THEN
+			wid = LIST_COLUMN_AUTOSIZE_USEHEADER
+		ELSE
+			wid = self . prompt_details [ count, EXPLORER_UTILS_WID_POS ]
+		ENDIF
+
+		self . add_column ( STRIP ( name ), wid )
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_remove ( self, VALUE column )
+
+{
+* Remove a Column. Can only remove if there will be at leats one column left
+* afterwards
+* 
+* Parameters : self   , List Viewer Object
+*              column , column number to remove (1 indexed array)
+*
+*******************************************************************************}
+
+	IF self . column_count( ) > 1 THEN
+
+		self . column_save ( )
+
+		ARRAY_REMOVE_SLICE ( self . prompt_details, 1, column )
+
+		self . column_build ( TRUE )
+		self . refresh_display( )
+
+	ELSE
+		flash_message ( "LIST_ONECOL", TRUE )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_swap ( self, VALUE column1, VALUE column2 )
+
+{
+* Swap two Columns around
+* 
+* Parameters : self    , List Viewer Object
+*              column1 , first column number to swap (1 indexed array)
+*              column2 , second column number to swap (1 indexed array)
+*
+*******************************************************************************}
+
+	DECLARE temp1, temp2
+
+	self . column_save ( )
+
+	ARRAY_COPY ( temp1, self . prompt_details [ column1 ] )
+	ARRAY_COPY ( temp2, self . prompt_details [ column2 ] )
+
+	self . prompt_details [ column1 ] = temp2
+	self . prompt_details [ column2 ] = temp1
+
+	self . column_build ( TRUE )
+	self . refresh_display( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_save ( self )
+
+{
+* Save Changes from the client back to the prompt details definitions
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE count, widf, pos
+	count = 1
+
+	WHILE count <= self . column_count( ) DO
+
+		widf = self . get_column_width ( count - 1 )
+		pos  = EXPLORER_UTILS_WID_POS
+		
+		IF widf <> self . prompt_details [ count, pos ] THEN
+
+			self . prompt_details [ count, pos ] = widf
+			self . columns_changed = TRUE
+
+		ENDIF
+		
+		count = count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_insert_blank ( self, VALUE column )
+
+{
+* Insert a New Blank Column
+* 
+* Parameters : self   , List Viewer Object
+*              column , column number to insert before (1 indexed array)
+*
+*******************************************************************************}
+
+	IF column = MAX_COLUMNS THEN
+		column = self . column_count( ) + 1
+	ENDIF
+
+	ARRAY_INSERT_SLICE ( self . prompt_details, 1, column )
+
+	self . prompt_details [ column, 1 ] = ""
+	self . prompt_details [ column, 2 ] = "DISPLAY"
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_insert ( self, VALUE column )
+
+{
+* Insert a New Column
+* 
+* Parameters : self   , List Viewer Object
+*              column , column number to insert before (1 indexed array)
+*
+*******************************************************************************}
+
+	self . column_insert_blank ( column )
+
+	IF NOT self . column_edit ( column ) THEN
+		ARRAY_REMOVE_SLICE ( self . prompt_details, 1, column )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_edit ( self, VALUE column )
+
+{
+* Edit a Column Definition
+* 
+* Parameters : self   , List Viewer Object
+*              column , column number to edit (1 indexed array)
+*
+*******************************************************************************}
+
+	DECLARE form, fields, ok_button, cancel_button, widf, details, pos, 
+	        row, name, prompts, width_pos
+
+	{***********************************************************************
+	* Get Hold of the Defaults.
+	***********************************************************************}
+
+	width_pos = EXPLORER_UTILS_WID_POS
+	details   = self . prompt_details [ column ]
+	details [ width_pos ] = self . get_column_width ( column - 1 )
+
+	{***********************************************************************
+	* Create the Edit Form.
+	***********************************************************************}
+
+	CREATE OBJECT "STD_FORM", form
+
+	form . header  = GET_USER_MESSAGE ( "LIST_COLUMN", 1 ) 
+	form . footer  = GET_USER_MESSAGE ( "LIST_FOOTER", 1 ) 
+
+	form . width   = 43
+	form . height  = 4
+	form . row     = self . row + 8
+	form . column  = ( self . column + ( self . width / 2 )) - 15
+
+	form . button_style      = FORM_BUTTON_NONE
+	form . return_behaviour  = FORM_RETURN_WRAP
+	form . confirm_required  = FALSE
+	form . parent_prompt     = self
+
+	pos = 1
+	row = 1
+
+	{***********************************************************************
+	* Add the Prompts.	   
+	***********************************************************************}
+
+	fields = lib_list_viewer_get_fields ( self . table )
+
+	PROMPT OBJECT form . prompt_objects [ pos ]
+	     AT 22, row
+	     CHOOSE OUT_OF fields
+	     WITH ( value                = details [ FIELD_NAME_POSITION ],
+	            vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )   ,
+	            leave_prompt_routine = "edit_column_leave_field"      ,
+	            validation_routine   = "edit_column_validate_field"   ,
+	            always_validate      = TRUE                           )
+
+	name = PAD ( GET_USER_MESSAGE ( "LIST_FIELD", 1 ) , " ", 18 )
+	form . add_display ( name, 2, row, PROMPT_RENDITION_RAISED )
+
+	pos = pos + 1
+	row = row + 1
+
+	PROMPT OBJECT form . prompt_objects [ pos ]
+	     AT 22, row
+	     FORMAT TEXT20
+	     WITH ( value = details [ MESSAGE_POSITION ] )
+
+	name = PAD ( GET_USER_MESSAGE ( "LIST_DISPNAME", 1 ) , " ", 18 )
+	form . add_display ( name, 2, row, PROMPT_RENDITION_RAISED )
+
+	IF NOT self . autosize THEN
+	
+		pos = pos + 1
+		row = row + 1
+
+		PROMPT OBJECT form . prompt_objects [ pos ]
+			 AT 22, row
+			 FORMAT integer
+			 WITH ( value   = details [ width_pos ],
+					minimum = 1                    , 
+					maximum = 100                  )
+
+		name = PAD ( GET_USER_MESSAGE ( "LIST_WIDTH", 1 ) , " ", 18 )
+		form . add_display ( name, 2, row, PROMPT_RENDITION_RAISED )
+
+	ENDIF
+
+	{***********************************************************************
+	* Miscelaneous Settings.
+	***********************************************************************}
+
+	form . add_frame ( "", 1, 1, form. height - 1, form . width ) 
+	widf = form . width
+	form . width = form . width + 12
+
+	PROMPT OBJECT ok_button
+	    CLASS "STD_PROMPT_BUTTON"
+	    AT widf + 3, 1
+	    WITH ( caption      = GET_USER_MESSAGE ( "LIST_OK", 1 ),
+	           send_lastkey = "DO"                             , 
+	           width        = 10                               )
+
+	form . add_prompt ( ok_button )
+
+	PROMPT OBJECT cancel_button
+	    CLASS "STD_PROMPT_BUTTON"
+	    AT widf + 3, 3
+	    WITH ( caption = GET_USER_MESSAGE ( "LIST_CANCEL", 1 ), 
+	           send_lastkey = "EXIT"                          ,
+	           width        = 10                              )
+
+	form . add_prompt ( cancel_button )
+
+	{***********************************************************************
+	* Send the form on its merry way.
+	***********************************************************************}
+
+	form . start_prompt ( )
+	form . wait_prompt  ( )
+	form . end_prompt   ( )
+
+	IF form . get_lastkey ( ) = "DO" THEN
+
+		prompts = form . prompt_objects
+
+		details [ FIELD_NAME_POSITION ] = prompts [ 1 ] . value
+		details [ MESSAGE_POSITION    ] = prompts [ 2 ] . text
+
+		IF NOT self . autosize THEN
+			details [ width_pos ] = prompts [ 3 ] . value
+		ELSE
+			details [ width_pos ] = LIST_COLUMN_AUTOSIZE_USEHEADER
+		ENDIF
+
+		self . column_build ( TRUE )
+		self . refresh_display( )
+		
+		self . columns_changed = TRUE
+
+	ENDIF
+
+	RETURN ( form . get_lastkey ( ) = "DO" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_viewer_action_column_save_user_table ( self, VALUE table )
+
+{
+* Writes the column details back to the explorer_column table for the passed
+* table and the current user
+*
+* Parameters : self  , List Viewer Object
+*              table , the table name
+*
+******************************************************************************}
+
+	DECLARE folder_number
+
+	folder_number = SELECT explorer_folder . folder_number
+					  WHERE cabinet    = "TABLE_DETAILS"
+					  AND   table_name = TOUPPER( table )
+					  ORDER ON folder_number
+
+	IF folder_number <> EMPTY THEN
+		self . column_save_to_db ( "TABLE_DETAILS" : "$" : OPERATOR, folder_number )
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_viewer_action_column_save_to_db (       self          ,
+                                               VALUE cabinet       ,
+                                               VALUE folder_number )
+
+{
+* Writes the column details back to the explorer_column table for the passed
+* cabinet and folder
+*
+* Parameters : self          , List Viewer Object
+*              cabinet       , the cabinet name this list belongs to
+*              folder_number , the folder num this list belongs to
+*
+******************************************************************************}
+
+	IF NOT transaction_is_write ( ) THEN
+	
+		CALL_ROUTINE "SAVE_COLUMNS"
+					 IN LIBRARY "$LIB_LIST_VIEWER"
+					 NEW TRANSACTION
+					 USING self, cabinet, folder_number
+					 
+	ENDIF
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE list_viewer_action_column_count( self )
+{
+* Returns the number of columns defined in the prompt details array
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	RETURN( size_of_array( self . prompt_details ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_finish ( self )
+
+{
+* Handle any special finialisation callbacks.
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . finish_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_callback ( self, VALUE callback, lib, rout )
+
+{
+* Get Callback
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE retval
+
+	retval = lib_utils_get_callback ( callback, self . vgl_library,
+	                                  lib,      rout              )
+	
+	RETURN ( retval )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_icon ( self, row )
+
+{
+* Return the Icon Number to the Data Loader. There are many places where an
+* icon can be defined. :
+*		self . icon_callback routine if defined
+*		self . icon_number value if not blank
+*		auto status icon
+*		table defaults
+* 
+* Parameters : self , List Viewer Object
+*              row  , row object record 
+*
+*******************************************************************************}
+
+	DECLARE icon, lib, rout, status, icon_id
+	
+	icon = EMPTY
+	
+	IF self . get_callback ( self . icon_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self, row
+		    RETURNING  icon
+	
+	ELSEIF ( valid_field ( row . table, "STATUS" )) AND
+	       ( self . auto_status_icon = TRUE       ) THEN
+
+		status = SELECT 'row . table' . status IN OBJECT row
+
+		icon_id = "INT_"
+		icon_id = icon_id : STRIP ( row . table ) : "_" : status
+
+		IF client_icon_defined ( icon_id ) THEN
+			icon = client_icon_id_to_number( icon_id )
+		ENDIF
+
+	ELSEIF self . icon_number <> -1 THEN
+			
+		icon = self . icon_number
+
+	ENDIF
+	
+	IF icon = EMPTY THEN
+		
+		lib = SELECT explorer_folder . user_library
+				  WHERE cabinet    = "TABLE_DETAILS"
+				  AND   table_name = TOUPPER( self . table )
+				  ORDER ON folder_number
+
+		IF lib <> EMPTY THEN
+
+			rout = SELECT explorer_folder . data_icon_routine
+			
+			IF NOT BLANK( lib ) AND NOT BLANK( rout ) THEN
+			
+				CALL_ROUTINE rout
+				    IN LIBRARY lib
+				    USING self, row
+				    RETURNING icon
+			ENDIF
+	
+		ENDIF
+
+		IF icon = EMPTY THEN
+		
+			icon_id = explorer_utils_get_table_default_icon ( self . table )
+		
+			icon = client_icon_id_to_number( icon_id )
+
+		ENDIF
+
+	ENDIF
+	
+	RETURN ( icon )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_sub_icon ( self, row, VALUE count )
+
+{
+* Return the Icon Number to the Data Loader
+* 
+* Parameters : self  , List Viewer Object
+*              row   , row object record 
+*              count , column number 
+*
+*******************************************************************************}
+
+	DECLARE icon, lib, rout
+	icon = -1
+
+	IF self . get_callback ( self . sub_icon_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self, row, count
+		    RETURNING  icon
+
+	ENDIF
+
+	RETURN ( icon )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_labtable_rmb ( self )
+
+{
+* Return the Icon Number to the Data Loader
+* 
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE count, labtable, actions, option, text, data, add_item,
+	        add_divider, current, row, removed, remove_field
+
+	labtable = EMPTY
+
+	data = ( self . get_first_selected ( text ) <> EMPTY )
+
+	IF ( self . menu_labtable     ) AND 
+	   ( self . labtable <> EMPTY ) THEN
+
+		count = 1
+
+		{**************************************************************}
+		{* Deal with Removed Records Correctly                        *}
+		{**************************************************************}
+
+		IF data THEN
+
+			current = self . get_first_selected ( text )
+			row     = self . get_row ( current, FALSE  )
+			removed = FALSE
+
+			GET_TABLE_DETAILS 'self . table', "REMOVE_FIELD", 
+			                   remove_field
+
+			IF remove_field <> EMPTY THEN
+	
+				removed = SELECT 'self . table' . 'remove_field'
+				          IN OBJECT row
+	
+			ENDIF
+
+		ENDIF
+
+		{**************************************************************}
+		{* Go work out the available options.                         *}
+		{**************************************************************}
+
+		lab_get_actions_array ( actions )
+		CREATE OBJECT POPUP_MENU_CLASS, labtable
+		labtable . new_level ( GET_USER_MESSAGE ( "POPUP_LAB", 1 ) )
+		option = self . labtable . options_array [ count ]
+
+		WHILE option <> EMPTY DO
+
+			add_item    = FALSE
+			add_divider = FALSE
+
+			{******************************************************}
+			{* Work out What to do.                               *}
+			{******************************************************}
+
+			IF NOT data THEN
+
+				IF ( count = ADD_OPTION_NUM  ) OR 
+				   ( count = LIST_OPTION_NUM ) THEN
+	
+					add_item = TRUE
+	
+				ENDIF
+
+			ELSEIF ( count = REMOVE_OPTION_NUM ) AND 
+			       ( NOT removed               ) THEN
+
+				add_divider = TRUE
+				add_item = TRUE
+
+			ELSEIF ( removed ) THEN
+
+				IF count = RESTORE_OPTION_NUM THEN
+
+					add_divider = TRUE
+					add_item    = TRUE
+		
+				ELSEIF count = LIST_OPTION_NUM THEN
+
+					add_item    = TRUE
+
+				ENDIF
+
+			ELSEIF ( option <> 0                  ) AND  
+			       ( count  <> REMOVE_OPTION_NUM  ) AND
+			       ( count  <> RESTORE_OPTION_NUM ) THEN
+
+				add_item = TRUE
+
+				IF ( count = DISPLAY_OPTION_NUM ) OR
+				   ( count = LIST_OPTION_NUM    ) THEN
+
+					add_divider = TRUE
+
+				ENDIF
+
+			ENDIF
+
+			{******************************************************}
+			{* Add the items to the Popup.                        *}
+			{******************************************************}
+
+			IF add_item THEN
+
+				self . labtable_item ( labtable          ,
+				                       option            ,
+				                       actions [ count ] )
+			ENDIF
+
+			IF add_divider THEN
+
+				labtable . add_divider ( )
+
+			ENDIF
+
+			count = count + 1
+			option = self . labtable . options_array [ count ]
+
+		ENDWHILE
+
+		labtable . pop_level   ( )
+		labtable . process_routine = "menu_callback_labtable"
+		labtable . process_library = GLOBAL ( "CURRENT_LIBRARY" )
+
+		OBJECT_ASSIGN_UNCOUNTED ( labtable . prompt, self )
+
+	ENDIF
+
+	RETURN ( labtable )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_labtable_item (       self   , 
+                                                 popup  , 
+                                           VALUE option , 
+                                           VALUE text   )
+
+{ 
+* Put up the Appropriate Items. Make sure we can access the Data.
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE current, row, item
+
+	current = self . get_first_selected ( item )
+
+	IF ( current <> EMPTY ) THEN
+		
+		row = self . get_row ( current, FALSE )
+
+	ENDIF
+
+	IF ( current = EMPTY ) OR ( role_lib_valid_row ( option, row ) ) THEN
+
+		popup . add_item ( text )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_refresh ( self )
+
+{ 
+* Refresh data in list viewer
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . load_data ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_refresh_display ( self )
+
+{ 
+* Refresh display in list viewer. Doesn't reselect data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . number_displayed = 0
+
+	ARRAY self . position
+	self . remove_all_items ( )
+
+	self . display_data( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_get_last_item ( self )
+
+{ 
+* Returns the last bottom most Item in the list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . get_item_count( ) - 1 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_remove_control_items ( self )
+{ 
+* Removes the 'more' item
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . remove_more_flag ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_more ( self )
+
+{ 
+* Get more data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE last_item
+
+	self . remove_control_items( )
+
+	last_item = self . get_last_item( )
+
+	self . display_data ( )
+
+	IF last_item <> -1 THEN
+		self . ensure_topmost( last_item )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_display_all ( self )
+
+{ 
+* Get all data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE display_limit
+
+	self . remove_control_items( )
+
+	display_limit = self . display_limit
+
+	self . display_limit = 0
+	self . display_data ( )
+
+	self . display_limit = display_limit
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_set_last_hit_field( self )
+{
+* Sets the last hit field
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE column_type
+
+	self . last_hit_field = EMPTY
+
+	IF ( self . last_hit_column > 0                       ) AND
+	   ( self . last_hit_column <= self . column_count( ) ) THEN
+	   
+		column_type = self . prompt_details [ self . last_hit_column, TYPE_POSITION ]
+
+		IF ( column_type = "DISPLAY" ) OR ( column_type = "FORMAT" ) THEN
+		
+			self . last_hit_field = self . prompt_details [ self . last_hit_column, FIELD_NAME_POSITION ]
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_refresh( self, menu )
+{
+* Adds context menu refresh options
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_refresh( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_REFRESH", 1 )
+		item . enabled = self . can_refresh( )
+		item . set_action( self, "OPTION_REFRESH" )
+
+		menu . add ( item )
+		
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_data_window( self, menu )
+{
+* Adds context menu options to modify the data view window
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_more( ) THEN
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_MORE", 1 )
+		item . enabled = self . can_more( )
+		item . set_action( self, "OPTION_MORE" )
+
+		menu . add( item )
+
+	ENDIF
+	
+	IF self . show_display_all( ) THEN
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_MORE_TO_END", 1 )
+		item . enabled = self . can_display_all( )
+		item . set_action( self, "OPTION_DISPLAY_ALL" )
+
+		menu . add( item )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_custom( self, menu )
+{
+* Adds context menu options added by user
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	IF ( self . selected_objects . size( ) <> 0 ) THEN
+
+		IF self . new_rmb <> EMPTY THEN
+
+			menu . add_menu ( self . new_rmb )
+
+		ENDIF
+
+	ELSEIF ( self . custom_rmb <> EMPTY ) THEN
+
+		menu . add_menu ( self . custom_rmb )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_entity( self, menu )
+{
+* Adds context menu options for entity
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE standard
+
+	IF self . menu_standard THEN
+	
+		CALL_ROUTINE "explorer_rmb_load_for_table"
+		             IN LIBRARY "$explorer_rmb"
+		             USING self . table     ,
+		                   self . selected_objects
+		             RETURNING standard
+
+		IF standard <> EMPTY THEN
+		
+			standard . refresh_callback = STRIP ( GLOBAL ( "CURRENT_LIBRARY" ) ) :
+			                              "/popup_refresh_callback"
+			standard . parent = self
+
+			menu . add_menu( standard )
+
+		ENDIF
+	
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_reporting( self, menu )
+{
+* Adds context menu options for entity reporting
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE menu_num, item, infomaker_report, valid_report
+
+	menu . new_level ( "Reports" )
+
+	menu_num = SELECT master_menu . procedure_num 
+	               WHERE ( table_name  = self . table )
+	               AND   ( action_type = "REPORTING" ) 
+	               AND   ( parameters  <> "" )
+
+	WHILE menu_num <> EMPTY DO
+	
+		valid_report = EMPTY
+		
+		infomaker_report = SELECT master_menu . parameters
+		
+		valid_report = SELECT infomaker_link . identity
+				WHERE ( identity = infomaker_report )
+				AND   ( removeflag = FALSE )
+	
+		IF ( CAN_ACCESS_MENU ( menu_num ) ) AND
+		   ( valid_report <> EMPTY ) THEN
+
+			CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+			item . text = STRIP( SELECT master_menu . short_text )
+
+			item . set_action( self, "INVOKE_REPORT" )
+
+			item . add_action_parameter( valid_report )
+
+			item . add_action_parameter( menu_num )
+
+			menu . add( item )
+		
+		ENDIF
+		
+		NEXT master_menu
+		menu_num = SELECT master_menu . procedure_num 
+		
+	ENDWHILE
+	
+	menu . pop_level ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_callback( self, menu )
+{
+* Adds context menu options specified using callback
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE lib, rout, custom
+
+	IF self . get_callback ( self . rmb_callback, lib, rout ) THEN
+
+		CALL_ROUTINE rout IN LIBRARY lib 
+		    USING self, self . table_object RETURNING custom
+
+		IF custom <> EMPTY THEN
+			menu . add_menu ( custom ) 
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_auto_labtable( self, menu )
+{
+* Adds context menu options based on labtable options
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE labtable
+
+	labtable = self . labtable_rmb ( )
+
+	IF labtable <> EMPTY THEN
+
+		menu . add_menu ( labtable )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_favourites( self, menu )
+{
+* Adds context menu options to add to/remove from favourites list
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_add_favourite( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = "Add to Favourites"
+		item . enabled = self . can_add_favourite( )
+		item . set_action( self, "OPTION_ADD_FAVOURITE" )
+		
+		menu . add( item )
+	
+	ENDIF
+	
+	IF self . show_remove_favourite( ) THEN
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = "Remove from Favourites"
+		item . enabled = self . can_remove_favourite( )
+		item . set_action( self, "OPTION_REMOVE_FAVOURITE" )
+	
+		menu . add( item )
+	
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_criteria( self, menu )
+{
+* Adds context menu options to manipulate criteria
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_edit_criteria( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_EDIT", 1 )
+		item . enabled = self . can_edit_criteria( )
+		item . set_action( self, "OPTION_EDIT_CRITERIA" )
+		
+		menu . add( item )
+		
+	ENDIF
+	
+	IF self . show_display_criteria( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_DISP", 1 )
+		item . enabled = self . can_display_criteria( )
+		item . set_action( self, "OPTION_DISPLAY_CRITERIA" )
+		
+		menu . add( item )
+		
+	ENDIF
+
+	IF self . show_toggle_removed( ) THEN
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+
+		IF self . show_removed THEN
+			item . text = GET_USER_MESSAGE ( "POPUP_HIDE", 1 )
+		ELSE
+			item . text = GET_USER_MESSAGE ( "POPUP_REMOVED", 1 )
+		ENDIF
+		
+		item . enabled = self . can_toggle_removed( )
+		item . set_action( self, "OPTION_TOGGLE_REMOVED" )
+			
+		menu . add( item )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_autofilter( self, menu )
+{
+* Adds context menu options to manipulate autofiltering
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item, first_row, field_value, field_text, menu_prefix
+
+	menu . new_level ( GET_USER_MESSAGE( "POPUP_AUTOFILTER", 1 ) )
+
+	IF self . show_clear_autofilter( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE( "POPUP_CLEARFILTER", 1 )
+		item . enabled = self . can_clear_autofilter( )
+		item . set_action( self, "OPTION_CLEAR_AUTOFILTER" )
+
+		menu . add( item )
+	
+		menu . add_divider( )
+	
+	ENDIF
+
+	IF self . show_set_autofilter( ) THEN
+
+		first_row = self . selected_objects . get_by_number( 1 )
+
+		field_value = SELECT 'self . table' . 'self . last_hit_field' IN OBJECT first_row
+		field_text = STRIP( lib_text_special_to_text( field_value ) )
+
+		menu_prefix = GET_USER_MESSAGE( "POPUP_WHERE", 1 ) : STRIP( self . last_hit_field )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " = "  : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_EQ )
+		item . add_action_parameter( field_value     )
+
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " >= " : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_GE )
+		item . add_action_parameter( field_value     )
+
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " <= " : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_LE )
+		item . add_action_parameter( field_value     )
+
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " <> " : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_NE )
+		item . add_action_parameter( field_value     )
+
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " > "  : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_GT )
+		item . add_action_parameter( field_value     )
+
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : " < "  : field_text
+
+		item . set_action( self, "ADD_AUTOFILTER" )
+
+		item . add_action_parameter( self . last_hit_field )
+		item . add_action_parameter( ARRAY_SELECT_LT )
+		item . add_action_parameter( field_value     )
+		
+		menu . add( item )
+		
+		menu . add_divider( )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = menu_prefix : GET_USER_MESSAGE( "POPUP_AUTOFILTER_CONTAINS", 1 )
+		
+		item . set_action( self, "ADD_AUTOFILTER_CONTAINS" )
+
+		item . add_action_parameter( self . last_hit_field )
+		
+		menu . add( item )
+		
+	ENDIF
+	
+	menu . pop_level( )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_view( self, menu )
+{
+* Adds context menu options that change the view of the data
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	menu . new_level ( GET_USER_MESSAGE ( "POPUP_VIEW", 1 ) )
+
+	IF self . show_set_view( ) THEN
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text          = GET_USER_MESSAGE ( "POPUP_LARGE", 1 )
+		item . radio_checked = ( self . get_view() = LIST_ICON_VIEW )
+		item . enabled       = self . can_set_view( )
+		
+		item . set_action( self, "SET_ICON_VIEW" )
+		item . add_action_parameter( LIST_ICON_VIEW )
+
+		menu . add( item )
+		
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text          = GET_USER_MESSAGE ( "POPUP_SMALL", 1 )
+		item . radio_checked = ( self . get_view() = LIST_SMALL_ICON_VIEW )
+		item . enabled       = self . can_set_view( )
+		
+		item . set_action( self, "SET_ICON_VIEW" )
+		item . add_action_parameter( LIST_SMALL_ICON_VIEW )
+
+		menu . add( item )
+		
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text          = GET_USER_MESSAGE ( "POPUP_LIST", 1 )
+		item . radio_checked = ( self . get_view() = LIST_LIST_VIEW )
+		item . enabled       = self . can_set_view( )
+		
+		item . set_action( self, "SET_ICON_VIEW" )
+		item . add_action_parameter( LIST_LIST_VIEW )
+	
+		menu . add( item )
+	
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text          = GET_USER_MESSAGE ( "POPUP_DETAILS", 1 )
+		item . radio_checked = ( self . get_view() = LIST_REPORT_VIEW )
+		item . enabled       = self . can_set_view( )
+		
+		item . set_action( self, "SET_ICON_VIEW" )
+		item . add_action_parameter( LIST_REPORT_VIEW )
+
+		menu . add( item )
+		
+	ENDIF
+
+	menu . pop_level ( )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_menu_items_properties( self, menu )
+{
+* Adds context menu options to view properties
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	DECLARE item
+
+	IF self . show_properties( ) THEN
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_PROP", 1 )
+		item . enabled = self . can_properties( )
+		item . default = ( self . default_action = "OPTION_PROPERTIES" )
+		item . set_action( self, "OPTION_PROPERTIES" )
+		
+		menu . add( item )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_build_context_menu( self, menu )
+{
+* Builds context menu
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	CALL_ROUTINE "list_viewer_build_context_menu_call_routine"
+	             USING self, menu
+	             IN LIBRARY GLOBAL ( "CURRENT_LIBRARY" )
+	             NEW CONTEXT
+
+ENDROUTINE
+			
+{******************************************************************************}
+
+ROUTINE list_viewer_build_context_menu_call_routine ( self, menu )
+
+{
+* Builds context menu used behind a call_routine ... new context to preserve
+* current record selections
+*
+* Parameters : self , List Viewer object
+*              menu , Menu object to add things to
+*
+*******************************************************************************}
+
+	menu . add_divider( )
+	
+	self . add_menu_items_custom( menu )
+	
+	menu . add_divider( )
+	
+	self . add_menu_items_callback( menu )
+
+	menu . add_divider( )
+
+	self . add_menu_items_data_window( menu )
+
+	menu . add_divider( )
+
+	self . add_menu_items_entity( menu )
+
+	menu . add_divider( )
+	
+	self . add_menu_items_reporting( menu )
+
+	menu . add_divider( )
+
+	self . add_menu_items_auto_labtable( menu )
+
+	menu . add_divider( )
+
+	self . add_menu_items_autofilter( menu )
+
+	menu . add_divider( )
+
+	self . add_menu_items_criteria( menu )
+	
+	menu . add_divider( )
+
+	self . add_menu_items_refresh( menu )
+	
+	menu . add_divider( )
+	
+	self . add_menu_items_view( menu )
+		
+	menu . add_divider( )
+	
+	self . add_menu_items_favourites( menu )
+
+	menu . add_divider( )
+	
+	self . add_menu_items_properties( menu )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_process_context_menu(       self      ,
+                                                       menu      ,
+                                                 VALUE selection )
+{
+* This routine is now redundant. It is better to set the menu items' actions
+* when the menu is being built.
+*
+* Processes the context menu. Returns true if processed. 
+*
+* Parameters : self      , List Viewer object
+*              menu      , Popup Menu object
+*              selection , Menu item selected
+*
+*******************************************************************************}
+
+	IF NOT menu . handled THEN
+	
+		menu . process ( selection )
+		
+	ENDIF
+
+	RETURN( menu . handled )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_right_mouse_click ( self )
+
+{ 
+* Right Mouse Button Callback on the Viewer.
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE menu, selection
+
+	self . selected_objects = self . get_selected_objs( FALSE )
+
+	self . set_last_hit_field( )
+
+	CREATE OBJECT POPUP_MENU_CLASS, menu
+	
+	self . build_context_menu( menu )
+
+	selection = menu . start( )
+	
+	self . process_context_menu( menu, selection )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE popup_refresh_callback( self )
+
+{
+* Called if a RMB option has the Refresh option selected 
+*
+* Parameters  : self , List Viewer object
+*
+******************************************************************************}
+
+	IF self . parent <> EMPTY THEN
+		self . parent . refresh()
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_double_click ( self )
+
+{ 
+* Called on mouse double-click
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . default_action <> EMPTY THEN
+
+		self . ?self . default_action? ( )
+
+	ELSEIF self . get_callback ( self . default_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING self
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_column_click ( self )
+
+{ 
+* Column Click Routine
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE menu, fields, pos, item, field_name, count
+
+	IF self . menu_columns THEN
+
+		CREATE OBJECT POPUP_MENU_CLASS, menu
+
+		IF ( BLANK ( GLOBAL ( "COLUMN_DEFINITION" ))) THEN
+		
+			{ No column definition - allow user to change at will }
+
+			CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+			item . text    = GET_USER_MESSAGE ( "POPUP_EDITCOL" , 1 )
+			item . enabled = self . can_column_edit( )
+			item . set_action( self, "OPTION_COLUMN_EDIT" )
+		
+			menu . add( item )
+
+		ENDIF
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_INSERT"  , 1 )
+		item . enabled = self . can_column_insert( )
+		item . set_action( self, "OPTION_COLUMN_INSERT" )
+		
+		menu . add( item )
+
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_REMOVE"  , 1 )
+		item . enabled = self . can_column_remove( )
+		item . set_action( self, "OPTION_COLUMN_REMOVE" )
+		
+		menu . add( item )
+		
+		menu . new_level( GET_USER_MESSAGE ( "POPUP_CHOOSECOL"  , 1 ) )
+
+		fields = lib_list_viewer_get_fields ( self . table )
+ 		array_remove_slice ( fields, 1, 1 )
+ 		
+ 		count = 0
+		pos = 1
+
+		WHILE pos <= size_of_array( fields ) DO
+		
+			field_name = fields[pos,2]
+			
+			CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+			item . checked = self . field_exists( field_name )
+			item . text    = fields [ pos, 1 ]
+			item . enabled = self . can_column_toggle( field_name )
+			item . new_line_break = ( ( count MOD 20 = 0 ) AND ( count <> 0 ) )
+				
+			item . set_action( self, "TOGGLE_COLUMN_FIELD" )
+			item . add_action_parameter( field_name )
+				
+			menu . add( item )
+				
+			count = count + 1
+				
+			pos = pos + 1
+			
+		ENDWHILE
+		
+		menu . pop_level( )
+		
+		menu . add_divider( )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text    = GET_USER_MESSAGE ( "POPUP_MOVEL", 1 )
+		item . enabled = self . can_column_move_left( )
+		item . set_action( self, "OPTION_COLUMN_MOVE_LEFT" )
+		menu . add( item )
+
+		CREATE OBJECT POPUP_MENU_ITEM_CLASS, item
+		item . text = GET_USER_MESSAGE ( "POPUP_MOVER", 1 )
+		item . set_action( self, "OPTION_COLUMN_MOVE_RIGHT" )
+		item . enabled = self . can_column_move_right( )
+
+		menu . add( item )
+
+		menu . process ( menu . start ( ) )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_criteria ( self )
+
+{ 
+* CRITERIA Key Routine
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . criteria_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ELSEIF self . can_display_criteria( ) THEN
+	
+		self . option_display_criteria ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_build ( self )
+
+{ 
+* BUILD Key Routine F9
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout, text, first_item, next_item, row, padded_id
+
+	IF self . get_callback ( self . build_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+	ELSE
+
+		first_item = self . get_first_selected( text )
+		next_item  = self . get_next_selected ( text )
+	
+		IF ( first_item <> EMPTY ) AND ( next_item = EMPTY ) THEN
+		
+			row = self . get_row ( first_item, FALSE )
+
+			IF row <> EMPTY THEN
+				padded_id = get_key0_string_object( self . table, row )
+	
+				prompt_labtable ( self . table, padded_id, self . display_only )
+			
+			ENDIF
+			
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_browse_routine ( self )
+
+{
+* BROWSE Key Routine F2
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . browse_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ENDIF
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_select ( self )
+
+{ 
+* SELECT Key Routine F3
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . select_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ELSEIF self . can_properties( ) THEN
+		
+		self . option_properties ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_insert ( self )
+
+{ 
+* INSERT Key Routine F5
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . insert_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ELSEIF self . can_refresh( ) THEN
+	
+		self . option_refresh ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_remove ( self )
+
+{ 
+* REMOVE Key Routine F6
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE lib, rout
+
+	IF self . get_callback ( self . remove_key_callback, lib, rout ) THEN
+
+		CALL_ROUTINE    rout
+		    IN LIBRARY lib
+		    USING      self
+		    NEW CONTEXT
+
+	ELSEIF self . can_more( ) 
+	
+		self . option_more ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_autofilter(       self              ,
+                                           VALUE criteria_field    ,
+                                           VALUE criteria_operator ,
+                                           VALUE criteria_value    )
+{
+* Adds the passed filter to the autofilter
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	ARRAY_SELECT_ADD( self . auto_criteria ,
+	                  criteria_operator    ,
+	                  criteria_field       ,
+	                  criteria_value       )
+
+	self . refresh ( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_add_autofilter_contains(       self           ,
+                                                    VALUE criteria_field )
+{
+* Prompts the user for a value then concatanates wildcards to either side of
+* the value before adding it as a LIKE clause to the autofilter
+*
+* Parameters : self           , List Viewer object
+*              criteria_field , 
+*
+*******************************************************************************}
+
+	DECLARE criteria_value, head_text, prompt_text
+
+	head_text   = GET_USER_MESSAGE( "LIST_AUTOFILTER_CONTAINS_HEAD", 1 ) :
+	              STRIP( criteria_field )
+	              
+	prompt_text = GET_USER_MESSAGE( "LIST_AUTOFILTER_CONTAINS_TEXT", 1 ) :
+	              STRIP( criteria_field ) :
+	              GET_USER_MESSAGE( "LIST_AUTOFILTER_CONTAINS_TEXT", 2 )
+
+	criteria_value = prompt_for_text ( head_text, prompt_text, 30 )
+
+	IF NOT BLANK( criteria_value ) THEN
+
+		criteria_value = "%" : STRIP( criteria_value ) : "%"
+
+		ARRAY_SELECT_ADD( self . auto_criteria ,
+		                  ARRAY_SELECT_LIKE    ,
+		                  criteria_field       ,
+		                  criteria_value       )
+
+		self . refresh ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_clear_autofilter( self )
+{
+* Clears the autofilter
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_clear_autofilter( ) THEN
+	
+		ARRAY self . auto_criteria
+
+		self . refresh ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_column_edit ( self )
+
+{ 
+* Allows user to edit the current list column
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . column_edit ( self . current_column + 1 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_column_insert ( self )
+
+{ 
+* Allows user to insert at the current list column
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . column_insert ( self . current_column + 1 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_column_remove ( self )
+
+{ 
+* Allows user to remove the current list column
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . column_remove ( self . current_column + 1 )
+
+	self . columns_changed = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_column_move_left ( self )
+
+{ 
+* Allows user to move the current list column to the left
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . column_swap ( self . current_column     , 
+	                     self . current_column + 1 )
+	                     
+	self . columns_changed = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_column_move_right ( self )
+
+{ 
+* Allows user to move the current list column to the right
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	self . column_swap ( self . current_column + 1 , 
+	                     self . current_column + 2 )
+	                     
+	self . columns_changed = TRUE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_add_favourite ( self )
+
+{ 
+* Adds selected item(s) to the user's favourites list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE odb, ok
+
+	IF self . can_add_favourite( ) THEN
+
+		ok = TRUE
+
+		odb = self . selected_objects
+
+		odb . set_first( )
+
+		WHILE ( odb . current <> EMPTY ) AND ok DO
+
+			ok = ok AND favourites_add_record( self . table, odb . current )
+
+			odb . set_next( )
+
+		ENDWHILE
+
+		IF ok THEN
+			flash_message( "Selection successfully added to your favourites list", TRUE )
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_remove_favourite ( self )
+{ 
+* Removes selected item(s) from the user's favourites list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE odb, ok
+
+	IF self . can_remove_favourite( ) THEN
+
+		ok = TRUE
+
+		odb = self . selected_objects
+
+		odb . set_first( )
+
+		WHILE ( odb . current <> EMPTY ) AND ok DO
+
+			ok = ok AND favourites_remove_record( self . table, odb . current )
+
+			odb . set_next( )
+
+		ENDWHILE
+
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_edit_criteria( self )
+{
+* Edit current criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_edit_criteria( ) THEN
+
+		self . edit_criteria ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_display_criteria( self )
+{
+* Edit current criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_display_criteria( ) THEN
+
+		self . display_criteria ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_invoke_report( self,  VALUE report_id, VALUE menu_num )
+{
+* Invokes the passed master_menu's report
+*
+* Parameters : self          , List Viewer object
+*
+*******************************************************************************}
+
+	infomaker_report_invoke_rmb( report_id, menu_num, self . selected_objects )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_set_icon_view( self, VALUE view_mode )
+{
+* Sets list icon view
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_set_view( ) THEN
+
+		self . set_view ( view_mode )
+
+		self . write_view( view_mode )
+
+		IF ( self . autosize ) THEN
+			self . autosize ( )
+		ENDIF
+
+		self . update_screen_state( )
+
+	ENDIF
+		
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_more( self )
+{
+* Displays the next chunk of data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_more( ) THEN
+	
+		self . more( )
+		
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_display_all( self )
+{
+* Displays all data matching criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_display_all( ) THEN
+		self . display_all( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_options_form_create ( self )
+
+{ 
+* Initialises the options form
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE form
+
+	CREATE OBJECT "LIST_VIEWER_OPTIONS", form
+
+	form . display_limit = self . display_limit
+	
+	RETURN( form )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_options_form_save ( self, form )
+
+{ 
+* Saves the values from the option form
+*
+* Parameters : self , List Viewer object
+*              form , The options form
+*
+*******************************************************************************}
+
+	IF form . display_limit <> self . display_limit THEN
+	
+		self . display_limit = form . display_limit
+	
+		user_setting_write( "ENTITY"             ,
+		                    self . table         ,
+		                    "MORE_AMOUNT"        ,
+		                    self . display_limit )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_modify_settings ( self )
+
+{ 
+* Allows user to modify their browse settings
+*
+* Parameters : self, List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE form, my_trans
+	
+	form = self . options_form_create ( )
+	
+	IF form . go( ) THEN
+	
+		IF NOT transaction_is_write() THEN
+			START WRITE TRANSACTION "Update browse configuration"
+			my_trans = TRUE
+		ENDIF
+	
+		self . options_form_save ( form )
+		
+		IF my_trans THEN
+			COMMIT
+		ENDIF
+		
+		self . refresh( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_properties( self )
+{
+* Displays the property sheet
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_properties( ) THEN
+		self . edit_properties( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_refresh( self )
+{
+* Refreshes the list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_refresh( ) THEN
+		self . refresh( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_option_toggle_removed( self )
+{
+* Toggles the show removed flag
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	IF self . can_toggle_removed( ) THEN
+	
+		self . show_removed = NOT self . show_removed
+
+		self . refresh ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_add_favourite( self )
+{
+* Returns True if can add current item(s) to favourites list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_add_favourite( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_remove_favourite( self )
+{
+* Returns True if can remove current item(s) from favourites list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_remove_favourite( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_edit_criteria( self )
+{
+* Returns True if user can edit current criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_edit_criteria( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_display_criteria( self )
+{
+* Returns True if user can display current criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_display_criteria( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_set_view( self )
+{
+* Returns true if can set list view
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . menu_view )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_more( self )
+{
+* Returns true if can display the next chunk of data
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . some_left )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_display_all( self )
+{
+* Returns true if can display all data matching criteria
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . some_left )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_modify_settings( self )
+{
+* Returns True if user can modify their browse settings
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_properties( self )
+{
+* Returns True if user can edit properties
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( ( self . menu_property              ) AND
+	        ( self . get_selected_count( ) <> 0 )     )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_refresh( self )
+{
+* Returns True if user can refresh list
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_refresh( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_toggle_removed( self )
+{
+* Returns True if user can toggle between showing and hiding removed options
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . show_toggle_removed( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_clear_autofilter( self )
+{
+* Returns True if user can clear autofilter
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( ( self . menu_auto_criteria                  ) AND
+	        ( size_of_array( self . auto_criteria ) <> 0 )     )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_toggle( self, VALUE field_name )
+{
+* Returns True if user can toggle passed column
+*
+* Parameters : self       , List Viewer object
+*              field_name , Field Name
+*
+*******************************************************************************}
+
+	RETURN( self . column_count( ) <> 0 )
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_remove( self )
+{
+* Returns True if user can remove current column
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . column_count( ) <> 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_insert( self )
+{
+* Returns True if user can insert at current column position
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_edit( self )
+{
+* Returns True if user can edit current column
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . column_count( ) <> 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_move_left( self )
+{
+* Returns True if user can current column left
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . current_column > 0 )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_can_column_move_right( self )
+{
+* Returns True if user can current column right
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( ( self . current_column + 1 ) < self . column_count( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_refresh( self )
+{
+* Returns True if refresh list option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . menu_refresh )
+
+ENDROUTINE
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_properties( self )
+{
+* Returns True if properties option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( TRUE )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_toggle_removed( self )
+{
+* Returns True if toggle removed options should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE valid, remove_field
+	
+	valid = FALSE
+	
+	IF ( self . menu_toggle_removed ) AND
+	   ( self . menu_refresh        ) AND
+	   ( self . table <> EMPTY      ) THEN
+
+		GET_TABLE_DETAILS 'self . table', "REMOVE_FIELD", remove_field
+
+		IF remove_field <> EMPTY THEN
+
+ 			valid = NOT criteria_contains_field ( self . criteria, remove_field )
+
+		ENDIF
+
+	ENDIF
+
+	RETURN( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_add_favourite( self )
+{
+* Returns True if add current item(s) to favourites list option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE valid, some_not_in_faves
+
+	valid = ( TOUPPER( STRIP( self . table ) ) <> "FAVOURITE" ) AND
+	        ( self . menu_favourites                          )
+	
+	IF valid AND ( self . selected_objects <> EMPTY ) THEN
+	
+		some_not_in_faves = NOT favourites_contains_obdb( self . table            ,
+		                                                  self . selected_objects )
+
+		valid = some_not_in_faves
+		
+	ENDIF
+
+	RETURN( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_remove_favourite( self )
+{
+* Returns True if remove current item(s) from favourites list option should
+* be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	DECLARE valid, any_in_faves
+
+	valid = ( TOUPPER( STRIP( self . table ) ) <> "FAVOURITE" ) AND
+	        ( self . menu_favourites                          )
+
+	IF valid AND ( self . selected_objects <> EMPTY ) THEN
+	
+		any_in_faves = favourites_intersects_obdb( self . table            ,
+		                                           self . selected_objects )
+		                                           
+		valid = any_in_faves
+		
+	ENDIF
+
+	RETURN( valid )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_edit_criteria( self )
+{
+* Returns True if edit current criteria option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . menu_criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_display_criteria( self )
+{
+* Returns True if display current criteria option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . menu_criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_clear_autofilter( self )
+{
+* Returns True if clear autofilter option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . menu_auto_criteria )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_set_autofilter( self )
+{
+* Returns True if set autofilter options should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( ( self . menu_auto_criteria             ) AND
+	        ( self . selected_objects . size( ) = 1 ) AND
+	        ( self . last_hit_field <> EMPTY        )     )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_set_view( self )
+{
+* Returns True if set view options should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . can_set_view( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_more( self )
+{
+* Returns True if more option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . can_more( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_show_display_all( self )
+{
+* Returns True if display all option should be shown
+*
+* Parameters : self , List Viewer object
+*
+*******************************************************************************}
+
+	RETURN( self . can_display_all( ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_action_is_more_item( self, VALUE item_num )
+{
+* Returns True if the passed list item number is the 'more' item (the item you
+* click on to bring back the next set of records)
+*
+* Parameters : self     , List Viewer object
+*              item_num , item number to test
+*
+*******************************************************************************}
+
+
+	RETURN ( item_num = self . more_item )
+
+ENDROUTINE
+{Modified the routine list_viewer_action_selected  in $LIB_LIST_VIEWER; this seemed to resolve the problem 
+See NOTES; marked *** RT *** 30-10-2008 ***}
+{******************************************************************************}
+
+ROUTINE list_viewer_action_selected ( self )
+
+{ 
+* Called when item is selected, assumes base selected has already been called
+*
+* Parameters : self , List Viewer Object
+*
+*******************************************************************************}
+
+	DECLARE first_item, selected_count
+
+	selected_count = 0
+	first_item = self . current_item
+
+	IF ( first_item <> -1 ) AND ( self . is_single_selection ( )) THEN
+		selected_count = 1
+	ELSE
+		selected_count = self . get_selected_count ( )
+{		first_item = self . current_item    *** RT *** 30-10-2008 ***}
+	ENDIF
+	
+	IF ( selected_count = 1 ) AND
+	   ( self . is_more_item ( first_item )) THEN
+	
+		self . more( )
+	
+	ELSE
+	
+		self . update_screen_state( )
+	
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{* List Viewer Form                                                           *}
+{******************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE list_viewer_form_class_initialisation( self )
+
+{ 
+* List Viewer Form Class Initialisation
+*
+* Parameters : self , List Viewer Form Object
+*
+*******************************************************************************}
+
+	self . button_style      = FORM_BUTTON_NONE
+	self . return_behaviour  = FORM_RETURN_WRAP
+	self . confirm_required  = FALSE
+	self . prompt_id         = "$LIB_LIST_VIEWER_OUTPUT"
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_form_action_start_prompt( self )
+
+{ 
+* Start Prompt override
+*
+* Parameters : self , List Viewer Form Object
+*
+*******************************************************************************}
+
+	DECLARE list
+
+	list = self . list
+
+	self . std_form :: start_prompt( )
+	
+	list . set_view_for_user( )
+	
+	IF list . load_on_start THEN
+
+		list . load_data ( )
+
+	ELSEIF ( self . active_prompt <> list . tag ) THEN
+
+		list . set_empty_text( "Click on this list to load items" )
+
+	ENDIF
+	
+	list . update_screen_state( )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_form_action_end_prompt( self )
+
+{ 
+* Ends the prompt. Cleans up recursive object links to allow memory to be freed
+*
+* Parameters : self , List Viewer Form Object
+*
+*******************************************************************************}
+
+	self . std_form :: end_prompt( )
+
+	self . list . form = EMPTY
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_form_action_up( self )
+
+{ 
+* Handle the up key
+*
+* Parameters : self , List Viewer Form Object
+*
+*******************************************************************************}
+
+	IF self . active_prompt = self . list . tag THEN
+		{do nowt}
+	ELSE
+		self . std_form :: up( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_form_action_down( self )
+
+{ 
+* Handle the down key
+*
+* Parameters : self , List Viewer Form Object
+*
+*******************************************************************************}
+
+	IF self . active_prompt = self . list . tag THEN
+		{do nowt}
+	ELSE
+		self . std_form :: down( )
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+{*                         M E N U   C A L L B A C K S                        *}
+{******************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE menu_callback_labtable ( self, VALUE result )
+
+{
+* RMB Menu Callback for Laboratory Tables
+*
+*******************************************************************************}
+
+	DECLARE app, handled, count, actions, item, item_no, option, row, padded_id
+	app     = self . prompt
+	handled = FALSE
+	count   = 1
+	
+	lab_get_actions_array ( actions )
+
+	WHILE ( actions [ count ] <> EMPTY ) DO
+
+		IF ( result = actions [ count ] ) AND 
+		   (( count = ADD_OPTION_NUM  )   OR 
+		    ( count = LIST_OPTION_NUM ))  THEN
+
+			item_no = app . get_first_selected ( item )
+			option  = app . labtable . options_array [ count ]
+
+			lab_call_execproc ( option      ,
+			                    app . table ,
+			                    EMPTY       ,
+			                    EMPTY       )
+
+			handled = TRUE
+
+		ELSEIF result = actions [ count ] THEN
+
+			item_no = app . get_first_selected ( item )
+			option  = app . labtable . options_array [ count ]
+
+			WHILE item_no <> EMPTY DO
+
+				row = app . get_row ( item_no, FALSE )
+
+				padded_id = get_key0_string_object( app . table, row )
+
+				lab_call_execproc ( option      ,
+				                    app . table ,
+				                    padded_id   ,
+				                    EMPTY       )
+
+				item_no = app . get_next_selected ( item )
+
+			ENDWHILE
+
+			handled = TRUE
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+	RETURN ( handled )
+
+ENDROUTINE
+
+{******************************************************************************}
+{                          O T H E R     S T U F F                            *}
+{******************************************************************************}
+
+ROUTINE edit_column_leave_field ( self )
+
+{
+* Leave the Field Prompt on the Edit column dialog.
+*
+*******************************************************************************}
+
+	DECLARE wid, text, app, form, name
+	form = self . parent_prompt
+	app  = form . parent_prompt
+
+	IF ( self . text <> self . original_text ) THEN
+
+		name = self . value
+		wid  = criteria_cache_field_width ( app . table, name ) 
+		text = criteria_cache_field_title ( app . table, name ) 
+
+		IF wid > 50 THEN
+			wid = 30
+		ENDIF
+
+		form . prompt_objects [ self . tag + 1 ] . set_text ( text )
+		form . prompt_objects [ self . tag + 2 ] . set_text ( wid  )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE edit_column_validate_field ( self  )
+
+{
+* Validate the Field Entry on the Edit Column Dialog.
+*
+*******************************************************************************}
+
+	RETURN ( NOT BLANK ( self . text ) )
+
+ENDROUTINE
+
+{******************************************************************************}
+{                       E X A M P L E   O F   U S A G E                       *}
+{******************************************************************************}
+
+ROUTINE example_of_usage 
+
+{
+* An Example of Usage.
+*
+*******************************************************************************}
+
+	DECLARE viewer, form, obj, table_array, rmb, message
+	ARRAY table_array
+
+	define_list_viewer_class ( )
+
+	CREATE OBJECT "STD_FORM", form
+	form . row    = 6
+	form . column = 30
+	form . height = 1
+
+	form . width  = 45
+	form . header = GET_USER_MESSAGE ( "LIST_VIEW", 1 ) 
+
+	form . column = 1 + ( GLOBAL ( "SCREEN_WIDTH"  ) - form . width  ) / 2
+	form . row    = 1 + ( GLOBAL ( "SCREEN_HEIGHT" ) - form . height ) / 2 
+
+	get_table_names ( table_array )
+
+	PROMPT OBJECT obj
+	    AT 16, 1
+	    CHOOSE OUTOF table_array
+	    WITH ( width   = 25   ,
+	           lowered = TRUE )
+
+	message = GET_USER_MESSAGE ( "LIST_NAME", 1 )
+	form . add_display ( message , 2, 1, PROMPT_RENDITION_RAISED )
+	form . add_prompt  ( obj )
+	form . add_frame   ( "", 1, 1, form . height, form . width )        
+
+	form . start_prompt ( )
+	form . wait_prompt  ( )
+	form . end_prompt   ( )
+
+	IF form . get_lastkey ( ) <> "EXIT" THEN
+
+		CREATE OBJECT LIST_VIEWER_CLASS, viewer
+		CREATE OBJECT POPUP_MENU_CLASS, rmb
+
+		rmb . add_item ( GET_USER_MESSAGE ( "LIST_EXAM_ITEM", 1 )     )
+		rmb . process_routine = "menu_callback_example"
+		rmb . process_library = GLOBAL ( "CURRENT_LIBRARY" )
+		rmb . prompt          = viewer
+
+		viewer . menu_columns = TRUE
+		viewer . display_only = FALSE
+		viewer . header       = GET_USER_MESSAGE ( "LIST_EXAM_HEAD", 1 ) 
+		viewer . table        = form . prompt_objects [ 1 ] . text
+		viewer . custom_rmb   = rmb
+		
+		viewer . go ( )
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE menu_callback_example ( self, VALUE result )
+
+{
+* RMB Menu Callback Example
+*
+*******************************************************************************}
+
+	DECLARE app, handled, text, message
+	app = self . prompt
+	handled = TRUE
+
+	IF ( result = GET_USER_MESSAGE ( "LIST_EXAM_ITEM", 1 )  ) THEN
+		
+		app . get_first_selected ( text )
+
+		message_fetch ( "LIST_EXAM_SHOW", message )
+		message_add_parameter ( message, text )
+		message = message_get_text ( message, 1 )
+
+		flash_message ( message, TRUE )
+
+	ELSE
+
+		handled = FALSE
+
+	ENDIF
+
+	RETURN ( handled )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE criteria_contains_field ( select_array, VALUE field )
+
+{
+* Returns TRUE if passed select_array contains the passed field
+*
+*******************************************************************************}
+
+	DECLARE pos, found
+	
+	found = FALSE
+	
+	pos = 1
+	WHILE ( pos <= size_of_array( select_array ) ) AND NOT found DO
+	
+		IF select_array[pos,2] = field THEN
+			found = TRUE
+		ENDIF
+	
+		pos = pos + 1
+		
+	ENDWHILE
+
+	RETURN( found )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE save_columns (       self          ,
+                       VALUE cabinet       ,
+                       VALUE folder_number )
+
+{
+* Writes the column details back to the explorer_column table for the passed
+* cabinet and folder
+*
+* Parameters  : cabinet       : the cabinet name this list belongs to
+*               folder_number : the folder num this list belongs to
+*
+******************************************************************************}
+
+	DECLARE message, count, key, field, name, widf, col, in_trans, len
+
+	in_trans = TRUE
+
+	message = GET_USER_MESSAGE ( "EXP_LIB_SAVEC", 1 ) 
+	
+	self . column_save()
+	
+	IF ( self . columns_changed ) AND
+	   ( self . menu_columns    ) AND
+	   ( NOT GLOBAL ( "COMMIT_VIEW_MODE" )    ) THEN
+
+		GET_FIELD_DETAILS explorer_folder . cabinet, "FIELD_SIZE", len
+		cabinet = PAD ( cabinet, " ", len )
+
+		{**************************************************************}
+		{* Delete the existing configuration                          *}
+		{**************************************************************}
+		
+		IF NOT transaction_is_write () THEN
+			message =  GET_USER_MESSAGE ( "EXPLORER_COLS_TRANS", 1 )
+			START WRITE TRANSACTION message
+			in_trans = FALSE
+		ENDIF
+		
+		col = SELECT explorer_column . cabinet
+		      FOR UPDATE
+		      WHERE  cabinet       = cabinet
+		      AND    folder_number = folder_number
+
+		WHILE col <> EMPTY DO
+
+			DELETE explorer_column
+			NEXT explorer_column
+			col = SELECT explorer_column . cabinet
+
+		ENDWHILE
+
+		{**************************************************************}
+		{* Save the new configuration                                 *}
+		{**************************************************************}
+		
+		count = 1
+		
+		WHILE count <= self . column_count( ) DO
+
+			key = cabinet : folder_number : 
+			      PACKED_DECIMAL ( count )
+
+			RESERVE ENTRY explorer_column, key
+
+			field   = self . prompt_details [ count, FIELD_NAME_POSITION    ]
+			name    = self . prompt_details [ count, MESSAGE_POSITION       ]
+
+			IF NOT self . autosize THEN
+				widf = self . prompt_details [ count, EXPLORER_UTILS_WID_POS ]
+			ELSE
+				widf = LIST_COLUMN_AUTOSIZE_USEHEADER
+			ENDIF
+
+			ASSIGN explorer_column . name       = name
+			ASSIGN explorer_column . field_name = field
+			ASSIGN explorer_column . width      = widf
+		
+			UPDATE explorer_column
+
+			count = count + 1
+
+		ENDWHILE
+
+		self . columns_changed = FALSE
+
+		IF NOT in_trans THEN
+			COMMIT
+		ENDIF
+
+	ENDIF
+	
+ENDROUTINE
+
+{******************************************************************************}
+{* List Viewer Options Class                                                  *}
+{******************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE list_viewer_options_class_initialisation( self )
+{
+* List Viewer Options Class Initialisation
+*
+* Parameters : self , List Viewer Options Object
+*
+*******************************************************************************}
+
+	self . header    = "Modify Settings"
+	self . prompt_id = "$LIB_LIST_VIEWER_MODIFY_SETTINGS"
+	self . row       = 4
+	self . column    = 4
+	self . width     = 60
+	
+	self . display_limit     = 0
+	
+	self . prompt_display_limit = EMPTY
+	
+	self . prompt_count = 0
+	
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_options_action_go( self )
+{
+* Creates form and prompts the user
+*
+* Parameters : self , List Viewer Options Object
+*
+*******************************************************************************}
+
+	DECLARE ok_pressed
+
+	self . create_prompts( )
+
+	self . height = self . prompt_count
+
+	self . start_prompt( )
+
+	self . wait_prompt( )
+
+	self . end_prompt( )
+
+	ok_pressed = ( self . get_last_key( ) = "DO" )
+
+	IF ok_pressed THEN
+		
+		self . save( )
+		
+	ENDIF
+	
+	RETURN( ok_pressed )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_options_action_save( self )
+{
+* Saves the values in the prompts back to properties
+*
+* Parameters : self , List Viewer Options Object
+*
+*******************************************************************************}
+
+	self . display_limit = self . prompt_display_limit . value
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE list_viewer_options_action_create_prompts( self )
+{
+* Create screen
+*
+* Parameters : self , List Viewer Options Object
+*
+*******************************************************************************}
+
+	DECLARE more_prompt, display_obj
+	
+	CREATE OBJECT "STD_PROMPT_TEXT", display_obj
+	display_obj . row    = self . prompt_count + 1
+	display_obj . column = 1
+	display_obj . value  = GET_USER_MESSAGE( "BROWSER_SETTING_MORE_AMOUNT", 1 )
+	display_obj . width  = 50
+	
+	self . add_display( display_obj )
+	
+	CREATE OBJECT "STD_PROMPT_TEXT_INTEGER", more_prompt
+	self . prompt_display_limit = more_prompt
+	more_prompt . row      = self . prompt_count + 1
+	more_prompt . column   = 52
+	more_prompt . width    = 4
+	more_prompt . minimum  = 0
+	more_prompt . value    = self . display_limit
+
+	self . add_prompt ( more_prompt )
+
+	self . prompt_count = self . prompt_count + 1
+	
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

@@ -1,0 +1,1411 @@
+{***********************************************************************
+*
+* Module Name   : MES_TRANSFER
+*
+* Purpose       : Handles data to and from MES.
+*
+* Document Ref  : LIMS Design Specifications related to MES, version .2
+*
+* Specification :N/A
+*
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2009-04-23      Fredrik Lindstein   Created
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $LIMSML_PROCESS
+JOIN LIBRARY TOOLBOX
+{JOIN LIBRARY $SP_LOGIN_JOB}
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+{*************************************************************************
+*
+* This file is deviede into three different sections:
+*
+* 1.    Routines transferring data from LIMS to MES.
+*       Likley to contain code to create xml-files.
+*
+* 2.    Routines transferring data from MES to LIMS
+*       Likley to contain code how to process xml-files
+*       sent to SM via webservice.
+*
+* 3.    Misc routines.
+*       Routines used by both or that have no specific relevance
+*       to either of the two previous sections (i.e write to log).
+*
+* 4.    Transaction handeling.
+*       Routines used to createl, store and connect transaction identities
+*
+*
+*************************************************************************}
+
+{*************************************************************************
+*
+*   SECTION 1: Transferring data from LIMS to MES
+*
+**************************************************************************}
+{************************************************************************}
+GLOBAL ROUTINE EnvironmentalSampling(VALUE JobId)
+{
+*
+* Purpose       : Main routine that collects data and prints xml for
+*                 enviromental sampling.
+*
+* Parameters    : JobHeaderJobName - Job header identity
+*
+* Return Value  : None
+*
+*************************************************************************}
+DECLARE JobArray, intv,  xmldoc, transaction, request_xml, FileName,  XMLSchema
+DECLARE SmpInfo, SmpId,SmpArrSize, i , JobCounter, TransactionId, WebService
+DECLARE WebServiceAction, BatchName, NumOfJobs, datetostart, ymd, sqlstmt
+DECLARE product_name, product_version, c_samp, check_ok, WorkCenter, LogTxt
+{* marks Removed due to e-mail from Lisbeth GruboV 2009-06-10 10:31}
+
+NumOfJobs = SELECT COUNT JOB_HEADER WHERE JOB_NAME = JobId
+
+IF (JobId = EMPTY) OR (NumOfJobs = 0) THEN
+    WriteToLog("Found no job with JobId = ": JobId : ". Exiting.")
+ELSE
+
+    SET DATE FORMAT "YYMZDZ"
+        datetostart = SELECT job_header . date_to_start where job_name = jobid
+        ymd = STRING(datetostart)
+    RESTORE DATE FORMAT
+
+    sqlstmt = "UPDATE JOB_HEADER SET DATE_TO_START = CONVERT(DATE, '":ymd:"', 12) WHERE JOB_NAME = '":JobId:"'"
+    execute_sql ( sqlstmt)
+    execute_sql ( "commit")
+
+    ARRAY JobArray ARRAY_SIZE(0, 6)
+
+{    WriteToLog("EnvironmentalSampling - JobId = ": JobId)}
+    LogTxt = "EnvironmentalSampling - JobId = ": JobId
+    {Set defult values}
+    intv        = INTERVAL("0001 00:00:00.00")
+    TransactionId = GenerateTransactionId()
+    FileName    = "SampleOrder_" : TransactionId
+
+    XMLSchema   = "http://www.chr-hansen.com/LIMS/HygieneSampleOrder"
+    JobCounter  = 1
+    SmpArrSize  = 0
+    WebService  = GLOBAL("BIZTALK_WEBSERVICE")
+    WebServiceAction= "SampleOrder"
+
+    BatchName = STRIP(SELECT job_header . batch_name WHERE job_name = JobId)
+    ProductName = STRIP(SELECT job_header . product_name WHERE job_name = JobId)
+    ProductVersion = SELECT max_active_mlp_ver.MAX_VERSION WHERE identity = ProductName
+    ProductVersion = JUSTIFY(PAD(STRIP(ProductVersion)," ",10),"RIGHT")
+    WorkCenter = SELECT job_header . work_center WHERE job_name = JobId {Replacing JobArray [1, 1]}
+
+{   sqlstmt = "UPDATE SAMPLE SET BATCH_NAME = '":BatchName:"', PRODUCT = '":ProductName:"', PRODUCT_VERSION = '":ProductVersion:"', RECD_DATE = NULL WHERE JOB_NAME = '":STRIP(JobId):"'"
+    WriteToLog("SQL to Update Sample: " : sqlstmt)
+
+    execute_sql ( sqlstmt)
+    execute_sql ( "commit")
+}
+    {Get values for job}
+    JobArray [JobCounter, 1] = ProductName:"/":BatchName {replacing JobId}
+    JobArray [JobCounter, 2] = WorkCenter
+    JobArray [JobCounter, 3] = SELECT job_header . date_to_start
+    JobArray [JobCounter, 4] = JobArray [1, 3] + intv
+    JobArray [JobCounter, 5] = SELECT job_header . product_name
+
+    {Get values for sample(s) and add to array}
+    SmpId = SELECT sample . id_numeric WHERE job_name = JobArray [1, 1]
+
+    {Define (and redefine) sample array}
+    ARRAY SmpInfo ARRAY_SIZE(0, 4, 2)
+
+    {Add sample information to sample array}
+    c_samp = 0
+    WHILE SmpId <> EMPTY DO
+
+        i = SIZE_OF_ARRAY(SmpInfo) + 1
+        SmpArrSize = 1
+        SmpInfo[i, SmpArrSize, 1] = "Status"
+        SmpInfo[i, SmpArrSize, 2] = SELECT sample . status
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize, 1] = "TagId"
+        SmpInfo[i, SmpArrSize, 2] = SELECT sample . SAMPLING_POINT
+
+        c_samp = c_samp +1
+
+        NEXT SAMPLE
+        SmpId = SELECT sample . id_numeric
+
+    ENDWHILE
+
+    {Add sample array to job array}
+    JobArray [JobCounter, 6] = SmpInfo
+
+    c_samp = size_of_array ( SmpInfo )
+    {fm("size_of_array(SmpInfo): '":c_samp:"'")}
+
+    IF (NUMERIC(size_of_array(SmpInfo)) > 0) OR (c_samp > 0) THEN
+
+        sqlstmt = "UPDATE SAMPLE SET BATCH_NAME = '":BatchName:"', PRODUCT = '":ProductName:"', PRODUCT_VERSION = '":ProductVersion:"', RECD_DATE = NULL WHERE JOB_NAME = '":STRIP(JobId):"'"
+        {WriteToLog("Updating ":STRIP(c_samp):" sample(s). ":sqlstmt)}
+        LogTxt = LogTxt:" Updating ":STRIP(c_samp):" sample(s). ":sqlstmt
+        execute_sql ( sqlstmt)
+        execute_sql ( "commit")
+        IF (WorkCenter  = "AVE") THEN
+            {Generate XML-document}
+            xmldoc = CreateXMLForEnviSmps(JobArray, SmpArrSize, FileName, TransactionId)
+            transaction = xmldoc  . gettransaction ( 0 )
+            request_xml = transaction . returnxml ()
+            WriteXMLFile(FileName, request_xml)
+            ChangeXMLNameSpace(FileName, XMLSchema)
+            SendToWebService(WebService, WebServiceAction, FileName, LogTxt)
+            {FM("Job ": STRIP(Jobid) :" was sent to MES")}
+        ELSE
+            WriteToLog("Jobs for WorkCenter '":STRIP(WorkCenter):"' are not sent to MES")
+        ENDIF
+
+    ELSE
+
+{   WriteToLog("Before Cancelling job ": jobId)}
+        START READ TRANSACTION "Cancel job"
+
+        JobId = SELECT  job_header . JOB_NAME FOR UPDATE
+                WHERE  JOB_NAME = JobId
+
+        START WRITE TRANSACTION "Cancel job"
+
+        CHANGE JOB STATUS TO "X", check_ok
+        UPDATE job_header
+
+        COMMIT
+
+{   WriteToLog("After Cancelling job ": jobId)}
+    WriteToLog("The job '":STRIP(jobid):"' had no samples. Job was cancelled.")
+    fm("The job '":STRIP(jobid):"' had no samples. Job was cancelled.")
+
+    ENDIF
+
+ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE CreateXMLForEnviSmps(JobArray, SmpArray, VALUE EntityName, VALUE TransactionId)
+{
+*
+* Purpose      : Creates and populates a limsml object
+*
+* Parameters   : JobArray - Array
+*
+* Return Value : limsml - HELPER_RICHDOCUMENT
+*
+**************************************************************************}
+DECLARE limsml, entity, i
+{DECLARE j, k, smpentity}
+
+    {Define class and object along with default values}
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+    i = 1
+
+    {Loop through array and add entities to xml object.}
+    WHILE JobArray[i, 1] <> EMPTY DO
+
+        entity = limsml . addentity (EntityName)
+        entity . field_inout ( "TransactionNo", TransactionId)
+        SET DATE FORMAT "YYYY-MZ-DZ H24:MI:SS.CC"
+            entity.field_inout ( "CreateDateTime", STRING(NOW))
+        RESTORE DATE FORMAT
+        entity . field_inout ( "Wo_id", JobArray[i, 1])
+        entity . field_inout ( "Location_Element_Level", JobArray[i, 2])
+        entity . field_inout ( "Start_time", ConvertDateToXML(JobArray[i, 3]))
+        entity . field_inout ( "End_time", ConvertDateToXML(JobArray[i, 4]))
+        entity . field_inout ( "Item_Id", JobArray[i, 5])
+
+{Re-Removed due to e-mail from Lisbeth Gruvbo 2009-06-10 10:31
+
+        SmpArray = JobArray[i, 6]
+        j = 1
+}
+        {Add samples as child entites to the job entity}
+
+{       WHILE SmpArray[j, 1, 1] <> EMPTY DO
+            smpentity = entity . addchild ( "Sample" )
+            k = 1
+            WHILE k < SmpArrSize + 1
+                smpentity . field_inout ( SmpArray[j, k, 1], SmpArray[j, k, 2])
+                k = k + 1
+            ENDWHILE
+
+            j = j + 1
+        ENDWHILE
+END Removed}
+
+        i = i + 1
+
+    ENDWHILE
+
+    {Return xml object}
+    RETURN( limsml )
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE SampleResponseToMES
+               (VALUE WorkCenter,
+                VALUE BatchName,
+                VALUE Product,
+                VALUE SamplingPoint,
+                VALUE TagId,
+                VALUE TransactionId,
+                VALUE Operation,
+                VALUE Sequence,
+                VALUE WorkId)
+{
+*
+* Purpose       : Main routine that collects data and prints xml for
+*         enviromental sampling.
+*
+* Parameters    : JobHeaderJobName - Job header identity
+*
+* Return Value  : None
+*
+**************************************************************************}
+DECLARE i, SmpInfo, SmpId, xmldoc, transaction, request_xml, WebService, NumOfJobs
+DECLARE FileName, SmpArrSize, sqlstmt, dynamic_sql, XMLSchema, WebServiceAction, add_on
+DECLARE LogTxt
+
+{WriteToLog("START SampleResponseToMES with SamplingPoint=":SamplingPoint: ", WorkCenter=":WorkCenter: ", BatchName=":BatchName: ", Product=":Product: ", WorkId=":WorkId)}
+{WriteToLog("SampleRequestFromMES for: ":Product:"/":BatchName:" MES_SP: ":SamplingPoint: ", WorkCenter: ":WorkCenter: ", WorkId: ":WorkId)}
+
+    LogTxt = Product:"/":BatchName:"/":WorkCenter:"/":SamplingPoint
+
+    {Set defult values}
+    add_on      =  INCREMENT ( "MES_TRANSFER", "ADDON")
+    FileName    = "SampleResponse_" : TransactionId :"_" :STRIP(add_on)
+    XMLSchema   = "http://www.chr-hansen.com/LIMS/SampleResponse"
+    WebService  = GLOBAL("BIZTALK_WEBSERVICE")
+    WebServiceAction= "SampleOrder"
+    TransactionId   = "LIMS-":TransactionId
+
+    {Define (and redefine) sample array}
+    ARRAY SmpInfo ARRAY_SIZE(0, 35, 2)
+
+    {Create dynamic sql object due to advanced sql query...
+     Well for SM its advanced. It uses TWO tables.}
+    CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+
+    {Create sqlquery and add to sql object}
+    {sqlstmt =  "SELECT DISTINCT " :}
+    sqlstmt =   "SELECT " :
+                "JH.WORK_CENTER, " :
+                "S.BATCH_NAME, " :
+                "SP.MES_SP, " :
+                "S.ID_NUMERIC, " :
+                "SP.DESCRIPTION, " :
+                "SP.DELIV_LOCATION, " :
+                "SP.LABEL_COUNT, " :
+                "SP.[IDENTITY], " :
+                "SP.VOLUME, " :
+                "SP.MES_SP " :
+                "FROM SAMPLE S, SAMPLE_POINT SP, JOB_HEADER JH " :
+                "WHERE  SP.MES_SP = '": SamplingPoint :"' " :
+{                "AND    JH.WORK_CENTER = '": WorkCenter :"' " :}
+                "AND    S.BATCH_NAME = '": BatchName :"' " :
+                "AND    S.PRODUCT = '": Product :"' " :
+                "AND    S.SAMPLING_POINT = SP.[IDENTITY] " :
+                "AND    S.JOB_NAME = JH.JOB_NAME " :
+                "AND    SP.REMOVEFLAG = 'F' "
+
+    dynamic_sql . add_to_sql_statement ( sqlstmt )
+
+    {Specify the results}
+    dynamic_sql . add_select_field  ("JOB_HEADER", "WORK_CENTER")
+    dynamic_sql . add_select_field  ("SAMPLE", "BATCH_NAME")
+    dynamic_sql . add_select_field  ("SAMPLE", "SAMPLING_POINT")
+    dynamic_sql . add_select_field  ("SAMPLE", "ID_NUMERIC")
+{   dynamic_sql . add_select_field  ("SAMPLE", "DESCRIPTION") TBG/090107}
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "DESCRIPTION")
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "DELIV_LOCATION")
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "LABEL_COUNT")
+{   dynamic_sql . add_select_field  ("SAMPLE_POINT", "POINT_LOCATION") TBG/090107}
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "[IDENTITY]")
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "VOLUME")
+    dynamic_sql . add_select_field  ("SAMPLE_POINT", "MES_SP")
+
+    {Execute query and loop through resultset.}
+    dynamic_sql . execute ()
+{WriteToLog("SQL: ":sqlstmt)}
+    SmpId = dynamic_sql . select ( 4 )
+
+    WHILE SmpId <> EMPTY DO
+
+    add_on      =  INCREMENT ( "MES_TRANSFER", "ADDON")
+    FileName    = "SampleResponse_" : TransactionId :"_" :STRIP(add_on)
+
+        SmpArrSize = 1
+
+{       WriteToLog("Found and responding sample ":SmpId)}
+
+        i = SIZE_OF_ARRAY(SmpInfo) + 1
+        SmpInfo[i, SmpArrSize, 1]  = "TransactionId"
+        SmpInfo[i, SmpArrSize, 2]  = TransactionId
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize, 1]  = "Location_Element_Level"
+        SmpInfo[i, SmpArrSize, 2]  = WorkCenter {dynamic_sql . select ( 1 )}
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize, 1] = "BatchID"
+        SmpInfo[i, SmpArrSize, 2] = dynamic_sql . select ( 2 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize, 1] = "SamplePointID"
+        SmpInfo[i, SmpArrSize, 2] = dynamic_sql . select ( 3 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize, 1] = "SampleID"
+        SmpInfo[i, SmpArrSize, 2] = dynamic_sql . select ( 4 )
+
+{       SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "TagID"
+        SmpInfo[i, SmpArrSize,2]= TagId             }
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Description"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 5 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Storage_Location"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 6 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Quantity"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 7 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Local_Sample_Point_ID"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 8 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Volume"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 9 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Operation"
+        SmpInfo[i, SmpArrSize,2]= operation
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Sequence"
+        SmpInfo[i, SmpArrSize,2]= Sequence
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "MesSp"
+        SmpInfo[i, SmpArrSize,2]= dynamic_sql . select ( 10 )
+
+        SmpArrSize = SmpArrSize + 1
+        SmpInfo[i, SmpArrSize,1]= "Work_id"
+        SmpInfo[i, SmpArrSize,2]= workid
+
+{WriteToLog("Found and responding sample ":SmpId:ASCII(10):
+"                        TransactionId:          ":TransactionId:ASCII(10):
+"                        Location_Element_Level: ":dynamic_sql . select ( 1 ):ASCII(10):
+"                        BatchID:                ":dynamic_sql . select ( 2 ):ASCII(10):
+"                        SamplePointID:          ":dynamic_sql . select ( 3 ):ASCII(10):
+"                        SampleID:               ":dynamic_sql . select ( 4 ):ASCII(10):
+"                        TagID:                  ":TagId:ASCII(10):
+"                        Description:            ":dynamic_sql . select ( 5 ):ASCII(10):
+"                        Storage_Location:       ":dynamic_sql . select ( 6 ):ASCII(10):
+"                        Quantity:               ":dynamic_sql . select ( 7 ):ASCII(10):
+"                        Local_Sample_Point_ID:  ":dynamic_sql . select ( 8 ):ASCII(10):
+"                        Volume:                 ":dynamic_sql . select ( 9 ):ASCII(10):
+"                        Operation:              ":operation:ASCII(10):
+"                        Sequence:               ":Sequence:ASCII(10):
+"                        MesSp:                  ":dynamic_sql . select ( 10 ):ASCII(10):
+"                        Work_id:                ":workid:ASCII(10))}
+
+        dynamic_sql . next ()
+
+        SmpId = dynamic_sql . select ( 4 )
+
+        LogTxt = LogTxt:" ":STRIP(SmpInfo[i ,5 ,2]):" ":STRIP(SmpInfo[i ,6 ,2]):" => ":STRIP(SmpInfo[i ,7 ,2])
+
+    ENDWHILE  {** moved for testing multipl sample on one SamplingPoint }
+
+        {If no samples is found, return non-applicable to MES}
+        IF size_of_array(SmpInfo) = 0 THEN
+
+            NumOfJobs = SELECT COUNT JOB_HEADER WHERE PROCESS_ORDER = BatchName
+
+            IF NumOfJobs = 0 THEN
+
+{                LogTxt = LogTxt:" => Job not found. Non Applicable"}
+                LogTxt = LogTxt:"  N/A      Job not found."
+{               WriteToLog("Found no sample. Sending non-applicable")}
+                SmpArrSize = 1
+
+                i = SIZE_OF_ARRAY(SmpInfo) + 1
+                SmpInfo[i, SmpArrSize, 1]  = "TransactionId"
+                SmpInfo[i, SmpArrSize, 2]  = TransactionId
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1]  = "Location_Element_Level"
+                SmpInfo[i, SmpArrSize, 2]  = WorkCenter
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "BatchID"
+                SmpInfo[i, SmpArrSize, 2] = BatchName
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "SamplePointID"
+                SmpInfo[i, SmpArrSize, 2] = "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "SampleID"
+                SmpInfo[i, SmpArrSize, 2] = "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "TagID"
+                SmpInfo[i, SmpArrSize,2]= TagId
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Description"
+                SmpInfo[i, SmpArrSize,2]= "Missing Job"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Storage_Location"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Quantity"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Local_Sample_Point_ID"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Volume"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Operation"
+                SmpInfo[i, SmpArrSize,2]= operation
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Sequence"
+                SmpInfo[i, SmpArrSize,2]= Sequence
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "MesSp"
+                SmpInfo[i, SmpArrSize,2]= SamplingPoint
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Work_id"
+                SmpInfo[i, SmpArrSize,2]= workid
+
+
+            ELSE
+
+                LogTxt = LogTxt:"  N/A   Sample not found."
+{               WriteToLog("Found no Sample. Sending non-applicable")}
+                SmpArrSize = 1
+
+                i = SIZE_OF_ARRAY(SmpInfo) + 1
+                SmpInfo[i, SmpArrSize, 1]  = "TransactionId"
+                SmpInfo[i, SmpArrSize, 2]  = TransactionId
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1]  = "Location_Element_Level"
+                SmpInfo[i, SmpArrSize, 2]  = WorkCenter
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "BatchID"
+                SmpInfo[i, SmpArrSize, 2] = BatchName
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "SamplePointID"
+                SmpInfo[i, SmpArrSize, 2] = "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize, 1] = "SampleID"
+                SmpInfo[i, SmpArrSize, 2] = "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "TagID"
+                SmpInfo[i, SmpArrSize,2]= TagId
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Description"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Storage_Location"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Quantity"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Local_Sample_Point_ID"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Volume"
+                SmpInfo[i, SmpArrSize,2]= "non-applicable"
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Operation"
+                SmpInfo[i, SmpArrSize,2]= operation
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Sequence"
+                SmpInfo[i, SmpArrSize,2]= Sequence
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "MesSp"
+                SmpInfo[i, SmpArrSize,2]= SamplingPoint
+
+                SmpArrSize = SmpArrSize + 1
+                SmpInfo[i, SmpArrSize,1]= "Work_id"
+                SmpInfo[i, SmpArrSize,2]= workid
+
+
+            ENDIF
+
+        ENDIF
+
+    {WriteToLog(LogTxt)}
+
+    {Generate XML-document}
+    xmldoc = CreateXMLForSmpResponseToMES(SmpInfo, SmpArrSize, FileName)
+
+    transaction = xmldoc  . gettransaction ( 0 )
+    request_xml = transaction . returnxml ()
+
+    {Write xml to physical file}
+    WriteXMLFile(FileName, request_xml)
+
+    {Change namespace in created xml file}
+    ChangeXMLNameSpace(FileName, XMLSchema)
+
+    {Send xml file to MES}
+    SendToWebService(Webservice, WebServiceAction, FileName, LogTxt)
+
+{   ENDWHILE}
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE CreateXMLForSmpResponseToMES(SmpArray, SmpArrSize, VALUE EntityName)
+{
+*
+* Purpose      : Creates and populates a limsml object
+*
+* Parameters   : JobArray - Array
+*
+* Return Value : limsml - HELPER_RICHDOCUMENT
+*
+**************************************************************************}
+DECLARE limsml, j, k, smpentity
+
+
+    {Define class and object along with default values}
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+    j = 1
+
+    {Loop through array and add entities to xml object.}
+
+    {Add samples as child entites to the job entity}
+    WHILE SmpArray[j, 1, 1] <> EMPTY DO
+        smpentity = limsml . addentity ( EntityName )
+        k = 1
+        WHILE k < SmpArrSize + 1
+            smpentity . field_inout ( SmpArray[j, k, 1], SmpArray[j, k, 2])
+            k = k + 1
+        ENDWHILE
+
+        j = j + 1
+    ENDWHILE
+
+    {Return xml object}
+    RETURN( limsml )
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 2: Transferring data from MES to LIMS
+*
+**************************************************************************}
+
+{*******************************************************************************}
+GLOBAL ROUTINE SampleStatusFromMES ( processor, entity, action, response )
+{
+*
+* Purpose      : Update sample status when sent via webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE sample_ID, id_text, sample_status, sampled_by, sample_template,
+    sampled_comment, mes_status, batch_before, material_before, sample_equipment,
+    sampled_date, mlp_ver, warn_msg, LF, check_ok, Material, Batch_ID, MES_SP, status,
+    tank_number
+    {, tests_to_do, check_ok, sqlstmt, workcenter}
+
+    LF = ASCII(10):"                               "
+
+    sample_ID           = action.get_param_default("SAMPLE_ID", EMPTY)
+    Material            = action.get_param_default("ITEM_ID", EMPTY)
+    Batch_ID            = action.get_param_default("BATCHID", EMPTY)
+    MES_SP              = action.get_param_default("MES_SP", EMPTY)
+    {workcenter          = action.get_param_default("LOC_ELEMENT_LEVEL", EMPTY)}
+    sampled_by          = action.get_param_default("USER_ID", EMPTY)
+    sampled_date        = action.get_param_default("DATE_TIME", EMPTY)
+    sampled_comment     = action.get_param_default("COMMENT", EMPTY)
+    mes_status          = action.get_param_default("STATUS", EMPTY)
+    material_before     = action.get_param_default("PREV_MATERIAL_ID", EMPTY)
+    batch_before        = action.get_param_default("PREV_BATCH_ID", EMPTY)
+    sample_equipment    = action.get_param_default("EQUIPMENTID", EMPTY)
+    tank_number         = " "
+    
+    IF sampled_by = EMPTY THEN
+        sampled_by = "Unknown"
+    ENDIF
+    IF sampled_date = EMPTY THEN
+        sampled_date = NOW
+    ENDIF
+    IF sampled_comment = EMPTY THEN
+        sampled_comment = ""
+        IF sampled_by = "Unknown" THEN
+            sampled_comment = "<Error in xml>"
+        ENDIF
+    ELSEIF NUMTEXT(sampled_comment) THEN
+        tank_number = RIGHTSTRING("00000":STRIP(sampled_comment), 5)
+        sampled_comment = ""
+    ENDIF
+    IF batch_before = EMPTY THEN
+        batch_before = " "
+    ENDIF
+    IF sample_equipment = EMPTY THEN
+        sample_equipment = " "
+    ENDIF
+    IF material_before = EMPTY THEN
+        material_before = " "
+    ELSE
+    {START: Getting product_description from mlp_header   DKTBG/20100128}
+        mlp_ver = SELECT max_active_mlp_ver.MAX_VERSION
+                   WHERE identity = material_before
+        IF mlp_ver = EMPTY THEN
+            material_before = "< ":material_before:" >"
+        ELSE
+            material_before = STRIP(SELECT MLP_HEADER . DESCRIPTION
+                                     WHERE identity = material_before
+                                     AND PRODUCT_VERSION = mlp_ver)
+            warn_msg        = SELECT  MLP_HEADER . WARN_MSG
+            IF
+                warn_msg = "T" THEN
+                material_before = "(!)   " : material_before
+            ENDIF
+        ENDIF
+    {End:   Getting product_description from mlp_header   DKTBG/20100128}
+    ENDIF
+
+    IF sample_equipment = EMPTY THEN
+        sample_equipment = " "
+    ENDIF
+
+{Date handling sampled date}
+    sampled_date = ConvertDateFromXML(sampled_date)
+
+    IF sample_ID = EMPTY THEN
+        sample_template = "ADHOC"
+        id_text = STRIP(Material):"/":STRIP(Batch_ID):"/":STRIP(MES_SP)
+        sample_id = SELECT sample . id_numeric WHERE id_text = id_text
+        IF sample_id = EMPTY THEN
+            sample_ID = NEW_SAMPLE(STRIP(Material):"/":STRIP(Batch_ID), sample_template, "")
+            WriteToLog("Sample created: ":STRIP(sample_ID):" - (":Material:"/":Batch_ID:"/":MES_SP:")")
+        ENDIF
+    ELSE
+        id_text = STRIP(SELECT sample . id_text WHERE id_numeric = sample_ID)
+    ENDIF
+
+    sample_ID           = JUSTIFY(PAD(sample_ID," ",10),"RIGHT")
+
+    { ***  Added for debugging *** }
+    sample_comment = STRIP(SELECT sample.sample_comment WHERE id_numeric = sample_ID)
+    WriteToLog("Sample comment LIMS: ":sample_comment:", MES:":sampled_comment)
+
+    IF (sample_comment <> "") THEN
+        IF (sampled_comment <> "") THEN
+            sampled_comment     = sample_comment:"; ":sampled_comment:" /":sampled_by
+        ELSE
+            sampled_comment     = sample_comment
+        ENDIF
+    ENDIF
+    
+    WriteToLog("New sample comment: ":sampled_comment)
+    
+{Select sample for update}
+    status = (SELECT sample . id_numeric FOR UPDATE 
+                   WHERE  id_numeric = sample_ID
+                   AND    batch_name = STRIP(Batch_ID)
+                   AND    product    = STRIP(Material))
+
+    IF status = EMPTY THEN
+        status = (SELECT sample . id_numeric FOR UPDATE 
+                       WHERE  id_numeric = sample_ID)
+    ENDIF
+
+    WriteToLog("Selected sample":sample_id:" FOR UPDATE; Status = ":status)
+    
+
+    IF (status <> EMPTY) AND (LEFTSTRING(status,5) <> "-----") THEN
+        sample_status = SELECT sample.status
+    {Convert empty values to space}
+        IF INDEX(id_text, "----") <> 0 THEN
+            id_text = "Null"
+        ENDIF
+
+        ASSIGN sample . id_text         = id_text
+        ASSIGN sample . sampled_by      = sampled_by
+        ASSIGN sample . sample_comment  = sampled_comment
+        ASSIGN sample . tank_number     = tank_number
+        ASSIGN sample . batch_before    = batch_before
+        ASSIGN sample . product_before  = material_before
+        ASSIGN sample . sampled_date    = sampled_date
+        ASSIGN sample . equipment       = sample_equipment
+
+        IF TOUPPER(mes_status )= "YES" THEN
+            IF sample_status = "H" THEN
+                CHANGE SAMPLE STATUS TO "U", check_ok
+            ENDIF
+        ELSE
+            CHANGE SAMPLE STATUS TO "X", check_ok
+        ENDIF
+
+        IF NOT transaction_is_write ( ) THEN
+            START WRITE TRANSACTION "Update sample status"
+        ENDIF
+
+        UPDATE sample
+        COMMIT
+
+        WriteToLog("Sample status received from MES":
+        LF:"ID_NUMERIC:     ":STRIP(sample_ID):" (":id_text:")":
+        LF:"SAMPLED_BY:     ":sampled_by:
+        LF:"SAMPLED_DATE:   ":sampled_date:
+        LF:"MES_STATUS:     ":mes_status:
+        LF:"SAMPLE_COMMENT: ":sampled_comment:
+        LF:"PRODUCT_BEFORE: ":material_before:
+        LF:"BATCH_BEFORE:   ":batch_before:
+        LF:"EQUIPMENT:      ":sample_equipment)
+    ELSE
+        WriteToLog("Sample status received from MES, NOT MATCHING an actual sample":
+        LF:"PRODUCT:        ":material:
+        LF:"BATCH:          ":batch_id:
+        LF:"ID_NUMERIC:     ":STRIP(sample_ID):" (":id_text:")":
+        LF:"SAMPLED_BY:     ":sampled_by:
+        LF:"SAMPLED_DATE:   ":sampled_date:
+        LF:"MES_STATUS:     ":mes_status:
+        LF:"SAMPLE_COMMENT: ":sampled_comment:
+        LF:"PRODUCT_BEFORE: ":material_before:
+        LF:"BATCH_BEFORE:   ":batch_before:
+        LF:"EQUIPMENT:      ":sample_equipment)
+    ENDIF
+    
+ENDROUTINE
+
+{*******************************************************************************}
+GLOBAL ROUTINE ManualSampleTransfer ( processor, entity, action, response )
+{
+*
+* Purpose      : Creates a new sample according to template sent by webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE  sample_jobname, sample_samplingpoint
+
+    {Get the parameters from the prosecced xml-file}
+    sample_jobname          = action.get_param_default("JOB_NAME", EMPTY)
+    sample_samplingpoint    = action.get_param_default("MES_SP", EMPTY)
+
+   WriteToLog("ManualSampleTransfer recieved - ":sample_jobname:"/":sample_samplingpoint)
+
+ENDROUTINE
+
+{*******************************************************************************}
+ROUTINE GetAnalysisInTestSched(VALUE TestSchedule, TestsToAdd)
+{
+*
+* Purpose      : Gets analyses within given testschedule
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE aid, counter
+
+    aid = SELECT TEST_SCHED_ENTRY . ANALYSIS_ID
+        WHERE IDENTITY = TestSchedule
+        ORDER ON ORDER_NUM
+
+    WHILE aid <> EMPTY DO
+
+        counter = SIZE_OF_ARRAY(TestsToAdd) + 1
+        TestsToAdd[counter, 1] = AID
+        TestsToAdd[counter, 2] = SELECT TEST_SCHED_ENTRY . IS_ANALYSIS
+
+        NEXT TEST_SCHED_ENTRY
+        aid = SELECT TEST_SCHED_ENTRY . ANALYSIS_ID
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*******************************************************************************}
+ROUTINE CreateNewJob (VALUE JobTemplate, VALUE NewJobName)
+{
+*
+* Purpose      : Update sample status when sent via webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE limsml, entity, action, transaction, request_xml, response_xml, error_xml
+{WriteToLog("Start CreateNewJob (VALUE ":JobTemplate:", VALUE ":NewJobName:")")}
+
+    {Define class and object along with default values}
+    limsml_helper_define_class()
+    CREATE OBJECT HELPER_RICHDOCUMENT, limsml
+
+    limsml . setresponse ( "SYSTEM" )
+    entity = limsml . addentity ("JOB")
+
+    action = entity . addaction ("CREATE_BY_TEMPLATE")
+    action . add_parameter ( "TEMPLATE", JobTemplate )
+    action . add_parameter ( "JOB_NAME", NewJobName)
+
+    transaction = limsml . gettransaction ( 0 )
+    request_xml = transaction . returnxml ()
+
+    process_transaction ( request_xml, response_xml, error_xml )
+
+    IF LENGTH(STRIP(error_xml)) = 0 THEN
+{WriteToLog("End   CreateNewJob (VALUE ":JobTemplate:", VALUE ":NewJobName:")")}
+        RETURN (TRUE)
+    ELSE
+        WriteToLog("    Error in CreateNewJob. ErrorXML = " : error_xml)
+        RETURN (FALSE)
+    ENDIF
+
+ENDROUTINE
+
+{*******************************************************************************}
+GLOBAL ROUTINE MES_Inspection_Lot ( processor, entity, action, response )
+{
+*
+* Purpose      : Update sample status when sent via webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE LF, MaterialID, BatchName, InspectionLotID, ProductionStatus,  MeanWeight, mes_update, TimeStamp, Job
+
+LF = ASCII(10):"                               "
+
+    {Get the parameters from the procecced xml-file}
+    MaterialID          = STRIP(action.get_param_default("MATERIAL_ID", " "))
+    BatchName           = STRIP(action.get_param_default("BATCHNAME", " "))
+    InspectionLotID     = STRIP(action.get_param_default("INSPECTIONLOT_ID", " "))
+    ProductionStatus    = STRIP(action.get_param_default("PRODUCTION_STATUS", " "))
+    MeanWeight          = STRIP(action.get_param_default("MEANWEIGHT", 0))
+    TimeStamp           = action.get_param_default("TIMESTAMP", EMPTY)
+    TimeStamp           = ConvertDateFromXML(TimeStamp)
+
+    Job = SELECT job_header . job_name FOR UPDATE WHERE job_name = MaterialID:"/":BatchName
+
+WriteToLog( LF:"MaterialID          = ":MaterialID      :
+            LF:"BatchName           = ":BatchName       :
+            LF:"InspectionLotID     = ":InspectionLotID :
+            LF:"ProductionStatus    = ":ProductionStatus:
+            LF:"MeanWeight          = ":MeanWeight      :
+            LF:"TimeStamp           = ":TimeStamp       :
+            LF:"Job                 = ":Job             )
+
+WriteToLog(Job:" = ":MaterialID:"/":BatchName:" ??")
+    IF (Job = MaterialID:"/":BatchName) THEN
+        mes_update = SELECT job_header . mes_update
+WriteToLog(TimeStamp:" > ":mes_update:" ??")
+        IF (TimeStamp > mes_update) THEN
+            ASSIGN job_header . mes_status  = ProductionStatus
+            ASSIGN job_header . potency     = MeanWeight
+            ASSIGN job_header . mes_update  = TimeStamp
+
+            IF NOT transaction_is_write ( ) THEN
+                START WRITE TRANSACTION "Update job with MES info"
+            ENDIF
+
+            UPDATE JOB_HEADER
+            COMMIT
+            WriteToLog("Job Header: ":Job:", updated.")
+        ENDIF
+    ENDIF
+
+
+ENDROUTINE
+
+{*******************************************************************************}
+ROUTINE SampleRequestFromMES(processor, entity, action, response)
+{
+*
+* Purpose      : Update sample status when sent via webservice
+*
+* Parameters   : processor , [LIMSML_PROCESS]
+*                entity    , [HELPER_ENTITY]
+*                action    , [HELPER_ACTIONML]
+*                response  , [HELPER_RICHDOCUMENT,HELPER_DOCUMENT]]
+*
+* Return Value : None
+*
+*******************************************************************************}
+DECLARE jobheader_workcenter, sample_batchname, sample_product,
+    sample_samplingpoint, sample_tagid, transid, op, seq, workid
+        {, LimsTransId}
+
+    {Get the parameters from the procecced xml-file}
+    jobheader_workcenter    = action.get_param_default("LOC_ELEMENT_LEVEL", EMPTY)
+    sample_batchname    = action.get_param_default("BATCHID", EMPTY)
+    sample_product      = action.get_param_default("ITEM_ID", EMPTY)
+    sample_samplingpoint    = action.get_param_default("MES_SP", EMPTY)
+    sample_tagid        = action.get_param_default("TAGID", EMPTY)
+    transid         = action.get_param_default("TRANSACTION_ID", EMPTY)
+    op          = action.get_param_default("OPERATION", EMPTY)
+    seq         = action.get_param_default("SEQUENCE", EMPTY)
+    workid          = action.get_param_default("WORK_ID", EMPTY)
+
+    {LimsTransId        = GenerateTransactionId()}
+
+    {WriteToLog("SampleRequestFromMES - Done reciving parameters. Starting SampleResponse.")}
+
+    {Run response routine}
+    SampleResponseToMES(jobheader_workcenter,
+                sample_batchname,
+                sample_product,
+                sample_samplingpoint,
+                sample_tagid,
+                transid,
+                op,
+                seq,
+                workid)
+
+{WriteToLog("END SampleRequestFromMES")}
+
+ENDROUTINE
+
+
+{*************************************************************************
+*
+*   SECTION 3: Misc
+*
+**************************************************************************}
+
+{*************************************************************************}
+GLOBAL ROUTINE WriteXMLFile(VALUE FileName, VALUE XMLText)
+{
+*
+* Purpose      : Creates the physical file and adds xml to it.
+*
+* Parameters   : Filename - where the file should be saved
+*        XMLText  - text to add to created file
+*
+* Return Value :N/A
+*
+**************************************************************************}
+DECLARE check_ok, tmp_name
+
+    {Create temp file}
+    tmp_name = "smp$userfiles:BizTalk\" : STRIP(FileName) : ".xml"
+
+    FILE CREATE tmp_name, check_ok
+    FILE EXTEND tmp_name, check_ok
+    FILE WRITE  tmp_name, XMLText , check_ok
+    FILE CLOSE  tmp_name, check_ok
+
+{WriteToLog("xmldoc: \\dklims04-t\Userfiles\BizTalk\":FileName:".xml")}
+
+    ChangeXMLEncoding(STRIP(FileName))
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE SendToWebService(VALUE sURL, VALUE Action, VALUE XMLFile, LogTxt)
+{
+*
+* Purpose      : Use MSXML2.ServerXmlHttp object to communicate with a web service.
+*
+* Parameters   : sURL       - Path to webservice
+*        Action     - Function to call on webservice
+         FileName   - Path to file to be sent as parameter
+*
+* Return Value :N/A
+*
+**************************************************************************}
+DECLARE xmlhttp, strXml, tmpstr, check_ok, no_line
+DECLARE tmpXML, soapMessage, file_name
+
+    file_name   = "smp$userfiles:BizTalk\" : STRIP(XMLFile) : ".xml"
+
+    FILE OPEN file_name, check_ok
+
+    IF (check_ok <> EMPTY) THEN
+
+        WriteToLog("SendToWebService - Error open file " : STRIP(XMLFile) : ".xml")
+
+    ELSE
+
+        no_line = 1
+        FILE READ file_name, strXml ,check_ok
+
+        WHILE (check_ok = EMPTY) DO
+
+            no_line = no_line + 1
+
+            FILE READ file_name, tmpstr ,check_ok
+            IF tmpstr <> EMPTY THEN
+                strXml = strXml : tmpstr
+            ENDIF
+
+        ENDWHILE
+
+    ENDIF
+
+    tmpXML = SUBSTRING( strXML, 44, LENGTH(strXML))
+
+    soapMessage = "<s:Envelope xmlns:s=" : ASCII(34) : "http://schemas.xmlsoap.org/soap/envelope/" : ASCII(34) : ">"
+    soapMessage = soapMessage : "<s:Body>"
+    soapMessage = soapMessage : tmpXML
+    soapMessage = soapMessage : "</s:Body>"
+    soapMessage = soapMessage : "</s:Envelope>"
+
+    CREATE OBJECT "STD_OLE_AUTOMATION_SERVER", xmlhttp
+    xmlhttp . create ("Msxml2.ServerXMLHTTP")
+
+    xmlhttp.open("POST", sURL , False)
+    xmlhttp.setRequestHeader( "Man", "POST " : sURL : " HTTP/1.1")
+    xmlhttp.setRequestHeader( "SOAPAction", Action )
+    xmlhttp.setRequestHeader("Content-Type", "text/xml; charset=utf-8")
+    xmlhttp.send(soapMessage)
+
+    LogTxt = "Response to MES (":STRIP(xmlhttp.statusText):"): ":LogTxt
+    WriteToLog(LogTxt)
+{    WriteToLog(STRIP(XMLFile) : ".xml " : STRIP(xmlhttp.statusText):ASCII(10))}
+
+    RETURN ( xmlhttp.responseText )
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ChangeXMLEncoding(VALUE FileName)
+{
+*
+* Purpose      : Changes encoding from UTF-8 to ISO-8859-1
+*
+* Parameters   : Filename as string
+*
+* Return Value :N/A
+*
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath
+
+        FilePath = "smp$userfiles:BizTalk\" : FileName : ".xml"
+
+        IF FILE EXISTS ( FilePath ) THEN
+
+            {Open and read current file}
+            FILE OPEN FilePath, check_ok
+            FILE READ FilePath, out_val, check_ok
+
+            {Remove middle string from file}
+            start_string = SUBSTRING( out_val, 1, 30)
+            end_string = SUBSTRING( out_val, 36, length(out_val)-35)
+            FILE CLOSE FilePath, check_ok
+
+            {Delete original file}
+            FILE DELETE FilePath
+
+            {Create new file and add encoding as requested}
+            tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.xml"
+
+            FILE CREATE tmp_name, check_ok
+            FILE EXTEND tmp_name, check_ok
+            FILE WRITE tmp_name, start_string : "ISO-8859-1" : end_string , check_ok
+            FILE CLOSE tmp_name, check_ok
+
+            {Rename temp file to old name}
+            FILE COPY tmp_name, FilePath, check_ok
+            {Delte temp file}
+            FILE DELETE tmp_name
+        ELSE
+
+            WriteToLog("ERROR: File " : FilePath : " does not exist. Routine ChangeXMLEncoding.")
+
+        ENDIF
+
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ChangeXMLNameSpace (VALUE FileName, VALUE ChangeTo)
+{
+*
+* Purpose      : Changes namespace in xml doc.
+*
+* Parameters   : Filename - file to change in
+                 ChangeTo - Value to replace existing namespace with
+*
+* Return Value :N/A
+*
+**************************************************************************}
+DECLARE check_ok, out_val, start_string, end_string, tmp_name, FilePath, idx
+
+    FilePath = "smp$userfiles:BizTalk\" : FileName : ".xml"
+
+    IF FILE EXISTS ( FilePath ) THEN
+
+        {Open org file and read content}
+        FILE OPEN FilePath, check_ok
+        FILE READ FilePath, out_val, check_ok
+
+        {Find strings to keep}
+        start_string = SUBSTRING( out_val, 1, 61) : "=" : ASCII(34)
+        end_string = SUBSTRING( out_val, 154, LENGTH(out_val))
+
+        {Parse new value}
+        outval = start_string : ChangeTo : end_string
+
+        idx = INDEX(out_val, "system response_type=") + 29
+        start_string = SUBSTRING( out_val, 1, idx)
+        end_string = SUBSTRING( out_val, idx + 59, LENGTH(out_val))
+
+        FILE CLOSE FilePath, check_ok
+        FILE DELETE FilePath
+
+        tmp_name = "smp$userfiles:BizTalk\":FileName:"_tmp.xml"
+
+        FILE CREATE tmp_name, check_ok
+        FILE EXTEND tmp_name, check_ok
+        FILE WRITE tmp_name, start_string : end_string , check_ok
+        FILE CLOSE tmp_name, check_ok
+
+        FILE COPY tmp_name, FilePath, check_ok
+        FILE DELETE tmp_name
+
+    ELSE
+
+        WriteToLog("ERROR: File " : FilePath : " does not exist. Routine ChangeXMLEncoding.")
+
+    ENDIF
+
+
+ENDROUTINE
+
+{*************************************************************************
+*
+*   SECTION 4: Transaction handeling
+*
+**************************************************************************}
+
+{*************************************************************************}
+GLOBAL ROUTINE GenerateTransactionId
+{
+*
+* Purpose      : Creates a unique transaction identity
+*
+* Parameters   : None
+*
+* Return Value : A new identity
+*
+**************************************************************************}
+    DECLARE Answer, generated_number, i
+
+    SET FORMAT "9999999999"
+    generated_number = INCREMENT ( "MES_TRANSFER", "IDENTITY")
+
+    i = LENGTH(STRIP(generated_number))
+
+    WHILE i <= 6 DO
+
+        generated_number = "0" : STRIP(generated_number)
+        i = LENGTH(STRIP(generated_number))
+
+    ENDWHILE
+
+    Answer = "LIMS" : STRIP(generated_number)
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE SaveTransaction (VALUE LimsTransId, VALUE MesTransId, VALUE FunctionName)
+{
+*
+* Purpose      : Saves transaction in database
+*
+* Parameters   : LimsTransId - TransactionId created by and for LIMS
+*                MesTransId  - Transaction from MES
+*                FunctionName- What did just happen?
+*
+* Return Value : None
+*
+**************************************************************************}
+    DECLARE sqlstmt
+
+    sqlstmt = "INSERT INTO MES_TRANSFER_LOG VALUES ('" : LimsTransId : "','" : MesTransId : "', '" : FunctionName : "', SYSDATE, '" : GLOBAL("OPERATOR") : "')"
+    execute_sql ( sqlstmt)
+    execute_sql ( "commit")
+
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ConvertDateToXML (VALUE DateToConvert)
+{
+*
+* Purpose      : Converts a date to xml format
+*
+* Parameters   : DateToConvert - well guess...
+*
+* Return Value : Converted date
+*
+**************************************************************************}
+DECLARE Answer, year, month, day, hour, minute, sec
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    Answer = string ( DateToConvert )
+
+    day     = SUBSTRING ( Answer , 1 , 2 )
+    month   = SUBSTRING ( Answer , 4 , 2 )
+    year    = SUBSTRING ( Answer , 7 , 4 )
+    hour    = SUBSTRING ( Answer , 12 , 2 )
+    minute  = SUBSTRING ( Answer , 15 , 2 )
+    sec     = SUBSTRING ( Answer , 18 , 2 )
+
+    Answer = year : "-" : month : "-" : day : "T" : hour : ":" : minute : ":" : sec
+
+    RESTORE DATE FORMAT
+
+    RETURN (Answer)
+
+ENDROUTINE
+
+{*************************************************************************}
+ROUTINE ConvertDateFromXML (VALUE DateToConvert)
+{
+*
+* Purpose      : Converts a date from xml format
+*
+* Parameters   : DateToConvert - well guess...
+*
+* Return Value : Converted date
+*
+**************************************************************************}
+DECLARE Answer, year, month, day, hour, minute, sec, TmpStr
+
+    TmpStr = STRING ( DateToConvert )
+    year    = SUBSTRING ( TmpStr , 1 , 4 )
+    month   = SUBSTRING ( TmpStr , 6 , 2 )
+    day     = SUBSTRING ( TmpStr , 9 , 2 )
+    hour    = SUBSTRING ( TmpStr , 12 , 2 )
+    minute  = SUBSTRING ( TmpStr , 15 , 2 )
+    sec     = SUBSTRING ( TmpStr , 18 , 2 )
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    Answer = day : "-" : month : "-" : year : " " : hour : ":" : minute : ":" : sec
+
+    RESTORE DATE FORMAT
+
+
+    IF IS_DATE ( Answer ) THEN
+        IF DateToConvert = "0001-01-01T00:00:00" THEN
+            SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+            Answer = NOW
+            RESTORE DATE FORMAT
+        ENDIF
+        RETURN (Answer)
+    ELSE
+        Answer = EMPTY
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************}
+{ Used for testing only
+* DKTBG / 20090110
+*
+*
+**************************************************************************}
+
+{*************************************************************************}
+ROUTINE TestSamplePlanTrigger ( VALUE Input, VALUE testPar)
+    WriteToLog ("Routine from SamplePlanLogin returns: '":Input:"' and '":testPar:"'")
+ENDROUTINE
+
+{*************************************************************************}
+

@@ -1,0 +1,1085 @@
+{  ************************************************************************** }
+{                                                                             }
+{  Module Name : IMPORTPREV.RPF                                               }
+{                                                                             }
+{  Purpose     : Copy results to a job from a parent job.                     }
+{                                                                             }
+{  Requirements: The two jobs must be linked in table batch_trace.            }
+{                Only results for analyses on the testschedule are copied.    }
+{                Only results for identical analysis names are copied.        }
+{                Component names for the analysis results to be copied must   }
+{                be identical.                                                }
+{                                                                             }
+{  Author      : Henrik Behrndt / 9-MAR-99                                    }
+{                                                                             }
+{  ************************************************************************** }
+{  Modification history:                                                      }
+{                                                                             }
+{  8-5-2000 HBe: Only results for identical analysis versions are copied.     }
+{                MLP parameter version selected from a random sample.         }
+{                                                                             }
+{  10-10-03 HBe: Including timeseries data in the transfer                    }
+{  ************************************************************************** }
+
+ENABLE WINDOWS
+SET NAME "DISPLAY/"
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+
+
+
+declare m_job, m_product, m_batch, c_product, c_batch, plant,
+m_sample, c_sample, child_active, ok_to_write, lk1, lk2, group_checking
+
+DECLARE confirm_transfer, user_overwrite_confirmation	{form objects}
+
+m_job = EMPTY
+
+where_to_transfer_to (m_job, m_product, m_batch)
+
+IF m_job = EMPTY THEN
+   EXIT
+ENDIF
+
+{**AS1361 HBe 5-10-2001}
+group_checking = global ( "CHECK_GROUPS" )
+SET SECURITY FALSE
+{**AE1361}
+
+
+select_child_batch (m_job, c_batch, c_product, m_product, m_batch)
+
+IF c_batch = EMPTY THEN
+   EXIT
+ENDIF
+
+
+SET MODE ACTIVE
+
+m_prod_version = SELECT sample . product_version 
+WHERE job_name = m_job
+
+{**AS1304 HBe 19-4-00}
+plant = STRIP(SELECT sample . group_id)
+{**AE1304}
+
+IF  NOT (m_prod_version <> EMPTY) AND (NOT BLANK(m_prod_version)) THEN
+   FLASH_MESSAGE("Problem identifying master product version, exiting.",TRUE)
+   EXIT
+ENDIF
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+
+get_the_parameters (m_product, m_prod_version, m_sample, plant, c_sample )
+
+find_sample_ids (m_product, m_batch, c_product, c_batch, m_sample, c_sample,
+m_sample_id, c_sample_id)
+
+
+find_tests  (m_sample_id, c_sample_id)
+
+{**AE1361 HBe 5-10-01}
+SET SECURITY group_checking
+{**AE1361}
+
+
+ROUTINE where_to_transfer_to (m_job, m_product, m_batch)
+
+ARRAY empty_arr
+
+IF prompt_user ( "transferable_jobs_view", "Transfer of data from parent job",
+                               EMPTY,
+                               TRUE, "Enter Job Name to Transfer Data to:",
+                               empty_arr, m_job, l_k_m )
+THEN
+   IF NOT ((STRIP(m_job) <> EMPTY) AND (STRIP(m_job) <> "")) THEN
+     FLASH_MESSAGE("No job name was selected.",TRUE)
+     EXIT
+   ENDIF
+ENDIF
+m_product = select transferable_jobs_view . product_name
+          where job_name = m_job
+m_batch   = select transferable_jobs_view . batch_name
+
+ENDROUTINE
+
+
+ROUTINE select_child_batch ( VALUE m_job, c_batch, c_product, VALUE m_product, VALUE m_batch )
+
+ARRAY child_job_select_arr
+DECLARE child_status
+c_batch = EMPTY
+
+
+      child_job_select_arr[1,1] = ARRAY_SELECT_EQ
+      child_job_select_arr[1,2] = "BATCH_NAME_MASTER"
+      child_job_select_arr[1,3] = m_batch
+      child_job_select_arr[2,1] = ARRAY_SELECT_EQ
+      child_job_select_arr[2,2] = "PRODUCT_NAME_MASTER"
+      child_job_select_arr[2,3] = m_product
+
+
+IF prompt_user ( "batch_trace", "Input selection", "batch_name_child", TRUE,
+                              "Enter batch name for child batch.",
+                              child_job_select_arr, c_batch, l_k_c )
+
+THEN
+   IF NOT ((STRIP(c_batch) <> EMPTY) AND (STRIP(c_batch) <> "")) THEN
+      FLASH_MESSAGE("No batch was selected.",TRUE)
+      EXIT
+   ENDIF
+   c_product = SELECT batch_trace . product_name_child
+     WHERE batch_name_child = c_batch
+     AND product_name_master = m_product
+     AND batch_name_master = m_batch
+ELSE
+   FLASH_MESSAGE("Problem selecting child batch.",TRUE)
+   EXIT
+ENDIF
+
+
+where_to_find_child (c_batch, c_product)
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+
+{**AS1341 HBe 15-8-01: CHECK for and confirm the use of a reference order - (Used in FRANCE)}
+
+use_ref    = EMPTY
+ref_active = EMPTY
+
+{**MS1365 HBe 30-10-2001
+            ref_order = SELECT job_header.reference_order
+            WHERE batch_name   = c_batch
+            AND   product_name = c_product
+}
+
+            ref_order = SELECT job_header.reference_order
+            WHERE job_name   = STRIP(c_product):"/":STRIP(c_batch)
+
+{**ME1365}
+IF (ref_order <> EMPTY) AND (NOT BLANK(ref_order))
+THEN
+
+   where_to_find_reference (ref_order, ref_active)
+
+   IF ref_active = FALSE THEN
+      SET MODE COMMITTED
+   ELSE
+      SET MODE ACTIVE
+   ENDIF
+
+   ref_job = SELECT job_header.job_name
+             WHERE process_order = ref_order
+
+
+   IF (ref_job <> EMPTY) AND (NOT BLANK(ref_job))
+   THEN
+      confirm_ref_order (ref_order, use_ref, ref_job)
+      IF use_ref
+      THEN
+         child_active = ref_active
+         c_batch   = SELECT job_header.batch_name
+         c_product = SELECT job_header.product_name
+      ENDIF
+   ELSE
+
+      FLASH_MESSAGE("Warning: A reference to an order was found, but no job exists for this order.", TRUE)
+
+   ENDIF
+ENDIF
+
+
+
+
+{**AE1341}
+
+{**M1365 HBe 25-10-2001
+
+child_status = SELECT job_header.job_status
+   where batch_name = c_batch AND product_name = c_product
+flash_message(child_status : c_batch : c_product, TRUE)
+}
+
+child_status = SELECT job_header.job_status
+   where job_name = STRIP(c_product):"/":STRIP(c_batch)
+
+{**ME1365}
+{**MS1341 HBe 15-8-01}
+IF ((child_status = EMPTY) OR (BLANK(child_status)))
+THEN
+   FLASH_MESSAGE("The chosen child job ":STRIP(c_product):"/":STRIP(c_batch):" does not exist!", TRUE)
+   EXIT
+ENDIF
+{**AE1341}
+
+IF strip(child_status) <> "A" THEN
+  FLASH_MESSAGE("The child job ":STRIP(c_product):"/":STRIP(c_batch):" has not been authorized!",TRUE)
+  EXIT
+ENDIF
+
+ENDROUTINE
+
+
+
+ROUTINE get_the_parameters (VALUE mlp_id, VALUE mlp_version, m_sample, plant, c_sample)
+
+array parm_array
+array plant_array
+declare counter
+declare match
+
+IF NOT mlp_analysis_parameters("M", "IMPORTPREV", 4, mlp_id, mlp_version,
+parm_array,no_sets, err_mes  )
+THEN
+  FLASH_MESSAGE("Error in parameter setup or no setup for this product.",TRUE)
+  EXIT
+ENDIF
+{**AS1304 HBe 19-4-01}
+counter = 0
+match = 0
+WHILE counter < no_sets
+counter = counter + 1
+   IF STRIP(parm_array [counter, 4]) = plant THEN
+      match = match + 1
+      plant_array[1,1] = parm_array[counter,1]
+      plant_array[1,2] = parm_array[counter,2]
+      plant_array[1,3] = parm_array[counter,3]
+      plant_array[1,4] = parm_array[counter,4]
+   ENDIF
+ENDWHILE
+IF match <1 THEN
+  FLASH_MESSAGE("Parameter setup does not exist for the plant assigned to the master product.",TRUE)
+  EXIT
+ENDIF
+
+{**AE1304}
+
+
+IF match > 1 THEN
+  FLASH_MESSAGE("More than one parameter setup for this product/plant combination. Please reduce to one set.",TRUE)
+  EXIT
+ENDIF
+
+
+IF plant_array[1,1] <> "TRUE" THEN
+  FLASH_MESSAGE("Parameter setup does not allow transfer for this product.",TRUE)
+  EXIT
+ENDIF
+
+
+IF err_mes <> EMPTY THEN
+  FLASH_MESSAGE("Some error in parameter setup. ":strip(err_mes),TRUE)
+  EXIT
+ENDIF
+
+c_sample = plant_array[1,2]
+m_sample = plant_array[1,3]
+
+IF c_sample = EMPTY  THEN
+  FLASH_MESSAGE("Child sample has not been defined in parameters.",TRUE)
+ENDIF
+
+IF m_sample = EMPTY  THEN
+  FLASH_MESSAGE("Master sample has not been defined in parameters.",TRUE)
+ENDIF
+
+ENDROUTINE
+
+
+ROUTINE find_sample_ids
+(VALUE m_product, VALUE m_batch, VALUE c_product, VALUE c_batch,
+ VALUE m_sample, VALUE c_sample, m_sample_id, c_sample_id)
+
+SET MODE ACTIVE
+ARRAY c_sample_arr
+ARRAY m_sample_arr
+
+
+{MS 1222 HBe 23/6-99: More master samples of same type may exist, user choice
+between relevant available samples (id_numerics) is wanted}
+
+mx_sample_id = select sample.id_numeric
+   where product = m_product and
+   batch_name = m_batch and
+   sampling_point = m_sample
+
+m_sample_id = mx_sample_id
+
+mx_sample_count = 0
+
+WHILE (mx_sample_id <> EMPTY) DO
+
+   mx_sample_count = mx_sample_count + 1
+
+   m_sample_arr[mx_sample_count , 1] = SELECT sample.id_text
+   m_sample_arr[mx_sample_count , 2] = SELECT sample.id_numeric
+
+
+   NEXT sample
+
+   mx_sample_id = SELECT sample.id_numeric
+
+ENDWHILE
+
+
+IF mx_sample_count <= 1
+THEN
+   IF (m_sample_id = EMPTY) OR (BLANK(m_sample_id))
+   THEN
+      FLASH_MESSAGE("The Master Sample Is Non Existing!",TRUE)
+      EXIT
+   ENDIF
+ELSE
+
+   CREATE TEXT WINDOW master_sample_selection
+      HEIGHT  10
+      WIDTH   75
+      BORDER
+      HEADER = "Multiple ":strip(m_sample):" Master Samples Exists. ":
+               "Please Select Master Sample."
+      FOOTER = "Press DO to continue"
+
+   PASTE TEXT WINDOW master_sample_selection ON LINE 4 FROM 5
+
+      PROMPT FOR m_sample_id USING
+         "PRESS FIND to Select:  "
+                  ON LINE 6 FROM 6
+                  IN WINDOW master_sample_selection
+                  CHOOSE OUTOF m_sample_arr
+
+
+   UNPASTE TEXT WINDOW master_sample_selection
+
+ENDIF
+
+
+{ME 1222 HBe 23/6-99}
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+
+{MS 1222 HBe 22/6-99: More samples of same type may exist, user choice between
+relevant authorized samples (id_numerics) is wanted}
+{**MS1579: Browse on matching sample points instead of exact match}
+cx_sample_id = select sample.id_numeric
+   where product = c_product and
+   batch_name = c_batch and
+   sampling_point LIKE "%":TO_UPPER(c_sample):"%" and
+   status = "A"
+   ORDER ON login_date
+{**ME1579}
+c_sample_id = cx_sample_id
+
+cx_sample_count = 0
+
+WHILE (cx_sample_id <> EMPTY) DO
+
+   cx_sample_count = cx_sample_count + 1
+
+   c_sample_arr[cx_sample_count , 1] = SELECT sample.id_text
+   c_sample_arr[cx_sample_count , 2] = SELECT sample.id_numeric
+
+
+   NEXT sample
+
+   cx_sample_id = SELECT sample.id_numeric
+
+ENDWHILE
+
+
+IF cx_sample_count <= 1
+THEN
+   IF c_sample_id = EMPTY
+   THEN
+      FLASH_MESSAGE("The Child Sample Is Non Existing or Not Authorized!",TRUE)
+      EXIT
+   ENDIF
+ELSE
+
+CREATE TEXT WINDOW child_sample_selection
+   HEIGHT  10
+   WIDTH   75
+   BORDER
+   HEADER = "Multiple ":strip(c_sample):" Child Samples Exists. ":
+            "Please Select Child Sample."
+   FOOTER = "Press DO to continue"
+
+PASTE TEXT WINDOW child_sample_selection ON LINE 4 FROM 5
+
+
+
+   PROMPT FOR c_sample_id USING
+      "Press FIND to Select:  "
+               ON LINE 6 FROM 6
+               IN WINDOW child_sample_selection
+               CHOOSE OUTOF c_sample_arr
+
+
+UNPASTE TEXT WINDOW child_sample_selection
+
+ENDIF
+
+
+{ME 1222 HBe 22/6-99}
+
+IF m_sample_id = EMPTY  THEN
+  FLASH_MESSAGE("Sample ":strip(m_sample):" for batch ":strip(m_batch):
+" does not exist.",TRUE)
+  EXIT
+ENDIF
+
+IF c_sample_id = EMPTY  THEN
+  FLASH_MESSAGE("Sample ":strip(c_sample):" for batch ":strip(c_batch):
+" does not exist.",TRUE)
+  EXIT
+ENDIF
+
+
+SET MODE ACTIVE
+
+ENDROUTINE
+
+
+ROUTINE find_tests (m_sample_id, c_sample_id)
+
+{**M1468 HBe 10-6-2003: WHILE loop changed to repeat loop to avoid double lookup on the test table}
+
+declare count_test, no_res, loop_m_tests,
+loop_c_tests, count_m_comps, count_c_comps, l_k_p
+
+
+ARRAY master_test_arr
+ARRAY child_test_arr
+ARRAY master_comp_arr
+ARRAY child_comp_arr
+
+START READ TRANSACTION "find master tests"
+count_m_test = 0
+
+{**M1468: Master tests in status X and A excluded}
+
+   first_m_test = SELECT test.test_number
+   where sample = m_sample_id
+   AND (status <> "X") AND (status <> "A")
+
+   IF first_m_test = EMPTY THEN
+      FLASH_MESSAGE("There are no master test results",TRUE)
+      EXIT
+   ENDIF
+
+REPEAT
+  count_m_test = count_m_test + 1
+  master_test_arr[count_m_test,1] = SELECT test.test_number
+  master_test_arr[count_m_test,2] = SELECT test.analysis
+  master_test_arr[count_m_test,3] = SELECT test.test_count
+  master_test_arr[count_m_test,4] = SELECT test.analysis_version
+  NEXT test
+UNTIL (master_test_arr[count_m_test,1] = EMPTY) OR (count_m_test > 200 )
+
+
+START READ TRANSACTION "find child tests"
+
+IF child_active = FALSE THEN
+   SET MODE COMMITTED
+ELSE
+   SET MODE ACTIVE
+ENDIF
+
+{**M1227 HBe 7/9-99: Status A in 2 select statements below included!}
+count_c_test = 0
+
+first_c_test = SELECT test.test_number
+   where ((sample = c_sample_id) AND (status = "A"))
+
+IF first_c_test = EMPTY THEN
+   FLASH_MESSAGE("There are no child test results",TRUE)
+   EXIT
+ENDIF
+
+
+REPEAT
+  count_c_test = count_c_test + 1
+  child_test_arr[count_c_test,1] = SELECT test.test_number
+  child_test_arr[count_c_test,2] = SELECT test.analysis
+  child_test_arr[count_c_test,3] = SELECT test.test_count
+  child_test_arr[count_c_test,4] = SELECT test.analysis_version
+  NEXT test
+UNTIL (child_test_arr[count_c_test,1] = EMPTY) OR (count_c_test > 200)
+
+
+SET MODE ACTIVE
+
+loop_m_tests = 1
+
+WHILE (loop_m_tests < count_m_test ) DO
+loop_c_tests = 1
+
+   WHILE loop_c_tests < count_c_test DO
+
+      IF master_test_arr[loop_m_tests,2] = child_test_arr[loop_c_tests,2]
+      THEN
+{**MS Mig 3.10-4.1 HBe 8-5-00: Check analysis version}
+{**AS 1361 HBe 22-11-01}   
+         serious_conflict = FALSE 
+{**AE 1361}
+         IF master_test_arr[loop_m_tests,4] <> child_test_arr[loop_c_tests,4]
+         THEN
+            vers_conflict = TRUE 
+         ELSE
+            vers_conflict = FALSE
+         ENDIF
+            IF get_components(master_test_arr[loop_m_tests,1], master_comp_arr, count_m_comps) = FALSE THEN
+               FLASH_MESSAGE("Error getting master components",TRUE)
+               EXIT
+            ENDIF
+            IF child_active = FALSE THEN
+               SET MODE COMMITTED
+            ELSE
+               SET MODE ACTIVE
+            ENDIF
+            IF get_components(child_test_arr[loop_c_tests,1], child_comp_arr, count_c_comps) = FALSE THEN
+               FLASH_MESSAGE("Error getting child components",TRUE)
+               EXIT
+            ENDIF
+            SET MODE ACTIVE
+            IF (count_m_comps = count_c_comps) AND (count_m_comps > 0) THEN
+               loop_comps = 1
+               WHILE loop_comps <= count_m_comps DO
+              IF master_comp_arr[loop_comps,1]<>child_comp_arr[loop_comps,1] THEN
+                   FLASH_MESSAGE("Error in component name for test ":strip(master_test_arr[loop_m_tests,2]),TRUE)
+{**MS1361 HBe 22-10-01}
+                   serious_conflict = TRUE 
+                   {EXIT}
+{**ME1361 HBe 22-10-01}
+                 ELSE
+
+                 ENDIF
+                 loop_comps = loop_comps + 1
+               ENDWHILE
+            ELSE
+               FLASH_MESSAGE("Different number of components on test ":strip(master_test_arr[loop_m_tests,2]),TRUE)
+{**MS1361 HBe 22-10-01}
+              serious_conflict = TRUE 
+             {EXIT}
+{**ME1361 HBe 22-10-01}
+
+            ENDIF
+
+             CREATE OBJECT "STD_FORM", confirm_transfer
+
+            {setup defaults}
+
+            confirm_transfer . header	= " Please confirm the transfer of results"
+            confirm_transfer . footer = "Press DO to exit"
+            confirm_transfer . row	=  7
+            confirm_transfer . column	=  4
+            confirm_transfer . width	= 60
+            confirm_transfer . height	=  8
+            confirm_transfer . return_behaviour = FORM_RETURN_STAY
+
+
+            confirm_transfer . add_display ( "From:", 1,2, prompt_rendition_bold )
+            confirm_transfer . add_display ("Job: ":strip(c_product):"/":strip(c_batch):
+               ". Sample: ":strip(c_sample_id):" (":strip(c_sample):
+               "). Analysis: ": strip(child_test_arr[loop_c_tests,2]):"/":
+               strip(child_test_arr[loop_c_tests,3]):" Ver.: ":strip(child_test_arr[loop_c_tests,4]):".", 2,3, prompt_rendition_bold )
+
+
+            confirm_transfer . add_display ( "To:", 1,4, prompt_rendition_bold )
+            confirm_transfer . add_display ("Job: ":strip(m_product):"/":strip(m_batch):
+               ". Sample: ":strip(m_sample_id):" (":strip(m_sample):
+               "). Analysis: ": strip(master_test_arr[loop_m_tests,2]):"/":
+               strip(master_test_arr[loop_m_tests,3]):" Ver.: ":strip(master_test_arr[loop_m_tests,4]):".", 2,5, prompt_rendition_bold )
+{***}
+IF vers_conflict THEN
+ confirm_transfer . add_display ( "Please Note the Version Conflict!", 10,7, prompt_rendition_blinking )
+ENDIF
+
+{**AS1361 HBe 22-10-01}
+IF serious_conflict THEN
+ confirm_transfer . add_display ( "NOTE: SERIOUS CONFLICT, TRANSFER NOT POSSIBLE!", 10,8, prompt_rendition_blinking )
+ENDIF
+
+{**AE1361}
+    
+            confirm_transfer . start_prompt ()
+            confirm_transfer . wait_prompt ()
+            confirm_transfer . end_prompt ()
+
+            lk1 = confirm_transfer . get_lastkey () 
+
+            IF lk1 = "EXIT" THEN 
+              cont = FALSE
+            ELSEIF lk1 = "ENTER" THEN 
+               Cont = TRUE
+            ELSEIF lk1 = "DO" THEN 
+               Cont = TRUE
+            ELSE
+               cont = FALSE
+               FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk1),TRUE)
+ENDIF
+
+            {END OF NEW OBJ PROMPT!}
+            IF cont = TRUE
+
+               THEN transfer_data(loop_m_tests, loop_c_tests)
+
+            ENDIF
+ {**ME Mig 3.10-4.1 HBe 8-5-00: End of check analysis version}
+
+      ENDIF
+      loop_c_tests = loop_c_tests + 1
+
+   ENDWHILE
+
+loop_m_tests = loop_m_tests + 1
+ENDWHILE
+
+
+ENDROUTINE
+
+
+
+ROUTINE transfer_data (VALUE loop_m_tests, VALUE loop_c_tests)
+
+DECLARE is_ok, size_m_arr, counter, found_m_res, size_err_arr, put_m_err,
+        back_counter, back_found
+
+ARRAY child_res_arr
+ARRAY master_res_arr
+ARRAY put_ok
+
+child_res_arr[1,1] = "COMPONENT_NAME"
+child_res_arr[1,2] = "RESULT_TYPE"
+child_res_arr[1,3] = "TEXT"
+
+
+master_res_arr[1,1] = "TEXT"
+
+
+
+
+         START READ TRANSACTION "get all test results"
+
+            GET_TEST_RESULTS master_test_arr[loop_m_tests,1], master_res_arr, is_ok
+            IF is_ok <> EMPTY THEN
+             FLASH_MESSAGE("Error obtaining the master results: ":strip(is_ok),TRUE)
+             EXIT
+            ENDIF
+
+            size_m_arr = SIZE_OF_ARRAY(master_res_arr)
+            found_m_res = FALSE
+            counter=2
+
+            WHILE counter <= size_m_arr DO
+
+                 IF NOT  ( (master_res_arr[counter,1] = NULL ) OR
+                           (master_res_arr[counter,1] = EMPTY) OR
+                           (BLANK(master_res_arr[counter,1]) )  )
+                 THEN
+
+
+
+
+                  found_m_res =  TRUE
+                ENDIF
+                counter=counter+1
+            ENDWHILE
+
+            Ok_to_write = TRUE
+
+            IF found_m_res = TRUE THEN
+
+               Confirm_the_overwrite (m_sample_id, ok_to_write)
+
+            ENDIF
+
+               IF child_active = FALSE THEN
+                  SET MODE COMMITTED
+               ELSE
+                  SET MODE ACTIVE
+               ENDIF
+
+            GET_TEST_RESULTS child_test_arr[loop_c_tests,1], child_res_arr, is_ok
+            IF is_ok <> EMPTY THEN
+              FLASH_MESSAGE("Error obtaining the child results: ":strip(is_ok),TRUE)
+              EXIT
+            ENDIF
+
+            SET MODE ACTIVE
+
+            IF ok_to_write = TRUE THEN
+
+               {saving the new test results}
+
+               PUT_TEST_RESULTS master_test_arr[loop_m_tests,1], child_res_arr, put_ok
+
+               size_err_array = SIZE_OF_ARRAY(put_ok)
+
+               counter = 1
+
+               put_m_err = FALSE
+
+               WHILE (counter  <= size_err_array ) DO
+                  IF (put_ok[counter] <> EMPTY) THEN
+                     IF counter = 1 THEN
+                        FLASH_MESSAGE(put_ok[counter],TRUE)
+                     ENDIF
+                     IF (counter > 1) THEN
+                        back_counter = 1
+                        back_found = FALSE
+                        WHILE back_counter < counter DO
+                           IF put_ok[counter] = put_ok[back_counter] THEN
+                              back_found = TRUE
+                           ENDIF
+                           back_counter = back_counter + 1
+                        ENDWHILE
+
+                        IF back_found = FALSE THEN
+                           FLASH_MESSAGE(put_ok[counter],TRUE)
+                        ENDIF
+
+                     ENDIF
+                  ENDIF
+                  counter=counter + 1
+               ENDWHILE
+
+               IF put_m_err <> FALSE THEN
+{                  FLASH_MESSAGE("There was an error saving the child results on master sample", TRUE)
+}
+               ENDIF
+
+{**AS1496 HBe 10-10-2003}
+
+               time_comp = SELECT timeseries.component_name
+                           WHERE test_number = child_test_arr[loop_c_tests,1]
+               IF (time_comp <> EMPTY) AND (NOT BLANK(time_comp)) THEN
+                  transfer = FALSE
+                  confirm_timeseries_transfer (child_test_arr[loop_c_tests,1], transfer)
+                  IF transfer THEN
+                     handle_timeseries_transfer (child_test_arr, loop_c_tests, master_test_arr, loop_m_tests)
+                  ENDIF
+               ENDIF
+{**AE1496}
+
+            ELSE
+               FLASH_MESSAGE("Not written due to lack of overwrite confirmation!",FALSE)
+
+            ENDIF
+ENDROUTINE
+
+ROUTINE where_to_find_child (VALUE c_batch, VALUE c_product)
+declare found_active, found_passive
+
+{**MS1365 HBe 30-10-2001
+found_active = SELECT job_header.job_status
+   where batch_name = c_batch AND product_name = c_product
+}
+
+found_active = SELECT job_header.job_status
+   where job_name = STRIP(c_product):"/":STRIP(c_batch)
+
+{*ME1365}
+
+IF found_active <> EMPTY
+THEN
+   child_active = TRUE
+   RETURN
+ENDIF
+
+found_passive = SELECT c_job_header.job_status
+   where batch_name = c_batch AND product_name = c_product
+
+IF found_passive <> EMPTY
+THEN
+   child_active = FALSE
+   RETURN
+ENDIF
+IF ( ( NOT (found_active <> EMPTY) ) and ( NOT (found_passive <> EMPTY) ) )
+THEN
+   FLASHMESSAGE("The child job was not found in active or in passive job_header tables!",TRUE)
+   EXIT
+ENDIF
+
+ENDROUTINE
+
+
+ROUTINE confirm_the_overwrite (m_sample_id, overwrite)
+
+CREATE OBJECT "STD_FORM", user_overwrite_confirmation
+
+{setup defaults}
+
+user_overwrite_confirmation. header	= "Warning: You are about to overwrite existing results!"
+user_overwrite_confirmation. footer = "Escape to cancel"
+user_overwrite_confirmation. row	=  7
+user_overwrite_confirmation. column	=  4
+user_overwrite_confirmation. width	= 60
+user_overwrite_confirmation. height	=  3
+user_overwrite_confirmation. return_behaviour = FORM_RETURN_STAY
+
+
+user_overwrite_confirmation. add_display ("Overwrite existing results on ":
+                  "master sample ":strip(m_sample_id):"? ", 12, 2, prompt_rendition_bold )
+
+user_overwrite_confirmation . start_prompt ()
+user_overwrite_confirmation . wait_prompt ()
+user_overwrite_confirmation . end_prompt ()
+
+lk2 = user_overwrite_confirmation . get_lastkey () 
+
+IF lk2 = "EXIT" THEN 
+  overwrite = FALSE
+ELSEIF lk2 = "ENTER" THEN 
+   overwrite = TRUE
+ELSEIF lk2 = "DO" THEN 
+   overwrite = TRUE
+ELSE
+   overwrite = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk2),TRUE) ENDIF
+
+
+ENDROUTINE
+
+
+{**AS1341 HBe 15-8-01}
+
+ROUTINE confirm_ref_order (VALUE ref_order, use_ref, VALUE ref_job)
+
+
+CREATE OBJECT "STD_FORM", ref_order_confirmation
+
+{setup defaults}
+
+
+ref_order_confirmation. header	= "Reference Order Specified"
+ref_order_confirmation. footer = "Escape to cancel"
+ref_order_confirmation. row	=  7
+ref_order_confirmation. column	=  4
+ref_order_confirmation. width	= 60
+ref_order_confirmation. height	=  3
+ref_order_confirmation. return_behaviour = FORM_RETURN_STAY
+
+
+ref_order_confirmation. add_display ("Attempt to import from job ":STRIP(ref_job):"    (On order ":
+                        STRIP(ref_order):").", 
+                        8, 2, prompt_rendition_bold )
+
+ref_order_confirmation. add_display ("instead of the selected child ":STRIP(c_product):"/":STRIP(c_batch):"?", 
+                        8, 3, prompt_rendition_bold )
+
+
+ref_order_confirmation . start_prompt ()
+ref_order_confirmation . wait_prompt ()
+ref_order_confirmation . end_prompt ()
+
+lk3 = ref_order_confirmation . get_lastkey () 
+
+IF lk3 = "EXIT" THEN 
+   use_ref = FALSE
+ELSEIF lk3 = "ENTER" THEN 
+   use_ref = TRUE
+ELSEIF lk3 = "DO" THEN 
+   use_ref = TRUE
+ELSE
+   use_ref = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk3),TRUE) ENDIF
+
+
+ENDROUTINE
+
+
+ROUTINE where_to_find_reference (VALUE ref_order, ref_active)
+declare found_active, found_passive
+
+SET MODE ACTIVE
+
+found_active = SELECT job_header.job_status
+   where process_order = ref_order
+
+IF found_active <> EMPTY
+THEN
+   ref_active = TRUE
+   RETURN
+ENDIF
+
+found_passive = SELECT c_job_header.job_status
+   where process_order = ref_order
+IF found_passive <> EMPTY
+THEN
+   ref_active = FALSE
+   RETURN
+ENDIF
+IF ( ( NOT (found_active <> EMPTY) ) and ( NOT (found_passive <> EMPTY) ) )
+THEN
+{**M1378 HBe 18-12-2001: Error message changed. Using "Return" instead of "Exit"}
+   FLASHMESSAGE("The reference process order ":ref_order: " on the selected child record was not found in active or in passive job_header tables!" :
+                " Please correct the problem with the child job!" ,TRUE)
+   RETURN
+ENDIF
+
+ENDROUTINE
+
+
+{**AE1341}
+
+
+{**AS 1496 HBe 10-10-03}
+{-------------------------------------------HANDLE_TIMESERIES_TRANSFER----------------------------------------------}
+ROUTINE handle_timeseries_transfer (child_test_arr, VALUE loop_c_tests, master_test_arr, VALUE loop_m_tests)
+
+   ARRAY target_array
+   DECLARE source_test, line_count, test, test_size
+
+
+   source_test = child_test_arr[loop_c_tests,1]
+   target_test = master_test_arr[loop_m_tests,1]
+
+   timestamp = SELECT timeseries.component_name
+               WHERE test_number = source_test
+
+   GET_FIELD_DETAILS timeseries.test_number, "FIELD_SIZE", test_size   
+
+   line_count = 0
+
+   WHILE (line_count <= 1000) AND (timestamp <> EMPTY) AND (NOT BLANK(timestamp))
+      line_count = line_count + 1
+
+      target_array[line_count , 1] = PAD(STRIP(target_test), " ", test_size)
+      target_array[line_count , 2] = SELECT timeseries . component_name
+      target_array[line_count , 3] = SELECT timeseries . timestamp
+      target_array[line_count , 4] = SELECT timeseries . result_value
+
+      NEXT timeseries
+      timestamp = SELECT timeseries.component_name
+   ENDWHILE
+
+
+   save_to_database ( target_array, line_count, source_test)
+
+
+ENDROUTINE
+
+{-----------------------------------------CONFIRM_TIMESERIES_TRANSFER----------------------------------------------}
+
+ROUTINE confirm_timeseries_transfer (test_number, overwrite)
+
+CREATE OBJECT "STD_FORM", user_overwrite_confirmation
+
+{setup defaults}
+
+user_overwrite_confirmation. header	= "TIMESERIES DATA EXISTS FOR IDENTIFIED TEST"
+user_overwrite_confirmation. footer = "Escape to cancel"
+user_overwrite_confirmation. row	=  7
+user_overwrite_confirmation. column	=  4
+user_overwrite_confirmation. width	= 60
+user_overwrite_confirmation. height	=  3
+user_overwrite_confirmation. return_behaviour = FORM_RETURN_STAY
+
+
+user_overwrite_confirmation. add_display ("Attempt transfer of timeseries data from ":
+                  "child test number ":strip(test_number):"? ", 12, 2, prompt_rendition_bold )
+
+user_overwrite_confirmation . start_prompt ()
+user_overwrite_confirmation . wait_prompt ()
+user_overwrite_confirmation . end_prompt ()
+
+lk2 = user_overwrite_confirmation . get_lastkey () 
+
+IF lk2 = "EXIT" THEN 
+  overwrite = FALSE
+ELSEIF lk2 = "ENTER" THEN 
+   overwrite = TRUE
+ELSEIF lk2 = "DO" THEN 
+   overwrite = TRUE
+ELSE
+   overwrite = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk2),TRUE) ENDIF
+
+
+ENDROUTINE
+
+{--------------------------------------------SAVE_TO_DATABASE---------------------------------------------------}
+
+
+ROUTINE save_to_database ( target_array, VALUE line_count, VALUE test)
+
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN LIBRARY TOOLBOX
+
+DECLARE block_head, the_table, put_counter, rc, key_string
+
+
+           block_head = "Insert timeseries"
+           the_table = "TIMESERIES"
+
+           START WRITE TRANSACTION "Put Timeseries"
+
+           IF NOT block_init ( block_head, the_table ) THEN 
+              ROLLBACK {Out of write transaction mode}
+              RETURN (false)
+           ENDIF
+                put_counter = 0
+                IF line_count >= 1000 THEN
+                   FLASH_MESSAGE("Long data series holding " : STRIP(line_count) : "records. Only transferring first 1000 lines", TRUE)
+                ENDIF
+                WHILE (put_counter < line_count) AND (put_counter < 1000)
+
+
+                   put_counter = put_counter + 1
+
+
+                   key_string = target_array[put_counter,1] : target_array[put_counter,2] : target_array[put_counter,3]
+
+                   IF block_row_create_last( block_head, key_string )
+
+                   THEN rc = block_row_last ( block_head )
+                        rc = block_row_field_assign(block_head,"RESULT_VALUE", NUMERIC(target_array[put_counter,4]))
+                   ELSE 
+		         FLASH_MESSAGE("Could not save data. Overwriting of EXTING timeseries data on master test by copying is not supported / permitted.", TRUE)
+                         rc = block_row_release (block_head)
+                         ROLLBACK
+                         RETURN (false)
+                   ENDIF
+
+                   IF rc <> EMPTY THEN
+                      FLASHMESSAGE(rc, TRUE)
+                   ENDIF
+
+                ENDWHILE
+
+
+                rc = block_row_update ( block_head )
+                rc = block_row_release ( block_head )
+
+                COMMIT
+
+                FLASH_MESSAGE(STRIP(put_counter) : " records transferred from test ": test , TRUE)
+                
+                RETURN(TRUE)
+ENDROUTINE
+
+
+{-----------------------------------------------------------------------------}
+
+
+{**AE 1496}

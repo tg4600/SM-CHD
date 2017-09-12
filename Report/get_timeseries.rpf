@@ -1,0 +1,1264 @@
+{**AS1475. Created on 2-7-2003 by HBe. Loads column data in ASCII files on PC into table timeseries}
+{**MS1494: Automatic pick-up as a background job. Uses analysis parameter "TIMESERIES".}
+{**MS1498: Load only using component names having the calculation format "TIMESERIES". }
+{          Test status C not allowed for import.                                       }
+{Temporarily allowing manual import on test status C and A}
+
+SET COMPILE_OPTION DECLARE
+
+ENABLE WINDOWS
+
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_RESULT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $RESULT_LIST
+JOIN LIBRARY $RESULT_SPREADSHEET
+JOIN LIBRARY $WKSBROWSE
+JOIN LIBRARY $LIB_RE_GLOBALS
+JOIN LIBRARY TOOLBOX
+
+
+
+{time_series_data ( "TD_ENTRY" )}
+
+{back_entry ("TD_ENTRY")}
+
+
+{-----------------------------------------------------------------------------}
+
+
+ROUTINE create_prompt_form (       prompt_form   ,
+                             VALUE window_width  ,
+                             VALUE window_height ,
+                                   window_header ,
+                                   window_footer )
+
+    CREATE OBJECT PROMPT_CLASS_FORM , prompt_form
+
+    prompt_form . height = window_height
+    prompt_form . width  = window_width
+    prompt_form . row    = 11
+    prompt_form . column = ROUND ( ( GLOBAL ( "SCREEN_WIDTH" ) -
+                    window_width  ) / 2 )
+    prompt_form . border = TRUE
+    prompt_form . header = window_header
+    prompt_form . footer = window_footer
+    prompt_form . proportional = TRUE
+    prompt_form . return_behaviour = FORM_RETURN_LEAVE
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE component_enter_prompt ( anal_id )
+
+
+   DECLARE test_number
+
+   IF anal_id . get_lastkey () <> "EXIT" THEN
+
+      test_number =  anal_id . parent_prompt . prompt_objects [1] . value
+
+      anal_id . select_array [1,3] = select test.analysis where test_number = test_number
+
+      anal_id . select_array [3,3] = select test.analysis_version
+
+   ENDIF
+
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+{Load time series data into LIMS using existing test number and component name as keys.}
+
+ROUTINE time_series_data ( VALUE mode )
+
+        DECLARE test_number , test_string , tsr_header ,
+        tsr_footer , component_string , window_width , prompt_form ,
+        title_width , component_title , test_title , button, comp_name,
+                file_location, source_location, analysis_title, analysis_name_string, analysis_name, file_title,
+                file_location_string, unit_title,
+                unit_string, unit_id, select_time_array, select_array_test, select_array, source_path, test, component, unit,
+                prefix_title, prefix_val, prefix_string, prefix,
+                postfix_title, postfix_val, postfix_string, postfix,
+                delim_title, delim_val, delim_string, deli_char,
+                decimal_title, decimal_val, decimal_string, decimal_char,
+                lineskip_title, lineskip_val, lineskip_string, lineskip,
+                detaillength{, RC}
+
+{        DECLARE log_file
+
+        logfile_init (log_file)}
+
+
+    IF mode = "TD_ENTRY" THEN
+        set test_status "VCPI"
+                tsr_header = "Load Timeseries Data File into LIMS"
+
+        ELSEIF mode = "TD_DELETE" THEN
+        set test_status "VCA"
+                tsr_header = "Delete Timeseries Data"
+        ELSEIF mode = "TD_DISPLAY" THEN
+        set sample_status "VCA"
+                tsr_header = "View Timeseries Data"
+
+    ELSE
+                tsr_header = "Timeseries Data - Other Function"
+        set sample_status "VCA"
+        set job_status "VCA"
+    ENDIF
+
+        test_string     = "Test Number"
+        component_string  = "Component Name"
+        file_location_string = "File Location"
+        analysis_name_string = "Analysis"
+        unit_string = "Time Unit in File"
+        prefix_string  = "File Prefix character(s):"
+        postfix_string = "File Extension:"
+        delim_string = "Delimiter Character:"
+        decimal_string = "Decimal Character:"
+        lineskip_string = "Initial lines to skip in file:"
+
+
+        detaillength = LENGTH(prefix_string)
+        IF LENGTH(postfix_string) > detaillength THEN
+           detaillength = LENGTH(postfix_string)
+        ENDIF
+        IF LENGTH(delim_string) > detaillength THEN
+           detaillength = LENGTH(delim_string)
+        ENDIF
+        IF LENGTH(decimal_string) > decimal_string THEN
+           detaillength = LENGTH(decimal_string)
+        ENDIF
+        IF LENGTH(lineskip_string) > detaillength THEN
+           detaillength = LENGTH(lineskip_string)
+        ENDIF
+
+
+
+        IF stringlength ( test_string ) >
+           stringlength ( component_string ) THEN
+
+        title_width = stringlength ( test_string )
+        ELSE
+        title_width = stringlength ( component_string )
+        ENDIF
+
+        tsr_footer = "Cancel to Return"
+
+    window_width = 31 + title_width
+
+    create_prompt_form ( prompt_form  ,
+                         window_width ,
+                         4            ,
+                         tsr_header ,
+                         tsr_footer   )
+
+
+
+    ARRAY select_array_test
+
+
+    select_array_test [1,1] = ARRAY_SELECT_EQ
+    select_array_test [1,2] = "STATUS"
+    select_array_test [1,3] = "V"
+
+    select_array_test [2,1] = ARRAY_SELECT_OR
+    select_array_test [2,2] = EMPTY
+    select_array_test [2,3] = EMPTY
+
+    select_array_test [3,1] = ARRAY_SELECT_EQ
+    select_array_test [3,2] = "STATUS"
+    select_array_test [3,3] = "P"
+
+    select_array_test [4,1] = ARRAY_SELECT_OR
+    select_array_test [4,2] = EMPTY
+    select_array_test [4,3] = EMPTY
+
+    select_array_test [5,1] = ARRAY_SELECT_EQ
+    select_array_test [5,2] = "STATUS"
+    select_array_test [5,3] = "C"
+
+{START: To be removed after automatic transfer is enabled}
+
+    select_array_test [6,1] = ARRAY_SELECT_OR
+    select_array_test [6,2] = EMPTY
+    select_array_test [6,3] = EMPTY
+
+    select_array_test [7,1] = ARRAY_SELECT_EQ
+    select_array_test [7,2] = "STATUS"
+    select_array_test [7,3] = "A"
+
+    select_array_test [8,1] = ARRAY_SELECT_OR
+    select_array_test [8,2] = EMPTY
+    select_array_test [8,3] = EMPTY
+
+
+    select_array_test [9,1] = ARRAY_SELECT_EQ
+    select_array_test [9,2] = "STATUS"
+    select_array_test [9,3] = "I"
+
+{**End of removal: Change 10 to 6 in the 3 lines below}
+
+    select_array_test [10,1] = ARRAY_SELECT_ORDER
+    select_array_test [10,2] = "TEST_NUMBER"
+    select_array_test [10,3] = ARRAY_SELECT_DESCENDING
+
+
+    ARRAY select_array
+
+    select_array [1,1] = ARRAY_SELECT_EQ
+    select_array [1,2] = "ANALYSIS"
+    select_array [1,3] = ""
+
+    select_array [2,1] = ARRAY_SELECT_AND
+    select_array [2,2] = ""
+    select_array [2,3] = ""
+
+    select_array [3,1] = ARRAY_SELECT_EQ
+    select_array [3,2] = "ANALYSIS_VERSION"
+    select_array [3,3] = ""
+
+    select_array [4,1] = ARRAY_SELECT_AND
+    select_array [4,2] = ""
+    select_array [4,3] = ""
+
+    select_array [5,1] = ARRAY_SELECT_EQ
+    select_array [5,2] = "CALCULATION"
+    select_array [5,3] = "TIMESERIES"
+
+
+    select_array [6,1] = ARRAY_SELECT_ORDER
+    select_array [6,2] = "NAME"
+    select_array [6,3] = ARRAY_SELECT_ASCENDING
+
+
+    ARRAY select_time_array
+
+    select_time_array [1,1] = ARRAY_SELECT_EQ
+    select_time_array [1,2] = "QUANTITY"
+    select_time_array [1,3] = "T"
+
+
+
+    PROMPT OBJECT test_title
+        FORMAT TEXT
+                ON LINE 1 FROM 1
+        WITH ( bold   = TRUE                ,
+               width  = title_width         ,
+               value  = test_string )
+
+    prompt_form . add_display ( test_title )
+
+
+    PROMPT OBJECT analysis_title
+        FORMAT TEXT
+                ON LINE 1 FROM 10
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = analysis_name_string )
+
+    prompt_form . add_display ( analysis_title )
+
+
+
+    PROMPT OBJECT component_title
+        FORMAT TEXT
+                ON LINE 2 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = component_string )
+
+    prompt_form . add_display ( component_title )
+
+    PROMPT OBJECT file_title
+        FORMAT TEXT
+                ON LINE 2 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = file_location_string )
+
+    prompt_form . add_display ( file_title )
+
+
+    PROMPT OBJECT unit_title
+        FORMAT TEXT
+                ON LINE 2 FROM 1
+        WITH ( bold   = TRUE             ,
+               width  = title_width      ,
+               value  = unit_string )
+
+    prompt_form . add_display ( unit_title )
+
+
+
+    PROMPT OBJECT test_number
+                BROWSE ON test . test_number
+                THEN select
+                ON LINE 1 FROM title_width + 2
+                WITH ( select_array = select_array_test)
+
+
+    prompt_form . add_prompt ( test_number )
+
+
+
+    PROMPT OBJECT analysis_name
+                BROWSE ON versioned_analysis . identity
+                ON LINE 2 FROM title_width + 10
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_display ( analysis_name )
+
+
+
+    PROMPT OBJECT comp_name
+                BROWSE ON versioned_component.name
+                ON LINE 2 FROM title_width + 2
+                WITH ( enter_prompt_routine = "component_enter_prompt",
+               vgl_library = GLOBAL ( "current_library" ) ,
+               select_array = select_array)
+
+
+    prompt_form . add_prompt ( comp_name )
+
+
+    PROMPT OBJECT file_location
+                BROWSE ON TEXT40
+                ON LINE 4 FROM title_width + 2
+        WITH ( lowered = TRUE )
+
+        file_location . value = "O:\temp\"
+
+    prompt_form . add_prompt ( file_location )
+
+
+    PROMPT OBJECT unit_id
+                BROWSE ON unit_header . identity
+                THEN select
+                ON LINE 4 FROM title_width + 2
+        WITH ( select_array = select_time_array )
+
+                unit_id . value = "min"
+
+    prompt_form . add_prompt ( unit_id )
+
+{--------------}
+
+    PROMPT OBJECT prefix_title
+        FORMAT TEXT
+        WITH ( bold   = TRUE             ,
+               width  = LENGTH ( prefix_string)      ,
+               value  = prefix_string )
+
+
+    prompt_form . add_display ( prefix_title )
+
+
+    PROMPT OBJECT prefix_val
+                BROWSE ON TEXT10
+        WITH ( lowered = TRUE )
+
+    prompt_form . add_prompt ( prefix_val )
+
+
+{--------------}
+
+    PROMPT OBJECT postfix_title
+        FORMAT TEXT
+        WITH ( bold   = TRUE             ,
+               width  = LENGTH ( postfix_string)      ,
+               value  = postfix_string )
+
+
+    prompt_form . add_display ( postfix_title )
+
+
+    PROMPT OBJECT postfix_val
+                BROWSE ON TEXT10
+        WITH ( lowered = TRUE )
+                postfix_val . value = ".txt"
+
+    prompt_form . add_prompt ( postfix_val )
+
+{--------------}
+
+    PROMPT OBJECT delim_title
+        FORMAT TEXT
+        WITH ( bold   = TRUE             ,
+               width  = LENGTH ( postfix_string)      ,
+               value  = delim_string )
+
+    prompt_form . add_display ( delim_title )
+
+
+    PROMPT OBJECT delim_val
+                BROWSE ON TEXT1
+        WITH ( lowered = TRUE )
+                delim_val . value = " "
+
+    prompt_form . add_prompt ( delim_val )
+
+{--------------}
+
+    PROMPT OBJECT decimal_title
+        FORMAT TEXT
+        WITH ( bold   = TRUE             ,
+               width  = LENGTH ( decimal_string)      ,
+               value  = decimal_string )
+
+    prompt_form . add_display ( decimal_title )
+
+
+    PROMPT OBJECT decimal_val
+                BROWSE ON TEXT1
+
+        WITH ( lowered = TRUE )
+                decimal_val . value = "."
+
+    prompt_form . add_prompt ( decimal_val )
+
+{--------------}
+
+    PROMPT OBJECT lineskip_title
+        FORMAT TEXT
+        WITH ( bold   = TRUE             ,
+               width  = LENGTH ( lineskip_string)      ,
+               value  = lineskip_string )
+
+    prompt_form . add_display ( lineskip_title )
+
+
+    PROMPT OBJECT lineskip_val
+                BROWSE ON INTEGER
+        WITH ( lowered = TRUE )
+                lineskip_val . value = "0"
+
+    prompt_form . add_prompt ( lineskip_val )
+
+{--------------}
+
+        IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        prompt_form . button_style = FORM_BUTTON_NONE
+
+        prompt_form . height = 15
+        prompt_form . width  = 60
+
+        test_title . column = 2
+        test_title . row = 1
+
+
+        analysis_title . column = 20
+        analysis_title . row = 1
+
+
+        analysis_name . column = 20
+        analysis_name . row = 2
+
+
+        test_number . column = 2
+        test_number . row = 2
+
+        component_title . column = 2
+        component_title . row = 3
+
+        comp_name . column = 2
+        comp_name . row = 4
+
+        file_title . column = 2
+        file_title . row = 6
+
+        file_location . column = 2
+        file_location . row = 7
+
+                unit_title . column = 2
+                unit_title . row = 8
+
+                unit_id . column = 2
+                unit_id . row = 9
+
+                prefix_title . column = 2
+                prefix_title . row = 10
+
+                prefix_val . column = detaillength + 2
+                prefix_val . row = 10
+
+                postfix_title . column = 2
+                postfix_title . row = 11
+
+                postfix_val . column = detaillength + 2
+                postfix_val . row = 11
+
+                delim_title . column = 2
+                delim_title . row = 12
+
+                delim_val . column = detaillength + 2
+                delim_val . row = 12
+
+                decimal_title . column = 2
+                decimal_title . row = 13
+
+                decimal_val . column = detaillength + 2
+                decimal_val . row = 13
+
+                lineskip_title . column = 2
+                lineskip_title . row = 14
+
+                lineskip_val . column = detaillength + 2
+                lineskip_val . row = 14
+
+
+        prompt_form . add_frame ( "" , 1 ,  1 , 4 , prompt_form . width - 13 )
+        prompt_form . add_frame ( "" , 1 ,  6 , 9 , prompt_form . width - 13 )
+
+            PROMPT OBJECT button
+                    CLASS "STD_PROMPT_BUTTON"
+                    ON LINE 1
+                    FROM    prompt_form . width - 10
+                    WITH ( caption      =
+                   get_user_message ( "SMP_PROMPT_BUTTON_OK" , 1 ) ,
+                           enabled      = TRUE    ,
+                   width        = 10 ,
+                           send_lastkey = "DO"  )
+
+            prompt_form . add_prompt ( button )
+
+            PROMPT OBJECT button
+                    CLASS "STD_PROMPT_BUTTON"
+                    ON LINE 3
+                    FROM    prompt_form . width - 10
+                    WITH ( caption      =
+                 get_user_message ( "SMP_PROMPT_BUTTON_CANCEL" , 1 ) ,
+                           enabled      = TRUE      ,
+                   width        = 10  ,
+                           send_lastkey = "EXIT"  )
+
+            prompt_form . add_prompt ( button )
+
+    ENDIF
+
+    prompt_form . start_prompt ()
+
+        { Now everythings setup do some prompting }
+
+    prompt_form . wait_prompt ()
+
+    WHILE prompt_form . get_lastkey () <> "EXIT" DO
+
+
+        analysis_name . set_text ( SELECT test . analysis
+                           IN OBJECT test_number )
+
+        prompt_form . set_enabled ( FALSE )
+
+                source_location = STRIP(file_location . value)
+                IF SUBSTRING ( source_location, LENGTH(source_location), 1) <> "\"  THEN
+                   source_path = source_location : "\"
+                ELSE
+                   source_path = source_location
+                ENDIF
+
+                test         = STRIP(test_number.value)
+
+                component    = STRIP(comp_name . value)
+
+                unit         = STRIP(unit_id . value)
+
+                deli_char    = STRIP(delim_val . value)
+                IF (deli_char = EMPTY) OR (deli_char = "") THEN
+                   deli_char = " "
+                ENDIF
+
+
+                prefix      = STRIP(prefix_val . value)
+                IF prefix = EMPTY THEN
+                   prefix = ""
+                ENDIF
+
+                postfix     = STRIP(postfix_val . value)
+                IF postfix  = EMPTY THEN
+                   postfix  = ""
+                ENDIF
+
+                lineskip    = STRIP(lineskip_val . value)
+                IF (lineskip < 0) OR (lineskip = EMPTY) THEN
+                   lineskip = 0
+                   WriteToLog("Lineskip can not be negative, using 0")
+                ENDIF
+
+                decimal_char    = STRIP(decimal_val . value)
+                IF (decimal_char = EMPTY) THEN
+                   decimal_char = ""
+                ENDIF
+
+
+                IF mode = "TD_ENTRY" THEN
+                   IF (LENGTH(STRIP(source_location)) > 0) AND (source_location <> EMPTY)
+                      AND (LENGTH(STRIP(test)) > 0) AND (test <> EMPTY)
+                      AND (LENGTH(STRIP(component)) > 0) AND (component <> EMPTY)
+                      AND (LENGTH(STRIP(unit)) > 0) AND (unit <> EMPTY)
+                   THEN
+                      handle_file_transfer ( mode, source_path, test, component, unit, deli_char, prefix, postfix, lineskip, decimal_char{, log_file} )
+                   ELSE
+                      WriteToLog("Data error - all fields must be completed")
+                   ENDIF
+                ELSE
+                   WriteToLog("Mode " : STRIP(mode) : " currently not supported")
+                ENDIF
+
+        prompt_form . active_prompt = 2
+
+        prompt_form . set_enabled ( TRUE )
+
+        prompt_form . wait_prompt ()
+
+    ENDWHILE
+
+    prompt_form . end_prompt ()
+
+    {FILE CLOSE log_file, rc}
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tddis ( option )
+
+    time_series_data ( "TD_DISPLAY" )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tddel ( option )
+
+    time_series_data ( "TD_DELETE" )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tdent ( option )
+
+    time_series_data ( "TD_ENTRY" )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE call_tdback ( option )
+
+    back_entry ( "TD_ENTRY" )
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+
+
+ROUTINE handle_file_transfer ( mode, source_path, test, component, unit, deli_char, prefix, postfix, lineskip, decimal_char{, log_file} )
+
+
+
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN LIBRARY $LIB_UTILS
+
+
+DECLARE source_file, destination_file, trans_status, check_ok
+
+check_ok = EMPTY
+
+source_file = source_path : prefix : test : postfix
+destination_file = "smp$userfiles\timeseries\" : prefix : test : component : postfix
+
+trans_status = transfer_to_server (source_file ,destination_file )
+
+IF trans_status <> EMPTY THEN
+   WriteToLog("Error transferring file " : source_file : " to server. ":trans_status )
+   RETURN(FALSE)
+ENDIF
+
+handle_data_file (destination_file, test, component, unit, deli_char, lineskip, decimal_char{, log_file})
+
+FILE DELETE destination_file, check_ok
+
+
+IF (check_ok<>EMPTY)
+    WriteToLog("Error deleting file " :  destination_file : "on server: " : check_ok)
+ENDIF
+
+
+ENDROUTINE
+
+{**AS1494 HBe 22-9-03---------------------------------------------------------}
+
+ROUTINE back_entry ( VALUE option )
+
+
+DECLARE log_file
+
+logfile_init (log_file)
+
+
+DECLARE the_files, file_name, transfer_ok, file_criteria, err_mes, file_handled
+DECLARE remaining_chars, found_prefix, done_prefix, found_postfix, done_postfix
+DECLARE last_num_pos, test_number, char_string, bsl_pos, found_bsl
+DECLARE file_handle_mess
+DECLARE s_group
+
+
+ARRAY the_files
+ARRAY transfer_ok ARRAYSIZE (0)
+
+file_criteria = "smp$userfiles/timeseries/auto/*.txt"
+
+FILE FIND file_criteria, the_files, err_mes
+
+IF err_mes <> EMPTY THEN
+   WriteToLog(err_mes)
+   RETURN(EMPTY)
+ENDIF
+
+
+file_name = the_files[1]
+file_handled = 1
+
+WriteToLog("FileName = ":file_name)
+
+WHILE (file_name <> EMPTY) AND (NOT BLANK (file_name))
+
+
+   {Finding actual file name}
+   bsl_pos = LENGTH(file_name)
+   found_bsl = FALSE
+   WHILE (bsl_pos >= 0) AND (NOT found_bsl)
+      IF SUBSTRING(filename, bsl_pos, 1) = "\" THEN
+         found_bsl = TRUE
+      ELSE
+         bsl_pos = bsl_pos - 1
+      ENDIF
+   ENDWHILE
+
+   char_string = SUBSTRING(file_name, bsl_pos+1, LENGTH(file_name) - bsl_pos)
+   remaining_chars = LENGTH(char_string)
+
+   {finding the non-numeric pre-fix before test_number in the file name}
+
+{**AS1562}
+
+   {Stripping off any prefix characters added by the FTP program - that was included for source identification}
+
+   IF ((NOT NUMTEXT(SUBSTRING(char_string, 1, 1))) AND (NOT NUMTEXT(SUBSTRING(char_string, 2, 1))) AND (SUBSTRING(char_string,3,1) = "-")) THEN
+      char_string = SUBSTRING(char_string, 4, LENGTH(char_string)-3)
+   ENDIF
+
+
+{**AE1562}
+
+   found_prefix = ""
+   done_prefix = FALSE
+
+
+   WHILE (remaining_chars > 0) AND (NOT done_prefix)
+      IF (NOT NUMTEXT (SUBSTRING(char_string,1,1))) OR (SUBSTRING(char_string,1,1) = " ") THEN
+         remaining_chars = remaining_chars - 1
+         found_prefix = found_prefix : SUBSTRING(char_string, 1, 1)
+         char_string = SUBSTRING(char_string, 2, remaining_chars)
+      ELSE
+         done_prefix = TRUE
+      ENDIF
+   ENDWHILE
+
+   {finding the non-numeric post-fix after test_number in the file name}
+   found_postfix = ""
+   done_postfix = FALSE
+   last_num_pos = 1
+   test_number = EMPTY
+
+   WHILE (last_num_pos <= LENGTH(char_string)) AND (NOT done_postfix)
+      IF NOT NUMTEXT (SUBSTRING(char_string, last_num_pos, 1)) AND (SUBSTRING(char_string,1,1) <> " ") THEN
+         done_postfix  = TRUE
+         found_postfix = SUBSTRING(char_string, last_num_pos, LENGTH(char_string)-last_num_pos+1)
+         char_string   = SUBSTRING(char_string, 1, last_num_pos-1)
+      ELSE
+         last_num_pos  = last_num_pos + 1
+      ENDIF
+   ENDWHILE
+
+{**AS1558}
+{Removing any single letter (normally 'a') after the test number}
+   IF NOT NUMTEXT(SUBSTRING(char_string, LENGTH(char_string)-1, 1)) THEN
+      char_string = SUBSTRING(char_string, 1,LENGTH(char_string)-1)
+   ENDIF
+{**AE1558}
+
+{Checking if the test number is usefull}
+   IF (NOT NUMTEXT(char_string)) OR (LENGTH(test_number) < 1) THEN
+      WriteToLog("The test number is not numeric: " : char_string)
+   ELSEIF (char_string = EMPTY) OR (BLANK(char_string)) THEN
+      IF (found_prefix <> ".") AND (found_prefix <> "..") THEN
+         WriteToLog("Test number not found in file name: ":file_name)
+      ENDIF
+   ELSE
+      test_number = char_string
+{Handling the test number, ignoring file with extension '-err' / '.err'}
+      file_handle_mess = EMPTY
+      IF     (TOUPPER(SUBSTRING(file_name, LENGTH(file_name)-3 , 4)) <> TOUPPER("-err"))
+         AND (TOUPPER(SUBSTRING(file_name, LENGTH(file_name)-3 , 4)) <> TOUPPER(".err"))
+      THEN
+         s_group    = "XXX"
+         IF handle_test_number (file_name, test_number, found_postfix, found_prefix{, log_file}, s_group)
+         THEN
+            FILE DELETE file_name, file_handle_mess
+         ELSE
+               FILE COPY file_name, file_name:".":s_group:"-err", file_handle_mess
+               FILE DELETE file_name, file_handle_mess
+         ENDIF
+         IF file_handle_mess <> EMPTY THEN
+            WriteToLog(file_handle_mess)
+         ENDIF
+      ELSE
+         {WriteToLog("Not attempting import of: " : STRIP(file_name))}
+      ENDIF
+   ENDIF
+      file_handled = file_handled + 1
+      file_name = the_files[file_handled]
+ENDWHILE
+
+
+{Counter 1 over actual count}
+WriteToLog("Files handled: ": STRIP(file_handled-1) : ". Process completed at " : NOW)
+FILE WRITE logfile, "* * * * * * * * * * * * * * * *   E N D   * * * * * * * * * * * * * * * * "
+FILE CLOSE log_file
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE handle_test_number (file_name, test_number, found_postfix, found_prefix{, log_file}, s_group)
+
+
+DECLARE analysis_id, analysis_ver, parm_array, n_sets, err_mess
+DECLARE component_name, unit, prefix_parm, postfix_parm, deli_char, decimal_char, lineskip
+DECLARE found_parm, array_set, test_stat, comp_check
+DECLARE sample_id, s_login_by
+ARRAY parm_array
+
+
+analysis_id   = SELECT test.analysis
+                WHERE test_number = test_number
+analysis_ver  = SELECT test.analysis_version
+test_stat     = SELECT test.status
+sample_id     = SELECT test.sample
+IF NOT ((sample_id = EMPTY) OR (BLANK(sample_id))) THEN
+   s_group       = STRIP(SELECT sample.group_id
+                         WHERE  id_numeric = sample_id)
+   s_login_by    = STRIP(SELECT sample.login_by)
+
+   IF ((s_group = EMPTY) OR BLANK(s_group)) AND (s_login_by <> EMPTY) AND (NOT BLANK(s_login_by))  THEN
+      s_group = STRIP(SELECT personnel.default_group WHERE identity = s_login_by)
+   ENDIF
+
+ENDIF
+
+IF (analysis_id = EMPTY) OR (BLANK(analysis_id)) THEN
+   analysis_id  = SELECT c_test.analysis
+                  WHERE test_number = test_number
+   IF (analysis_id = EMPTY) OR (BLANK(analysis_id)) THEN
+      WriteToLog("No analysis found for test " : test_number)
+      RETURN (FALSE)
+   ELSE
+      analysis_ver  = SELECT c_test.analysis_version
+      test_stat     = SELECT c_test.status
+      sample_id     = SELECT c_test.sample
+      IF NOT ((sample_id = EMPTY) OR (BLANK(sample_id))) THEN
+         s_group       = STRIP(SELECT c_sample.group_id
+                               WHERE  id_numeric = sample_id)
+         s_login_by    = STRIP(SELECT c_sample.login_by)
+         IF ((s_group = EMPTY) OR BLANK(s_group)) AND (s_login_by <> EMPTY) AND (NOT BLANK(s_login_by))  THEN
+            s_group = STRIP(SELECT personnel.default_group WHERE identity = s_login_by)
+         ENDIF
+      ENDIF
+   ENDIF
+ENDIF
+
+IF (s_group = EMPTY) OR (BLANK(s_group)) THEN
+   s_group = s_login_by
+ENDIF
+
+IF (s_group = EMPTY) OR (BLANK(s_group)) THEN
+   s_login_by = "NOINF"
+ENDIF
+
+
+IF (test_stat <> "V") AND (test_stat <> "P") AND (test_stat <> "I") THEN
+   WriteToLog("Illegal test status " : STRIP(test_stat) : " for test number: " : STRIP(test_number))
+   RETURN (FALSE)
+ENDIF
+
+
+IF NOT mlp_analysis_parameters ( "A", "TIMESERIES", 7, analysis_id, analysis_ver, parm_array, n_sets, err_mess)
+THEN
+   WriteToLog(STRIP(test_number):": Unable to find parameters for analysis " : analysis_id : " version " : analysis_ver)
+   RETURN (FALSE)
+ENDIF
+
+{Finding a set of parameters where pre- and postfix matches the file being evaluated}
+found_parm = FALSE
+array_set  = 1
+
+WHILE (found_parm = FALSE) AND (array_set <= n_sets)
+
+   component_name = STRIP(parm_array [array_set,1])
+   unit           = STRIP(parm_array [array_set,2])
+   prefix_parm    = STRIP(parm_array [array_set,3])
+   postfix_parm   = STRIP(parm_array [array_set,4])
+   deli_char      = STRIP(parm_array [array_set,5])
+   decimal_char   = STRIP(parm_array [array_set,6])
+   lineskip       = STRIP(parm_array [array_set,7])
+   IF (TOUPPER(prefix_parm) = TOUPPER(found_prefix)) AND (TOUPPER(postfix_parm) = TOUPPER(found_postfix))
+   THEN
+      found_parm = TRUE
+   ELSE
+      array_set = array_set + 1
+   ENDIF
+ENDWHILE
+
+
+IF array_set > n_sets
+THEN
+   WriteToLog(STRIP(test_number): ": No suitable parameters found matching pre- and postfix for test")
+   RETURN (FALSE)
+ENDIF
+
+IF (TOUPPER (deli_char) = "SPACE") OR (deli_char = EMPTY) OR BLANK(deli_char)
+THEN
+   deli_char = " "
+ENDIF
+
+IF     (component_name = EMPTY) OR BLANK(component_name)
+    OR (unit = EMPTY) OR BLANK(unit)
+    OR ((deli_char <> " ") AND ((deli_char = EMPTY) OR (BLANK(deli_char))))
+    OR (decimal_char = EMPTY) OR BLANK(decimal_char)
+    OR (lineskip = EMPTY) OR BLANK(lineskip)
+THEN
+   WriteToLog(STRIP(test_number): ": Essential parameter missing in parameter setup on analysis for parameter set ": STRIP(array_set))
+   RETURN (FALSE)
+ENDIF
+
+
+{Checking component specified in parameters name is allowed}
+comp_check = SELECT versioned_component.calculation
+             WHERE  analysis = analysis_id
+             AND    analysis_version = analysis_ver
+             AND    name = component_name
+IF (comp_check <> "TIMESERIES") OR (comp_check = EMPTY) OR ( BLANK(comp_check)) THEN
+   WriteToLog(STRIP(test_number): ": Illegal parameter setup. Analysis: " : STRIP(analysis_id) : " Version: " : analysis_ver : " component name " : component_name : " does not have calculation format 'TIMESERIES'.")
+   RETURN (FALSE)
+ENDIF
+
+
+IF NOT handle_data_file (file_name, test_number, component_name, unit, deli_char, lineskip, decimal_char{, log_file})
+THEN
+   RETURN (FALSE)
+ELSE
+   RETURN (TRUE)
+ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE logfile_init (log_file)   {Initialisation of functions required for logfile operation}
+
+
+DECLARE hour, RC, day_no, mon_name
+
+hour     = STRIP(SUBSTRING(NOW, 13,2))
+day_no   = STRIP(SUBSTRING(NOW,  1,2))
+mon_name = STRIP(SUBSTRING(NOW,  4,3))
+rc       = EMPTY
+
+   log_file = "smp$logfiles:timeseries_":mon_name :".log"
+
+IF ((FILE EXISTS (log_file)) AND (STRIP(day_no) = "1") AND (hour <= "10"))
+THEN
+   FILE DELETE log_file, rc
+ENDIF
+
+IF NOT FILE EXISTS (log_file)
+THEN
+   FILE CREATE log_file, rc
+ELSE
+   FILE EXTEND log_file, rc
+ENDIF
+
+IF   rc = EMPTY
+THEN
+   FILE WRITE log_file, "* * * * * * * * * * * * * * * *  S T A R T  * * * * * * * * * * * * * * * * "
+   FILE WRITE log_file, STRIP(GLOBAL("OPERATOR")) : " started timeseries file handling on " : NOW : " in mode " : GLOBAL ("MODE")
+   RETURN ( TRUE  )
+ELSE
+   RETURN ( FALSE )
+ENDIF
+
+
+ENDROUTINE
+{-----------------------------------------------------------------------------}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+{**************************************************************************}
+
+{Write messages to the log file, also do a flash if in interactive mode}
+{ROUTINE write_log ( VALUE logfile, VALUE text )
+
+IF GLOBAL("MODE") = "INTERACTIVE" THEN
+   FILE WRITE logfile, text
+   FLASH_MESSAGE("Message: " : text, TRUE)
+ELSE
+   FILE WRITE logfile, text
+ENDIF
+
+ENDROUTINE}
+
+{**AE1494---------------------------------------------------------------------}
+
+
+
+ROUTINE handle_data_file (destination_file, test, component, unit, deli_char, lineskip, decimal_char{, log_file})
+
+
+DECLARE any_value, line_i, check_ok, line_count, array_count, max_vars, source_array, line_ok
+
+ARRAY source_array
+
+max_vars = 0
+line_ok = TRUE
+
+any_value = SELECT timeseries . timestamp
+            WHERE test_number = test AND component_name = component
+
+IF any_value <> EMPTY THEN
+   WriteToLog("Unable to load data file. Results for test " : test : " component " : component : " does already exist on the database.")
+   RETURN ( FALSE )
+ENDIF
+
+IF FILE EXISTS(destination_file) THEN
+
+    FILE OPEN destination_file, check_ok
+
+        IF check_ok = EMPTY THEN
+           line_count  = 0
+           array_count = 0
+           FILE READ destination_file, line_i ,check_ok
+           WHILE (check_ok = EMPTY) AND (line_ok)
+              line_count = line_count + 1
+              IF line_count > lineskip THEN
+                 array_count = array_count + 1
+                 handle_result_line ( line_i, array_count, unit, deli_char, source_array, max_vars, line_ok, decimal_char{, log_file} )
+              ENDIF
+              FILE READ destination_file, line_i, check_ok
+           ENDWHILE
+        ELSE
+           WriteToLog("Test " : STRIP(test) : ". Error opening file":destination_file)
+        ENDIF
+
+    FILE CLOSE destination_file, check_ok
+
+        IF NOT line_ok THEN
+           WriteToLog("Test " : STRIP(test) : ". Problem in data line, exiting" : line_i)
+           RETURN(false)
+        ENDIF
+
+        IF max_vars < 2 THEN
+           WriteToLog("Test " : STRIP(test) : ". Less than 2 data columns found in source file, aborting data import")
+           RETURN(FALSE)
+        ENDIF
+
+
+        IF max_vars > 2 THEN
+           WriteToLog("Test " : STRIP(test) : ". More than 2 data columns found in source file, only importing column one (time) and column two (values)")
+        ENDIF
+
+        IF NOT save_to_database ( source_array, array_count, test, component{, log_file})
+        THEN
+           WriteToLog("Test " : STRIP(test) : " could not be saved to the database")
+           RETURN(FALSE)
+        ELSE
+           WriteToLog("Test " : STRIP(test) : " handeled successfully")
+           RETURN(TRUE)
+        ENDIF
+
+ELSE
+    WriteToLog("Destination file " : destination_file : " does not exist" )
+    RETURN(FALSE)
+ENDIF
+
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE handle_result_line ( VALUE line_i, VALUE array_count, VALUE unit, VALUE deli_char, source_array, max_vars, line_ok, decimal_char{, log_file} )
+
+DECLARE var_count, deli_pos, this_value
+
+var_count = 0
+WHILE (LENGTH(line_i) > 0) AND (var_count < 4)
+   var_count = var_count + 1
+
+   IF (var_count > max_vars) THEN
+      max_vars = var_count
+   ENDIF
+
+   deli_pos = INDEX(line_i, deli_char)
+
+   IF deli_pos = 0 THEN
+      this_value = line_i
+      line_i = ""
+   ELSE
+      this_value = SUBSTRING(line_i, 1, deli_pos-1)
+      line_i = STRIP(SUBSTRING(line_i, deli_pos+1, LENGTH(line_i)-deli_pos))
+   ENDIF
+
+{transform decimal sign}
+   IF decimal_char <> "." THEN
+      this_value = SUBSTITUTE(this_value, decimal_char, ".")
+   ENDIF
+
+{Check if data is valid and make it numeric}
+   IF NUMTEXT(this_value) THEN
+      this_value = NUMERIC(this_value)
+   ELSE
+      WriteToLog("The value " : this_value : " is not numeric. (Try checking delimeter sign!)")
+      line_ok = FALSE
+      RETURN(false)
+   ENDIF
+
+{Transform first column = time to hour format}
+   IF (var_count = 1) AND (unit <> "hr") THEN
+      handle_time_unit (this_value, unit{, log_file})
+   ENDIF
+
+   source_array[array_count, var_count] = NUMERIC(this_value)
+
+{Left for tracing purposes!
+   flash_message("ARRAY:" : aray_count: "VAR: " : var_count:"VALUE: " : source_array[array_count, var_count], TRUE)
+}
+
+ENDWHILE
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE handle_time_unit ( this_value, VALUE unit{, log_file})
+
+{Time column on database is always to be stored as hours}
+
+IF unit = "min" THEN
+   this_value = this_value / 60
+ELSEIF unit = "day" THEN
+   this_value = this_value * 24
+ELSEIF unit = "mon" THEN
+   this_value = this_value * (365/12*24)
+ELSEIF unit = "s" THEN
+   this_value = this_value / 3600
+ELSEIF unit = "week" THEN
+   this_value = this_value * (7*24)
+ELSEIF unit = "yr" THEN
+   this_value = this_value * (365*24)
+ELSEIF unit = "wk" THEN
+   this_value = this_value * (7*24)
+ELSEIF unit = "hr" THEN
+   this_value = this_value
+ELSE
+   WriteToLog("Unsupported time format, no transformation made")
+   this_value = this_value
+ENDIF
+
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE save_to_database ( source_array, line_count, test, component{, log_file})
+
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN LIBRARY TOOLBOX
+
+DECLARE block_head, the_table, put_counter, rc, key_string, test_size, component_size
+
+
+           block_head = "Insert timeseries"
+           the_table = "TIMESERIES"
+
+           START WRITE TRANSACTION "Put Timeseries"
+
+           IF NOT block_init ( block_head, the_table ) THEN
+              ROLLBACK {Out of write transaction mode}
+              RETURN (false)
+           ENDIF
+
+                GET_FIELD_DETAILS timeseries.test_number,    "FIELD_SIZE", test_size
+                GET_FIELD_DETAILS timeseries.component_name, "FIELD_SIZE", component_size
+
+                put_counter = 0
+                IF line_count >= 1000 THEN
+                   WriteToLog("Long data file holding " : STRIP(line_count) : "records. Only importing first 1000 lines")
+                ENDIF
+                WHILE (put_counter < line_count) AND (put_counter < 1000)
+
+
+                   put_counter = put_counter + 1
+
+
+                   key_string = PAD(test, " ", test_size) : PAD(component, " ", component_size) : NUMERIC(source_array[put_counter,1])
+
+                   IF block_row_create_last( block_head, key_string )
+
+                   THEN rc = block_row_last ( block_head )
+                        rc = block_row_field_assign(block_head,"RESULT_VALUE", NUMERIC(source_array[put_counter,2]))
+                   ELSE
+                 WriteToLog("Could not save data file")
+                         rc = block_row_release (block_head)
+                         ROLLBACK
+                         RETURN (false)
+                   ENDIF
+
+                   IF rc <> EMPTY THEN
+                      FLASHMESSAGE(rc, TRUE)
+                   ENDIF
+
+                ENDWHILE
+
+
+                rc = block_row_update ( block_head )
+                rc = block_row_release ( block_head )
+
+                COMMIT
+
+                WriteToLog(STRIP(put_counter) : " records entered for test ": test : " component " : component)
+
+                RETURN(TRUE)
+ENDROUTINE
+
+
+{-----------------------------------------------------------------------------}
+

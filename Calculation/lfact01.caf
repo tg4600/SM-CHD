@@ -1,0 +1,911 @@
+
+{ This definition is required at the top of all calculations }
+GLOBAL ROUTINE calculation(current_sample,
+			   current_test_number,
+			   current_component_name)
+
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0027-1      120994  LPE     Calculations for pH estimatet in Analysis      }
+{                               Worskheet. Lars Foldagers methode.             }
+{**E0027-1      270195  LPE     Routine find_results_onwks() now returns the   }
+{                               correct number_of_wks_res.  }
+{**A1005        160597  JDY     Added new test reason handling                 }
+{                               Changed do_newtest to do_a_newtest due to      }
+{                               conflict in variable naming.                   }
+{**A1066        181297  JDY     Modified way of finding standard on worksheet  }
+
+JOIN LIBRARY $LIB_UTILS
+{**AS1005 16/5/97 }
+JOIN LIBRARY TOOLBOX
+{**AE1005 16/5/97 }
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+SET FORMAT "999999.99999"
+utest_ok = TRUE
+do_utest = FALSE
+
+{**AS1005 16/5/97 }
+reason_code = EMPTY
+new_test_nr = EMPTY
+{**AE1005 16/5/97 }
+{**AS1066 18/12/97 }
+std_sample_id = EMPTY
+std_found     = FALSE
+{**AE1066 186/12/97 }
+
+setup_constants()
+
+number_of_comp = get_num_comp ()
+
+number_of_res = get_results()
+
+IF number_of_res <> 0 THEN
+   IF number_of_res = number_of_comp THEN
+      number_of_samples = find_number_of_samples()
+      number_of_wks_res = find_results_onwks()
+
+      IF read_standard_ver_param()
+
+         IF standard_sample() THEN   { * Hvis det er standard der indtastes for * }
+
+            IF result_ok("Standard") THEN
+               IF number_of_samples = number_of_wks_res THEN
+                  IF (calc_utest() > std_p[MAX_U]) THEN
+                     error_mess = "Probability for drift in pH-measurement "
+                     flash_message(error_mess,true)
+                  ENDIF
+               ENDIF
+               calcresult = calc_std_estimatetph()
+            ELSE
+               calcresult = "NEWTEST"
+               cr_newtstsonwks()
+            ENDIF
+         ELSE
+            IF (stand_is_newtest() OR
+                stand_is_outrange()) THEN { * hvis standardens resultat = NEWTEST
+                                              eller out_of_range, så skal samplens
+                                              resultat også være NEWTEST       * }
+                  calcresult = "NEWTEST"
+            ELSE
+               IF result_ok("Sample") THEN
+                  calcresult = calc_estimatetph()
+               ELSE
+                  calcresult = "NEWTEST"
+                  cr_new_test()
+               ENDIF
+               IF number_of_samples = number_of_wks_res THEN
+                  IF (calc_utest() > std_p[MAX_U]) THEN
+                     error_mess = "Probability for drift in pH-measurement "
+                     flash_message(error_mess,true)
+                  ENDIF
+               ENDIF
+            ENDIF
+         ENDIF
+
+      ELSE
+
+         error_mess_1 = "Standard not found"
+         disp_error_win (error_mess_1," "," ")
+         calcresult = ph_res_val
+      ENDIF
+   ELSE
+      flash_message("RESULTS ARE MISSING ! ! !",true)
+      calcresult = EMPTY
+   ENDIF
+ELSE
+   calcresult = EMPTY
+ENDIF
+SET FORMAT "99999.99"
+{**AS1005 16/5/97 }
+create_reason ( current_test_number, current_component_name,
+                calcresult, reason_code, new_test_nr )
+{**AE1005 16/5/97 }
+
+{ The next two lines are required at the end of the calculation }
+return(calcresult) { The calculated result is returned here }
+
+ENDROUTINE
+
+{ - - - - - - - - - - - START FIND_NUMBER_OF_SAMPLES - - - - - - - - - - - -  }
+ROUTINE find_number_of_samples
+ARRAY wks_sample
+ARRAY wks_testno
+
+cur_wks_name = SELECT test.worksheet_id
+                   WHERE test_number = current_test_number
+                   ORDER ON test_number
+
+smpid_on_wks = SELECT test.sample_id
+                      WHERE worksheet_id = cur_wks_name
+                      ORDER ON worksheet_id
+i = 0
+j = 0
+number_of_standtst = 0
+
+WHILE (smpid_on_wks <> EMPTY) DO
+   j = j + 1
+   wks_sample[j] = smpid_on_wks
+   test_no = SELECT test.test_number
+   wks_testno [j] = test_no
+   analid = SELECT test.analysis_id
+
+{**MS1066 18/12/97  Find and store sample id if standard        }
+{**DS1066
+   smp_id = SELECT sample.id_numeric
+             WHERE ((id_numeric = smpid_on_wks) AND
+                    (sample_type = PAD("CONTROL "," ",10)))
+                    ORDER ON id_numeric
+   IF smp_id <> EMPTY THEN
+      i = i + 1
+      stand_smp_found = TRUE
+   ENDIF
+ **DE1066 }
+   is_std = select sample.standard
+            where  id_numeric = smpid_on_wks
+   IF (is_std) THEN
+      IF   std_found
+      THEN flash_message("Warning: More than one standard on worksheet. " :
+                         "Only first one is used",TRUE)
+      ELSE std_found = TRUE
+           std_sample_id = smpid_on_wks
+           std_text_id   = STRIP(SELECT sample.id_text)
+           std_prodname  = SELECT sample.product_name
+           std_ver       = select sample.product_version
+           std_testno    = test_no
+      ENDIF
+   ENDIF
+{**ME1066 18/12/97      }
+
+   NEXT test
+   smpid_on_wks = SELECT test.sample_id
+ENDWHILE
+RETURN (j)
+ENDROUTINE
+{ - - - - - - - - - - - - END FIND_NUMBER_OF_SAMPLES - - - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - START CALC_UTEST - - - - - - - - - - - - - - - - -  }
+ROUTINE calc_utest
+
+declare wks_c, utst , sum_phstar_one, sum_phstar_two
+
+ARRAY wks_ip
+ARRAY wks_phstar
+
+IF gent <= 1 THEN
+   return ( 0.0 )
+ENDIF
+
+wks_c = 1
+sum_phstar_one = 0
+sum_phstar_two = 0
+n_utest_res = 0
+WHILE wks_c <= number_of_samples
+
+   IF ((wks_ph[wks_c,1] < std_p [PHMIN]) OR
+       (wks_ph[wks_c,2] < std_p [PHMIN]) OR
+       (wks_ph[wks_c,1] > std_p [PHMAX]) OR
+       (wks_ph[wks_c,2] > std_p [PHMAX])) THEN
+       wks_c = wks_c + 1
+   ELSE
+      wks_ip [wks_c,1] = (wks_w [wks_c,1,1]*wks_w [wks_c,1,2])*100/
+                      ((206.9+wks_w[wks_c,1,1])*(206.9+wks_w[wks_c,1,2]))
+
+      wks_ip [wks_c,2] = (wks_w [wks_c,2,1]*wks_w [wks_c,2,2]*100)/
+                      ((206.9+wks_w[wks_c,2,1])*(206.9+wks_w[wks_c,2,2]))
+
+      wks_phstar[wks_c,1] = wks_ph[wks_c,1] -
+                           std_p[BETA]*log((wks_ip[wks_c,1]/std_p[IPSTAR]))
+
+      wks_phstar[wks_c,2] = wks_ph[wks_c,2] -
+                           std_p[BETA]*log((wks_ip[wks_c,2]/std_p[IPSTAR]))
+
+      IF ABS(wks_phstar[wks_c,1] - wks_phstar[wks_c,2]) > std_p [MAX_DIFF] THEN
+         wks_c = wks_c + 1
+      ELSE
+         sum_phstar_one = sum_phstar_one + wks_phstar[wks_c,1]
+         sum_phstar_two = sum_phstar_two + wks_phstar[wks_c,2]
+         wks_c = wks_c + 1
+         n_utest_res = n_utest_res + 1
+      ENDIF
+   ENDIF
+
+ENDWHILE
+utst  =   ABS( (sum_phstar_one - sum_phstar_two)/
+        (std_p[S_PH]*SQRT(2*(n_utest_res))))
+
+RETURN(utst)
+ENDROUTINE
+{ - - - - - - - - - - - - - END CALC_UTEST - - - - - - - - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - - START FIND_RESULTS_ONWKS - - - - - - - - - - - -  }
+ROUTINE find_results_onwks
+
+declare wks_c, comp_n
+
+ARRAY wks_w
+ARRAY wks_ph
+ARRAY wks_ip
+
+wks_c = 1
+i = 0
+
+WHILE wks_c <= number_of_samples
+
+   comp_n = SELECT result.component_name
+                WHERE test_number = wks_testno[wks_c]
+{                ORDER ON test_number }
+                ORDER ON order_number
+
+   number_of_num_res = 0
+
+ {**E0027-1S
+ IF comp_n <> EMPTY THEN
+      i = i + 1
+      gent = 0
+   ENDIF **E0027-1E}
+
+   WHILE comp_n <> EMPTY DO
+      res_type = SELECT result.result_type
+      res_txt = SELECT result.text
+      res_unit = SELECT result.units
+      IF (res_type = "N")
+         {**E0027-1S}
+         number_of_num_res = number_of_num_res + 1
+         {**E0027-1E}
+
+         IF gent <> NUMERIC(SUBSTRING(comp_n,1,1)) THEN
+            gent = NUMERIC(SUBSTRING(comp_n,1,1))
+
+            afvej = 0
+         ENDIF
+         IF STRIP(res_unit) = "g" THEN
+            afvej = afvej + 1
+            wks_w [wks_c, gent, afvej] =
+               RESULTVALUE(wks_sample[wks_c],wks_testno[wks_c],comp_n)
+         ELSEIF STRIP(res_unit) = "pH" THEN
+            wks_ph [wks_c, gent] =
+               RESULTVALUE(wks_sample[wks_c],wks_testno[wks_c],comp_n)
+
+         ENDIF
+      ENDIF
+      NEXT RESULT
+      comp_n = SELECT result.component_name
+   ENDWHILE
+   wks_c = wks_c + 1
+{**E0027-1S}
+ IF number_of_num_res = number_of_comp THEN
+      i = i + 1
+   ENDIF
+{**E0027-1E}
+ENDWHILE
+RETURN (i)
+ENDROUTINE
+{ - - - - - - - - - - - - - - END FIND_RESULTS_ONWKS - - - - - - - - - - - -  }
+
+
+{ - - - - - - - - - - - - -   START SETUP_CONSTANTS - - - - - - - - - - - -  }
+ROUTINE setup_constants
+
+param_count = 15
+
+ARRAY std_p ARRAYSIZE (param_count) = PAD(" "," ",5)
+ARRAY weight ARRAYSIZE(2,2)
+ARRAY ph     ARRAYSIZE(2)
+
+ ACT      = 1
+ PHEND    = 2
+ PHMIN    = 3
+ PHMAX    = 4
+ IPMIN    = 5
+ IPMAX    = 6
+ IPSTAR   = 7
+ W1       = 8
+ W2       = 9
+ BETA     = 10
+ S_BETA   = 11
+ S_PH     = 12
+ S_PHABS  = 13
+ MAX_DIFF = 14
+ MAX_U    = 15
+
+ENDROUTINE
+{ - - - - - - - - - - - - - - -  END SETUP_CONSTANTS - - - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - - - -START CR_NEWTSTONWKS  - - - - - - - - - - - -  }
+ROUTINE cr_newtstsonwks
+
+declare  wks_comp, i, number_of_comp, tmp_tst_no, j, newtest_done, success,
+         smp_res, newtst_str
+
+ARRAY anal_comp
+ARRAY do_a_newtest ARRAYSIZE(number_of_samples) = TRUE
+
+IF (NOT(new_test_created))THEN
+
+   stand_analid = SELECT test.analysis_id
+                   WHERE test_number = current_test_number
+                   ORDER ON test_number
+   { * Her findes standardens analyse navn * }
+
+   wks_comp = SELECT component.name
+                    WHERE ((analysis_id = stand_analid) AND
+                          (result_type = "K"))
+                    ORDER ON analysis_id
+   i = 0
+   WHILE wks_comp <> EMPTY
+      i = i + 1
+      anal_comp[i] = wks_comp
+      NEXT component
+      wks_comp = SELECT component.name
+   ENDWHILE
+   { * Alle componenter til analysen med resultattype "K" lægges ind i array * }
+   { * anal_comp. number_of_comp er antallet af componeneter                 * }
+
+   number_of_comp = i
+
+
+   { * I det efter følgende findes alle resultater til wks_testno og       * }
+   { * anal_comp. Hvis et resultat er "NEWTEST", så skal der for den       * }
+   { * pågældende test (sample) IKKE oprettes NEWTEST. Det markeres ved at * }
+   { * sættes do_newtest = FALSE, hvilket indikerer at der for denne sample* }
+   { * IKKE skal oprette newtest                                           * }
+
+   j = 1
+   WHILE j <= number_of_samples DO
+      i = 1
+      WHILE i <= number_of_comp
+         smp_res = SELECT result.text
+                          WHERE ((test_number = wks_testno[j]) AND
+                                 (component_name = anal_comp[i]))
+{                          ORDER ON test_number }
+                           ORDER ON order_number
+
+         IF STRIP(smp_res) = "NEWTEST" THEN
+            do_a_newtest[j] = FALSE
+         ELSEIF wks_sample [j] = std_sample_id THEN
+            do_a_newtest[j] = FALSE
+         ENDIF
+         i = i + 1
+      ENDWHILE
+      j = j + 1
+   ENDWHILE
+
+   newtest_done = FALSE
+   j = 1
+   WHILE j <= number_of_samples DO
+      IF do_a_newtest[j] THEN
+         newtest_done = TRUE
+         success = NEWTEST(wks_sample[j], stand_analid)
+         IF success = EMPTY THEN
+            CREATE TEXT WINDOW new_tst_err HEIGHT 2 WIDTH 55 BORDER=""
+            PASTE TEXT WINDOW new_tst_err ON LINE 19 FROM 2
+            DISPLAY "Newtest could not be created for samples"
+                  ON LINE 1 FROM 2 IN WINDOW new_tst_err BOLD
+            dummy = getkey
+            UNPASTE TEXT WINDOW new_tst_err
+         ENDIF
+      ENDIF
+      j = j +1
+   ENDWHILE
+
+   j = 1
+   newtst_str = " "
+   WHILE j <=number_of_samples DO
+      IF do_a_newtest[j] THEN
+         newtst_str =newtst_str:STRIP(wks_sample[j]):" "
+      ENDIF
+      j = j + 1
+   ENDWHILE
+   CREATE TEXT WINDOW new_test_win HEIGHT 4 WIDTH 55 BORDER
+   PASTE TEXT WINDOW new_test_win ON LINE 19 FROM 2
+   DISPLAY error_mess
+      ON LINE 1 FROM 2 IN WINDOW new_test_win BOLD
+   DISPLAY "New analysis  :"
+      ON LINE 2 FROM 2 IN WINDOW new_test_win
+   DISPLAY STRIP(stand_analid) ON LINE 2 FROM 19 IN WINDOW new_test_win BOLD
+   DISPLAY " created for sample(s): "
+      ON LINE 2 FROM (20+LENGTH(STRIP(stand_analid)))
+               IN WINDOW new_test_win
+   DISPLAY newtst_str
+      ON LINE 3 FROM 2 BOLD IN WINDOW new_test_win
+   DISPLAY "Press any key to continue . . . . . "
+      ON LINE 4 FROM 2 IN WINDOW new_test_win
+   dummy = getkey
+   CLEAR SCREEN IN WINDOW new_test_win
+   UNPASTE TEXT WINDOW new_test_win
+ENDIF
+ENDROUTINE
+{ - - - - - - - - - - - - - - - -END CR_NEWTSTONWKS  - - - - - - - - - - - -  }
+
+
+{ - - - - - - - - - - - - START READ_STANDARD_VER_PARAM- - - - - - - - - - -  }
+ROUTINE read_standard_ver_param
+
+declare  i, smpid_on_wks, test_no, {std_found,} smp_id, u_pos, p_pos,
+         {std_ver,} std_id{, std_prodname}
+
+{**MS1066 No need for finding any worksheet standard here. Done previously    }
+{**DS1066 18/12/97 .....
+cur_wks_name = SELECT test.worksheet_id
+                   WHERE test_number = current_test_number
+                   ORDER ON test_number
+
+smpid_on_wks = SELECT test.sample_id
+                      WHERE worksheet_id = cur_wks_name
+                      ORDER ON worksheet_id
+i = 0
+
+std_found = FALSE
+
+WHILE ((smpid_on_wks <> EMPTY) AND NOT(std_found)) DO
+
+   smp_id = SELECT sample.id_numeric
+             WHERE ((id_numeric = smpid_on_wks) AND
+                   (sample_type = PAD("CONTROL "," ",10)))
+                   ORDER ON id_numeric
+
+   IF smp_id <> EMPTY THEN
+      std_found = TRUE
+      std_sample_id = smp_id
+      std_text_id = STRIP(SELECT sample.id_text)
+      std_prodname = SELECT sample.product_name
+      p_pos = INDEX(std_text_id,".")
+      u_pos = INDEX(std_text_id,"_")
+      std_ver = NUMERIC(SUBSTRING(std_text_id,(u_pos+1),(p_pos-(u_pos+1))))
+   ENDIF
+   NEXT test
+   smpid_on_wks = SELECT test.sample_id
+ENDWHILE
+ **DE1066 18/12/97 }
+{**ME1066 18/12/97 }
+
+IF std_found THEN
+
+   std_id = SELECT standard_versions.identity
+            WHERE ((identity = std_prodname) AND
+                (version = std_ver))
+            ORDER ON identity
+
+   std_p [ACT] = SELECT standard_versions.activity
+   std_p [PHEND] = SELECT standard_versions.phend
+   std_p [PHMIN] = SELECT standard_versions.phmin
+   std_p [PHMAX] = SELECT standard_versions.phmax
+   std_p [IPMIN] = SELECT standard_versions.ipmin
+   std_p [IPMAX] = SELECT standard_versions.ipmax
+   std_p [IPSTAR] = SELECT standard_versions.ipstar
+   std_p [W1] = SELECT standard_versions.weight1
+   std_p [W2] = SELECT standard_versions.weight2
+   std_p [BETA] = SELECT standard_versions.beta
+   std_p [S_BETA] = SELECT standard_versions.s_beta
+   std_p [S_PH] = SELECT standard_versions.s_ph
+   std_p [S_PHABS] = SELECT standard_versions.s_phabs
+   std_p [MAX_DIFF] = SELECT standard_versions.max_diff
+   std_p [MAX_U] = SELECT standard_versions.max_utest
+
+ENDIF
+
+RETURN( std_found )
+
+ENDROUTINE
+
+{ - - - - - - - - - - - - - END READ_STANDARD_VER_PARAM- - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - - START RESULT_OK - - - - - - - - - - - - - - - -  }
+ROUTINE result_ok (VALUE type)
+ARRAY ip ARRAYSIZE(2)
+ARRAY phstar ARRAYSIZE(2)
+
+declare n
+
+ip [1]      =  weight[1,1]*weight[1,2]*100/
+               ((206.9+weight[1,1])*(206.9+weight[1,2]))
+
+phstar [1]     = ph [1] - std_p[BETA]*LOG((ip[1]/std_p[IPSTAR]))
+
+IF gent > 1 THEN
+   ip [2]      =  weight[2,1]*weight[2,2]*100/
+                  ((206.9+weight[2,1])*(206.9+weight[2,2]))
+   phstar [2]     = ph [2] - std_p[BETA]*LOG((ip[2]/std_p[IPSTAR]))
+ENDIF
+
+res_ok = TRUE
+n = 1
+WHILE ((n <= gent) AND res_ok) DO
+   IF ((ph [n] < std_p [PHMIN]) OR (ph [n] > std_p [PHMAX])) THEN
+      error_mess = "pH measured for ":type:" is out of linear range"
+{**AS1005 16/5/97 }
+      reason_code = "PHLINEAR"
+{**AE1005 16/5/97 }
+      res_ok = FALSE
+   ENDIF
+   n = n + 1
+ENDWHILE
+
+IF (res_ok) AND (gent>1) THEN
+   IF ABS(phstar[1] - phstar[2]) > std_p [MAX_DIFF] THEN
+      res_ok = FALSE
+      SET FORMAT "999999.99"
+      error_mess = "Difference between replicates > ":
+                    STRIP(STRING(std_p[MAX_DIFF]))
+{**AS1005 16/5/97 }
+      reason_code = "DIFREP"
+{**AE1005 16/5/97 }
+      SET FORMAT "999999.99999"
+   ENDIF
+ENDIF
+RETURN(res_ok)
+ENDROUTINE
+{ - - - - - - - - - - - - -   END RESULT_OK - - - - - - - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - - START STAND_IS_NEWTEST- - - - - - - - - - - - -  }
+ROUTINE stand_is_newtest
+
+
+declare stand_analid, comp, c_count, stand_is_newtst, stand_smp_found,
+        smpid_on_wks, i, test_no, analid, smp_id,
+        number_of_standtst, stand_count, stand_comp, stand_res, stand_res_type
+
+
+standtestno = SELECT test.test_number
+                WHERE sample_id = std_sample_id
+                ORDER ON sample_id
+
+stand_is_newtst = FALSE
+
+stand_comp_n = SELECT result.component_name
+             WHERE ((test_number = standtestno) AND
+                    (result_type = "K"))
+              ORDER ON order_number
+{             ORDER ON test_number }
+
+   WHILE stand_comp_n <> EMPTY DO
+      stand_res = SELECT result.text
+      IF (STRIP(stand_res) = "NEWTEST")
+         stand_is_newtst = TRUE
+      ENDIF
+      NEXT result
+      stand_comp_n = SELECT result.component_name
+   ENDWHILE
+RETURN(stand_is_newtst)
+ENDROUTINE
+{ - - - - - - - - - - - - - - END STAND_IS_NEWTEST- - - - - - - - - - - - -  }
+
+
+{ - - - - - - - - - - - - - START STAND_IS_OUTRANGE- - - - - - - - - - - - -  }
+ROUTINE stand_is_outrange
+
+
+declare stand_analid, comp, c_count, stand_is_newtst, stand_smp_found,
+        smpid_on_wks, i, test_no, analid, smp_id,
+        number_of_standtst, stand_count, stand_comp, stand_res, stand_res_type
+
+
+standtestno = SELECT test.test_number
+                WHERE sample_id = std_sample_id
+                ORDER ON sample_id
+
+stand_out_range = FALSE
+
+stand_comp_n = SELECT result.component_name
+             WHERE ((test_number = standtestno) AND
+                    (result_type = "K"))
+             ORDER ON order_number
+{             ORDER ON test_number }
+
+   WHILE stand_comp_n <> EMPTY DO
+       out_range = SELECT result.out_of_range
+       IF out_range THEN
+          stand_out_range = TRUE
+       ENDIF
+       NEXT result
+       stand_comp_n = SELECT result.component_name
+   ENDWHILE
+RETURN(stand_out_range)
+ENDROUTINE
+{ - - - - - - - - - - - - - - END STAND_IS_OUTRANGE- - - - - - - - - - - - -  }
+
+{ - - - - - - - - - - - - - START GET_NUM_COMP - - - - - - - - - - - - - - - - }
+ROUTINE get_num_comp
+
+declare  anal, comp_n, n_comp, comp_type, comp_unit
+
+anal  =  SELECT test.analysis
+            WHERE test_number = current_test_number
+            ORDER ON test_number
+
+comp_n = SELECT component.name
+                WHERE analysis_id = anal
+                ORDER ON analysis_id
+
+n_comp = 0
+
+WHILE (comp_n <> EMPTY)  DO
+   comp_type = SELECT component.result_type
+   comp_unit = SELECT component.units
+   IF comp_type = "N" THEN
+      n_comp = n_comp + 1
+   ELSE
+      IF (comp_type = "K")
+         IF STRIP(comp_unit) = "pH" THEN
+            calccomp_one = comp_n
+         ELSE
+            calccomp_two = comp_n
+         ENDIF
+      ENDIF
+   ENDIF
+   NEXT component
+   comp_n = SELECT component.name
+ENDWHILE
+RETURN(n_comp)
+ENDROUTINE
+{ - - - - - - - - - - - - - END GET_NUM_COMP - - - - - - - - - - - - - - - - - }
+
+{ - - - - - - - - - - - - - START GET_RESULTS - - - - - - - - - - - - - - - - }
+ROUTINE get_results
+
+declare comp, n_res, strip_comp, res_type, res_txt
+
+comp_n = SELECT result.component_name
+                WHERE test_number = current_test_number
+                ORDER ON order_number
+
+new_test_created = FALSE
+
+n_res = 0
+
+IF comp_n <> EMPTY THEN
+   gent = 0
+ENDIF
+
+ph_res_val = EMPTY
+
+WHILE (comp_n <> EMPTY)  DO
+   res_type = SELECT result.result_type
+   res_txt = SELECT result.text
+   res_unit = SELECT result.units
+   IF STRIP(res_txt) = "NEWTEST" THEN
+      new_test_created = TRUE
+   ENDIF
+   IF (res_type = "N")
+      IF gent <> NUMERIC(SUBSTRING(comp_n,1,1)) THEN
+         gent = NUMERIC(SUBSTRING(comp_n,1,1))
+         afvej = 0
+      ENDIF
+      IF STRIP(res_unit) = "g" THEN
+         afvej = afvej + 1
+         weight [gent, afvej] =
+             RESULTVALUE(current_sample,current_test_number,comp_n)
+      ELSEIF STRIP(res_unit) = "pH" THEN
+         ph [gent] = RESULTVALUE(current_sample,current_test_number,comp_n)
+      ENDIF
+      n_res = n_res + 1
+
+   ELSE
+
+      IF (res_type = "K") AND (comp_n = calccomp_one ) THEN
+        ph_res_val  = SELECT result.value
+
+      ENDIF
+   ENDIF
+   NEXT RESULT
+   comp_n = SELECT result.component_name
+ENDWHILE
+RETURN(n_res)
+ENDROUTINE
+{ - - - - - - - - - - - - - END GET_RESULTS - - - - - - - - - - - - - - - - - }
+
+
+{ - - - - - - - - - - - - - START STANDARD_SAMPLE - - - - - - - - - - - - - - }
+ROUTINE standard_sample
+
+declare is_control, sa_type
+
+is_control= FALSE
+
+{**MS1066 18/12/97 New method for checking for standard  }
+{**DS1066 18/12/97
+sa_type = SELECT sample.sample_type
+                WHERE id_numeric = current_sample
+                ORDER ON id_numeric
+
+IF PAD(sa_type," ",10) = PAD("CONTROL"," ",10) THEN
+    is_control = TRUE
+ENDIF
+ **DE1066 18/12/97 }
+
+is_control = select sample.standard
+             where  id_numeric = current_sample
+
+{**ME1066 18/12/97 }
+
+RETURN(is_control)
+ENDROUTINE
+{ - - - - - - - - - - - - - - END STANDARD_SAMPLE - - - - - - - - - - - - - - }
+
+{- - - - - - - - - - - - - START CR_NEW_TEST- - - - - - - - - - - - - - -  - - }
+ROUTINE cr_new_test
+
+declare newtest_done, new_test_nr, anal_id, samp_id
+
+SET NOTPROTECTED
+
+newtest_done = FALSE
+new_test_nr =""
+
+samp_id = SELECT test.sample_id
+          WHERE test_number = current_test_number
+          ORDER ON test_number
+
+anal_id = SELECT test.analysis_id
+
+IF (NOT(new_test_created))THEN
+   new_test_nr = NEWTEST(samp_id,anal_id)
+   newtest_done = TRUE
+ENDIF
+
+IF new_test_nr = ERROR THEN
+   CREATE TEXT WINDOW err_newtest HEIGHT 2 WIDTH 50 BORDER=""
+   PASTE TEXT WINDOW err_newtest ON LINE 17 FROM 2
+   DISPLAY  "ERROR CREATING NEWTEST ":new_test_nr
+      IN WINDOW err_newtest ON LINE 1 FROM 3 BOLD
+   DISPLAY  "Press any key to continue ...... "
+      IN WINDOW err_newtest ON LINE 2 FROM 3 BLINKING
+   dummy = getkey
+   UNPASTE TEXT WINDOW err_newtest
+ELSE
+   CREATE TEXT WINDOW new_test_win HEIGHT 4 WIDTH 55 BORDER
+   PASTE TEXT WINDOW new_test_win ON LINE 19 FROM 2
+   DISPLAY error_mess
+      ON LINE 1 FROM 2 IN WINDOW new_test_win BOLD
+   DISPLAY "One New analysis  :"
+      ON LINE 2 FROM 2 IN WINDOW new_test_win
+   DISPLAY STRIP(anal_id) ON LINE 2 FROM 19 IN WINDOW new_test_win BOLD
+   DISPLAY " created for the sample."
+      ON LINE 2 FROM (20+LENGTH(STRIP(anal_id))) IN WINDOW new_test_win
+   DISPLAY "Press any key to continue . . . . "
+      ON LINE 4 FROM 2 IN WINDOW new_test_win
+   dummy = getkey
+   UNPASTE TEXT WINDOW new_test_win
+ENDIF
+ENDROUTINE
+{- - - - - - - - - - - - - END CR_NEW_TEST - - - - - - - - - - - - - - -  - - }
+
+{ - - - - - - - - - - - - - START CALC_ESTIMATETPH - - - - - - - - - - - - - - }
+ROUTINE calc_estimatetph
+
+ARRAY std_ip ARRAYSIZE(2)
+ARRAY std_phstar ARRAYSIZE(2)
+
+get_std_results(std_text_id)
+
+
+std_ip [1]  =  std_weight[1,1]*std_weight[1,2]*100/
+               ((206.9+std_weight[1,1])*(206.9+std_weight[1,2]))
+std_phstar [1] = std_ph [1] - std_p[BETA]*LOG(std_ip[1]/std_p[IPSTAR])
+
+IF   gent > 1
+THEN std_ip [2]  =  std_weight[2,1]*std_weight[2,2]*100/
+                    ((206.9+std_weight[2,1])*(206.9+std_weight[2,2]))
+     std_phstar [2] = std_ph [2] - std_p[BETA]*LOG(std_ip[2]/std_p[IPSTAR])
+     ave_phstar     = (phstar[1] + phstar[2])/2
+     std_ave_phstar = (std_phstar[1] + std_phstar[2])/2
+ELSE ave_phstar     =  phstar[1]
+     std_ave_phstar =  std_phstar[1]
+ENDIF
+
+delta_ph       = ave_phstar - std_ave_phstar
+
+std_ideal      = std_p [PHEND] + std_p[BETA]*LOG(std_p[ACT]/1000)
+
+est_ph     = std_ideal + delta_ph
+
+RETURN(est_ph)
+ENDROUTINE
+{ - - - - - - - - - - - - - END CALC_ESTIMATETPH - - - - - - - - - - - - - - }
+
+
+{ - - - - - - - - - - - - - START CALC_STD_ESTIMATETPH - - - - - - - - - - - - - - }
+ROUTINE calc_std_estimatetph
+
+IF gent > 1
+THEN ave_phstar     = (phstar[1] + phstar[2])/2
+ELSE ave_phstar     =  phstar[1]
+ENDIF
+
+est_ph     = ave_phstar
+
+
+RETURN(est_ph)
+ENDROUTINE
+{ - - - - - - - - - - - - - END CALC_STD_ESTIMATETPH - - - - - - - - - - - - - - }
+
+
+{ - - - - - - - - - - - - - START GET_STD_RESULTS- - - - - - - - - - - - - - - - }
+ROUTINE get_std_results (VALUE std_txt)
+
+declare  stand_analid, std_smpid, stand_smp_found, { **DS1066 std_testno, }
+         std_comp_n
+
+ARRAY std_weight ARRAYSIZE(2,2)
+ARRAY std_ph     ARRAYSIZE(2)
+
+{**DS1066 18/12/97 No need for finding standard. Done previously ...
+std_smpid = SELECT sample.id_numeric
+            WHERE ((id_text = std_txt) AND
+                  (sample_type = PAD("CONTROL "," ",10)))
+            ORDER ON id_text
+
+stand_analid = SELECT test.analysis_id
+                   WHERE test_number = current_test_number
+                   ORDER ON test_number
+
+
+stand_smp_found = FALSE
+
+cur_wks_name = SELECT test.worksheet_id
+                   WHERE test_number = current_test_number
+                   ORDER ON test_number
+
+std_testno = SELECT test.test_number
+                    WHERE (worksheet_id = cur_wks_name) AND
+                          (sample_id = std_smpid)
+                    ORDER ON sample_id
+ **DE1066 18/12/97 ..... }
+{**AS1066  8/01/98 }
+std_smpid = std_sample_id
+{**AE1066  8/01/98 }
+
+std_comp_n = SELECT result.component_name
+                WHERE test_number = std_testno
+                ORDER ON order_number
+{                ORDER ON test_number }
+
+IF std_comp_n <> EMPTY THEN
+   gent = 0
+ENDIF
+
+WHILE std_comp_n <> EMPTY
+   std_res_type = SELECT result.result_type
+   std_res_txt = SELECT result.text
+   std_res_unit = SELECT result.units
+   IF (std_res_type = "N")
+      IF gent <> NUMERIC(SUBSTRING(std_comp_n,1,1)) THEN
+         gent = NUMERIC(SUBSTRING(std_comp_n,1,1))
+         afvej = 0
+      ENDIF
+      IF STRIP(std_res_unit) = "g" THEN
+         afvej = afvej + 1
+         std_weight [gent, afvej] =
+             RESULTVALUE(std_smpid,std_testno,std_comp_n)
+      ELSEIF STRIP(std_res_unit) = "pH" THEN
+         std_ph [gent] = RESULTVALUE(std_smpid,std_testno,std_comp_n)
+      ENDIF
+   ENDIF
+   NEXT RESULT
+   std_comp_n = SELECT result.component_name
+ENDWHILE
+
+ENDROUTINE
+{ - - - - - - - - - - - - - - END GET_STD_RESULTS- - - - - - - - - - - - - - - - }
+ROUTINE disp_error_win (VALUE error_mess_1         ,
+                        VALUE error_mess_2         ,
+                        VALUE error_mess_3          )
+
+   CREATE TEXT WINDOW new_test_win HEIGHT 4 WIDTH 55 BORDER
+   PASTE TEXT WINDOW new_test_win ON LINE 19 FROM 2
+   DISPLAY error_mess_1 ON LINE 1 FROM 2 IN WINDOW new_test_win BOLD
+   IF error_mess_2 <> " " THEN
+      DISPLAY error_mess_2 ON LINE 2 FROM 2 IN WINDOW new_test_win BOLD
+   ENDIF
+   IF error_mess_3 <> " " THEN
+      DISPLAY error_mess_3 ON LINE 3 FROM 2 IN WINDOW new_test_win BOLD
+   ENDIF
+   DISPLAY "Press any key to continue . . . . "
+          ON LINE 4 FROM 2 IN WINDOW new_test_win
+
+   dummy = getkey
+
+ENDROUTINE   {disp_error_win}

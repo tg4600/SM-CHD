@@ -1,0 +1,1160 @@
+{***********************************************************************
+* Module Name   : SAP_MATMAS
+* Purpose       : Present most recent data from SAP_MATMAS and SAP_CLASS
+*                 for a single MLP
+* Document Ref  : N/A
+* Specification : N/A
+************************************************************************
+* Modification History
+*
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2016-07-07  Tommy Bøgeskov      Created
+************************************************************************}
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_LIST
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_UTILS 
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+{ *************************** Section for testing  *************************** }
+DECLARE mlp, ver, updates
+ARRAY updates   ARRAY_SIZE (0,4) 
+    
+    mlp = "703781            11"
+    ver = 11
+    GetSAPDetails(mlp, EMPTY, "DISPLAY", updates)
+    
+EXIT
+{ ************************* End Section for testing  ************************* }
+
+GLOBAL ROUTINE GetSAPDetails(VALUE mlp, VALUE copied_identity, VALUE operation, updates)
+{*************************************************************************
+* Purpose      : Create array of selected values from SAP_MATMAS and SAP_CLASS
+* Parameters   : mlp, copied_identity, operation
+* Return Value : N/A
+**************************************************************************}
+DECLARE values, matmas, size, ver, idoc, matmas_init, values_init, messages, title, i, j, s, tmp,new_values ,dif_values, newversion
+
+    matmas_init = FALSE
+    values_init = FALSE
+    idoc = SELECT max_matmas.uniqueid WHERE identity = mlp
+
+    
+    GET_FIELD_DETAILS MLP_HEADER.IDENTITY, "FIELD_SIZE", size
+    ver = RIGHTSTRING(mlp, LENGTH(mlp) - size)
+    mlp = LEFTSTRING(mlp, size)
+    IF (operation = "QUIT") OR
+       (operation = "SAVE") OR
+       (operation = "READ_FOR_DISPLAY") THEN
+        RETURN
+    ELSEIF (operation = "READ_FOR_MODIFY")  THEN
+        IF iDoc = EMPTY THEN
+            iDoc = ""
+        ENDIF
+        IF (idoc > (SELECT mlp_header.sap_uniqueid)) THEN
+            fm("New Material Master Data received from SAP.":ASCII(10):
+               "Be sure to update all fields marked with '*'.")
+        ENDIF
+        RETURN
+    ENDIF
+
+    idoc = SELECT max_matmas.uniqueid WHERE identity = mlp
+    IF ((INDEX("MODIFY;READ_FOR_MODIFY", operation) = 0) AND
+        (BLANK(SELECT mlp_header.sap_uniqueid))) AND 
+        ((ver = SELECT max_active_mlp_ver.max_version WHERE identity = mlp) OR
+         (ver = SELECT max_mlp_version.max_version    WHERE identity = mlp)) THEN
+        fm("No SAP Master Data assigned to current version of '":mlp:"'":ASCII(10):
+           "Showing most recent Material Master Data received from SAP.")
+    ELSEIF BLANK(SELECT mlp_header.sap_uniqueid) THEN
+        fm("No SAP Master Data assigned") 
+        RETURN
+    ENDIF
+
+    IF NOT matmas_init    
+        ARRAY matmas ARRAY_SIZE (0,5) ARRAY_INITIAL (500) ARRAY_EXTEND (100)
+
+        INIT_MATMAS(matmas)
+        matmas_init = TRUE
+    ENDIF    
+        
+    IF NOT values_init    
+        ARRAY values     ARRAY_SIZE (0, 4) ARRAY_INITIAL (200) ARRAY_EXTEND (50)
+        ARRAY new_values ARRAY_SIZE (0, 4) ARRAY_INITIAL (200) ARRAY_EXTEND (50)
+        ARRAY dif_values ARRAY_SIZE (0, 4) ARRAY_INITIAL (200) ARRAY_EXTEND (50)
+
+        
+        idoc = SELECT mlp_header.sap_uniqueid
+        INIT_VALUES(matmas, values,     idoc)
+        
+        IF (ver = SELECT max_active_mlp_ver.max_version WHERE identity = mlp) OR
+           (ver = SELECT max_mlp_version.max_version    WHERE identity = mlp) THEN
+            IF (idoc < SELECT max_matmas.uniqueid WHERE identity = mlp) THEN
+                idoc = SELECT max_matmas.uniqueid WHERE identity = mlp
+                INIT_VALUES(matmas, new_values, idoc)
+            ENDIF
+
+            IF size_of_array(new_values) > 0 THEN
+                array_copy(dif_values, new_values)
+                i = 1
+                j = 1
+                s = 1
+                NewVersion = FALSE
+               {WriteToLog("") }
+                WHILE (j > 0) AND (j <= size_of_array(dif_values))
+                    WHILE i <= size_of_array(values)
+                        j = s
+                        tmp = STRIP(SUBSTRING(dif_values[j, 1], 4, LENGTH(dif_values[j, 1])))
+                        IF    ((0 = INDEX("Master Status;Description;Product Code;Material Type;Product Area", tmp)) 
+                               AND (0 = INDEX("Product Segment;Product Cluster;Product Sub Cluster", tmp)) 
+                               AND (0 = INDEX("STRAINS;STRAINS_INGREDIENTS;GROUPING;PRODUCT_GROUP;PRODUCT_FORM;PRODUCT_FORMAT;PRODUCT_IDENTIFICATION", tmp))) THEN
+                            {WriteToLog("Not used :":dif_values[j, 1]) }
+                            array_remove_slice(dif_values, 1, j)
+                            s = j
+                            j = size_of_array(dif_values) + 1
+                        ELSEIF ((values[i, 1] = dif_values[j, 1]) AND 
+                                (values[i, 2] = dif_values[j, 2])) THEN
+                           {WriteToLog("Unchanged :":dif_values[j, 1]) }
+                            IF (0 < INDEX("Product Code;", tmp)) 
+                                NewVersion = TRUE
+                            ENDIF
+                            array_remove_slice(dif_values, 1, j)
+                            s = j
+                            j = size_of_array(dif_values) + 1
+                        ELSE   
+                           {WriteToLog("Modified  :":dif_values[j, 1]:values[i, 2]:" <> ":dif_values[j, 2]) }
+                            dif_values[j, 3] = EMPTY
+                            j = j + 1
+                            s = j
+                        ENDIF
+                            i = i + 1
+                        ENDWHILE
+                ENDWHILE
+            ENDIF
+        ENDIF    
+        
+        IF size_of_array(dif_values) > 0 THEN
+            ARRAY   messages ARRAY_SIZE (0)
+            array_insert_slice(dif_values, 1, 1)
+            dif_values[1, 1] = "Item"
+            dif_values[1, 2] = "Value"
+            IF ("" = SELECT mlp_header.sap_uniqueid) THEN
+                title       = "New SAP Master Data for '":STRIP(mlp):"'"
+                messages[1] = "No Master Data assigned to: ":STRIP(mlp):"/":STRIP(ver)
+                messages[2] = "Most recent data from SAP:"
+                IF NewVersion THEN
+                    messages[3] = ""
+                    messages[4] = "New version should be created..."
+                ENDIF
+                ArrayGrid(title, messages, dif_values, TRUE)   
+            ELSE
+                title       = "New SAP Master Data for '":STRIP(mlp):"'"
+                messages[1] = "Updated SAP Master Data values available"
+                IF NewVersion THEN
+                    messages[2] = ""
+                    messages[3] = "New version should be created..."
+                ENDIF
+                ArrayGrid(title, messages, dif_values, TRUE)   
+            ENDIF       
+        ENDIF
+        
+        
+        values_init = TRUE
+    ENDIF    
+        
+    GetUpdates(values, updates)
+
+    IF ("" <> SELECT mlp_header.sap_uniqueid) THEN
+        SelectChars(mlp, ver, values, updates, operation)
+    ENDIF    
+
+ENDROUTINE
+
+ROUTINE GetIDoc(mlp)
+{*************************************************************************
+* Purpose       : Select / Deselect tests for sample
+* Parameters    : Array of tests
+* Return Value  : Array of tests
+*************************************************************************}
+
+DECLARE idoc, mlp_ver, c_idoc, n_idoc, fields_array, f, table, field, type
+ARRAY fields_array
+    
+    table = "SAP_MATMAS"
+    type  = ""
+    field = "NAMECULTURE"
+        f = size_of_array(fields_array) + 1
+        fields_array[f, 1] = table
+        fields_array[f, 2] = type
+        fields_array[f, 3] = field
+
+    table = "SAP_CLASS"
+    type  = "Material Class"
+    field = "PRODUCT_FAMILY_CULTURE"
+    
+    
+    
+    idoc    = ""
+    mlp_ver = SELECT max_active_mlp_ver.max_version WHERE identity = mlp
+    c_idoc  = SELECT mlp_header.sap_uniqueid        WHERE identity = mlp AND product_version = mlp_ver
+    n_idoc  = SELECT max_matmas.uniqueid            WHERE identity = mlp 
+    
+    IF c_idoc = n_idoc THEN
+        idoc = c_idoc
+    ELSEIF c_idoc = "" THEN
+        c_idoc = SELECT MIN mlp_header.sap_uniqueid WHERE identity = mlp AND sap_uniqueid <> ""
+        IF c_idoc <> EMPTY THEN
+            idoc = c_idoc
+        ELSE
+            idoc = n_idoc
+        ENDIF
+    ELSEIF n_idoc > c_idoc
+        
+    ELSE
+        fm("Not able to determine valid idoc id...")
+        RETURN(EMPTY)
+    ENDIF
+
+    RETURN(idoc)
+
+ENDROUTINE
+
+ROUTINE SelectChars(mlp, ver, values, updates, operation)
+{*************************************************************************
+* Purpose       : Select / Deselect tests for sample
+* Parameters    : Array of tests
+* Return Value  : Array of tests
+*************************************************************************}
+
+DECLARE form, list
+{fm("SelectChars, operation = ":operation) }
+
+    IF (operation <> "READ_FOR_DISPLAY") AND
+       (operation <> "READ_FOR_MODIFY" ) AND
+       (operation <> "COPY" ) AND
+       (operation <> "ADD" ) THEN
+        set_up_std_prompt_list_class ( )
+        CREATE OBJECT "STD_FORM", form
+        form.height     = 30
+        form.width      = 80
+        form.row        = 4
+        form.column     = 6
+        form.border     = TRUE
+        form.header     = "SAP Master Data (":STRIP(mlp):")"
+        form.prompt_id  = "sap_matmas"
+
+        CREATE OBJECT "STD_PROMPT_LIST", list
+        list.height = form.height - 1
+        list.width  = form.width - 2
+        list.row    = 1
+        list.column = 2
+        list.style  = {LIST_STYLE_CHECK_BOXES + }
+                      LIST_STYLE_REPORT +
+                      LIST_STYLE_SHOWSELALWAYS +
+                      LIST_STYLE_AUTOARRANGE    +
+                      LIST_STYLE_HEADERDRAGDROP +
+                      LIST_STYLE_FULLROWSELECT
+        list.add_column ( "Item ", 25 )
+        list.add_column ( "Value", 30 )
+        list.add_column ( "MLP",  0 )
+        form.add_prompt ( list )
+        CreateList(form, list, values)
+        form.start_prompt ( )
+        {SetState(form, list) }  
+        form.wait_prompt ( )
+
+    ENDIF    
+
+ENDROUTINE
+
+ROUTINE CreateList (main_form, List, values)
+{*************************************************************************
+* Purpose       : Populate Array of test in list
+* Parameters    : Form, List and Array of tests
+* Return Value  : None
+*************************************************************************}
+
+DECLARE i
+
+    ARRAY main_form.user_info ARRAYSIZE ( 0 , 4 )
+    i = 0
+    WHILE ( i < SIZE_OF_ARRAY(values) ) DO
+        i = i + 1
+        {window_set_status(STRIP(values[i,1]):" : ":STRIP(values[i,2]):" : ":STRIP(values[i,3]):" : ":STRIP(values[i,4])) }
+        main_form.user_info[i, 1] = values [i, 1]
+        main_form.user_info[i, 2] = values [i, 2]
+        main_form.user_info[i, 3] = values [i, 3]
+        main_form.user_info[i, 4] = values [i, 4]
+        list.insert_item (values [i, 1] , 115 )
+        list.set_item(2, values [i, 2] )
+        list.set_item(3, values [i, 3] )
+        list.set_item(4, values [i, 4] )
+    ENDWHILE
+    {window_set_status("") }
+    
+{**************************************************************************************************************
+    fm("Values:  ":ASCII(10):GetArray(values))
+    fm("UserInfo:":ASCII(10):GetArray(main_form.user_info))
+***************************************************************************************************************}
+
+ENDROUTINE
+
+ROUTINE SetState(self, list)
+{*************************************************************************
+* Purpose       : Sets items to checked, when corresponding value in mlp_header
+*                 is different from value in sap_matmas
+* Parameters    : Form object, list
+* Return Value  : None
+*************************************************************************}
+DECLARE i, mask, field, state, context
+{fm("SetState") }
+    
+    push_file_descriptor ("mlp_header", context)
+    i = 1
+    WHILE (i <= size_of_array(self.user_info)) DO
+        mask  = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED 
+        {window_set_status(STRIP(self.user_info[i,1]) :" : ":STRIP(self.user_info[i,2]):" : ":STRIP(self.user_info[i,3]):" : ":STRIP(self.user_info[i,4])) }
+        field = self.user_info[i,3]
+        IF NOT(BLANK(field)) AND (field <> EMPTY) THEN 
+            {window_set_status(self.user_info[i,2]:" <> ":(SELECT mlp_header.'field' WHERE identity = mlp AND product_version = ver)) }
+            IF (self.user_info[i,2] <> (SELECT mlp_header.'field' WHERE identity = mlp AND product_version = ver)) THEN
+                state = LIST_ITEM_CHECKED
+            ELSE
+                state = LIST_ITEM_NOTCHECKED
+            ENDIF 
+        ELSE 
+            state = LIST_STYLE_SUB_ITEM_IMAGES
+        ENDIF
+        list.set_item_state ( i - 1 , state, mask )
+        i = i + 1
+    ENDWHILE
+    pop_file_descriptor(context)
+
+ENDROUTINE
+
+ROUTINE GetUpdates(values, updates)
+{*************************************************************************
+* Purpose       : Get items to update, when corresponding value in mlp_header
+*                 is different from value in sap_matmas
+* Parameters    : Form object, list
+* Return Value  : None
+*************************************************************************}
+DECLARE i, field, context
+    
+    push_file_descriptor ("mlp_header", context)
+    i = 1
+    WHILE (i <= size_of_array(values)) DO
+        field = values[i,3]
+        IF NOT(BLANK(field)) AND (field <> EMPTY) THEN
+            IF (values[i,2] <> (SELECT mlp_header.'field' WHERE identity = mlp AND product_version = ver)) THEN
+                updates[size_of_array(updates) + 1, 1] = field
+                updates[size_of_array(updates)    , 2] = values[i,2]
+            ENDIF    
+        ENDIF 
+        i = i + 1
+    ENDWHILE
+    pop_file_descriptor(context)
+
+ENDROUTINE
+
+ROUTINE GetValues(self, list, updates)
+{*************************************************************************
+* Purpose       : Checks if list items is checked.
+* Parameters    : Form object, list and Array of tests
+* Return Value  : Array with checked analysis
+*************************************************************************}
+DECLARE i, mask, state_is, j
+
+    {fm(GetArray(self.user_info)) }
+
+    i = 1
+    WHILE i <= size_of_array(self.user_info) DO
+        mask     = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state_is = list.get_item_state ( i - 1, mask )
+        IF (state_is = LIST_ITEM_CHECKED) AND NOT(BLANK(self.user_info[i, 3])) THEN 
+            j = size_of_array(updates) + 1
+            updates[j,1] = self.user_info[i, 3]
+            updates[j,2] = self.user_info[i, 2]
+           {array_remove_slice(self.user_info, 1, i) }
+        ENDIF 
+        i = i + 1
+    ENDWHILE
+ 
+ENDROUTINE
+
+
+ROUTINE INIT_VALUES(matmas, values, VALUE idoc)
+                                 {*************************************************************************
+* Purpose      : Create array of values from SAP_MATMAS and SAP_CLASS
+*                in currently selected idoc
+* Parameters   : matmas - fields to investigate
+*                idoc   - last idoc received for current mlp
+* Return Value : values - selected values from current idoc
+*
+*   VALUES array definition:
+    
+*   col 1 = Description / ID from SAP_CLASS
+*   col 2 = value retreived from SAP_MATMAS or SAPCLASS
+*   col 3 = field name in MLP_HEADER
+**************************************************************************}
+    DECLARE m, val, field, v, class_value
+
+    m = 1
+    WHILE m <= size_of_array(matmas)
+        IF (INDEX(matmas[m,1],"***") > 0) THEN
+            v = size_of_array(values) + 1
+            values[v,1] = matmas[m,1]
+        ELSEIF NOT(BLANK(matmas[m,1])) AND 
+           NOT(matmas[m,1] = EMPTY) THEN
+            field = matmas[m,1]
+            val = FormatVal(field, (SELECT SAP_MATMAS.'field' WHERE uniqueid = idoc), idoc)
+            v = size_of_array(values) + 1
+            values[v,1] = matmas[m,4]
+            values[v,2] = val
+            values[v,3] = matmas[m,3]
+            {values[v,4] = matmas[m,4] }
+        ELSEIF NOT(BLANK(matmas[m,2])) AND NOT(matmas[m,2] = EMPTY) THEN
+            field = matmas[m,2]
+            class_value = SELECT SAP_CLASS.TEXTVALUE WHERE uniqueid = idoc AND type = matmas[m,5] AND id = field ORDER ON ordernumber
+            WHILE class_value <> EMPTY
+                v = size_of_array(values) + 1
+                val         = FormatVal(field, class_value, idoc)
+                values[v,1] = matmas[m,4]
+                values[v,2] = val
+                values[v,3] = matmas[m,3]
+                {values[v,4] = matmas[m,4] }
+            NEXT sap_class
+                class_value = SELECT sap_class.textvalue
+            ENDWHILE
+        ENDIF
+        
+        {window_set_status("(m = ":STRIP(m):", v = ":STRIP(v):") ":STRIP(values[v,1]):" : ":STRIP(values[v,2]):" : ":STRIP(values[v,3]):" : ":STRIP(values[v,4])) }
+        m = m + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE FormatVal(VALUE Field, VALUE val, VALUE idoc)
+{*************************************************************************
+* Purpose       : If selected val is date and field is expected to hold a date
+*                 format val as a date, otherwise strip val
+* Parameters    : field - fieldname for selected val
+*                 val   - value to investigate
+* Return Value  : N/A
+*************************************************************************}
+DECLARE fam_name
+    IF IS_DATE(val) AND
+       ((INDEX(field, "DATE") > 0) OR
+        (INDEX(field, "CHANGED") > 0) OR
+        (INDEX(field, "CREATED") > 0)) THEN
+        SET DATE FORMAT "DZ-MON-YYYY H24:MI"
+        val   = STRIP(STRING(DATE(val)))
+        IF RIGHTSTRING(val,5) = "00:00" THEN
+            val = STRIP(LEFTSTRING(val, LENGTH(val) - 5))
+        ENDIF
+        RESTORE DATE FORMAT
+    ELSE
+        fam_name = ""
+        IF field = "NAMECULTURE" THEN
+            fam_name = SELECT sap_class.textvalue WHERE uniqueid = iDoc AND type = "Material class" AND id = "PRODUCT_FAMILY_CULTURE"
+            IF (fam_name = EMPTY) OR 
+               (fam_name = "No information") OR 
+               (fam_name = "Not applicable") THEN
+                fam_name = ""
+            ELSE
+                fam_name = STRIP(fam_name):" "
+            ENDIF
+        ENDIF    
+        val = STRIP(fam_name:val)
+    ENDIF
+
+    RETURN(val)
+    
+ENDROUTINE
+
+ROUTINE INIT_MATMAS(matmas)
+{*************************************************************************
+* Purpose      : Create array of selectable values from SAP_MATMAS and SAP_CLASS
+* Parameters   : N/A
+* Return Value : N/A
+
+*   MATMAS array definition:
+    
+*   col 1 = Field name in SAP_MATMAS
+*   col 2 = ID in SAP_CLASS, section 'Material Class'
+*   col 3 = field name in MLP_HEADER
+*   col 4 = Description
+**************************************************************************}
+DECLARE i, field, size
+    
+    i = 1
+    matmas[i,1] = "  ***  Material Master ***  "
+    
+    i = i + 1
+    matmas[i,1] = "GIN"
+    matmas[i,2] = ""
+    matmas[i,3] = "IDENTITY" 
+    matmas[i,4] = "Identity"
+    
+    i = i + 1
+    matmas[i,1] = "UNIQUEID"
+    matmas[i,2] = ""
+    matmas[i,3] = "SAP_UNIQUEID"
+    matmas[i,4] = "IDoc ID"
+    
+    i = i + 1
+    matmas[i,1] = "MASTERSTATUS"
+    matmas[i,2] = ""
+    matmas[i,3] = "SAP_MASTERSTATUS"
+    matmas[i,4] = "Master Status"
+    
+    i = i + 1
+    matmas[i,1] = "DESCRIPTION"
+    matmas[i,2] = ""
+    matmas[i,3] = "DESCRIPTION"
+    matmas[i,4] = "Description"
+    
+    i = i + 1
+    matmas[i,1] = "NAMECULTURE"
+    matmas[i,2] = ""
+    matmas[i,3] = "PRODUCT_CODE"
+    matmas[i,4] = "Product Code"
+    
+    i = i + 1
+    matmas[i,1] = "CLASSID"
+    matmas[i,2] = ""
+    matmas[i,3] = "MATERIAL_TYPE"
+    matmas[i,4] = "Material Type"
+    
+    i = i + 1
+    matmas[i,1] = "PRODUCTAREA"
+    matmas[i,2] = ""
+    matmas[i,3] = "PRODUCTAREA"
+    matmas[i,4] = "Product Area"
+    
+    i = i + 1
+    matmas[i,1] = "PRODUCTSEGMENT"
+    matmas[i,2] = ""
+    matmas[i,3] = "PRODUCTSEGMENT"
+    matmas[i,4] = "Product Segment"
+    
+    i = i + 1
+    matmas[i,1] = "PRODUCTCLUSTER"
+    matmas[i,2] = ""
+    matmas[i,3] = "PRODUCTCLUSTER"
+    matmas[i,4] = "Product Cluster"
+    
+    i = i + 1
+    matmas[i,1] = "PRODUCTSUBCLUSTER"
+    matmas[i,2] = ""
+    matmas[i,3] = "PRODUCTSUBCLUSTER"
+    matmas[i,4] = "Product Sub Cluster"
+    
+    i = i + 1
+    matmas[i,1] = "PRODUCTGROUP"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Product Group"
+    
+    i = i + 1
+    matmas[i,1] = "VALUECHAIN"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Value Chain"
+{    
+    i = i + 1
+    matmas[i,1] = "PRODHIER"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Product Hierakey"
+ }    
+    i = i + 1
+    matmas[i,1] = "PRODHIERAKEYNAME"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Product Hierakey Name"
+    
+    i = i + 1
+    matmas[i,1] = "MATERIAL"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Material"
+{    
+    i = i + 1
+    matmas[i,1] = "MATERIALGROUP"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Material Group"
+ }    
+    i = i + 1
+    matmas[i,1] = "MATGROUPDESC"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Material Group Description"
+{    
+    i = i + 1
+    matmas[i,1] = "CLASSIFICATIONVALUE"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Classification Value"
+ }    
+    i = i + 1
+    matmas[i,1] = "CLASSIFICATIONDESCRIPTION"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Classification Description"
+    
+    i = i + 1
+    matmas[i,1] = "STATUS"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Status"
+    
+    i = i + 1
+    matmas[i,1] = "UNITOFMEASURE"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Unit of Measure"
+    
+    i = i + 1
+    matmas[i,1] = "LASTCHANGEDON"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Changed on"
+    
+    i = i + 1
+    matmas[i,1] = "LASTCHANGEDBY"
+    matmas[i,2] = ""
+    matmas[i,3] = ""
+    matmas[i,4] = "Changed by"
+    
+    i = i + 1
+    matmas[i,1] = "CREATIONDATETIME"
+    matmas[i,2] = ""
+    {matmas[i,3] = "MODIFIED_ON" } 
+    matmas[i,4] = "Received"
+    
+    i = i + 1
+    matmas[i,1] = "DELETED"
+    matmas[i,2] = ""
+    {matmas[i,3] = "REMOVEFLAG" }
+    matmas[i,4] = "Removed"
+    
+    GET_FIELD_DETAILS sap_class.id, "FIELD_SIZE", size
+    i = 1
+    WHILE i <= size_of_array(matmas)
+        matmas[i,4] = PAD("MM: ":matmas[i,4], " ", size + 4)
+        i = i + 1
+    ENDWHILE
+    
+    
+    field = SELECT DISTINCT sap_class.id WHERE type = "Material class"
+
+    i = i + 1
+    matmas[i,1] = "  ***  Material Classification ***  "
+    
+    WHILE field <> EMPTY
+        i = i + 1
+        matmas[i,1] = ""
+        matmas[i,2] = field
+        matmas[i,3] = ""
+        matmas[i,4] = "MC: ":field
+        matmas[i,5] = "Material class"
+    NEXT sap_class
+        field = SELECT sap_class.id 
+    ENDWHILE
+
+    field = SELECT DISTINCT sap_class.id WHERE type = "Material documentation class"
+
+    i = i + 1
+    matmas[i,1] = "  ***  Material Documentation ***  "
+    WHILE field <> EMPTY
+        i = i + 1
+        matmas[i,1] = ""
+        matmas[i,2] = field
+        matmas[i,3] = ""
+        matmas[i,4] = "MD: ":field
+        matmas[i,5] = "Material documentation class"
+    NEXT sap_class
+        field = SELECT sap_class.id 
+    ENDWHILE
+
+    field = SELECT DISTINCT sap_class.id WHERE type = "Batch"
+
+    i = i + 1
+    matmas[i,1] = "  ***  Batch Classification ***  "
+    WHILE field <> EMPTY
+        i = i + 1
+        matmas[i,1] = ""
+        matmas[i,2] = field
+        matmas[i,3] = ""
+        matmas[i,4] = "BC: ":field
+        matmas[i,5] = "Batch"
+    NEXT sap_class
+        field = SELECT sap_class.id 
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+{*************************************************************************}
+
+{******************************************************************************}
+
+ROUTINE prompt_uniqueid (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field 
+
+    mlp_field   = "SAP_UNIQUEID"
+    sap_field   = "UNIQUEID"
+    
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_uniqueid }
+
+{******************************************************************************}
+
+ROUTINE prompt_mlp_desc (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "DESCRIPTION"
+    sap_field   = "DESCRIPTION"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_uniqueid }
+
+{******************************************************************************}
+
+ROUTINE prompt_master_status (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "SAP_MASTERSTATUS"
+    sap_field   = "MASTERSTATUS"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_mlp_description }
+
+{******************************************************************************}
+
+ROUTINE prompt_prod_code (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "PRODUCT_CODE"
+    sap_field   = "NAMECULTURE"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_prod_code }
+
+{******************************************************************************}
+
+ROUTINE prompt_mat_type (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "MATERIAL_TYPE"
+    sap_field   = "CLASSID"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_mat_type }
+
+{******************************************************************************}
+
+ROUTINE prompt_prod_cluster (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "PRODUCTCLUSTER"
+    sap_field   = "PRODUCTCLUSTER"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_prod_cluster }
+
+{******************************************************************************}
+
+ROUTINE prompt_prod_sub_cluster (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "PRODUCTSUBCLUSTER"
+    sap_field   = "PRODUCTSUBCLUSTER"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_prod_sub_cluster }
+
+{******************************************************************************}
+
+ROUTINE prompt_prod_area (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "PRODUCTAREA"
+    sap_field   = "PRODUCTAREA"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_prod_segment }
+
+{******************************************************************************}
+ROUTINE prompt_prod_segment (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE mlp_field, sap_field
+
+    mlp_field   = "PRODUCTSEGMENT"
+    sap_field   = "PRODUCTSEGMENT"
+
+    prompt_field (mlp_field, sap_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_prod_segment }
+
+{******************************************************************************}
+
+ROUTINE prompt_strains (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "STRAINS"
+    mlp_field = "STRAINS"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_strains }
+
+{******************************************************************************}
+
+ROUTINE prompt_grouping (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "GROUPING"
+    mlp_field = "GMP_STATUS"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_product_group }
+
+{******************************************************************************}
+
+ROUTINE prompt_product_group (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "PRODUCT_GROUP"
+    mlp_field = "PRODUCT_GROUP"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_product_group }
+
+{******************************************************************************}
+
+ROUTINE prompt_product_form (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "PRODUCT_FORM"
+    mlp_field = "PRODUCT_FORM"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_product_form }
+
+{******************************************************************************}
+
+ROUTINE prompt_product_format (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "PRODUCT_FORMAT"
+    mlp_field = "SAMPLE_TYPE"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_product_format }
+
+{******************************************************************************}
+
+ROUTINE prompt_product_id (  VALUE column, VALUE row, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE ClassID, ClassType, mlp_field
+    
+    ClassType = "Material class"
+    ClassID   = "PRODUCT_IDENTIFICATION"
+    mlp_field = "PRODUCT_IDENTIFICATION"
+    
+    prompt_class_id (ClassType, ClassID, mlp_field, row, column, cell_width, window, is_display)
+
+ENDROUTINE { prompt_product_id }
+
+{******************************************************************************}
+
+ROUTINE prompt_field ( VALUE mlp_field, VALUE sap_field, VALUE row, VALUE column, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE val, old_val, aArray, aMLP, iDoc, aSAP, aCnt, phrase_field, phrase_text, prompt_type, phrase_type, fam_name
+    ARRAY aArray
+
+    GET_FIELD_DETAILS mlp_header.'mlp_field', "PROMPT_TYPE", prompt_type
+    GET_FIELD_DETAILS mlp_header.'mlp_field', "PHRASE_ID"  , phrase_type
+    
+    IF mlp_field = "MATERIAL_TYPE" THEN
+        prompt_type = "DEFAULT"
+    ELSEIF INDEX("SAP_UNIQUEID;SAP_MASTERSTATUS;PRODUCT_CODE;PRODUCTCLUSTER;PRODUCTSUBCLUSTER;PRODUCTSEGMENT;PRODUCTAREA;", mlp_field:";") > 0 THEN
+        prompt_type = EMPTY
+    ENDIF
+    
+    phrase_field = EMPTY
+
+    aMLP    = SELECT mlp_header.identity
+    val     = SELECT mlp_header.'mlp_field'
+    old_val = val
+
+    IF is_display THEN
+        DISPLAY val 
+        ON LINE row 
+        FROM column 
+        TO column + cell_width - 1 
+        IN WINDOW window
+    ELSE
+        aCnt = 0
+        iDoc = SELECT max_matmas.uniqueid WHERE identity = aMLP
+
+        WriteToLog(aMLP:" ":mlp_field:" ":iDoc:" ":prompt_type)
+        IF (iDoc = EMPTY) AND (prompt_type <> "DEFAULT") THEN
+            aCnt           = aCnt + 1
+            aArray[aCnt,1] = ""
+            aArray[aCnt,2] = ""
+        ELSE
+            fam_name = ""
+            IF (mlp_field   = "PRODUCT_CODE") THEN
+                fam_name = SELECT sap_class.textvalue WHERE uniqueid = iDoc AND type = "Material class" AND id = "PRODUCT_FAMILY_CULTURE"
+                IF (fam_name = EMPTY) OR 
+                   (fam_name = "No information") OR 
+                   (fam_name = "Not applicable") THEN
+                    fam_name = ""
+                ELSE
+                    fam_name = STRIP(fam_name):" "
+                ENDIF
+            ENDIF    
+            aSAP = SELECT sap_matmas.'sap_field' WHERE UniqueId = iDoc
+            WHILE aSAP <> EMPTY DO
+                aCnt           = aCnt + 1
+                aArray[aCnt,1] = STRIP(fam_name:aSAP)
+                aArray[aCnt,2] = STRIP(fam_name:aSAP)
+            NEXT sap_matmas
+                aSAP = SELECT sap_matmas.'sap_field'
+            ENDWHILE
+            IF (prompt_type = "PHRASE") OR (prompt_type = "PHRASE_ID") THEN
+                phrase_field = "PHRASE_ID"
+            ELSEIF prompt_type = "CHOOSE" THEN
+                phrase_field = "PHRASE_TEXT"
+            ENDIF
+            
+            IF phrase_field <> EMPTY THEN
+                aCnt = 1
+                WHILE aCnt <= size_of_array(aArray) DO
+                    WriteToLog(aCnt:") SELECT phrase.'":phrase_field:"' WHERE phrase_type = ":phrase_type:" AND phrase_id = ":aArray[aCnt,1]:" = ":(SELECT phrase.'phrase_field' WHERE phrase_type = phrase_type AND phrase_id = aArray[aCnt,1]))
+                    phrase_text    = SELECT phrase.'phrase_field' WHERE phrase_type = phrase_type AND phrase_id = aArray[aCnt,1]
+                    IF (phrase_text <> aArray[aCnt,1]) AND (phrase_text <> EMPTY) THEN
+                        aArray[aCnt,1] = aArray[aCnt,1]:": ":phrase_text
+                    ENDIF
+                    aArray[aCnt,2] = aSAP
+                    aCnt = aCnt + 1
+                ENDWHILE
+            ENDIF
+            
+        ENDIF
+        
+        IF ( aCnt > 0 )
+            PROMPT FOR val 
+            ON LINE row 
+            FROM column 
+            TO column + cell_width - 1 
+            IN WINDOW window 
+            CHOOSE OUT_OF aArray
+        ELSE
+            PROMPT FOR val 
+            ON LINE row 
+            FROM column 
+            TO column + cell_width - 1 
+            IN WINDOW window 
+            FORMAT mlp_header.'mlp_field'
+        ENDIF
+
+        IF STRIP(val) <> old_val THEN
+            ASSIGN mlp_header.'mlp_field' = val 
+            IF (mlp_field   = "PRODUCT_CODE") AND NOT(BLANK(val))
+                AND ("NONE" <> SELECT mlp_header.sap_cert) THEN
+                ASSIGN mlp_header.external_version = TRUE
+            ENDIF    
+            ASSIGN mlp_header.'mlp_field' = val 
+        ENDIF
+    ENDIF
+
+ENDROUTINE { prompt_field }
+
+{******************************************************************************}
+
+ROUTINE prompt_class_id ( VALUE ClassType, VALUE ClassID, VALUE mlp_field, VALUE row, VALUE column, VALUE cell_width, window, VALUE is_display )
+
+    DECLARE val, old_val, aArray, MultiText, aMLP, ver, iDoc, aSAP, aCnt, phrase_field, phrase_text, prompt_type, phrase_type, context
+    ARRAY aArray
+
+    GET_FIELD_DETAILS mlp_header.'mlp_field', "PROMPT_TYPE", prompt_type
+    GET_FIELD_DETAILS mlp_header.'mlp_field', "PHRASE_ID"  , phrase_type
+    
+    {IF INDEX("PRODUCT_GROUP;SAMPLE_TYPE;", mlp_field:";") > 0 THEN }
+    IF INDEX("PRODUCT_GROUP;", mlp_field:";") > 0 THEN
+        {Use default field definition according to structure.txt}
+        prompt_type = "DEFAULT" 
+    ELSEIF INDEX("PRODUCT_FORM;PRODUCT_FORMAT;PRODUCT_IDENTIFICATION;", mlp_field:";") > 0 THEN {CULTURE_GROUP;}
+        {Leave field empty, values only defined for GINs defined in SAP}
+        prompt_type = EMPTY
+    ENDIF
+    
+    phrase_field = EMPTY
+
+    aMLP    = SELECT mlp_header.identity
+    ver     = SELECT mlp_header.product_version 
+    val     = SELECT mlp_header.'mlp_field'
+    push_file_descriptor("MLP_HEADER", context)
+        old_val = SELECT mlp_header.'mlp_field' WHERE identity = aMLP and product_version = ver - 1
+    pop_file_descriptor(context)
+
+    IF is_display THEN
+        DISPLAY val 
+        ON LINE row 
+        FROM column 
+        TO column + cell_width - 1 
+        IN WINDOW window
+    ELSE
+        aCnt = 0
+        iDoc = SELECT max_matmas.uniqueid WHERE identity = aMLP
+
+        IF ClassID = "STRAINS" THEN
+            ClassID = "STRAINS_INGREDIENTS"
+            IF (0 = SELECT COUNT sap_class WHERE UniqueId = iDoc AND TYPE = ClassType AND ID = ClassID) THEN
+                ClassID = "STRAINS"
+            ENDIF
+        ENDIF
+
+        MultiText = " ":STRIP(TOLOWER(SUBSTITUTE(ClassID,"_"," ")))
+        IF (RIGHTSTRING(MultiText, 1) = "s") THEN
+            MultiText = MultiText:". Check [Master Data]"
+        ELSE    
+            MultiText = MultiText:"s. Check [Master Data]"
+        ENDIF
+
+        WriteToLog(aMLP:" ":mlp_field:" ":iDoc:" ":prompt_type)
+        aCnt = SELECT COUNT sap_class 
+               WHERE UniqueId = iDoc 
+                 AND TYPE = ClassType 
+                 AND ID = ClassID
+                 AND textvalue <> "No information"
+                 AND textvalue <> "Not applicable"
+        IF aCnt = 0 THEN
+            aCnt           = 1
+            push_file_descriptor("MLP_HEADER", context)
+                aSAP = SELECT mlp_header.'mlp_field'
+                       WHERE identity = aMLP
+                         AND removeflag = FALSE
+                         AND 'mlp_field' <> ""
+                       ORDER ON product_version DESCENDING
+                IF aSAP = EMPTY THEN
+                    aSAP = ""
+                ENDIF
+            pop_file_descriptor(context)
+            aArray[aCnt,1] = aSAP
+            aArray[aCnt,2] = aSAP
+
+            IF (prompt_type = "PHRASE") OR (prompt_type = "PHRASE_ID") THEN
+                phrase_field = "PHRASE_ID"
+            ELSEIF prompt_type = "CHOOSE" THEN
+                phrase_field = "PHRASE_TEXT"
+            ENDIF
+            
+            IF phrase_field <> EMPTY THEN
+                phrase_text = SELECT phrase.'phrase_field' WHERE phrase_type = phrase_type ORDER ON order_num
+                WHILE phrase_text <> EMPTY
+                    aCnt = aCnt + 1
+                    aArray[aCnt,1] = phrase_text
+                    aArray[aCnt,2] = phrase_text
+                NEXT phrase
+                    phrase_text = SELECT phrase.'phrase_field' 
+                ENDWHILE
+            ENDIF
+
+        ELSEIF aCnt = 1 THEN
+            aSAP = STRIP(SELECT sap_class.textvalue 
+                   WHERE UniqueId = iDoc 
+                     AND TYPE = ClassType 
+                     AND ID = ClassID
+                     AND textvalue <> "No information"
+                     AND textvalue <> "Not applicable")
+            aArray[1,1] = aSAP
+            aArray[1,2] = aSAP
+        ELSE
+            aSAP        = STRIP(aCnt):MultiText
+            aArray[1,1] = STRIP(aCnt):MultiText
+            aArray[1,2] = STRIP(aCnt):MultiText
+        ENDIF
+        
+        IF (STRIP(aSAP) = "No Information") OR 
+           (STRIP(aSAP) = "Not applicable") THEN
+            val = ""       
+        ELSEIF (LEFTSTRING(val, 4) = "----") THEN
+            push_file_descriptor("MLP_HEADER", context)
+                val = SELECT mlp_header.'mlp_field' WHERE identity = aMLP and product_version = ver - 1
+            pop_file_descriptor(context)
+        ENDIF
+
+        IF ( aCnt > 0 )
+            PROMPT FOR val 
+            ON LINE row 
+            FROM column 
+            TO column + cell_width - 1 
+            IN WINDOW window 
+            CHOOSE OUT_OF aArray
+        ELSE
+            val = old_val
+            PROMPT FOR val 
+            ON LINE row 
+            FROM column 
+            TO column + cell_width - 1 
+            IN WINDOW window 
+            FORMAT mlp_header.'mlp_field'
+            WITH (value = old_val)
+        ENDIF
+
+        IF (val <> old_val) OR (aCnt = 0) THEN
+            ASSIGN mlp_header.'mlp_field' = val 
+        ENDIF
+    ENDIF
+
+ENDROUTINE { prompt_class_id }

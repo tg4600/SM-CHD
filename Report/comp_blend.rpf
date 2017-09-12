@@ -1,0 +1,200 @@
+{***********************************************************************
+* Module Name   : COMP_BLEND.RPF
+* Purpose       : Calculate current component names weighted average based on blend (batch_trace) 
+* Document Ref  :
+* Specification : 
+************************************************************************
+* Modification History
+* Version   Date        Author              Modify Details
+************************************************************************
+* 1.0       2015-08-28  Tommy Boegeskov         New
+************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN STANDARD_LIBRARY STD_UTILS
+
+DECLARE current_sample, current_test_number, current_component_name, result
+
+current_sample          = "   1420259"
+current_test_number     = "   6246319"
+current_component_name  = "Total cell count"
+
+result = CALC(current_sample, current_test_number, current_component_name)
+
+EXIT
+
+
+{ This definition is required at the top of all calculations }
+
+GLOBAL ROUTINE CALC( current_sample, current_test_number, current_component_name )
+
+DECLARE product, batch, amount, dynamic_sql, select_str, comp_name, t_amount, t_unit, r_name, r_text, r_value, r_units, sum_amount, i, t_job, n, t,
+        arr_values, arr_avg, arr_result, status_array
+ARRAY arr_values
+ARRAY arr_result
+ARRAY arr_avg
+ARRAY status_array
+
+    product = SELECT all_sample.product WHERE id_numeric = current_sample
+    batch   = SELECT all_sample.batch_name
+    amount  = SELECT SUM batch_trace_view.amount WHERE product_name_master = product AND batch_name_master = batch AND material_type = "HALB" AND (unit = "KG" or unit = "L")
+    {60,916}
+
+
+    CREATE OBJECT "STD_DYNAMIC_SQL" , dynamic_sql
+    select_str = ""
+    select_str = select_str:"SELECT s.ID_TEXT ++ ' (' ++ t.ANALYSIS ++ '/' ++ cast(t.TEST_COUNT as VARCHAR) ++ ')', bt.AMOUNT, bt.UNIT, r.NAME, r.TEXT, r.VALUE, r.UNITS, bt.PRODUCT_NAME_CHILD ++ '/' ++ bt.BATCH_NAME_CHILD "
+    select_str = select_str:"FROM BATCH_TRACE_VIEW bt "
+    select_str = select_str:"INNER JOIN ALL_SAMPLE s on bt.PRODUCT_NAME_CHILD = s.PRODUCT AND bt.BATCH_NAME_CHILD = s.BATCH_NAME AND s.STATUS = 'A' "
+    select_str = select_str:"INNER JOIN ALL_TEST t on s.ID_NUMERIC = t.SAMPLE and t.STATUS = 'A' "
+    select_str = select_str:"INNER JOIN ALL_RESULT r on t.TEST_NUMBER = r.TEST_NUMBER and r.STATUS = 'A' "
+    select_str = select_str:"WHERE bt.PRODUCT_NAME_MASTER = '":product:"' AND bt.BATCH_NAME_MASTER = '":batch:"' AND r.NAME = '":current_component_name:"' "
+    select_str = select_str:"AND bt.MATERIAL_TYPE = 'HALB' AND (bt.UNIT = 'KG' OR bt.UNIT = 'L') "
+    select_str = select_str:"ORDER BY bt.PRODUCT_NAME_CHILD, bt.BATCH_NAME_CHILD "
+    dynamic_sql.add_to_sql_statement(select_str)
+    dynamic_sql.add_select_string(255)
+    dynamic_sql.add_select_field ("BATCH_TRACE_VIEW", "AMOUNT")
+    dynamic_sql.add_select_field ("BATCH_TRACE_VIEW", "UNIT")
+    dynamic_sql.add_select_field ("ALL_RESULT", "NAME")
+    dynamic_sql.add_select_field ("ALL_RESULT", "TEXT")
+    dynamic_sql.add_select_field ("ALL_RESULT", "VALUE")
+    dynamic_sql.add_select_field ("ALL_RESULT", "UNITS")
+    dynamic_sql.add_select_string(255)
+
+    dynamic_sql.execute()
+    comp_name = STRIP(dynamic_sql.select(1))
+
+    WHILE comp_name <> EMPTY
+        t_amount  = dynamic_sql.select(2)
+        t_unit    = dynamic_sql.select(3)
+        r_name    = dynamic_sql.select(4)
+        r_text    = dynamic_sql.select(5)
+        r_value   = dynamic_sql.select(6)
+        r_units   = dynamic_sql.select(7)
+        t_job     = STRIP(dynamic_sql.select(8))
+        
+        arr_values[size_of_array(arr_values) + 1, 1] = comp_name
+        arr_values[size_of_array(arr_values),     2] = t_amount
+        arr_values[size_of_array(arr_values),     3] = t_unit  
+        arr_values[size_of_array(arr_values),     4] = r_name  
+        arr_values[size_of_array(arr_values),     5] = r_text  
+        arr_values[size_of_array(arr_values),     6] = r_value 
+        arr_values[size_of_array(arr_values),     7] = r_units 
+        arr_values[size_of_array(arr_values),     8] = t_amount * r_value 
+        arr_values[size_of_array(arr_values),     9] = t_job
+        dynamic_sql.next()
+        comp_name = dynamic_sql.select(1)
+    ENDWHILE  
+
+    i = 1
+    t_job = ""
+    sum_amount = 0
+
+    t = size_of_array(arr_values)
+    WHILE i <= t
+        t_job = arr_values[i, 9]
+        t_amount = arr_values[i, 2] {amount}
+        sum_amount = sum_amount + t_amount
+        result   = arr_values[i, 8] {t_amount * r_value}
+        n = 1
+        IF (i + 1 <= size_of_array(arr_values)) THEN
+            WHILE (arr_values[i + 1, 9] = t_job)
+                i = i + 1
+                n = n + 1
+                result = result + arr_values[i, 8] 
+            ENDWHILE
+        ENDIF
+        arr_avg [size_of_array(arr_avg) + 1, 1]= t_amount
+        arr_avg [size_of_array(arr_avg)    , 2]= result / n
+        i = i + 1
+    ENDWHILE
+
+    i = 1 
+    WHILE i <= size_of_array(arr_values)
+        IF arr_values[i, 2] = EMPTY
+            array_remove_slice(arr_values, 1, i)
+        ENDIF
+        i = i + 1
+    ENDWHILE    
+
+    IF amount <> sum_amount THEN
+        fm("Amount of bulks does not match total amount!")
+        RETURN(EMPTY)
+    ENDIF
+    
+    i = 1
+    result = 0
+    WHILE i <= size_of_array(arr_avg)
+        result = result + arr_avg[i, 2]
+        i = i + 1
+    ENDWHILE
+
+    result = result / sum_amount 
+
+    IF size_of_array(arr_values) > size_of_array(arr_avg) THEN
+        IF NOT(confirm_with_text("Obs! ":ASCII(10):ASCII(10):"One or more used batches has multiple results for: ":current_component_name)) THEN
+           RETURN(EMPTY) 
+        ENDIF
+    ENDIF
+
+    i = 1
+    arr_result[i, 1] = "NAME"
+    arr_result[i, 2] = "TEXT"
+    arr_result[i, 3] = "VALUE"
+    arr_result[i, 4] = "UNITS"
+    t = size_of_array(arr_values)
+    WHILE (i <= t) AND (arr_values[i, 1] <> EMPTY)
+        arr_result[i + 1, 1] = arr_values[i, 1]
+        arr_result[i + 1, 2] = arr_values[i, 5]
+        arr_result[i + 1, 3] = arr_values[i, 6]
+        arr_result[i + 1, 4] = arr_values[i, 7]
+        i = i + 1
+    ENDWHILE
+    
+    WriteToLog(ASCII(10):
+       "Sample: ":STRIP(current_sample):", Test: ":STRIP(current_test_number):ASCII(10):
+       current_component_name:": ":result:ASCII(10):
+       GetArray(arr_result):ASCII(10))
+    
+RETURN(EMPTY) {*** Remove this line after final testing ***}
+
+    PUT_TEST_RESULTS current_test_number, arr_result, status_array
+
+    IF SIZE_OF_ARRAY(status_array) > 0 THEN
+        IF INDEX(GetArray(status_array),"is not an array") = 0 THEN
+            i = 2
+            WHILE i <= SIZE_OF_ARRAY(arr_result) DO
+                IF status_array[i] = "EMPTY" THEN
+                    arr_result[i,3] = "OK"
+                ELSE
+                    arr_result[i,3] = status_array[i]
+                ENDIF
+                i = i + 1
+            ENDWHILE
+        ENDIF
+        WriteToLog(ASCII(10):
+                   "Results added to sample: ":STRIP(current_sample):", test: ":STRIP(current_test_number):ASCII(10):
+                   GetArray(arr_result):ASCII(10))
+    ENDIF
+
+RETURN(result)
+
+ENDROUTINE
+
+{************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

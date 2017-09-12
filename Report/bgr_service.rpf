@@ -1,0 +1,178 @@
+{***********************************************************************
+* Module Name   : BGR_UPDATE.RPF
+* Purpose       : Update different records as stored in incidents_update
+* Document Ref  :
+* Specification : N/a
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       2015-04-17  Tommy Boegeskov     New
+************************************************************************}
+
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY LIT_EXPORT_LTE
+
+Start_Batch_Process()
+
+EXIT
+
+
+{==============================================================================}
+{ Return-Value: None                                                           }
+{=[15.03.2016 (EA)]============================================================}
+
+ROUTINE Start_Batch_Process
+
+    DECLARE doLoop                      { Handle the loop (break if false)      }
+
+    doLoop = TRUE
+    REPEAT
+        CALL_ROUTINE "BGR_PROCESS"
+        IN LIBRARY GLOBAL("CURRENT_LIBRARY")
+        NEW CONTEXT
+    UNTIL (doLoop = FALSE)
+   
+ENDROUTINE { Start_Batch_Process }
+
+{==============================================================================}
+{ Return-Value: None                                                           }
+{=[15.03.2016 (EA)]============================================================}
+
+ROUTINE bgr_process
+   
+   CONSTANT Track = FALSE
+   DECLARE id, a_routine, a_library, a_key0, a_key1, check_ok, input
+
+          {SMPBACK_ALIVE()}
+       id       = SELECT incidents_update . identity WHERE library <> "" ORDER ON identity
+       check_ok = EMPTY
+
+       IF id <> EMPTY THEN
+
+           WHILE (id = LOCKED) AND (id <> EMPTY)
+           NEXT incidents_update
+               id = SELECT incidents_update . identity
+           ENDWHILE
+
+           REPEAT
+   {****************************************************************************
+               Do something .....
+   ****************************************************************************}
+               a_library = SELECT incidents_update.library
+               a_routine = SELECT incidents_update.routine
+               a_key0    = SELECT incidents_update.record_key0
+               a_key1    = SELECT incidents_update.record_key1
+               check_ok  = EMPTY
+               input = PAD(STRIP(a_routine), " ", 20)
+
+               IF STRIP(a_key1) <> "" THEN
+                   input = PAD(input:STRIP(a_key0):", ":STRIP(a_key1), " ", 45)
+                   CALL_ROUTINE a_routine
+                   USING a_key0, a_key1
+                   RETURNING check_ok
+                   IN LIBRARY a_library
+               ELSEIF STRIP(a_key0) <> "" THEN
+                   input = PAD(input:STRIP(a_key0), " ", 45)
+                   CALL_ROUTINE a_routine
+                   USING a_key0
+                   RETURNING check_ok
+                   IN LIBRARY a_library
+               ELSE
+                   check_ok = "Delete id: ":STRIP(id):"; no record keys"
+               ENDIF
+               WriteToLog(input:"=> ":STRIP(check_ok))
+   {****************************************************************************
+               ... and delete the selected record
+   *****************************************************************************}
+               IF check_ok <> EMPTY THEN
+                   id = select incidents_update . identity FOR UPDATE WHERE identity = id
+                   IF (id <> EMPTY) AND (id <> LOCKED) THEN
+                       START WRITE TRANSACTION "Delete incident_update"
+                       DELETE incidents_update
+                       COMMIT
+                   ENDIF
+               ENDIF
+               SLEEP FOR INTERVAL("   0 00:00:00.10")
+               id = SELECT incidents_update . identity
+                    WHERE library <> ""
+                      AND identity > id
+                    ORDER ON identity
+
+
+           UNTIL (id = EMPTY)
+       ENDIF
+
+       WDT_Export_deliver_arc_files ( 123 )
+       WDT_export_load_delivered_files ( 123 )
+
+       SLEEP FOR INTERVAL("   0 00:00:05")
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+ROUTINE SMPBACK_ALIVE
+{* Purpose      : Create log file SMPBACK_ALIVE.log to be monitored by ORION.
+                  If alert "SampleManager Hearbeat WARN" occurs,
+                  then service (smpbackvgsm92prod) must be re-started.
+* Parameters   : None
+* Return Value : N/A
+********************************************************************************}
+DECLARE file_name, check_ok, scheduled, delay, rep_int
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    file_name = "smp$logfiles:":"SMPBACK_ALIVE.log"
+
+    IF NOT FILE EXISTS ( file_name ) THEN
+        FILE CREATE file_name, check_ok
+    ENDIF
+
+    scheduled = SELECT timerqueue . run_time
+                WHERE report_name = "BGR_UPDATE"
+
+    rep_int   = SELECT timerqueue . repeat_interval
+                WHERE report_name = "BGR_UPDATE"
+
+
+    delay = NOW - scheduled + INTERVAL(rep_int)
+
+    FILE EXTEND file_name, check_ok
+    FILE WRITE file_name, Now():";":delay, check_ok
+    FILE CLOSE file_name, check_ok
+
+    IF delay > rep_int * 2 THEN
+        file_name = "smp$logfiles:":"DELAY.txt"
+        IF NOT FILE EXISTS ( file_name ) THEN
+            FILE CREATE file_name, check_ok
+        ENDIF
+        FILE EXTEND file_name, check_ok
+        FILE WRITE file_name, Now():";":delay, check_ok
+        FILE CLOSE file_name, check_ok
+    ENDIF
+
+    RESTORE DATE FORMAT
+    IF Track THEN
+        WriteToLog("Delay: ":delay)
+    ENDIF
+ENDROUTINE
+
+{*********************************************************************************}
+
+ROUTINE WriteToLog(VALUE Msg)
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

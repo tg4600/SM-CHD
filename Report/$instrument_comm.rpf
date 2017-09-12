@@ -1,0 +1,1625 @@
+{Compared 20140122 /DKTBG}
+{******************************************************************************
+*
+* Module Name   : $INSTRUMENT_COMM
+*
+* Purpose       : Instrument Communications
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_PROPERTY_SHEET
+JOIN LIBRARY $LIB_PROMPT_ARRAY
+JOIN LIBRARY $LIB_TEXT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $PROMPT_PICTURE
+
+GLOBAL CONSTANT INSTRUMENT_COMM_CLASS       = "INSTRUMENT_COMM"
+GLOBAL CONSTANT INSTRUMENT_COMM_SETUP_CLASS = "INSTRUMENT_COMM_SETUP"
+GLOBAL CONSTANT INSTRUMENT_COMM_PAGE_CLASS  = "INSTRUMENT_COMM_PAGE"
+GLOBAL CONSTANT INSTRUMENT_DATA_PAGE_CLASS  = "INSTRUMENT_DATA_PAGE"
+
+CONSTANT WAIT_FORM_CLASS    = "WAIT_FORM"
+CONSTANT PROMPT_TEXT_SELECT = "PROMPT_TEXT_SELECT"
+
+CONSTANT REG_KEY_COMPUTER_NAME_KEY = "SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName"
+CONSTANT REG_KEY_COMPUTER_NAME_VAL = "ComputerName"
+
+CONSTANT USE_MSCOMM = FALSE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE instrument_comm_modify_option( VALUE option )
+
+{
+*	Prompts for instrument id and presents its instrument communication
+*	setup screen
+*
+******************************************************************************}
+
+	DECLARE identity
+
+	IF get_identity ( identity                                          ,
+	                  GET_USER_MESSAGE( "INST_COMM_P_INST_ID", 1 )      ,
+	                  GET_USER_MESSAGE( "INST_COMM_H_MOD_SETTINGS", 1 ) ,
+	                  "INSTRUMENT"                                      ,
+	                  EMPTY                                             ) THEN
+
+		instrument_comm_setup( identity, FALSE )
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE instrument_comm_display_option( VALUE option )
+
+{
+*	Prompts for instrument id and presents its instrument communication
+*	setup screen
+*
+******************************************************************************}
+
+	DECLARE identity
+
+	IF get_identity ( identity                                           ,
+	                  GET_USER_MESSAGE( "INST_COMM_P_INST_ID", 1 )       ,
+	                  GET_USER_MESSAGE( "INST_COMM_H_DISP_SETTINGS", 1 ) ,
+	                  "INSTRUMENT"                                       ,
+	                  EMPTY                                              ) THEN
+
+		instrument_comm_setup( identity, TRUE )
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_setup( VALUE instrument_id, VALUE display_only )
+
+{
+*	Presents the instrument communication setup screen for the passed instrument
+*
+******************************************************************************}
+	
+	DECLARE form, select_array
+	
+	instrument_comm_setup_initialisation()
+	
+	CREATE OBJECT INSTRUMENT_COMM_SETUP_CLASS, form
+	form . row          = 5
+	form . column       = 5
+	form . header       = STRIP( instrument_id ) : " - " : form . header
+	form . display_only = display_only
+
+	ARRAY select_array
+	
+	ARRAY_SELECT_ADD( select_array, ARRAY_SELECT_EQ, "IDENTITY", instrument_id )
+	form . container . select_for_update( select_array )
+
+	form . start_prompt( )
+	form . wait_prompt( )
+	form . end_prompt( )
+
+	form . finish( )
+	
+	IF form . get_last_key( ) = "DO" THEN
+	
+		START WRITE TRANSACTION "Save Instrument"
+		form . container . invoke_all ( "UPDATE" )
+		COMMIT
+	
+	ELSE
+
+		ROLLBACK
+
+	ENDIF
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE instrument_comm_setup_initialisation
+
+{
+*
+******************************************************************************}
+
+	property_sheet_define_class     ( )
+	set_up_std_prompt_picture_class ( )
+
+	{************************************************************************}
+
+	DEFINE CLASS INSTRUMENT_COMM_CLASS
+		
+		INITIALISATION
+			
+		PROPERTIES
+			"port"                   ,
+			"baud_rate"              ,
+			"parity"                 ,
+			"data_bits"              ,
+			"stop_bits"              ,
+			"send_string"            ,
+			"timeout"                ,
+			"preamble"               ,
+			"postamble"              ,
+			"buffer"                 ,
+			"done_read"              ,
+			"timeout_remaining"      ,
+			"wait_form"              ,
+			"instrument_id"          ,
+			"instrument_object"      ,
+			"instruments"            ,
+			"check_calibration"
+			
+		ACTIONS
+			"setup_from_object"      ,
+			"setup_from_criteria"    ,
+			"setup_from_identity"    ,
+			"setup_from_type"        ,
+			"setup_from_machine"     ,
+			"is_setup"               ,
+			"select_instrument"      ,
+			"read"                   ,
+			"read_to_postamble"      ,
+			"get_raw"                ,
+			"get_result"             ,
+			"get_settings_string"    ,
+			"build_instrument_list"  , 
+			"get_instrument_count"   ,
+			"read_result"            ,
+			"read_begin"             ,
+			"read_update"            ,
+			"read_end"
+			
+	END CLASS
+
+	DEFINE CLASS WAIT_FORM_CLASS
+		INHERIT "STD_FORM"
+		
+		PROPERTIES
+			"display_timeout"
+			
+	END CLASS
+
+	{************************************************************************}
+
+	DEFINE CLASS INSTRUMENT_COMM_SETUP_CLASS
+	
+		INHERIT PROPERTY_SHEET_EX_CLASS
+		
+		INITIALISATION
+			
+		ACTIONS
+			"start_prompt"
+			
+	END CLASS
+
+	{************************************************************************}
+
+	DEFINE CLASS INSTRUMENT_COMM_PAGE_CLASS
+	
+		INHERIT PROPERTY_PAGE_CLASS
+		
+		INITIALISATION
+
+		PROPERTIES
+			"prompts"
+
+		ACTIONS
+			"start_prompt" ,
+			"finish"	,
+			"initialise_comm"
+			
+	END CLASS
+
+	{************************************************************************}
+
+	DEFINE CLASS INSTRUMENT_DATA_PAGE_CLASS
+	
+		INHERIT PROPERTY_PAGE_CLASS
+		
+		INITIALISATION
+		
+		PROPERTIES
+			"prompts"
+		
+		ACTIONS
+			"start_prompt" ,
+			"update_result",
+			"read_instrument" ,
+			"finish"
+			
+	END CLASS
+
+	DEFINE CLASS PROMPT_TEXT_SELECT
+	
+		INHERIT "STD_PROMPT_TEXT"
+
+		ACTIONS
+			"get_pre_selection" ,
+			"get_post_selection"
+	END CLASS
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_class_initialisation( self )
+
+{
+*	Instrument Comm Class initialisation
+*
+******************************************************************************}
+
+	self . port                  = 1
+	self . baud_rate             = 9600
+	self . parity                = "N"
+	self . data_bits             = 8
+	self . stop_bits             = 1
+	self . send_string           = ""
+	self . timeout               = 0
+	self . preamble              = ""
+	self . postamble             = ""
+	self . done_read             = FALSE
+	self . buffer                = ""
+	self . timeout_remaining     = 0
+	self . instrument_id         = EMPTY
+	self . instrument_object     = EMPTY
+	self . instruments           = EMPTY
+	self . wait_form             = EMPTY
+	self . check_calibration     = FALSE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_build_instrument_list( self, criteria )
+
+{
+*	Fills the instruments object database with instruments setup for the
+*	current client that meet the passed criteria. Returns size of list
+*
+******************************************************************************}
+
+	DECLARE machine, client_criteria
+
+	machine = get_client_machine_name( )
+	
+	ARRAY client_criteria
+
+	ARRAY_SELECT_ADD( client_criteria    ,
+	                  ARRAY_SELECT_EQ    ,
+	                  "WORKSTATION_NAME" , 
+	                  machine            )
+
+	ARRAY_SELECT_CONCAT( criteria, client_criteria )
+
+	
+	CREATE OBJECT "STD_OBJECT_DATABASE", self . instruments
+	
+	self . instruments . initialise( "INSTRUMENT" )
+	self . instruments . select( criteria )
+	
+	RETURN( self . instruments . size( ) )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_get_instrument_count( self )
+
+{
+*	Returns the number of possible instruments
+*
+******************************************************************************}
+
+	DECLARE count
+
+	count = 0
+
+	IF self . instruments <> EMPTY THEN
+		count = self . instruments . size( )
+	ENDIF
+
+	RETURN( count )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_is_setup( self )
+
+{
+*	Returns True if instrument has been setup
+*
+******************************************************************************}
+
+	RETURN( self . instrument_object <> EMPTY )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_setup_from_object( self, obj )
+
+{
+*	Sets up communication settings based on passed instrument record
+*	Returns false if user cancelled operation
+*
+******************************************************************************}
+
+	DECLARE ok, calibation_status
+
+	ok = TRUE
+
+	IF self . check_calibration THEN
+			
+		calibation_status = instrument_calibrated( obj )	
+		
+		IF calibation_status = FALSE THEN
+			ok = confirm_with_text( GET_USER_MESSAGE( "INST_COMM_WARN_NOT_CALIB", 1 ) )
+		ENDIF
+
+	ENDIF
+
+	IF ok THEN
+
+		self . instrument_object = obj
+
+		self . instrument_id = SELECT instrument . identity IN OBJECT obj
+
+		self . port        = SELECT instrument . comm_port        IN OBJECT obj
+		self . baud_rate   = SELECT instrument . comm_baud        IN OBJECT obj
+		self . parity      = SELECT instrument . comm_parity      IN OBJECT obj
+		self . data_bits   = SELECT instrument . comm_databits    IN OBJECT obj
+		self . stop_bits   = SELECT instrument . comm_stopbits    IN OBJECT obj
+		self . send_string = SELECT instrument . comm_send_string IN OBJECT obj
+		self . timeout     = SELECT instrument . comm_timeout     IN OBJECT obj
+		self . send_string = SELECT instrument . comm_send_string IN OBJECT obj
+		self . preamble    = SELECT instrument . comm_preamble    IN OBJECT obj
+		self . postamble   = SELECT instrument . comm_postamble   IN OBJECT obj
+
+	ENDIF
+
+	RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_setup_from_criteria( self, criteria )
+
+{
+*	Sets up communication for an instrument that meets criteria.
+*	Returns false if user cancelled operation
+*
+******************************************************************************}
+
+	DECLARE ok, list_size
+	
+	ok = TRUE
+	
+	self . instrument_object = EMPTY
+	
+	list_size = self . build_instrument_list( criteria )
+	
+	IF list_size = 1 THEN
+	
+		{*********************************************************************}
+		{* Only one instrument connected that meets criteria - use it        *}
+		{*********************************************************************}
+	
+		self . instrument_object = self . instruments . get_by_number( 1 )
+	
+	ELSEIF list_size > 1
+	
+		{*********************************************************************}
+		{* Multiple instruments connected meeting criteria - Prompt user     *}
+		{*********************************************************************}
+
+		ok = self . select_instrument( self . instruments )
+
+	ENDIF
+
+
+	IF ok AND ( self . instrument_object <> EMPTY ) THEN
+		
+		ok = self . setup_from_object( self . instrument_object )
+
+	ENDIF
+
+	RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_setup_from_identity( self, VALUE identity )
+
+{
+*	Sets up communication for the instrument of the passed identity
+*	Returns false if user cancelled operation
+*
+******************************************************************************}
+
+	DECLARE criteria
+
+	ARRAY criteria
+	ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ, "IDENTITY", identity )
+
+	RETURN( self . setup_from_criteria( criteria ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_setup_from_type( self, VALUE type )
+
+{
+*	Sets up communication for an instrument of the passed type
+*	Returns false if user cancelled operation
+*
+******************************************************************************}
+
+	DECLARE criteria
+	
+	ARRAY criteria
+	ARRAY_SELECT_ADD( criteria, ARRAY_SELECT_EQ, "INSTTYPE_ID", type )
+
+	RETURN( self . setup_from_criteria( criteria ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_setup_from_machine( self )
+
+{
+*	Sets up communication for an instrument connected to machine
+*	Returns false if user cancelled operation
+*
+******************************************************************************}
+
+	DECLARE criteria
+	
+	ARRAY criteria
+
+	RETURN( self . setup_from_criteria( criteria ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read_to_postamble (       self      ,
+                                                   VALUE postamble )
+
+{
+*	Initialises communication and reads output from instrument until the
+*	postamble is received or the read timesout.
+*	Returns error message if unsuccessful or EMPTY if success
+*
+******************************************************************************}
+
+	DECLARE comms, errors, reading
+
+	self . done_read = FALSE
+
+	self . read_begin( )
+
+
+	IF USE_MSCOMM THEN
+		CREATE OBJECT "STD_OLE_AUTOMATION" , comms
+
+		errors = comms . create ( "MSCOMMLib.MSComm" )
+	ELSE
+		CREATE OBJECT "STD_NET", comms
+
+		errors = comms . create ( "ThermoComm", "ThermoComm.ThermoComm" )
+	ENDIF
+
+	IF errors = EMPTY
+
+		comms . commport = self . port
+		comms . settings = self . get_settings_string( )
+		
+		IF USE_MSCOMM THEN
+			comms . portopen = TRUE
+		ELSE
+			comms . openport ( )
+		ENDIF
+
+		comms . output   = lib_text_symbols_to_ascii( STRIP( self . send_string ) )
+
+		reading = TRUE
+		self . buffer = ""
+		self . timeout_remaining = self . timeout
+
+		WHILE ( reading ) AND ( self . timeout_remaining > 0 ) DO
+
+			self . read_update( )
+
+			IF comms . inbuffercount > 0 THEN
+			
+				self . buffer = self . buffer : comms . input
+				
+				IF NOT BLANK ( postamble ) THEN
+					reading = ( INDEX ( self . buffer, postamble ) = 0 )
+				ENDIF
+			
+			ELSE
+
+				SLEEP FOR INTERVAL ( "0 00:00:01" )
+				self . timeout_remaining = self . timeout_remaining - 1
+			
+			ENDIF
+		
+		ENDWHILE
+
+		IF USE_MSCOMM THEN
+			comms . portopen = FALSE
+		ELSE
+			comms . closeport ( )
+		ENDIF
+
+		IF self . buffer = "" THEN
+			errors = GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 1 ) :
+			         STRIP( self . timeout ) :
+			         GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 2 ) :
+			         ASCII( 13 ) :
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 3 ) : 
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 4 ) :
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 5 ) :
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 6 ) :
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_NO_RESPONSE", 7 )
+			         
+		ELSE	
+			self . done_read = TRUE
+		ENDIF
+
+	ELSE
+
+		IF USE_MSCOMM THEN
+
+		errors = GET_USER_MESSAGE( "INST_COMM_ERR_COM_OBJECT", 1 ) :
+		         ASCII( 13 ) : 
+		         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_COM_OBJECT", 2 ) :
+		         STRIP( errors )
+
+		ELSE
+
+			errors = GET_USER_MESSAGE( "INST_COMM_ERR_COM_OBJECT", 3 ) :
+			         ASCII( 13 ) : 
+			         ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_COM_OBJECT", 2 ) :
+			         STRIP( errors )
+
+		ENDIF
+
+	ENDIF
+
+	self . read_end( )
+
+	RETURN( errors )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read( self )
+
+{
+*	Initialises communication and reads output from instrument. Returns error
+*	message if unsuccessful or EMPTY if success
+*
+******************************************************************************}
+
+	RETURN ( self . read_to_postamble ( "" ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_get_raw( self )
+
+{
+*	Returns the raw output from the instrument
+*
+******************************************************************************}
+
+	IF NOT self . done_read THEN
+		self . read( )
+	ENDIF
+
+	RETURN( self . buffer )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_get_result( self )
+
+{
+*	Returns the result from the instrument
+*
+******************************************************************************}
+
+	DECLARE preamble, postamble
+
+	preamble  = lib_text_symbols_to_ascii( STRIP( self . preamble  ) )
+	postamble = lib_text_symbols_to_ascii( STRIP( self . postamble ) )
+
+	IF NOT self . done_read THEN
+		self . read_to_postamble ( postamble )
+	ENDIF
+
+	RETURN( instrument_comm_extract_result( self . buffer ,
+	                                        preamble      ,
+	                                        postamble     ) )
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_get_settings_string( self )
+
+{
+*	Returns a string containing baud, parity, databits and stop bits in the
+*	following format: "BBBB,P,D,S"
+*
+******************************************************************************}
+
+	DECLARE settings
+	
+	settings = STRIP( self . baud_rate ) : "," :
+	           STRIP( self . parity    ) : "," :
+	           STRIP( self . data_bits ) : "," :
+	           STRIP( self . stop_bits )
+
+
+	RETURN( settings )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read_result( self )
+
+{
+*	Reads and returns the result or ERROR if an error occured
+*
+******************************************************************************}
+
+	DECLARE errors, 
+	        result,
+	        postamble
+
+	postamble = lib_text_symbols_to_ascii( STRIP( self . postamble ) )
+
+	errors = self . read_to_postamble ( postamble )
+
+	IF errors = EMPTY THEN
+
+		result = self . get_result( )
+
+		IF result = ERROR THEN
+
+			errors = GET_USER_MESSAGE( "INST_COMM_ERR_RESULT_PARSE", 1 ) :
+					 ASCII( 13 ) : 
+					 ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_RESULT_PARSE", 2 ) :
+					 ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_RESULT_PARSE", 3 ) :
+					 ASCII( 13 ) : GET_USER_MESSAGE( "INST_COMM_ERR_RESULT_PARSE", 4 )
+
+			client_message_box ( errors                                                  ,
+								 GET_USER_MESSAGE( "INST_COMM_H_ERR_INTERPRETATION", 1 ) ,
+								 MB_OK + MB_ICONERROR                                    )
+
+		ENDIF
+
+
+	ELSE
+
+		result = ERROR
+
+		client_message_box ( errors                                              ,
+							 GET_USER_MESSAGE( "INST_COMM_H_ERR_CONNECTION", 1 ) ,
+							 MB_OK + MB_ICONERROR                                )
+
+	ENDIF
+
+	RETURN( result )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read_begin( self )
+
+{
+*	Displays a form to be while result is being fetched
+*
+******************************************************************************}
+
+	DECLARE animation, client_name, errors, text_prompt, row
+
+	CREATE OBJECT WAIT_FORM_CLASS, self . wait_form
+
+	self . wait_form . icon   = "INT_BLANK"
+	self . wait_form . header = GET_USER_MESSAGE( "INST_COMM_H_CONNECTING", 1 )
+	self . wait_form . width  = 22
+	self . wait_form . row    = ( GLOBAL ( "GUI_HEIGHT" ) / 2 ) - ( self . wait_form . height / 2 )
+	self . wait_form . column = ( GLOBAL ( "GUI_WIDTH"  ) / 2 ) - ( self . wait_form . width  / 2 )
+
+	self . wait_form . button_style = FORM_BUTTON_NONE
+
+	row = 1
+
+	errors = client_get_resource_name( "\AVI\InstrumentResult.avi", client_name )
+
+	IF errors = EMPTY THEN
+
+		CREATE OBJECT PROMPT_PICTURE_CLASS , animation
+
+		animation . row    = row
+		animation . column = 1
+
+		animation . set_animate ( client_name )
+	
+		self . wait_form . add_prompt( animation )
+	
+		row = row + 3
+	
+	ENDIF
+
+	IF self . instrument_id <> EMPTY THEN
+	
+
+		CREATE OBJECT "STD_PROMPT_TEXT", text_prompt
+		text_prompt . row    = row
+		text_prompt . column = 1
+		text_prompt . value  = GET_USER_MESSAGE( "INST_COMM_CONNECTING", 1 ) :
+		                       STRIP( self . instrument_id ) : "..."
+
+		self . wait_form . add_display( text_prompt )
+
+		IF STRINGLENGTH( text_prompt . value ) > self . wait_form . width THEN
+			self . wait_form . width = STRINGLENGTH( text_prompt . value )
+		ENDIF
+		                        
+		row = row + 1
+	ENDIF
+
+	CREATE OBJECT "STD_PROMPT_TEXT", text_prompt
+	text_prompt . row    = row
+	text_prompt . column = 1
+	
+	self . wait_form . add_display( text_prompt )
+	self . wait_form . display_timeout = text_prompt
+
+	self . wait_form . height = row
+	self . wait_form . start_prompt( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read_update( self )
+
+{
+*	Removes wait form
+*
+******************************************************************************}
+
+	DECLARE text
+	
+	text = GET_USER_MESSAGE( "INST_COMM_TIMEOUT_REMAIN", 1 ) :
+	       STRIP( self . timeout_remaining )
+	
+	IF self . timeout_remaining = 1 THEN
+		text = text : GET_USER_MESSAGE( "INST_COMM_TIMEOUT_REMAIN", 2 )
+	ELSE
+		text = text : GET_USER_MESSAGE( "INST_COMM_TIMEOUT_REMAIN", 3 )
+	ENDIF
+
+	self . wait_form . display_timeout . set_text( text )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_read_end( self )
+
+{
+*	Removes wait form
+*
+******************************************************************************}
+
+	self . wait_form . end_prompt( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_action_select_instrument( self, instruments )
+
+{
+*	Displays a popup menu containing all instruments in the passed object
+*	database. True is returned if an item is selected
+*
+******************************************************************************}
+
+	DECLARE menu, instrument_id, selection, ok
+	
+	set_up_popup_class( )
+	CREATE OBJECT POPUP_MENU_CLASS, menu
+
+	instruments . set_first( )
+	WHILE instruments . current <> EMPTY DO
+	
+		instrument_id = SELECT instrument . identity
+		                    IN OBJECT instruments . current
+	
+		menu . add_item( instrument_id )	
+	
+		instruments . set_next( )
+
+	ENDWHILE
+
+	selection = menu . start( )
+
+	IF selection <> EMPTY THEN
+		self . instrument_object = instruments . get_by_index( "KEY0", selection )
+		ok = TRUE
+	ELSE
+		ok = FALSE
+	ENDIF
+
+	RETURN( ok )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_setup_class_initialisation( self )
+
+{
+*	Instrument Comm Setup Class initialisation
+*
+******************************************************************************}
+
+	self . initialise ( )
+
+	CREATE OBJECT "STD_OBJECT_DATABASE", self . container
+	self . container . initialise ( "INSTRUMENT" )
+	
+	self . header = GET_USER_MESSAGE( "INST_COMM_H_INST_COMM", 1 )
+	self . icon   = "INT_INSTRUMENT_OUTPUT"
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_setup_action_start_prompt( self )
+
+{
+*
+******************************************************************************}
+
+	DECLARE form1, form2
+
+	IF self . container . size( ) = 1 THEN
+		
+		CREATE OBJECT INSTRUMENT_COMM_PAGE_CLASS, form1
+	
+		self . tab . set_size ( form1 )
+
+		self . add_page ( form1 )
+		
+		CREATE OBJECT INSTRUMENT_DATA_PAGE_CLASS, form2
+	
+		self . tab . set_size ( form2 )
+
+		self . add_page ( form2 )
+		
+	ENDIF
+
+	object_invoke_class ( self , PROPERTY_SHEET_EX_CLASS , "START_PROMPT" )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE instrument_comm_page_class_initialisation( self )
+
+{
+*
+******************************************************************************}
+
+	self . header   = GET_USER_MESSAGE( "INST_COMM_H_CONN", 1 )
+	self . prompts  = EMPTY
+	self . identity = "COMM"
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_page_action_start_prompt( self )
+
+{
+*
+******************************************************************************}
+
+	DECLARE parent, record, item
+
+	parent = self . property_sheet
+
+	parent . container . set_first()
+	record = parent . container . current
+
+	CREATE OBJECT PROMPT_ARRAY_CLASS, self . prompts
+	self . prompts . width          = self . width
+	self . prompts . row            = 0.5
+	self . prompts . column         = 1
+	self . prompts . object         = record
+	self . prompts . form           = self
+	self . prompts . section_indent = 6
+
+	item = self . prompts . add_divider( )
+	item . title       = GET_USER_MESSAGE( "INST_COMM_S_WORKSTATION", 1 )
+	item . description = GET_USER_MESSAGE( "INST_COMM_S_WORKSTATION", 2 )
+	item . icon        = "INT_COMPUTER"
+
+	item = self . prompts . add_field( "WORKSTATION_NAME" )
+	item . identity = "MACHINE"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_MACHINE", 1 )
+	
+	item = self . prompts . add_divider( )
+	item . title  = GET_USER_MESSAGE( "INST_COMM_S_PORT", 1 )
+	item . icon   = "INT_PORT"
+	
+	item = self . prompts . add_field( "COMM_PORT" )
+	item . identity = "PORT"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_PORT", 1 )
+
+	item = self . prompts . add_field( "COMM_BAUD" )
+	item . identity = "BAUD"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_BAUD", 1 )
+
+	item = self . prompts . add_field( "COMM_PARITY" )
+	item . identity = "PARITY"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_PARITY", 1 )
+
+	item = self . prompts . add_field( "COMM_DATABITS" )
+	item . identity = "DATABITS"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_DATABITS", 1 )
+
+	item = self . prompts . add_field( "COMM_STOPBITS" )
+	item . identity = "STOPBITS"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_STOPBITS", 1 )
+	
+	self . prompts . paste_items( )
+
+	object_invoke_class ( self , PROPERTY_PAGE_CLASS , "START_PROMPT" )
+	
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_page_action_finish( self )
+
+{
+*
+******************************************************************************}
+
+	self . prompts . finish( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_comm_page_action_initialise_comm( self, comm )
+
+{
+*
+******************************************************************************}
+
+	DECLARE stop_bits
+
+	stop_bits = self . prompts . get( "STOPBITS" ) . get_value( )
+	stop_bits = SUBSTITUTE( stop_bits, "_", "." )
+	
+
+	comm . port      = self . prompts . get( "PORT" ) . get_value( )
+	comm . baud_rate = self . prompts . get( "BAUD" ) . get_value( )
+	comm . parity    = self . prompts . get( "PARITY" ) . get_value( )
+	comm . data_bits = self . prompts . get( "DATABITS" ) . get_value( )
+	comm . stop_bits = stop_bits
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE instrument_data_page_class_initialisation( self )
+
+{
+*
+******************************************************************************}
+
+	self . header   = GET_USER_MESSAGE( "INST_COMM_H_RESULTS", 1 )
+	self . prompts  = EMPTY
+	self . identity = "DATA"
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_data_page_action_finish( self )
+
+{
+*
+******************************************************************************}
+
+	self . prompts . finish( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_data_page_action_start_prompt( self )
+
+{
+*
+******************************************************************************}
+
+	DECLARE parent, record, item, preamble_prompt, postamble_prompt
+	DECLARE prompt_object, send_string_prompt
+
+	parent = self . property_sheet
+
+	parent . container . set_first()
+	record = parent . container . current
+
+	CREATE OBJECT PROMPT_ARRAY_CLASS, self . prompts
+	self . prompts . width          = self . width
+	self . prompts . row            = 0.5
+	self . prompts . column         = 1
+	self . prompts . object         = record 
+	self . prompts . form           = self
+	self . prompts . section_indent = 6
+	
+	item = self . prompts . add_divider( )
+	item . title = GET_USER_MESSAGE( "INST_COMM_S_INIT", 1 )
+	
+	IF NOT self . display_only THEN
+		item . description = GET_USER_MESSAGE( "INST_COMM_S_INIT", 2 )
+	ENDIF
+
+	item = self . prompts . add_field( "COMM_SEND_STRING" )
+	item . identity = "SEND_STRING"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_SEND_STRING", 1 )
+	
+	item = self . prompts . add_field( "COMM_TIMEOUT" )
+	item . identity = "TIMEOUT"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_TIMEOUT", 1 )
+	
+	item = self . prompts . add_divider( )
+	item . title       = GET_USER_MESSAGE( "INST_COMM_S_OUTPUT", 1 )
+	item . description = GET_USER_MESSAGE( "INST_COMM_S_OUTPUT", 2 )
+	
+	CREATE OBJECT "STD_PROMPT_BUTTON", prompt_object
+	prompt_object . caption         = GET_USER_MESSAGE( "INST_COMM_B_READ", 1 )
+	prompt_object . character_sized = FALSE
+	prompt_object . tooltip         = GET_USER_MESSAGE( "INST_COMM_B_READ", 2 )
+	prompt_object . use_images ( EMPTY , 16 , client_icon_id_to_number( "INT_INSTRUMENT_OUTPUT" ) )
+	prompt_object . mouse_click_routine = "mouse_click_callback_read_instrument"
+	
+	item = self . prompts . add_prompt ( prompt_object )
+	item . post_spacing = 0.5
+	
+	CREATE OBJECT PROMPT_TEXT_SELECT, prompt_object
+	prompt_object . display_only = TRUE
+	prompt_object . lowered      = TRUE
+
+	item = self . prompts . add_prompt ( prompt_object )
+	item . identity     = "RAW"
+	item . title        = GET_USER_MESSAGE( "INST_COMM_RAW", 1 )
+		
+	item = self . prompts . add_divider( )
+	item . title = GET_USER_MESSAGE( "INST_COMM_S_PARSING", 1 )
+	
+	IF NOT self . display_only THEN
+		item . description = GET_USER_MESSAGE( "INST_COMM_S_PARSING", 2 )
+	ENDIF
+	
+	CREATE OBJECT "STD_PROMPT_BUTTON", prompt_object
+	prompt_object . caption         = GET_USER_MESSAGE( "INST_COMM_B_DELIMIT", 1 )
+	prompt_object . tooltip         = GET_USER_MESSAGE( "INST_COMM_B_DELIMIT", 2 )
+	prompt_object . character_sized = TRUE
+	prompt_object . mouse_click_routine = "mouse_click_callback_determine_delimiters"
+	prompt_object . enabled         = FALSE 
+	
+	item = self . prompts . add_prompt ( prompt_object )
+	item . identity     = "EXTRACT"
+	
+	item = self . prompts . add_field( "COMM_PREAMBLE" )
+	item . identity = "PREAMBLE"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_PREAMBLE", 1 )
+		
+	CREATE OBJECT PROMPT_TEXT_SELECT, prompt_object
+	prompt_object . display_only = TRUE
+	prompt_object . lowered      = TRUE
+	
+	item = self . prompts . add_prompt ( prompt_object )
+	item . identity = "RESULT"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_RESULT", 1 )
+	
+	item = self . prompts . add_field( "COMM_POSTAMBLE" )
+	item . identity = "POSTAMBLE"
+	item . title    = GET_USER_MESSAGE( "INST_COMM_POSTAMBLE", 1 )
+		
+	self . prompts . paste_items( )
+	
+	send_string_prompt  = self . prompts . get( "SEND_STRING" ) . object
+	send_string_prompt . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+	send_string_prompt . leave_prompt_routine = "leave_callback_send_string"
+	
+	preamble_prompt  = self . prompts . get( "PREAMBLE" ) . object
+	preamble_prompt . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+	preamble_prompt . leave_prompt_routine = "leave_callback_preamble"
+	
+	postamble_prompt = self . prompts . get( "POSTAMBLE" ) . object
+	postamble_prompt . vgl_library = GLOBAL( "CURRENT_LIBRARY" )
+	postamble_prompt . leave_prompt_routine = "leave_callback_postamble"
+
+	      
+	object_invoke_class ( self , PROPERTY_PAGE_CLASS , "START_PROMPT" )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_data_page_action_update_result( self )
+
+{
+*	Formats the result prompt from the raw prompt using the preamble and
+*	postamble
+*
+******************************************************************************}
+
+	DECLARE preamble, postamble, result_prompt, raw_text, result_text
+
+	result_prompt = self . prompts . get( "RESULT" ) . object
+
+	raw_text  = self . prompts . get( "RAW" ) . get_value( )
+	preamble  = self . prompts . get( "PREAMBLE" ) . get_value( )
+	postamble = self . prompts . get( "POSTAMBLE" ) . get_value( )
+	
+	preamble  = lib_text_symbols_to_ascii( STRIP( preamble ) )
+	postamble = lib_text_symbols_to_ascii( STRIP( postamble ) )
+	raw_text  = lib_text_symbols_to_ascii( STRIP( raw_text ) )
+	
+	result_text = instrument_comm_extract_result( raw_text, preamble, postamble )
+
+	IF result_text = ERROR THEN
+		result_prompt . set_text( GET_USER_MESSAGE( "INST_COMM_ERR_PARSING", 1 ) )
+	ELSE
+		result_prompt . set_text( lib_text_ascii_to_symbols( result_text ) )
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_data_page_action_read_instrument( self )
+
+{
+*	attempts to read instrument value into raw prompt using the defined
+*	settings
+*
+******************************************************************************}
+
+	DECLARE instrument_comm, errors, prompts, raw_prompt, extract_button
+	DECLARE send_string, timeout, raw_text, comm_page
+
+	prompts = self . prompts
+		
+	raw_prompt     = prompts . get( "RAW" ) . object
+	extract_button = prompts . get( "EXTRACT" ) . object
+	
+	raw_prompt . set_text( "" )
+	
+	send_string    = prompts . get( "SEND_STRING" ) . get_value( )
+	send_string    = STRIP( send_string )
+	send_string    = lib_text_symbols_to_ascii( send_string )
+
+	timeout        = prompts . get( "TIMEOUT" ) . get_value( )
+
+
+	comm_page = self . property_sheet . get( "COMM" )
+
+	IF comm_page <> EMPTY THEN
+	
+		CREATE OBJECT INSTRUMENT_COMM_CLASS, instrument_comm
+		comm_page . initialise_comm( instrument_comm )
+		
+		instrument_comm . send_string = send_string
+		instrument_comm . timeout     = timeout
+
+		errors = instrument_comm . read( )
+
+		IF errors = EMPTY THEN
+
+			raw_text = instrument_comm . get_raw( )
+			raw_text = lib_text_ascii_to_symbols( raw_text )
+			raw_prompt . set_text( raw_text )
+
+			extract_button . set_enabled( NOT self . display_only )
+
+			self . update_result( )
+
+
+		ELSE
+
+			client_message_box ( errors                                         ,
+								 GET_USER_MESSAGE( "INST_COMM_ERR_CONNECT", 1 ) ,
+								 MB_OK + MB_ICONERROR                           )
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE mouse_click_callback_read_instrument( self )
+
+{
+*
+******************************************************************************}
+
+	self . parent_prompt . read_instrument( )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE mouse_click_callback_determine_delimiters( self )
+
+{
+*
+******************************************************************************}
+
+	DECLARE raw_prompt, preamble_prompt, postamble_prompt, prompts
+	DECLARE preamble, postamble
+
+	prompts = self . parent_prompt . prompts
+	raw_prompt = prompts . get( "RAW" ) . object
+	
+	preamble = raw_prompt . get_pre_selection( )
+	preamble = lib_text_ascii_to_symbols( preamble )
+	
+	preamble_prompt  = prompts . get( "PREAMBLE" ) . object
+	preamble_prompt . set_text( preamble )
+
+	postamble = raw_prompt . get_post_selection( )
+	postamble = lib_text_ascii_to_symbols( postamble )
+
+	postamble_prompt = prompts . get( "POSTAMBLE" ) . object
+	postamble_prompt . set_text( postamble )
+
+	self . parent_prompt . update_result( )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE leave_callback_send_string( self )
+
+{
+*
+*
+******************************************************************************}
+
+	self . set_text( lib_text_normalise_symbols( STRIP( self . value ) ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE leave_callback_preamble( self )
+
+{
+*
+*
+******************************************************************************}
+
+	self . parent_prompt . update_result( )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE leave_callback_postamble( self )
+
+{
+*
+******************************************************************************}
+	
+	self . parent_prompt . update_result( )
+	
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}
+
+	ROUTINE prompt_text_select_action_get_pre_selection ( self )
+
+{
+*	Returns the text before the selected text
+*
+*******************************************************************************}
+	
+	DECLARE pre_selection, sel_start
+	
+	sel_start = self . char_position - self . selection_length
+
+	pre_selection = MIDSTRING( self . text, 1, sel_start - 1 )
+
+	RETURN( pre_selection )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE prompt_text_select_action_get_post_selection ( self )
+
+{
+*	Returns the text after the selected text
+*
+*******************************************************************************}
+	
+	DECLARE post_selection, sel_end
+	
+	sel_end   = self . char_position
+
+	post_selection = MIDSTRING( self . text, sel_end, LENGTH( self . text ) - sel_end + 1 )
+
+	RETURN( post_selection )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE instrument_comm_extract_result( VALUE raw_string ,
+                                        VALUE preamble   ,
+                                        VALUE postamble  )
+
+{
+*	Extracts a result string from the passed raw_string marked by a preamble
+*	and postamble
+*
+******************************************************************************}
+
+	DECLARE result_text, pre_index, post_index, remaining_count, found
+
+	result_text = ERROR
+
+	IF preamble = "" THEN
+	
+		pre_index = 1
+		found = TRUE
+	
+	ELSE
+	
+		pre_index = INDEX( raw_string, preamble )
+		found = ( pre_index <> 0 )
+	
+	ENDIF
+	
+	IF ( found ) THEN
+
+		remaining_count = STRINGLENGTH( raw_string ) -
+						  ( pre_index + STRINGLENGTH( preamble ) ) + 1
+
+		raw_string = RIGHTSTRING( raw_string, remaining_count )
+
+		IF postamble = "" THEN
+		
+			post_index = STRINGLENGTH( raw_string ) + 1
+			found = TRUE
+			
+		ELSE
+		
+			post_index = INDEX( raw_string, postamble )
+			found = ( post_index <> 0 )
+			
+		ENDIF
+
+		IF found THEN
+
+			result_text = LEFTSTRING( raw_string, post_index - 1 )
+
+		ENDIF
+	
+	ENDIF
+	
+	RETURN( result_text )
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE workstation_prompt( self )
+
+{
+*	Prompts for a valid workstation name
+*
+******************************************************************************}
+
+	CREATE OBJECT "STD_PROMPT_TEXT_IDENTITY", self
+
+	self . always_validate = TRUE
+	self . uppercase       = TRUE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE com_port_prompt( self )
+
+{
+*	Prompts for a valid com port on the client machine
+*
+******************************************************************************}
+
+	    DECLARE port, count, value_name,	
+	            port_name, port_number 
+	
+	    CREATE OBJECT "STD_PROMPT_TEXT_CHOOSE", self
+	    ARRAY self . choose_array
+	
+	    count = 1
+	    value_name = client_registry_enum_value ( HKEY_LOCAL_MACHINE             ,
+	                                              "HARDWARE\DEVICEMAP\SERIALCOMM",
+	                                              count - 1                      )
+	
+	    WHILE value_name <> EMPTY DO
+	
+	        IF BLANK( value_name ) THEN
+	
+	            { ignore - a blank value name indicates the key default value }
+	
+	        ELSE
+	
+	            port = client_registry_get_value ( HKEY_LOCAL_MACHINE              ,
+	                                               "HARDWARE\DEVICEMAP\SERIALCOMM" ,
+	                                               value_name                      )
+	
+	            IF ( port <> EMPTY ) THEN
+	
+	            
+	
+	                port_name = port
+	
+	                port_number = count
+	
+	                IF( INDEX( port_name, "COM" ) <> 0 ) THEN
+	
+	                    port_name = port
+	
+	                    port_number =  port_name # "COM"
+	
+	                    IF( NUMTEXT( port_number ) )
+	
+	                        port_number = TRUNC( NUMERIC( port_number ) )
+	
+	                    ENDIF
+	
+	                ENDIF
+	
+	                self . choose_array[count,1] = PAD( port_name, " ", 10 )
+	                self . choose_array[count,2] = port_number
+	
+	
+	            ENDIF
+	
+	        ENDIF
+	
+	        count = count + 1
+	
+	        value_name = client_registry_enum_value ( HKEY_LOCAL_MACHINE             ,
+	                                                  "HARDWARE\DEVICEMAP\SERIALCOMM",
+	                                                  count - 1                      )
+	
+	
+	    ENDWHILE
+
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE get_client_machine_name
+
+{
+*	Returns client machine name
+*
+******************************************************************************}
+
+	RETURN( client_registry_get_value ( HKEY_LOCAL_MACHINE        ,
+	                                    REG_KEY_COMPUTER_NAME_KEY ,
+	                                    REG_KEY_COMPUTER_NAME_VAL ) )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE instrument_calibrated( instrument_object )
+
+{
+*	Returns True if the passed instrument object is calibrated
+*	Returns EMPTY if calibration state unknown
+*	Returns False if out of calibration
+*
+******************************************************************************}
+
+	DECLARE calib_date, calib_intv, next_calib_date, calibrated
+		
+   	calib_date = SELECT instrument . calib_date IN OBJECT instrument_object
+   	calib_intv = SELECT instrument . calib_intv IN OBJECT instrument_object
+
+	IF ( calib_intv > INTERVAL( "0 00:00:00.00" ) ) AND
+	   ( calib_date <> DATE( "" )                 ) THEN
+	
+		next_calib_date = calib_date + calib_intv
+
+   		calibrated = ( NOW < next_calib_date )
+   		
+	ELSE
+	
+		calibrated = EMPTY
+	
+   	ENDIF
+
+	RETURN( calibrated )
+
+ENDROUTINE

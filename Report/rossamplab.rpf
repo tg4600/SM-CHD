@@ -1,0 +1,762 @@
+{------------------------------------------------------------------------------}
+{  CHG          DATE    PGMR    DESCRIPTION                                    }
+{------------------------------------------------------------------------------}
+{**A0012        220493  LPE     Customised Print og Sample Labels              }
+{**A0012-1      111193  LPE     For samples with sampling point="PK", print    }
+{                               Bulk Job ID                                    }
+{**A0012-3      031094  LPE     GLOBAL routine print_labels designed to print  }
+{                               all labels, so that the labels looks the same  }
+{                               way.                                           }
+{                               The following paramteres has to be passed to   }
+{                               the routine  :                                 }
+{                                       ARRAY of sampling_point,               }
+{                                       number of sampling points,             }
+{                                       product_name from the sample/job,      }
+{                                       batchname from the sample/job,         }
+{                                       product_code from the product_name,    }
+{                                       sampled_date from the sample,          }
+{                                       bulk_job_id if on exist                }
+{                               ARRAY sampling_point contains information from }
+{                               Sampling Points tabel and selected sample id   }
+{                               to print.                                      }
+{                               samp_point [n,1] = identity                    }
+{                               samp_point [n,2] = deliv_location              }
+{                               samp_point [n,3] = n_labels                    }
+{                               samp_point [n,4] = description                 }
+{                               samp_point [n,5] = sample to the sampling point}
+{                               samp_point [n,6] = volume                      }
+{Mig. 3.10-4.1  24-5-00  HBe    All escape sequences removed for windows print }
+{***1267        22-08-00 HBe    Added labelprint for Milwaukee (Letter format) }
+{**M1436        06-12-02 HBe    Leading blanks included for all label formats  }
+{**1697         26-04-06 HBe    Changed two set format commands                }
+{                               from 999 to 9999 to print volumes above 999 ml }
+{------------------------------------------------------------------------------}
+
+{ ---------- SET UP ESCAPE SEQUENCES  --------------- }
+
+join library $lib_utils
+JOIN STANDARD_LIBRARY std_utils
+join library toolbox
+join standard_library STD_ARRAY_SELECT
+
+enable windows
+SET PRINTERCODES TRUE
+SET WIDTH 100
+esc = ascii(27)
+wide = esc:"[5w"
+normal = esc:"[0w"
+narrow = esc:"[4w"
+b = esc:"[1m" { bold }
+n = esc:"[0m" { normal }
+printid = " "
+set format "9999999999"
+
+{--- Check to see if any parameters have been passed to the routine -----------}
+{--- The first will be sample id - either numeric or text ---------------------}
+{--- The second will be the printer id - since when called from sample login --}
+{--- there will always be two parameters - if there is one parameter the ------}
+{--- assumption made is that the reports output is to be directed to the ------}
+{--- default label printer - no parameters and the destination box is called --}
+
+wks_name = " "
+if global ("PARAM_ACTIVE") then
+  prompt for smplid
+  wks_name = smplid
+  if numtext ( wks_name ) then
+    wks_name = rightstring (pad (" ", " ", 10) + strip (wks_name), 10)
+    wks_name = select sample.id_numeric
+               where id_numeric = wks_name
+               order on id_numeric
+  else
+    wks_name = select sample.id_numeric
+               where id_text = wks_name
+               order on id_text
+  endif
+  if global ("PARAM_ACTIVE") then
+    prompt for printid
+    if printid = " " then
+      set name "DEFAULT_LABEL/"
+    else
+      set name "PRINTER/" : strip ( printid )
+    endif
+  else
+    if wks_name = empty then
+      wks_name = " "
+    endif
+    set name "DEFAULT_LABEL/"
+  endif
+else
+
+endif
+{--- Analyse the sample name given - if none provided prompt the user ---------}
+{--- if it could not be found tell the user and teminate - otherwise ----------}
+{--- print the label as requested ---------------------------------------------}
+
+if wks_name = " " then
+  if get_sample_name () then
+{**D1267 HBe 22-8-00
+     flash_message("Remember 4 x 11 labels paper in printer",TRUE)
+}
+  if get_job_name () then
+      dolabel ()
+    endif
+  endif
+elseif wks_name <> empty then
+  initialise ()
+  if get_job_name () then
+    dolabel ()
+  endif
+else
+  create text window error_box
+         height 1
+         width 78
+         border
+  display "Sample ":strip(smplid):" could not be found"
+          at 1,1
+          in window error_box
+  paste text window error_box at 2,23
+  pause ()
+  unpaste text window error_box
+endif
+
+{--- Routine to set up windows ------------------------------------------------}
+
+routine initialise
+
+  create text window screen_box height 5 width 50 border
+
+  display "               Printing Sample Label                "
+    in window screen_box on line 1 from 2 to 49  inverse
+  display "                                                    "
+    in window screen_box on line 5 from 2 to 49  inverse
+  display "Label   id        : $SAMPLABEL "
+    in window screen_box on line 3 from 2
+  display "Printer id        : " : printid
+    in window screen_box  on line 4 from 2
+
+ paste text window screen_box on line 8 from 15
+
+endroutine
+
+{ ------------------  GET SAMPLE FOR LABEL -------------------- }
+routine get_sample_name
+
+create text window main height 21 width 80
+paste text window main at 1,4
+
+display
+"                                 Sample Label                                       "
+on line 1 from 1 bold inverse in window main
+display "Press EXIT to end" on line 20 from 50 bold in window main
+sampid = " "
+
+prompt on line 8 from 10 for sampid browse on sample in window main
+   using "Enter the Sample ID : "
+
+wks_name = sampid
+
+if lastkey = "EXIT" then
+  return (false)
+else
+  return (true)
+endif
+
+endroutine
+
+{ --------------- GET JOB NAME  ---------------------------------  }
+
+routine get_job_name
+
+current_job_name = select sample.job_name
+                   where id_numeric = wks_name
+                   order on id_numeric
+
+current_job_name = strip (current_job_name)
+if current_job_name = empty then
+  return (false)
+else
+  return (true)
+endif
+
+endroutine
+
+
+ROUTINE dolabel
+{**A00012-3S**DOLABEL}
+{ ---------------  GET OTHER INFORMATION FOR THE SAMPLE  ---------------- }
+
+ARRAY cur_sp
+
+count = 1
+
+cur_sp[count,5] = wks_name
+
+s_date = SELECT sample.sampled_date
+prod_name = SELECT sample.product_name
+batch = SELECT sample.batch_name
+
+cur_sp [count,1] = SELECT sample.sampling_point
+
+{**A0012-1S**DOLABEL}
+
+sa_jobname = SELECT sample.job_name
+
+{ job name to sample }
+
+bulk_jobname = SELECT job_header.bulk_job_id
+                  WHERE job_name = sa_jobname
+                  ORDER ON job_name
+
+IF bulk_jobname = EMPTY THEN
+      bulk_jobname = ""
+ENDIF
+
+cur_sp [count,2] = SELECT sample_point.deliv_location
+                     WHERE identity = cur_sp [count,1]
+                     ORDER ON identity
+
+        cur_sp[count,3] = SELECT sample_point.label_count
+        cur_sp[count,4] = SELECT sample_point.description
+        cur_sp[count,6] = SELECT sample_point.volume
+mlp_code = SELECT mlp_header.product_code
+               WHERE identity = prod_name
+               ORDER ON identity
+{**DS 1267 HBe 22-8-00
+print_labels (cur_sp ,count, prod_name, batch, mlp_code, s_date,bulk_jobname)
+ **DE 1267 HBe 22-8-00}
+
+
+{**AS1267 HBe 22-8-00}
+
+LABEL_DETAILS (label_spaces, label_lines, count_labels_down, leading_blanks, sheet_defined)
+
+print_labels (cur_sp ,count, prod_name, batch, mlp_code, s_date,bulk_jobname, label_spaces, label_lines, count_labels_down, leading_blanks)
+
+{**AE 1267}
+
+ENDROUTINE
+
+
+{ - - - - - - - -  START PRINT_LABELS - - - - - - - - - - - - - - - - - - -}
+{**A00012-3S**PRINT_LABELS}
+{**M1267 HBe 22-8-00: "label_spaces, label_lines and count_labels_down added to routine call below}
+
+GLOBAL ROUTINE print_labels      (sam_points,
+                                 VALUE sp_count,
+                                 VALUE prod_name,
+                                 VALUE batch,
+                                 VALUE mlp_code,
+                                 VALUE taken_date,
+                                 VALUE bulk_job,
+                                 VALUE label_spaces,
+                                 VALUE label_lines,
+                                 VALUE count_labels_down,
+                                 VALUE leading_blanks)
+SET NAME "PRINTER/LOKAL"
+
+SET FORMAT "9999"
+SET WIDTH 180
+
+{**MS1267 HBe 23-8-00
+SET LENGTH 200
+**}
+
+
+SET LENGTH label_lines * count_labels_down
+{**ME1267}
+
+DECLARE count
+
+ARRAY save_points
+ARRAY p_points
+
+{**MS HBe 29-5-00
+ARRAY line_1 ARRAYSIZE (4) = " "
+ARRAY line_2 ARRAYSIZE (4) = " "
+ARRAY line_3 ARRAYSIZE (4) = " "
+ARRAY line_4 ARRAYSIZE (4) = " "
+ARRAY line_5 ARRAYSIZE (4) = " "
+ARRAY line_6 ARRAYSIZE (4) = " "
+}
+
+ARRAY line_1 ARRAYSIZE (3) = " "
+ARRAY line_2 ARRAYSIZE (3) = " "
+ARRAY line_3 ARRAYSIZE (3) = " "
+ARRAY line_4 ARRAYSIZE (3) = " "
+ARRAY line_5 ARRAYSIZE (3) = " "
+ARRAY line_6 ARRAYSIZE (3) = " "
+ARRAY line_7 ARRAYSIZE (3) = " "
+ARRAY line_8 ARRAYSIZE (3) = " "
+
+{**ME HBe 29-5-00}
+
+{**DS Mig. 3.10-4.1 HBe 29-5-00}
+l_wi = 21
+{**DE Mig. 3.10-4.1 HBe 29-5-00}
+{**AS Mig. 3.10-4.1 HBe 29-5-00}
+l_wi = 23
+{**AE Mig. 3.10-4.1 HBe 29-5-00}
+
+
+esc=""{**D Mig. 3.10-4.1 HBe 24-5-00 ASCII(27)}
+vmi8 = ""{**D Mig. 3.10-4.1 HBe 24-5-00   esc:"&l8C"}
+nm = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"&l2E"  } { NEW TOP MARGIN }
+om =""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"&l3E"   } { OLD TOP MARGIN }
+ecma = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(0N" } { ECMA character-set }
+pcdn = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(11U"} { PC8/DN character-set }
+b = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(s3B"   } { Bold }
+n = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(s0B"   } { Normal }
+p10 = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(s10H"} { 10 pitch/inch }
+p12 = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(s12H"} { 12 pitch/inch }
+p17 = ""{**D Mig. 3.10-4.1 HBe 24-5-00  esc:"(s17H"} { 17 pitch/inch }
+x = "   "{**D Mig. 3.10-4.1 HBe 24-5-00  600}           { postion in dots of date in line 6 }
+
+{**AS 1057 JDy 29/10/97 }
+reset = ""{**D Mig. 3.10-4.1 HBe 23-5-00  esc:"E"}
+lltop = LINESLEFT
+{**AE 1057 JDy 29/10/97 }
+
+   count = 1
+   s_count = count
+{   flash_message("Printing Labels",false) }
+
+   IF batch <> EMPTY THEN
+{**MS Mig. 3.10-4.1 HBe 29-5-00
+batch = STRIP(batch)
+}
+      batch = STRIP(substring(batch,1,11))
+{**ME Mig. 3.10-4.1 HBe 29-5-00}
+      l_b = LENGTH(batch)
+{**MS Mig. 3.10-4.1 HBe 29-5-00
+      batch = PAD(" "," ",(10-l_b)):batch
+}
+      batch = PAD(" "," ",(11-l_b)):batch
+{**ME Mig. 3.10-4.1 HBe 29-5-00}
+
+   ELSE
+{**MS Mig. 3.10-4.1 HBe 29-5-00
+      batch = PAD(" "," ",10)
+}
+batch = PAD(" "," ",11)
+{**ME Mig. 3.10-4.1 HBe 29-5-00}
+
+   ENDIF
+
+   IF strip(taken_date) <> EMPTY THEN
+{**MS Mig. 3.10-4.1 HBe 24-5-00
+      s_date = SUBSTRING(taken_date,1,11)
+}
+      s_date = PAD(SUBSTRING(taken_date,1,2) : SUBSTRING(taken_date,4,3) : SUBSTRING(taken_date,10,2)," ",7)
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+
+   ELSE
+{**MS Mig. 3.10-4.1 HBe 24-5-00
+      s_date = PAD(" "," ",11)
+}
+      s_date = PAD(" "," ",7)
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+
+   ENDIF
+IF bulk_job <> EMPTY THEN
+      bulk_job = STRIP(bulk_job)
+      l_bu = LENGTH(bulk_job)
+      IF l_bu = 0 THEN
+{**MS Mig. 3.10-4.1 HBe 24-5-00
+         bulk_job = PAD(" "," ",19)
+}
+         bulk_job = PAD(" "," ",17)
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+
+      ELSE
+{**MS Mig. 3.10-4.1 HBe 24-5-00
+         bulk_job = bulk_job:PAD(" "," ",(19-l_bu))
+}
+         bulk_job = bulk_job:PAD(" "," ",(17-l_bu))
+
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+
+      ENDIF
+   ELSE
+{**MS Mig. 3.10-4.1 HBe 24-5-00
+      bulk_job = PAD(" "," ",19)
+}
+      bulk_job = PAD(" "," ",17)
+
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+   ENDIF
+
+{**DS Mig. 3.10-4.1 HBe 29-5-00
+
+   IF prod_name <> EMPTY THEN
+      prod_name = PAD(prod_name," ",10)
+
+
+      IF mlp_code <> EMPTY THEN
+         mlp_code = PAD(mlp_code," ",10)
+      ELSE
+         mlp_code = PAD(" "," ",10)
+      ENDIF
+   ELSE
+      prod_name = PAD(" "," ",10)
+      mlp_code = PAD(" "," ",10)
+   ENDIF
+
+**DE Mig. 3.10-4.1 HBe 29-5-00}
+
+{**AS Mig. 3.10-4.1 HBe 29-5-00}
+
+   IF prod_name <> EMPTY THEN
+      prod_name = PAD(substring(prod_name,1,11)," ",11)
+
+
+      IF mlp_code <> EMPTY THEN
+         mlp_code = PAD(substring(mlp_code,1,11)," ",11)
+      ELSE
+         mlp_code = PAD(" "," ",11)
+      ENDIF
+   ELSE
+      prod_name = PAD(" "," ",11)
+      mlp_code = PAD(" "," ",11)
+   ENDIF
+
+{**AE Mig. 3.10-4.1 HBe 24-5-00}
+
+   WHILE count <= sp_count DO
+      IF ((sam_points[count,3] = EMPTY) OR
+          (sam_points[count,3] = 0)) THEN
+{**DS1088 JDy 10/3/98 Including handling of zero count }
+{        n_labels = 1   }
+         n_labels = 0
+{**DE1088 JDy 10/3/98 }
+      ELSE
+         n_labels = sam_points[count,3]
+      ENDIF
+
+{**DS1088 JDy 10/3/98 }
+{     IF n_labels > 1 THEN
+         l_count = 1
+         WHILE l_count <= n_labels
+            save_points[s_count,1] = sam_points[count,1]
+            save_points[s_count,2] = sam_points[count,2]
+            save_points[s_count,4] = sam_points[count,4]
+            save_points[s_count,5] = sam_points[count,5]
+            save_points[s_count,6] = sam_points[count,6]
+            l_count = l_count + 1
+            s_count = s_count + 1
+         ENDWHILE
+      ELSE
+         save_points[s_count,1] = sam_points[count,1]
+         save_points[s_count,2] = sam_points[count,2]
+         save_points[s_count,4] = sam_points[count,4]
+         save_points[s_count,5] = sam_points[count,5]
+         save_points[s_count,6] = sam_points[count,6]
+         tmp_save = save_points[s_count,1]
+         tmp_sp = sam_points[count,1]
+         s_count = s_count + 1
+      ENDIF       }
+{**DE1088 10/3/98 }
+{**AS1088 JDy 10/3/98 }
+      IF n_labels > 0 THEN
+         l_count = 0
+         WHILE l_count < n_labels
+            save_points[s_count,1] = sam_points[count,1]
+            save_points[s_count,2] = sam_points[count,2]
+            save_points[s_count,4] = sam_points[count,4]
+            save_points[s_count,5] = sam_points[count,5]
+            save_points[s_count,6] = sam_points[count,6]
+            s_count = s_count + 1
+            l_count = l_count + 1
+         ENDWHILE
+      ENDIF
+{**AE1088 10/3/98 }
+
+      count = count + 1
+   ENDWHILE
+
+   count = 1
+
+{** MS HBe 29-5-00
+WHILE count < s_count DO
+      line = ((count-1) DIV 4) + 1
+      row =  (count MOD 4)
+      IF row = 0 THEN
+         row = 4
+}
+WHILE count < s_count DO
+      line = ((count-1) DIV 3) + 1
+      row =  (count MOD 3)
+      IF row = 0 THEN
+         row = 3
+{**ME HBe 29-5-00}
+
+      ENDIF
+      p_points [line,row] = STRIP(save_points[count,1])
+      count = count + 1
+   ENDWHILE
+   last_row = row
+   last_line = line
+   l_c = 1
+   count = 1
+   WHILE l_c <= line DO
+      row = 1
+{**MS 1267 HBe 24-8-00
+      pr_line_1 = ""
+      pr_line_2 = ""
+      pr_line_3 = ""
+      pr_line_4 = ""
+      pr_line_5 = ""
+      pr_line_6 = ""
+   **AS HBe 29-5-00
+      pr_line_7 = ""
+      pr_line_8 = ""
+   **AE HBe 29-5-00
+**}
+
+
+      pr_line_1 = PAD("", " ", leading_blanks)
+      pr_line_2 = PAD("", " ", leading_blanks)
+      pr_line_3 = PAD("", " ", leading_blanks)
+      pr_line_4 = PAD("", " ", leading_blanks)
+      pr_line_5 = PAD("", " ", leading_blanks)
+      pr_line_6 = PAD("", " ", leading_blanks)
+      pr_line_7 = PAD("", " ", leading_blanks)
+      pr_line_8 = PAD("", " ", leading_blanks)
+
+
+{**ME 1267 }
+
+
+      IF l_c = last_line THEN
+         max_row = last_row
+      ELSE
+{**MS HBe 29-5-00
+         max_row = 4
+}
+         max_row = 3
+{**ME HBe 29-5-00}
+      ENDIF
+      WHILE row <= max_row DO
+         cur_sample = save_points[count,5]
+{ ** 1037DS }
+{
+         IF cur_sample = EMPTY THEN
+            cur_sample = PAD(" "," ",10)
+            l_sa = LENGTH(cur_sample)
+         ELSE
+            cur_sample = STRIP(cur_sample)
+            l_sa = LENGTH(cur_sample)
+            IF l_sa = 0 THEN
+               cur_sample = PAD(" "," ",10)
+            ELSE
+               cur_sample = b:PAD(" "," ",(10-l_sa)):cur_sample:n
+            ENDIF
+         ENDIF
+}
+{ ** 1037DE }
+{ ** 1037AS }
+         IF   (cur_sample = EMPTY) OR (BLANK(cur_sample))
+         THEN l_sa = 0
+         ELSE cur_sample = STRIP( cur_sample )
+              l_sa = LENGTH(cur_sample)
+         ENDIF
+{ ** 1037AE }
+
+         des = save_points[count,4]
+         IF des = EMPTY THEN
+            des =PAD(" "," ",l_wi)
+         ELSE
+            des = SUBSTRING(STRIP(des),1,l_wi)
+         ENDIF
+
+         vol = save_points[count,6]
+         l_vol = LENGTH(vol)
+{**DS Mig. 3.10-4.1 HBe 29-5-00
+         IF ((vol = EMPTY) OR (vol = 0)) THEN
+            vol = PAD(" "," ",7):" ml"
+          ELSE
+            IF l_vol >= 7 THEN
+               l_vol = 7
+            ENDIF
+            vol = PAD(" "," ",(7-l_vol)):vol:" ml"
+            vol = SUBSTRING(vol,1,10)
+         ENDIF
+**DE Mig. 3.10-4.1 HBe 29-5-00}
+
+{**AS Mig. 3.10-4.1 HBe 29-5-00}
+IF ((vol = EMPTY) OR (vol = 0)) THEN
+            vol = PAD(" "," ",8):" ml"
+          ELSE
+            IF l_vol >= 8 THEN
+               l_vol = 8
+            ENDIF
+            vol = PAD(" "," ",(8-l_vol)):vol:" ml"
+            vol = SUBSTRING(vol,1,11)
+         ENDIF
+{**AE Mig. 3.10-4.1 HBe 29-5-00}
+
+
+         dev_loc = save_points[count,2]
+         IF dev_loc = EMPTY THEN
+            dev_loc = PAD(" "," ",l_wi)
+         ELSE
+            dev_loc = SUBSTRING(STRIP(dev_loc),1,l_wi)
+         ENDIF
+{ ** 1037DS }
+{
+         line_1[row] = PAD(p_points[l_c,row]," ",10):
+                       PAD(" "," ",l_wi -20):cur_sample
+         line_2[row] = des
+         line_3[row] = prod_name:"/":batch
+         line_4[row] = mlp_code:"-":vol
+         line_5[row] = dev_loc
+         line_6[row] = s_date:" ":bulk_job
+}
+{ ** 1037DE }
+
+{ ** 1037AS }
+         line_1[row] = " "
+         line_2[row] = des
+         line_3[row] = prod_name:"/":batch
+         line_4[row] = mlp_code:"-":vol
+         line_5[row] = dev_loc
+
+         IF l_sa = 0
+         THEN
+{MS Mig. 3.10-4.1 HBe 24-5-00
+            line_6[row] = b:PAD(STRIP(p_points[l_c,row])," ",l_wi-7):n:s_date
+         ELSE
+            line_6[row] = b:PAD(STRIP(p_points[l_c,row]):"/":
+                              cur_sample," ",l_wi-7):n:s_date
+}
+
+            line_6[row] = b:PAD(STRIP(p_points[l_c,row])," ",l_wi-8):" ":s_date
+         ELSE
+           {line_6[row] = b:PAD(STRIP(p_points[l_c,row]):"/": cur_sample," ",l_wi-7):"  ":SUBSTRING(s_date,1,5)}
+            line_6[row] = b:PAD(STRIP(p_points[l_c,row]):"/": cur_sample," ",l_wi-8):" ":s_date
+         ENDIF
+         line_7[row] = " "
+         line_8[row] = " "
+{**ME Mig. 3.10-4.1 HBe 24-5-00}
+
+{ ** 1037AE }
+
+         IF row = 1 THEN
+            sp = ""
+         ELSE
+{**MS 29-5-00
+            sp = "   "
+}
+{**D1267 HBe 22-8-00
+            sp = "    "
+**ME HBe 29-5-00
+}
+{**AS1267 HBe 22-8-00}
+            sp=""
+            sp = PAD(sp, " ", label_spaces)
+{**AE 1267}
+         ENDIF
+
+         IF ((l_c = 1) AND (row=1)) THEN
+            pr_line_1 = vmi8:nm:ecma:p12:pr_line_1:sp:line_1[row]
+{**AS HBe 29-5-00}
+            pr_line_7 = vmi8:nm:ecma:p12:pr_line_7:sp:line_7[row]
+            pr_line_8 = vmi8:nm:ecma:p12:pr_line_8:sp:line_8[row]
+{**AE HBe 29-5-00}
+
+         ELSE
+            pr_line_1 = pr_line_1:sp:line_1[row]
+{**AS HBe 29-5-00}
+            pr_line_7 = pr_line_7:sp:line_7[row]
+            pr_line_8 = pr_line_8:sp:line_8[row]
+{**AS HBe 29-5-00}
+         ENDIF
+         SET FORMAT "9999"
+
+
+{** DS Mig. 3.10-4.1 HBe 24-5-00
+         x_p = x*(row-1)
+         x_pos =  esc:"*p":x_p:"X"
+
+         IF ((l_c = last_line) AND (row = max_row)) THEN
+            }{ sidste label }{
+            IF row = 1 THEN
+               pr_line_6 = p17:pr_line_6:x_pos:line_6[row]:p10:pcdn:om
+            ELSE
+               pr_line_6 = pr_line_6:x_pos:line_6[row]:p10:pcdn:om
+            ENDIF
+         ELSEIF row = 1 THEN
+            pr_line_6 = p17:pr_line_6:line_6[row]
+         ELSEIF ((row = 4) OR (row = max_row)) THEN
+            pr_line_6 = pr_line_6:x_pos:line_6[row]:p12
+         ELSE
+            pr_line_6 = pr_line_6:x_pos:line_6[row]
+         ENDIF
+** DE Mig. 3.10-4.1 HBe 24-5-00}
+
+         SET FORMAT "9999"
+
+         pr_line_2 = pr_line_2:sp:line_2[row]
+         pr_line_3 = pr_line_3:sp:line_3[row]
+         pr_line_4 = pr_line_4:sp:line_4[row]
+         pr_line_5 = pr_line_5:sp:line_5[row]
+{** AS Mig. 3.10-4.1 HBe 29-5-00}
+         pr_line_6 = pr_line_6:sp:line_6[row]
+         pr_line_7 = pr_line_7:sp:line_7[row]
+         pr_line_8 = pr_line_8:sp:line_8[row]
+{** AE Mig. 3.10-4.1 HBe 29-5-00}
+         row = row + 1
+         count = count + 1
+
+      ENDWHILE
+{**AS 1057 JDy 29/10/97 }
+      IF LINESLEFT = lltop THEN
+         pr_line_1 = reset:pr_line_1
+      ENDIF
+{**AE 1057 JDy 29/10/97 }
+{**AS 1267 HBe 21-8-00}
+
+IF label_lines = 8 THEN
+{**AE 1267}
+
+LITERAL
+$pr_line_1______________________________________________________________________________________________________________________________________________________
+$pr_line_2______________________________________________________________________________________________________________
+$pr_line_3______________________________________________________________________________________________________________
+$pr_line_4______________________________________________________________________________________________________________
+$pr_line_5______________________________________________________________________________________________________________
+$pr_line_6______________________________________________________________________________________________________________________________________________________
+$pr_line_7______________________________________________________________________________________________________________
+$pr_line_8______________________________________________________________________________________________________________
+$ENDLITERAL
+      l_c = l_c + 1
+
+{**AS 1267 HBe 21-8-00}
+
+ELSEIF label_lines = 6 THEN
+
+LITERAL
+$pr_line_1______________________________________________________________________
+$pr_line_2______________________________________________________________________________________________________________
+$pr_line_3______________________________________________________________________________________________________________
+$pr_line_4______________________________________________________________________________________________________________
+$pr_line_5______________________________________________________________________________________________________________
+$pr_line_6______________________________________________________________________
+$ENDLITERAL
+      l_c = l_c + 1
+
+ELSE
+   FLASH_MESSAGE("Error, missing LITERAL outpur for ":strip(label_lines):" lines on each label!",true)
+
+ENDIF
+{**AE 1267}
+
+   ENDWHILE
+
+flush_literal
+
+{**A00012-3E**PRINT_LABELS}
+ENDROUTINE
+{ - - - - - - - - - -END PRINT_LABELS - - - - - - - - - - - - - - - - - - -}
+
+
+

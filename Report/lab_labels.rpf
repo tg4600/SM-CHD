@@ -1,0 +1,512 @@
+{***********************************************************************
+* Module Name   : LAB_LABELS
+* Purpose       : Creates labels with LIMS LabelTemplates
+* Document Ref  :
+* Specification : N/A
+************************************************************************
+* Modification History
+* Version   Date        Author          Modify Details
+************************************************************************
+* 1.0       11-05-2017  Tommy Bøgeskov   Created
+* 2.0       11-05-2017  Tommy Bøgeskov   Updated, to improve performance
+                                         by using same template for sample,
+                                         test and component. This will reduce 
+                                         the number of print jobs, and eliminate
+                                         waiting time in the printer. Different
+                                         layout for the entities can be controlled
+                                         using layers in template definition.
+************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIMSML_HELPER
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $TOOLBOX
+JOIN LIBRARY $USER_CONTROL
+DECLARE start
+
+    PLS(0)
+    EXIT
+
+GLOBAL ROUTINE PLS (VALUE option)
+{*************************************************************************
+* Purpose       : Prompt for Sample and select any or all tests
+*               : for label printing. Generate xml to be saved
+*               : The xml will be processed by PC SYS LIMS Print
+* Parameters    : 
+* Return Value  : None
+*************************************************************************}
+DECLARE printer, CreateSampleForm, SampleID, ArrTests 
+
+    start = NOW
+    window_set_status(RIGHTSTRING(INTERVAL(NOW - start),8))
+    
+    IF GLOBAL("LABEL_ID") = "" THEN
+        define_label_printer ( 163 )
+    ELSE
+        printer = GLOBAL("LABEL_ID")
+        printer = SELECT printer.identity
+                     WHERE identity = printer
+                       AND removeflag = FALSE
+        IF printer = EMPTY THEN
+            define_label_printer ( 163 )
+        ENDIF
+    ENDIF
+    
+    DECLARE queue
+    IF "QUEUE" = (SELECT printer . device_type WHERE identity = printer) THEN
+        queue = STRIP(SELECT printer.logical_name WHERE identity = printer)
+        IF BLANK(queue) THEN
+            fm("Printer ":STRIP(printer):" has no logical name ...")
+            EXIT
+        ENDIF
+        printer = queue
+    ELSE
+        fm("Printer ":STRIP(printer):" is not setup with device type QUEUE.")
+        EXIT
+    ENDIF
+    
+    REPEAT
+        create_form(CreateSampleForm, SampleID)
+        ARRAY   ArrTests
+        GetTestList(SampleId.text, ArrTests, FALSE)
+        IF CreateSampleForm.get_lastkey() = "DO" THEN
+            IF SelectTests(SampleId.text, ArrTests) THEN
+                PrintTests(ArrTests, printer)
+            ENDIF
+        ENDIF
+    UNTIL CreateSampleForm.get_last_key() = "EXIT"
+    
+ENDROUTINE
+
+ROUTINE create_form (CreateSampleForm, SampleID)
+{*************************************************************************
+* Purpose       : Prompt for sample
+*               : 
+* Parameters    : Form, Sample ID
+* Return Value  : None
+*************************************************************************}
+
+    CREATE OBJECT PROMPT_CLASS_FORM, CreateSampleForm
+    CreateSampleForm.header    = "Print Labels for sample... (LIMS)"
+    CreateSampleForm.column    = 5
+    CreateSampleForm.row       = 10
+    CreateSampleForm.height    = 4
+    CreateSampleForm.width     = 50
+    CreateSampleForm.return_behaviour = FORM_RETURN_LEAVE
+
+    CreateSampleForm.add_display("Select Sample: ", 2, 1, PROMPT_RENDITION_BOLD)
+    PROMPT OBJECT SampleID
+              BROWSE ON SAMPLE.ID_NUMERIC
+              AT 15, 1
+    CreateSampleForm.add_prompt (SampleID)
+    CreateSampleForm.add_display("Currently using printer: ":GLOBAL("LABEL_ID"), 15, 3, PROMPT_RENDITION_BOLD)
+    CreateSampleForm.add_display("(Use 'Ctrl-E, DLX' to change printer)",        15, 4, PROMPT_RENDITION_BOLD)
+    CreateSampleForm.start_prompt()
+    CreateSampleForm.wait_prompt()
+    CreateSampleForm.end_prompt()
+
+ENDROUTINE
+
+GLOBAL ROUTINE PrintRVS(ArrSmps, VALUE Printer, VALUE ExcludePrevPrinted)
+{*************************************************************************
+* Purpose       : Routine to be called without interaction to print all labels 
+*               : for one sample to specified printer
+* Parameters    : Sample ID, Printer
+* Return Value  : None
+*************************************************************************}
+DECLARE ArrTests, {ArrLabel, } i
+
+    DECLARE queue
+    IF "QUEUE" = (SELECT printer . device_type WHERE identity = printer) THEN
+        queue = STRIP(SELECT printer.logical_name WHERE identity = printer)
+        IF BLANK(queue) THEN
+            fm("Printer ":STRIP(printer):" has no logical name ...")
+            EXIT
+        ENDIF
+        printer = queue
+    ELSE
+        fm("Printer ":STRIP(printer):" is not setup with device type QUEUE.")
+        EXIT
+    ENDIF
+    
+    ARRAY   ArrTests
+
+    i = 1
+    WHILE i <= size_of_array(ArrSmps)
+        IF ArrSmps[i] <> EMPTY THEN
+            GetTestList(ArrSmps[i], ArrTests, ExcludePrevPrinted)  
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    RETURN(PrintTests(ArrTests, printer))
+    
+ENDROUTINE
+
+ROUTINE PrintTests(ArrTests, printer)
+{*************************************************************************
+* Purpose       : Create Header information and get all label details for 
+*               : test numbers in ArrTests
+* Parameters    : ArrTests - Array of test numbers, selected printer
+* Return Value  : None
+*************************************************************************}
+DECLARE ArrLabel, res, field_size, lbl_job, lbl_smp, lbl_tst, lbl_res, i, context, l, entity, template
+
+    start = NOW
+
+    ARRAY ArrLabel
+
+    GET_FIELD_DETAILS label_template.identity, "FIELD_SIZE", field_size
+    lbl_job = PAD(GLOBAL("LBL_JOB_HEADER"), " ", field_size)
+    lbl_smp = PAD(GLOBAL("LBL_SAMPLE")    , " ", field_size)
+    lbl_tst = PAD(GLOBAL("LBL_TEST")      , " ", field_size)
+    lbl_res = PAD(GLOBAL("LBL_RESULT")    , " ", field_size)
+        
+    i = 1
+    WHILE i <= size_of_array(ArrTests)
+        res = STRIP(SELECT DISTINCT lablabels_view.identity 
+                    WHERE tn_select = ArrTests[i, 2])
+        WHILE res <> EMPTY
+            push_file_descriptor("lablabels_view", context) 
+                template = ""
+                entity = SELECT lablabels_view.entity WHERE identity = res AND tn_select = ArrTests[i, 2]
+                IF entity = "COMPONENT" THEN
+                    template = lbl_res
+                ELSEIF entity = "TEST" THEN
+                    template = lbl_tst
+                ELSEIF entity = "SAMPLE" THEN
+                    template = lbl_smp
+                ELSEIF entity = "JOB_HEADER" THEN
+                    template = lbl_job
+                ENDIF
+                IF NOT(BLANK(template)) AND (NOT_IN_ARRAY(res, ArrLabel)) THEN
+                    l = size_of_array(ArrLabel) + 1
+                    ArrLabel[l, 1] = template
+                    ArrLabel[l, 2] = printer
+                    ArrLabel[l, 3] = res
+                    window_set_status("Colleting label details ":RIGHTSTRING(INTERVAL(NOW - start),8):" ":res)
+                ENDIF    
+            pop_file_descriptor(context)
+        NEXT lablabels_view
+            res = SELECT lablabels_view.identity 
+        ENDWHILE
+        i = i + 1
+    ENDWHILE
+
+    window_set_status("Colleted label details ":RIGHTSTRING(INTERVAL(NOW - start),8):". Transferring to ":printer)
+    IF size_of_array(ArrLabel) > 0 THEN
+        PRT_ARRAY(ArrLabel, ArrTests)
+    ENDIF    
+    window_set_status("Printed   label details in ":RIGHTSTRING(INTERVAL(NOW - start),8))
+
+    RETURN(size_of_array(ArrLabel))
+
+ENDROUTINE
+
+GLOBAL ROUTINE PrintSampleReports_rmb ( rmb_object, object , collection )
+{*************************************************************************
+* Purpose       : Explorer RMB callback routine for printing all labels
+*               : for selected samples without interaction using default 
+*               : label printer
+* Parameters    : Sample ID
+* Return Value  : None
+
+    rmb_object  EXPLORER_RMB
+    object      STD_OBJECT_RECORD
+
+*************************************************************************}
+DECLARE ArrSmps, i, table, ArrKey0, field
+
+ARRAY ArrSmps 
+ARRAY ArrKey0
+
+    table = rmb_object.table
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+    IF size_of_array(ArrKey0) = 0 THEN
+        fm("No key field defined for table ":table)
+    ELSEIF size_of_array(ArrKey0) > 1
+        fm("Multiple keys defined for ":table:ASCII(10):GetArray(ArrKey0))
+    ELSE
+        field = ArrKey0[1]
+    ENDIF
+
+    collection.set_first()
+    WHILE collection.current <> EMPTY DO
+        ArrSmps [size_of_array(ArrSmps) + 1] = SELECT 'table'.'field' IN OBJECT collection.current
+        collection.set_next()
+    ENDWHILE
+    
+    PrintRVS(ArrSmps, GLOBAL("LABEL_ID"), TRUE)
+    
+    RETURN
+    
+    i = 1
+    WHILE i <= size_of_array(ArrSmps)
+        PrintRVS(ArrSmps[i, 1], GLOBAL("LABEL_ID"), TRUE)
+        i = i + 1
+    ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE GetTestList(SampleId, ArrTests, VALUE ExcludePrevPrinted)
+{*************************************************************************
+* Purpose       : Create list of tests for sample
+* Parameters    : SampeID
+* Return Value  : Array of Analysis/TestCount; TestNumber
+*************************************************************************}
+
+DECLARE test_num, i
+
+{ARRAY   ArrTests}
+
+    IF ExcludePrevPrinted THEN
+        test_num = SELECT DISTINCT lablabels_view.test_number 
+                   WHERE sample_id = SampleID
+                   AND (test_status = "H" OR
+                        test_status = "U" OR
+                        test_status = "V" OR
+                        test_status = "P" )
+                   AND label_printed = FALSE     
+    ELSE
+        test_num = SELECT DISTINCT lablabels_view.test_number 
+                   WHERE sample_id = SampleID
+                   AND (test_status = "H" OR
+                        test_status = "U" OR
+                        test_status = "V" OR
+                        test_status = "P" )
+    ENDIF
+    WHILE test_num <> EMPTY DO
+        ArrTests [size_of_array(ArrTests) + 1, 2] = test_num
+    NEXT lablabels_view
+        test_num = SELECT lablabels_view.test_number
+    ENDWHILE
+    
+    i = 1
+    WHILE i <= size_of_array(ArrTests)
+        ArrTests [i, 1] = STRIP(SELECT lablabels_view.analysis WHERE test_number = ArrTests [i, 2]):"/":STRIP(SELECT lablabels_view.test_count)
+        i = i + 1
+    ENDWHILE
+    
+    RETURN(ArrTests)
+
+ENDROUTINE
+
+ROUTINE SelectTests(SampleId, ArrTests)
+{*************************************************************************
+* Purpose       : Select / Deselect tests for sample
+* Parameters    : Array of tests
+* Return Value  : Array of tests
+*************************************************************************}
+
+DECLARE form, list
+        set_up_std_prompt_list_class ( )
+        CREATE OBJECT "STD_FORM", form
+        form.height     = 10
+        form.width      = 40
+        form.row        = 4
+        form.column     = 6
+        form.border     = TRUE
+        form.header     = "Sample ID: ":SampleID
+        form.prompt_id  = "PrintLabelForSample"
+
+        CREATE OBJECT "STD_PROMPT_LIST", list
+        list.height = form.height - 1
+        list.width  = form.width - 2
+        list.row    = 1
+        list.column = 1
+        list.style  = LIST_STYLE_CHECK_BOXES +
+                      LIST_STYLE_REPORT +
+                      LIST_STYLE_SHOWSELALWAYS +
+                      LIST_STYLE_AUTOARRANGE    +
+                      LIST_STYLE_HEADERDRAGDROP +
+                      LIST_STYLE_FULLROWSELECT
+        list.add_column ( "Analysis", 15 )
+        form.add_prompt ( list )
+        AddAnalysisToList(form, list, ArrTests)
+        form.start_prompt ( )
+        SetState(form, list)
+        form.wait_prompt ( )
+
+        IF form.get_last_key ( ) = "DO" THEN
+            GetTestArray(form, list, ArrTests)
+        ENDIF
+        form.end_prompt()
+
+    RETURN(form.get_last_key() = "DO")
+
+ENDROUTINE
+
+ROUTINE AddAnalysisToList (FormObj, List, AnalysisArray)
+{*************************************************************************
+* Purpose       : Populate Array of test in list
+* Parameters    : Form, List and Array of tests
+* Return Value  : None
+*************************************************************************}
+
+DECLARE main_form, counter
+
+    main_form = FormObj
+    ARRAY main_form.user_info ARRAYSIZE ( 0 , 2 )
+    counter = 0
+    WHILE ( counter < SIZE_OF_ARRAY(AnalysisArray) ) DO
+        counter = counter + 1
+        main_form.user_info[counter, 1] = AnalysisArray [counter, 1]
+        main_form.user_info[counter, 2] = AnalysisArray [counter, 2]
+        list.insert_item ( main_form.user_info [ counter, 1 ] , 115 )
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE SetState(self, list)
+{*************************************************************************
+* Purpose       : Sets all items to checked
+* Parameters    : Form object, list
+* Return Value  : None
+*************************************************************************}
+DECLARE counter, mask, state
+
+    counter = 0
+    WHILE (counter < size_of_array(self.user_info)) DO
+        mask  = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state = LIST_ITEM_CHECKED
+        list.set_item_state ( counter , state, mask )
+        counter = counter + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE GetTestArray(self, list, ArrTests)
+{*************************************************************************
+* Purpose       : Checks if list items is checked.
+* Parameters    : Form object, list and Array of tests
+* Return Value  : Array with checked analysis
+*************************************************************************}
+DECLARE i, mask, state_is
+
+    i = size_of_array(self.user_info)
+    WHILE (i > 0) DO
+        mask     = LIST_ITEM_CHECKED + LIST_ITEM_NOTCHECKED
+        state_is = list.get_item_state ( i - 1, mask )
+        IF NOT(state_is = LIST_ITEM_CHECKED) THEN 
+           array_remove_slice(self.user_info, 1, i)
+        ENDIF 
+        i = i - 1
+    ENDWHILE
+
+    ArrTests = self.user_info
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"):"_":GLOBAL("label_id"))
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Handle records in lbl_array
+* Parameters   : lbl_array(Printer, Template, ID)
+* Return Value : N/A
+**************************************************************************}
+ROUTINE PRT_ARRAY(lbl_array, ArrTests)
+DECLARE i, report_id, printer_id, status, start, tn
+
+    start = NOW
+    printer_id = lbl_array[1, 2]
+    i = 1 
+    WHILE (i <= size_of_array(lbl_array)) 
+      AND (lbl_array[i, 2] <> EMPTY)
+        DECLARE keys
+        ARRAY   keys
+        report_id  = lbl_array[i, 1]
+        printer_id = lbl_array[i, 2]
+        WHILE (i <= size_of_array(lbl_array)) AND
+              (report_id = lbl_array[i, 1])
+            keys[size_of_array(keys) + 1] = lbl_array[i, 3]
+            i = i + 1
+        ENDWHILE
+        
+        WriteToLog("")
+        IF size_of_array(keys) = 1 THEN
+            IF (keys[1] <> EMPTY) AND NOT(BLANK(report_id)) THEN
+                WriteToLog(ASCII(10):"Printing ":STRIP(report_id):", ":keys[1])
+            ENDIF    
+        ELSE
+            WriteToLog(ASCII(10):"Printing ":STRIP(report_id):", ":GetArray(keys))
+        ENDIF
+        
+        window_set_status(RIGHTSTRING(INTERVAL(NOW - start),8):" Transferring ":STRIP(size_of_array(keys)):" labels to ":printer_id)
+        status = PRINT_LABEL_TEMPLATE(report_id, printer_id, 1, keys) 
+        window_set_status(RIGHTSTRING(INTERVAL(NOW - start),8):" Transferred  ":STRIP(size_of_array(keys)):" labels to ":printer_id)
+        WriteTolog(RIGHTSTRING(INTERVAL(NOW - start),8):" Transferred ":STRIP(size_of_array(keys)):" labels to ":printer_id)
+
+        IF status <> EMPTY THEN
+            WriteToLog(status:" = PRINT_LABEL_TEMPLATE(":report_id:", ":printer_id:", 1, ":keys[1]:")")
+        ENDIF
+        
+        IF report_id = lbl_array[i, 2] THEN
+            i = i + 1
+        ENDIF
+
+    ENDWHILE
+    
+    start = NOW
+
+    i = 1 
+    WHILE i <= size_of_array(ArrTests)
+        tn = SELECT test.test_number WHERE test_number = ArrTests[i, 2] and label_printed = FALSE
+        IF (tn <> EMPTY) THEN
+            status = SELECT test.test_number FOR UPDATE WHERE test_number = ArrTests[i, 2]
+            IF (status = tn) THEN
+                START WRITE TRANSACTION "Mark test as printed"
+                ASSIGN test.label_printed = TRUE
+                UPDATE test
+                COMMIT
+            ENDIF
+        ENDIF    
+        i = i + 1
+    ENDWHILE
+    
+    WriteTolog(RIGHTSTRING(INTERVAL(NOW - start),8):" Updated print status on tests")
+    {WriteToLog("Completed, ":STRIP(size_of_array(lbl_array)):" labels in ":RIGHTSTRING(INTERVAL(NOW - start),8):ASCII(10)) }
+    
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Verify if 'res' is already 3rd column of array
+* Parameters   : res, Array
+* Return Value : TRUE/FALSE
+**************************************************************************}
+ROUTINE NOT_IN_ARRAY(res, ArrLabel)
+DECLARE i
+
+    i = 1
+    WHILE i <= size_of_array(ArrLabel)
+        IF (ArrLabel[i, 3] = res) THEN
+            RETURN(FALSE)
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    RETURN(TRUE)
+
+ENDROUTINE
+
+{*************************************************************************}

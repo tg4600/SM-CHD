@@ -1,0 +1,443 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_LEVEL.RPF
+*
+* Purpose       : Routines to access and process level information
+*
+* Document Ref. : SE/T/VGSM310-WORK-MLP
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_MESSAGE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $MLPS_CONST
+JOIN LIBRARY $MLPS_USER
+JOIN LIBRARY $incident_login
+
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET NAME "defer/"
+
+SET COMPILE_OPTION DECLARE
+
+CONSTANT LEVEL_CLASS  = "STD_LEVEL_CLASS"
+
+CONSTANT REPORT_ON_PASS_COMMIT = "P"
+CONSTANT REPORT_ON_FAIL_COMMIT = "Y"
+CONSTANT REPORT_ALWAYS_COMMIT  = "E"
+
+CONSTANT REPORT_ON_PASS_ENTRY  = "I"
+CONSTANT REPORT_ON_FAIL_ENTRY  = "F"
+CONSTANT REPORT_ALWAYS_ENTRY   = "B"
+
+CONSTANT REPORT_ALWAYS         = "A"
+
+DECLARE LEVEL_DATABASE          ,
+	level_identity_size     ,
+	lib_level_mlp_operation
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE lib_level_initialise
+
+	IF NOT global ( "library_initialised" ) THEN
+
+		CREATE OBJECT "STD_COLLECTION" , LEVEL_DATABASE
+		LEVEL_DATABASE . add_index ( "NAME" ) 		
+
+		lib_level_define_base_class ()
+		
+		GET_FIELD_DETAILS mlp_level . level_id  ,
+				  "FIELD_SIZE"          ,
+			          LEVEL_IDENTITY_SIZE
+
+		SET GLOBAL ( "library_initialised" ) TO TRUE
+
+	ENDIF	
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_level_define_base_class
+
+	DEFINE CLASS LEVEL_CLASS
+
+		INHERIT    "STD_COLLECTED"
+
+		ACTIONS    "VALID"                 ,
+			   "PASS_ACTION"           ,
+			   "FAIL_ACTION"           ,
+			   "CALL_LEVEL_ROUTINE"		       		
+
+		PROPERTIES "NAME"       ,
+			   "USER_INFO"	
+
+		TABLES MLP_LEVEL
+
+	END CLASS
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE lib_level_get_context
+
+	RETURN ( lib_level_mlp_operation )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE lib_level_name ( VALUE level_name )
+
+	RETURN ( PAD ( level_name , " " , level_identity_size ))
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE lib_level_get ( VALUE level_name )	
+
+	DECLARE name         ,
+		level        ,
+		level_object ,
+		message_ptr
+	
+	name = lib_level_name ( level_name )
+
+	level_object = LEVEL_DATABASE . get_by_index ( "NAME" , name )
+
+	IF level_object = EMPTY THEN
+
+		level = SELECT mlp_level . level_id	
+		        WHERE  level_id  = name
+
+		IF level = EMPTY THEN
+
+			message_fetch ( "RESULT_ENTRY_LEVEL_NON_EXISTS" ,
+					 message_ptr                    )
+
+			message_add_parameter ( message_ptr    ,
+						strip ( name ) )
+			
+			fatal_error ( message_get_text ( message_ptr , 1 ))
+		
+                ENDIF
+
+		CREATE OBJECT LEVEL_CLASS , level_object
+        	level_object . name = name
+	        	
+		object_copy_current_table ( level_object, "MLP_LEVEL" )
+
+		mlps_user_read_level ( level_object )
+
+		LEVEL_DATABASE . add ( level_object )
+
+	ENDIF
+
+	RETURN ( level_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_level_class_action_valid ( self )
+
+	RETURN ( SELECT mlp_level . result_action IN OBJECT self <> "N" )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE std_level_class_action_call_level_routine ( self          ,
+                                                    mlp_operation )
+
+        DECLARE routine_name ,
+		library_name ,
+		sample_id    ,
+		test_number  ,
+		name         ,
+		level        ,
+		result_object
+
+	result_object = mlp_operation . result_row
+
+        library_name = SELECT mlp_level . report_name
+                        IN OBJECT self
+        routine_name = SELECT mlp_level . routine_name
+                        IN OBJECT self
+        sample_id    = SELECT sample . id_numeric
+                        IN OBJECT result_object . test_object . sample_object
+
+        test_number  = SELECT test . test_number
+                        IN OBJECT result_object . test_object
+
+        name         = SELECT result . name IN OBJECT result_object
+        level        = SELECT mlp_level . level_id IN OBJECT self
+
+        IF routine_name = " " THEN
+
+                routine_name = ( SELECT mlp_level . level_id
+                                                IN OBJECT self )
+
+        ENDIF
+
+        object_set_current_table ( result_object, "RESULT" )
+
+        lib_level_mlp_operation = mlp_operation
+
+	IF NOT BLANK ( library_name ) THEN
+
+		CALL_ROUTINE routine_name
+			NEW CONTEXT
+			IN LIBRARY library_name
+			USING sample_id, test_number, name, level
+			USING TABLE result
+
+	ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_level_class_action_pass_action ( self          ,
+					     mlp_component ,
+					     mlp_operation ,
+					     limit         )
+        DECLARE report_action ,
+                call_report
+
+        report_action = SELECT mlp_level . report_action
+                                           IN OBJECT self
+
+	IF report_action = REPORT_ALWAYS THEN
+
+		call_report = TRUE
+
+	ELSEIF ( lib_level_valid_calling_context ( mlp_operation . calling_context )) AND
+	       ( mlp_operation . calling_context . single_result_commit             ) THEN
+
+		call_report = ( report_action = REPORT_ON_PASS_COMMIT ) OR
+		              ( report_action = REPORT_ALWAYS_COMMIT  ) OR
+		              ( report_action = REPORT_ON_PASS_ENTRY  ) OR
+		              ( report_action = REPORT_ALWAYS_ENTRY   )
+
+	ELSEIF ( NOT lib_level_valid_calling_context ( mlp_operation . calling_context )) OR
+	       ( mlp_operation . calling_context . in_update_phase                      ) THEN
+
+		call_report = ( report_action = REPORT_ON_PASS_COMMIT ) OR
+		              ( report_action = REPORT_ALWAYS_COMMIT  )
+
+	ELSE
+
+		call_report = ( report_action = REPORT_ON_PASS_ENTRY ) OR
+		              ( report_action = REPORT_ALWAYS_ENTRY  )
+
+	ENDIF
+
+	IF ( call_report ) THEN
+
+        	self . call_level_routine ( mlp_operation )
+
+	ENDIF
+
+        mlps_user_level_pass ( mlp_operation ,
+			       mlp_component ,
+			       limit         ,
+			       self          )				
+	
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_level_class_action_fail_action ( self          ,
+					     mlp_component ,
+					     mlp_operation ,
+					     limit	   )
+
+	DECLARE report_action     ,
+	        disallow_flag     ,
+	        incident_template ,
+	        call_report
+
+	mlp_operation . continue_checking = ( "Y" = SELECT limit_view . continue_checking
+	                                                   IN OBJECT limit )
+
+	disallow_flag = SELECT mlp_level . result_action IN OBJECT self
+
+	IF ( disallow_flag = "D" ) OR ( disallow_flag = "F" ) THEN
+
+		mlp_operation . disallow = TRUE
+
+	ENDIF
+
+	report_action = SELECT mlp_level . report_action
+	                       IN OBJECT self
+
+	IF ( SELECT mlp_level . message_action IN OBJECT self                   ) AND
+	   ( lib_level_valid_calling_context ( mlp_operation . calling_context )) AND
+	   ( NOT mlp_operation . calling_context . in_update_phase              ) THEN
+
+		mlp_operation . calling_context . mlp_fail_message ( self          ,
+		                                                     mlp_component ,
+		                                                     mlp_operation ,
+		                                                     limit         )
+
+	ENDIF
+
+	IF report_action = REPORT_ALWAYS THEN
+
+		call_report = TRUE
+
+	ELSEIF ( lib_level_valid_calling_context ( mlp_operation . calling_context )) AND
+	       ( mlp_operation . calling_context . single_result_commit             ) THEN
+
+		call_report = ( report_action = REPORT_ON_FAIL_COMMIT ) OR
+		              ( report_action = REPORT_ALWAYS_COMMIT  ) OR
+		              ( report_action = REPORT_ON_FAIL_ENTRY  ) OR
+		              ( report_action = REPORT_ALWAYS_ENTRY   )
+
+	ELSEIF ( NOT lib_level_valid_calling_context ( mlp_operation . calling_context )) OR
+	       ( mlp_operation . calling_context . in_update_phase                      ) THEN
+
+		call_report = ( report_action = REPORT_ON_FAIL_COMMIT ) OR
+		              ( report_action = REPORT_ALWAYS_COMMIT  )
+
+	ELSE
+
+		call_report = ( report_action = REPORT_ON_FAIL_ENTRY ) OR
+		              ( report_action = REPORT_ALWAYS_ENTRY  )
+
+	ENDIF
+
+	IF ( call_report ) THEN
+
+		self . call_level_routine ( mlp_operation )
+
+	ENDIF
+
+	IF ( lib_level_valid_calling_context ( mlp_operation . calling_context )) AND
+	   (( mlp_operation . calling_context . in_update_phase ) OR
+	    ( mlp_operation . calling_context . single_result_commit )) THEN
+
+		incident_template = SELECT mlp_level . incident_template IN OBJECT self
+
+		IF NOT BLANK ( incident_template ) THEN
+
+			lib_level_get_incidents ( incident_template          ,
+						  mlp_operation . result_row )
+
+		ENDIF
+
+	ENDIF
+
+	mlps_user_level_fail ( mlp_operation ,
+			       mlp_component ,
+			       limit         ,
+			       self          )
+
+ENDROUTINE
+
+
+
+{*****************************************************************************}
+
+	ROUTINE lib_level_get_incidents ( VALUE incident_template ,
+						result_object     )
+
+{
+*	Creates the incident records in an array of objects. The database
+*	records are created in $lib_re_result when the result record is
+*	created.
+*
+******************************************************************************}
+
+DECLARE samp_name , res_name , test_no , the_table , subject_id
+
+	samp_name = SELECT test . sample_id
+					IN OBJECT result_object . test_object
+	res_name  = SELECT result . name IN OBJECT result_object
+	test_no   = SELECT result . test_number IN OBJECT result_object
+
+	the_table = SELECT incident_template . subject_table
+			WHERE template_id = incident_template
+
+	IF ( STRIP ( the_table )) = "RESULT" THEN
+
+		subject_id = test_no : res_name
+		object_set_current_table ( result_object , STRIP ( the_table ))
+
+	ELSEIF ( STRIP ( the_table )) = "TEST" THEN
+
+		subject_id = test_no
+		object_set_current_table ( result_object . test_object , STRIP ( the_table ))
+			
+	ELSEIF ( STRIP ( the_table )) = "SAMPLE" THEN
+
+		subject_id = samp_name
+		object_set_current_table ( result_object . test_object . sample_object , STRIP ( the_table ))
+
+	ELSE
+
+		subject_id = EMPTY
+
+	ENDIF
+
+        { Don't create an incident when authorising or cancelling }
+
+	IF ( subject_id <> EMPTY ) AND
+           ( INDEX ( "ARX", SELECT result . status IN OBJECT result_object ) = 0 ) THEN
+
+		incidents_login_background ( incident_template               ,
+					     subject_id                      ,
+					     result_object . incidents_array ,
+					     result_object.grid              )
+
+	ENDIF
+
+ENDROUTINE    { lib_level_get_incidents }
+
+{*****************************************************************************}
+
+	ROUTINE lib_level_valid_calling_context ( calling_context )
+
+{
+*
+*	Checks if the passed calling_context is valid
+*	i.e. Assigned and not empty
+*
+******************************************************************************}
+
+	DECLARE valid
+
+	IF NOT variable_is_assigned ( calling_context ) THEN
+	
+		valid = FALSE
+	
+	ELSEIF calling_context = EMPTY THEN
+	
+		valid = FALSE
+
+	ELSE
+	
+		valid = TRUE
+
+	ENDIF
+
+	RETURN ( valid )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+{*****************************************************************************}

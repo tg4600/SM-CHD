@@ -1,0 +1,3571 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_UTILS.RPF
+*
+* Purpose       : Common routines for standard reports
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+{ Routines contained within this report include
+
+    Get_identity         -  puts up a box on the screen and prompts for an
+                    old identity.
+
+    Mark_notes_present   - places the note indicator on the screen
+
+    Remove_notes_mark    - Remove the note indicator from the screen
+
+    Note_present         - checks to see if a note is present
+
+    Display_top_line     - Display the first line on the screen
+
+    Display_bottom_line  - Display the bottom line on the screen
+
+    Find_max_number      - Return the maximum number
+
+    Find_min_number      - Return the minimum number
+
+    Move_up_a_line       - Move up a line scrolling if necessary
+
+    Move_down_a_line     - Move down a line scrolling if necessary
+
+    Centre_text          - Centre a piece of text
+
+    Expand_message       - Expand a message
+
+    Contract             - Remove spaces from a string
+
+    GET_SMP_FOR_ANAL     - Returns Sample ID for a given analysis
+
+    confirm_with_message - Display a message and wait for user to confirm
+
+    confirm_with_text    - Display a bit of text and wait for user to confirm
+
+    popup_menu           - Does a client_do_popup_menu on an array, but return
+                   a number instead of the item text
+
+    flash_message_with_param - Same as flash message but accepts a parameter
+                   or array of paramters to display
+
+    confirm_message_with_param - Same as confirm message but accepts a parameter
+                     or array of paramters to display
+
+}
+
+JOIN STANDARD_LIBRARY std_client
+JOIN STANDARD_LIBRARY std_utils
+JOIN STANDARD_LIBRARY std_message
+JOIN STANDARD_LIBRARY std_prompt
+JOIN STANDARD_LIBRARY std_structure
+JOIN STANDARD_LIBRARY std_window
+JOIN STANDARD_LIBRARY std_vgl
+JOIN STANDARD_LIBRARY STD_VGL_TOOLS
+
+ENABLE WINDOWS
+SET NOTPROTECTED
+
+{------------------------------------------------------------------------------}
+
+CONSTANT LIB_UTILS_SQLSERVER = "SQLSERVER"
+
+{------------------------------------------------------------------------------}
+
+ROUTINE get_identity_size ( VALUE browse_type )
+
+DECLARE key0 , size_of_browse
+
+GET_TABLE_DETAILS 'browse_type' , "BROWSE_FIELD" , key0
+GET_FIELD_DETAILS 'browse_type' . 'key0' , "FIELD_SIZE" , size_of_browse
+
+RETURN ( size_of_browse )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_identity_in_window (       identity ,
+                          screen ,
+                    VALUE prompt_line ,
+                    VALUE prompt_column ,
+                    VALUE browse_type ,
+                    VALUE OBSELETE )
+
+DECLARE key0, identity_to_find
+
+get_table_details 'browse_type' , "BROWSE_FIELD" , key0
+
+REPEAT
+
+    PROMPT FOR identity IN WINDOW screen
+           ON LINE prompt_line
+           FROM prompt_column
+           BROWSE ON 'browse_type'
+
+    IF lastkey = "EXIT" THEN
+
+        RETURN ( FALSE )
+
+        ELSE
+
+        identity_to_find = select 'browse_type' . 'key0'
+                   where  'key0' = identity
+                 {  order on 'key0'  }
+
+    ENDIF
+
+UNTIL ( strip ( identity ) <> " " ) AND
+      ( identity_to_find = identity )
+
+RETURN ( TRUE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_identity (       identity ,
+                  VALUE input_message ,
+                  VALUE top_line ,
+                  VALUE browse_type ,
+                  VALUE help_context )
+
+{ Places a box on the screen and prompts for the required value browsing on
+  the given table }
+
+DECLARE width_to_use , bottom_line , input_box , temp
+
+IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+    return ( prompt_in_window ( browse_type ,
+                                input_message ,
+                                top_line ,
+                                help_context ,
+                                identity ) )
+
+ELSE
+
+temp = get_user_message ( input_message , 1)
+
+IF temp <> ERROR THEN
+
+    input_message = temp
+
+ENDIF
+
+size_of_identity = get_identity_size ( browse_type )
+
+width_to_use = find_max_number ( length ( input_message ) + size_of_identity ,
+                             length ( top_line )  ) + 10
+
+{top_line    = centre_text ( top_line , width_to_use  - 2 )}
+
+CREATE TEXT WINDOW input_box
+       HEIGHT 4
+       WIDTH width_to_use
+       BORDER
+       HELP CONTEXT = help_context
+
+display_top_line ( top_line , input_box , width_to_use )
+
+DISPLAY input_message  IN WINDOW input_box ON LINE 3 FROM 7
+
+PASTE TEXT WINDOW input_box ON LINE 11 FROM ( 80 - width_to_use ) DIV 2 + 1
+
+RETURN ( get_identity_in_window ( identity ,
+                      input_box ,
+                  3 ,
+                  length ( input_message ) + 9 ,
+                  browse_type ,
+                      EMPTY ))
+
+ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_new_identity_in_window (       identity ,
+                              screen ,
+                        VALUE prompt_line ,
+                        VALUE prompt_column ,
+                        VALUE browse_type ,
+                        VALUE OBSELETE  )
+
+DECLARE identity_to_find , key0 , temp
+
+
+get_table_details 'browse_type' , "KEY0_FIELD" , temp
+key0 = temp [1]
+
+REPEAT
+
+    REPEAT
+
+        PROMPT FOR identity IN WINDOW screen
+                   ON LINE prompt_line
+                   FROM prompt_column
+                   FORMAT 'browse_type'.'key0'
+
+        IF lastkey = "EXIT" THEN
+
+            RETURN ( FALSE )
+
+        ENDIF
+
+    UNTIL NOT ( BLANK ( identity ) )
+
+        Set Security false
+
+    identity_to_find = select 'browse_type' . 'key0'
+               where  'key0' = identity
+
+        Set Security true
+
+    IF identity_to_find <> EMPTY THEN
+
+        flash_message ( get message ( 273  , 1  ) , TRUE )
+
+    ELSE
+
+        RETURN ( TRUE )
+
+    ENDIF
+
+UNTIL FALSE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_new_identity (       identity ,
+                      VALUE input_message ,
+                      VALUE top_line ,
+                      VALUE browse_type ,
+                  VALUE help_context )
+
+{ Places a box on the screen and prompts for the required new value }
+
+DECLARE width_to_use , bottom_line , input_box , temp
+
+temp = get_user_message ( input_message , 1 )
+
+IF temp <> ERROR THEN
+
+    input_message = temp
+
+ENDIF
+
+size_of_identity = get_identity_size ( browse_type )
+
+width_to_use = find_max_number ( length ( input_message ) + size_of_identity ,
+                             length ( top_line )  ) + 10
+
+{top_line    = centre_text ( top_line , width_to_use  - 2 )}
+
+CREATE TEXT WINDOW input_box
+       HEIGHT 4
+       WIDTH width_to_use
+       BORDER
+       HELP CONTEXT = help_context
+
+display_top_line ( top_line , input_box , width_to_use )
+
+DISPLAY input_message  IN WINDOW input_box ON LINE 3 FROM 7
+
+PASTE TEXT WINDOW input_box ON LINE 11 FROM 20
+
+RETURN ( get_new_identity_in_window ( identity ,
+                          input_box ,
+                      3 ,
+                      length ( input_message ) + 9 ,
+                      browse_type ,
+                          EMPTY ))
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE move_up_a_line (       screen_current ,
+                VALUE screen_bottom ,
+                    VALUE screen_top ,
+                      field_current ,
+                VALUE field_bottom ,
+                      screen )
+
+IF screen_current = screen_bottom THEN
+
+    IF field_current <> field_bottom THEN
+
+        field_current = field_current - 1
+
+        scroll in window screen DIRECTION "DOWN"
+                 FROM LINE screen_bottom
+                 TO LINE   screen_top
+
+        RETURN ( TRUE )
+
+    ENDIF
+
+ELSE
+
+    IF field_current <> field_bottom THEN
+
+        screen_current = screen_current - 1
+            field_current  = field_current - 1
+
+    ENDIF
+
+ENDIF
+
+RETURN ( FALSE )
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE insert_or_move_down_a_line (       screen_current ,
+                            VALUE screen_bottom ,
+                                VALUE screen_top ,
+                                  field_current ,
+                            VALUE field_top ,
+                                  screen ,
+                        VALUE insert_allowed ,
+                              insert_required )
+
+
+insert_required = FALSE
+
+IF ( field_current >= field_top ) AND
+   ( insert_allowed ) THEN
+
+    IF field_current = field_top THEN
+
+        insert_required = TRUE
+        field_top = field_top + 1
+
+    ELSE
+
+        RETURN ( FALSE )
+
+    ENDIF
+
+ELSE
+
+    insert_required = FALSE
+
+ENDIF
+
+IF screen_current = screen_top THEN
+
+    IF field_current <> field_top THEN
+
+        field_current = field_current + 1
+
+        scroll in window screen DIRECTION "UP"
+                 FROM LINE screen_bottom
+                 TO LINE   screen_top
+
+        RETURN ( TRUE )
+
+    ENDIF
+
+ELSE
+
+    IF field_current <> field_top THEN
+
+        screen_current = screen_current + 1
+            field_current  = field_current  + 1
+
+    ENDIF
+
+ENDIF
+
+RETURN ( insert_required )
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE move_down_a_line (       screen_current ,
+                  VALUE screen_bottom ,
+                      VALUE screen_top ,
+                        field_current ,
+                  VALUE field_top ,
+                        screen )
+
+DECLARE insert_required
+
+RETURN ( insert_or_move_down_a_line ( screen_current ,
+                          screen_bottom ,
+                          screen_top ,
+                          field_current ,
+                          field_top ,
+                          screen ,
+                          FALSE ,
+                          insert_required ))
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE mark_note_present (       screen ,
+                   VALUE screen_width )
+
+    IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+
+        DISPLAY "N" IN WINDOW screen
+            ON LINE 1 FROM screen_width - 2
+                BOLD INVERSE
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE remove_notes_mark (       screen ,
+                   VALUE screen_width )
+
+    IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+
+        DISPLAY " " IN WINDOW screen
+            ON LINE 1 FROM screen_width - 2
+                INVERSE
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE note_present ( VALUE subject ,
+                  VALUE subject_item )
+
+RETURN ( FALSE )
+{ ROB
+RETURN ( select note.note_key
+            where note_key = pad ( subject , " " , 20 ) :
+                         pad ( subject_item , " " , 20 )
+            order on note_key
+         <> empty )
+}
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE display_top_line ( VALUE top_line ,
+                    screen   ,
+                  VALUE screen_width )
+
+DECLARE temp
+
+    temp = get_user_message ( top_line , 1 )
+
+    IF temp <> ERROR THEN
+
+        top_line = temp
+
+    ENDIF
+
+    window_set_header ( screen, STRIP ( top_line ) )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE display_bottom_line ( VALUE bottom_line ,
+                       screen   ,
+                     VALUE screen_width ,
+                     VALUE screen_height ,
+                     VALUE indicate_scroll )
+
+DECLARE temp
+
+IF ( GLOBAL ( "TERMTYPE" ) <> "GUI" ) THEN
+
+    temp = get_user_message ( bottom_line , 1 )
+
+    IF temp <> ERROR THEN
+
+        bottom_line = temp
+
+    ENDIF
+
+    IF indicate_scroll THEN
+
+        DISPLAY "^" IN WINDOW screen
+            ON LINE screen_height
+                FROM screen_width - 2
+                    BOLD INVERSE
+
+        DISPLAY " " IN WINDOW screen
+            ON LINE screen_height
+            FROM screen_width - 1
+            INVERSE
+
+        bottom_line = centre_text ( bottom_line , screen_width - 4 )
+
+    ELSE
+
+        bottom_line = centre_text ( bottom_line , screen_width - 2 )
+
+    ENDIF
+
+    DISPLAY bottom_line IN WINDOW screen ON LINE
+        screen_height FROM 2  INVERSE
+
+ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE find_min_number ( VALUE first_number , VALUE second_number )
+
+IF numeric ( first_number ) < numeric ( second_number ) THEN
+
+    RETURN ( first_number )
+
+ELSE
+
+    RETURN ( second_number )
+
+ENDIF
+
+ENDROUTINE
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE find_max_number ( VALUE first_number , VALUE second_number )
+
+IF numeric ( first_number ) > numeric ( second_number ) THEN
+
+    RETURN ( first_number )
+
+ELSE
+
+    RETURN ( second_number )
+
+ENDIF
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE centre_text( VALUE txt, VALUE len )
+
+    DECLARE rtxt, n_sp
+
+    {
+    len = NUMERIC( len )
+    IF ( len = ERROR ) OR ( len < 1 ) OR ( len > 255 ) THEN
+        RETURN( ERROR )
+    ENDIF
+        }
+
+    rtxt = LEFTSTRING( STRIP( txt ), LENGTH( txt ) )
+    n_sp = ( len - LENGTH( rtxt ) ) DIV 2
+    IF n_sp > 0 THEN
+        rtxt = PAD( " ", " ", n_sp ):rtxt
+    ENDIF
+    rtxt =  PAD( rtxt, " ", len )
+
+    RETURN( rtxt )
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE expand_message ( VALUE message , VALUE replacement_text )
+
+{ replace the $variable in the message by the given text }
+
+DECLARE start_position , end_position , found_end
+
+start_position = 1
+
+WHILE ( start_position < length ( message ) ) AND
+      ( substring ( message , start_position , 1 ) <> "$" )  DO
+
+    start_position = start_position + 1
+
+ENDWHILE
+
+IF start_position <> length ( message ) THEN
+
+    end_position = start_position
+        found_end    = FALSE
+
+    WHILE ( end_position <= length ( message ) ) AND
+          ( NOT FOUND_END ) DO
+
+        IF substring ( message , end_position , 1 ) = " " THEN
+
+            found_end = TRUE
+
+        ELSE
+
+            end_position = end_position + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    IF end_position < length ( message ) THEN
+
+            RETURN ( substring ( message , 1 , start_position - 1 ) :
+             replacement_text :
+             substring ( message , end_position ,
+                     length ( message ) - end_position + 1 ))
+
+    ELSE
+
+            RETURN ( substring ( message , 1 , start_position - 1 ) :
+             replacement_text )
+
+    ENDIF
+
+ENDIF
+
+RETURN ( ERROR )
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE contract ( VALUE string_to_contract )
+
+DECLARE return_line
+
+return_line = strip ( string_to_contract ) # " "
+
+WHILE return_line <> string_to_contract DO
+
+    string_to_contract = return_line
+    return_line        = return_line # " "
+
+ENDWHILE
+
+RETURN ( return_line )
+
+ENDROUTINE
+
+{ --------------------------------------------------------------------------- }
+
+GLOBAL ROUTINE get_token (       parameter_string ,
+               VALUE separator )
+
+DECLARE separator_pos  , temp
+
+separator_pos = INDEX ( parameter_string , separator )
+
+IF separator_pos = 0 THEN
+
+    temp = strip ( parameter_string )
+
+    parameter_string = " "
+
+ELSE
+
+    temp = strip ( substring ( parameter_string , 1 , separator_pos - 1 ))
+
+    parameter_string = substring ( parameter_string , separator_pos + 1 ,
+                       length ( parameter_string ) -
+                        separator_pos )
+
+ENDIF
+
+RETURN ( temp )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE wait
+
+DECLARE time
+
+time = global ( "READ_TIME" )
+
+sleep for time
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE put_up_message ( VALUE message ,
+                    VALUE top_line ,
+                      message_box )
+
+DECLARE update_count
+
+update_count = screen_update_override ( )
+
+message_width = find_max_number ( length ( message ) , length ( top_line ) ) + 10
+message_width = find_max_number ( message_width , 35 )
+
+create_message_box  ( top_line , message_width , message_box )
+display_new_message ( message  , message_width , message_box )
+
+screen_update_restore ( update_count )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE create_message_box ( VALUE top_line ,
+                    VALUE message_width ,
+                          message_box )
+
+    CONSTANT MESSAGE_HEIGHT = 4
+    CONSTANT MESSAGE_LINE   = 10
+
+    IF GLOBAL ( "TERMTYPE" ) <> "GUI" THEN
+
+        IF message_width < GLOBAL ( "SCREEN_WIDTH" ) - 4 THEN
+            message_width = message_width + 2
+        ENDIF
+
+        message_column = find_max_number( 1,
+            ( GLOBAL ( "SCREEN_WIDTH" ) - message_width ) DIV 2 + 1 )
+
+        CREATE TEXT WINDOW message_box
+                    HEIGHT MESSAGE_HEIGHT
+                    WIDTH  MESSAGE_WIDTH
+                    BORDER
+                    HELP CONTEXT = "$LIB_UTILS_MESSAGE"
+
+        display_top_line ( top_line , message_box , message_width )
+
+        PASTE TEXT WINDOW message_box AT MESSAGE_COLUMN , MESSAGE_LINE
+
+    ELSE
+        message_box = EMPTY
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE display_new_message ( VALUE message ,
+                     VALUE message_width ,
+                       message_box )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        window_set_status ( message )
+
+    ELSE
+
+        DISPLAY centre_text ( message , MESSAGE_WIDTH )
+                FROM 2 ON LINE 3
+                IN WINDOW message_box
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE remove_message ( message_box )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        window_set_status ( "" )
+
+    ELSE
+
+        UNPASTE TEXT WINDOW message_box
+
+    ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE put_up_error_message ( VALUE message ,
+                               VALUE do_pause ,
+                   VALUE top_line )
+
+DECLARE message_box , status
+
+IF global ( "mode" ) <> "INTERACTIVE" THEN
+
+    LOG_MESSAGE "LOGFILE", message , status
+
+ELSE
+
+    put_up_message ( message ,
+             topline ,
+             message_box )
+
+    update_count = screen_update_override ( )
+
+    IF do_pause THEN
+
+        pause ()
+
+    ELSE
+
+        wait ()
+
+    ENDIF
+
+    screen_update_restore ( update_count )
+
+ENDIF
+
+ENDROUTINE
+
+
+    {-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE flash_message ( VALUE message ,
+                               VALUE do_pause )
+
+DECLARE temp
+DECLARE temp_array
+
+IF global ( "mode" ) <> "INTERACTIVE" THEN
+
+    LOG_MESSAGE "LOGFILE", message , status
+
+ELSE
+
+    ARRAY temp_array ARRAY_SIZE (2)
+    temp_array[ 1 ] = message
+
+    flash_messages( get message(2831,1), "", temp_array, do_pause )
+
+ENDIF
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE flash_messages ( VALUE top_line ,
+                                VALUE bottom_line ,
+                                      message_array ,
+                                VALUE pause_flg )
+
+DECLARE max_mess_len, win_height, mess_len, wrapped_messages, count, w_count,
+        max_mess_width, max_mess_lines, at_x, at_y, message_copy, min_mess_width
+
+ARRAY wrapped_messages
+
+  IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+    flash_messages_gui ( top_line, message_array, "", "" )
+    RETURN
+
+  ENDIF
+
+  win_height = 4
+  count = 1
+  w_count = 1
+  max_mess_width = GLOBAL ( "SCREEN_WIDTH" ) - 2
+  min_mess_width = 33
+  max_mess_lines = 19
+
+  { CONVERT USER MESSAGES }
+  message_copy = get_user_message( top_line, 1 )
+  IF ( message_copy <> ERROR ) THEN
+    top_line = message_copy
+  ENDIF
+  message_copy = get_user_message( bottom_line, 1 )
+  IF ( message_copy <> ERROR ) THEN
+    bottom_line = message_copy
+  ENDIF
+  count = 1
+  WHILE ( message_array[ count ] <> EMPTY ) DO
+    message_copy = get_user_message( message_array[ count ], 1 )
+    IF message_copy <> ERROR THEN
+      message_array[ count ] = message_copy
+    ENDIF
+    count = count + 1
+  ENDWHILE
+
+  IF STRINGLENGTH( top_line ) > max_mess_width THEN
+    top_line = LEFTSTRING( top_line, max_mess_width )
+  ENDIF
+  IF STRINGLENGTH( bottom_line ) > max_mess_width THEN
+    bottom_line = LEFTSTRING( bottom_line, max_mess_width )
+  ENDIF
+
+  max_mess_len = find_max_number( STRINGLENGTH( top_line ),
+                          STRINGLENGTH( bottom_line ) )
+  max_mess_len = find_min_number( max_mess_len, max_mess_width )
+  max_mess_len = find_max_number( max_mess_len, min_mess_width )
+
+  count = 1
+  WHILE ( ( message_array[ count ] <> EMPTY ) AND
+          ( w_count <= max_mess_lines ) ) DO
+    mess_len = LENGTH( message_array[ count ] )
+    IF ( mess_len > max_mess_len ) THEN
+      IF ( mess_len < max_mess_width ) THEN
+        max_mess_len = mess_len
+        w_count = w_count + 1
+      ELSE
+        max_mess_len = max_mess_width
+        message_copy = message_array[ count ]
+        WHILE ( mess_len > 0 ) DO
+          w_count = w_count + 1
+          mess_len = find_min_number( mess_len, max_mess_width )
+          mess_len = STRINGLENGTH( SPLITWORDS( message_copy, mess_len ) )
+          message_copy = RIGHTSTRING( message_copy,
+                          STRINGLENGTH( message_copy ) - mess_len )
+          mess_len = LENGTH( message_copy )
+        ENDWHILE
+      ENDIF
+    ELSE
+      w_count = w_count + 1
+    ENDIF
+    count = count + 1
+  ENDWHILE
+
+  win_height = win_height + w_count - 1
+  count = 1
+  w_count = 1
+  WHILE ( ( message_array[ count ] <> EMPTY ) AND
+          ( w_count <= max_mess_lines ) ) DO
+    mess_len = LENGTH( message_array[ count ] )
+    IF ( mess_len > max_mess_len ) THEN
+      IF ( mess_len < max_mess_width ) THEN
+        wrapped_messages[ w_count ] = STRIP( message_array[ count ] )
+        w_count = w_count + 1
+      ELSE
+        message_copy = message_array[ count ]
+
+        WHILE ( mess_len > 0 ) DO
+          IF mess_len > max_mess_width THEN
+            mess_len = max_mess_width
+          ENDIF
+          wrapped_messages[ w_count ] = SPLITWORDS( message_copy, mess_len )
+          mess_len = STRINGLENGTH( wrapped_messages[ w_count ] )
+          w_count = w_count + 1
+          message_copy = RIGHTSTRING( message_copy,
+                          STRINGLENGTH( message_copy ) - mess_len )
+          mess_len = LENGTH( message_copy )
+        ENDWHILE
+
+      ENDIF
+    ELSE
+      wrapped_messages[ w_count ] = STRIP( message_array[ count ] )
+      w_count = w_count + 1
+    ENDIF
+    count = count + 1
+  ENDWHILE
+
+  IF ( w_count > max_mess_lines ) THEN
+    w_count = max_mess_lines
+  ENDIF
+
+  at_y = ( GLOBAL ( "SCREEN_HEIGHT" ) - (w_count+4) ) DIV 2 + 1
+  at_x = ( GLOBAL ( "SCREEN_WIDTH" ) - ( max_mess_len + 2 ) ) DIV 2 + 1
+
+  IF ( STRINGLENGTH( bottom_line ) = 0 ) THEN
+    win_height = win_height - 1
+  ENDIF
+
+  IF ( max_mess_len < max_mess_width - 1 ) THEN
+    CREATE TEXT WINDOW flash_window
+           HEIGHT win_height
+           WIDTH max_mess_len + 2
+           BORDER
+           HELP CONTEXT = "$LIB_UTILS_FLASH"
+
+    DISPLAY centre_text( top_line, max_mess_len ) AT 2,1 IN WINDOW flash_window INVERSE
+
+    IF ( STRINGLENGTH( bottom_line ) > 0 ) THEN
+      DISPLAY centre_text( bottom_line, max_mess_len ) AT 2,win_height IN WINDOW flash_window INVERSE
+    ENDIF
+  ELSE
+    CREATE TEXT WINDOW flash_window
+           HEIGHT win_height
+           WIDTH max_mess_len
+           BORDER
+           HELP CONTEXT = "$LIB_UTILS_FLASH2"
+           {Same as above window}
+
+    DISPLAY centre_text( top_line, max_mess_len - 2 ) AT 2,1 IN WINDOW flash_window INVERSE
+
+    IF ( STRINGLENGTH( bottom_line ) > 0 ) THEN
+      DISPLAY centre_text( bottom_line, max_mess_len - 2 ) AT 2,win_height IN WINDOW flash_window INVERSE
+    ENDIF
+    at_x = at_x + 1
+  ENDIF
+
+  w_count = 1
+  WHILE ( ( wrapped_messages[ w_count ] <> EMPTY ) AND
+          ( w_count <= max_mess_lines ) ) DO
+
+    IF ( max_mess_len < max_mess_width - 1 ) THEN
+      DISPLAY centre_text( wrapped_messages[ w_count ], max_mess_len )
+              AT 2, w_count+2
+              IN WINDOW flash_window
+    ELSE
+      DISPLAY centre_text( wrapped_messages[ w_count ], max_mess_len )
+              AT 1, w_count+2
+              IN WINDOW flash_window
+    ENDIF
+
+    w_count = w_count + 1
+
+  ENDWHILE
+
+  PASTE TEXT WINDOW flash_window AT at_x, at_y
+
+  update_count = screen_update_override ( )
+
+  IF pause_flg THEN
+    pause()
+  ELSE
+    wait()
+  ENDIF
+
+  UNPASTE TEXT WINDOW flash_window
+
+  screen_update_restore ( update_count )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE flash_messages_gui ( VALUE top_line ,
+                                          message_array ,
+                                    VALUE severity ,
+                                    VALUE help_context )
+
+DECLARE count, message_copy, total_message, mess_lines, message_ptr
+
+
+    { CONVERT USER MESSAGES }
+
+    message_copy = get_user_message( top_line, 1 )
+
+    IF ( message_copy <> ERROR ) THEN
+
+        top_line = message_copy
+
+    ENDIF
+
+    count = 1
+    total_message = ""
+    mess_lines = size_of_array ( message_array )
+
+    WHILE ( count <= mess_lines ) AND
+          ( message_array[ count ] <> EMPTY ) DO
+
+        message_fetch ( message_array[ count ], message_ptr )
+
+        IF message_ptr <> EMPTY THEN
+
+            message_array[ count ] = message_get_text ( message_ptr ,1 )
+
+            IF ( count = 1 ) AND BLANK ( severity ) THEN
+                severity = message_get_severity ( message_ptr )
+            ENDIF
+
+        ENDIF
+
+        IF count = 1 THEN
+            total_message = message_array [ count ]
+        ELSE
+            total_message = total_message : CHR (13) :
+                            message_array [ count ]
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    total_message = STRIP ( total_message )
+    flash_gui ( top_line , total_message , severity , help_context )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE fatal_error ( VALUE message )
+
+DECLARE temp_array
+
+    IF global ( "mode" ) <> "INTERACTIVE" THEN
+
+        LOG_MESSAGE "LOGFILE", message , status
+
+    ELSEIF global ( "TERMTYPE" ) = "GUI" THEN
+
+        ARRAY temp_array ARRAY_SIZE (2)
+        temp_array[ 1 ] = message
+
+        flash_messages_gui ( get message(2831,1) ,
+                             temp_array          ,
+                             "ERROR"             ,
+                             ""                  )
+
+    ELSE
+
+    put_up_error_message ( message ,
+                   TRUE ,
+                   get message (2832,1) )
+
+    ENDIF
+
+EXIT
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+ROUTINE create_lock_message ( VALUE table_id ,
+                  VALUE field_id ,
+                  VALUE identity )
+
+IF NUMTEXT ( table_id ) THEN
+
+{ SUSAND 19/11/1991 Need to convert table id to number [Bug 124] Elmo 20/02/92}
+{  table_id = tablename ( table_id ) }
+   table_id = tablename ( NUMERIC (table_id) )
+ENDIF
+
+RETURN ( get message (2833,1) : strip ( identity ) : get message (2834,1) :
+     strip ( table_id ) : get message (2835,1) )
+
+ENDROUTINE
+
+{-----------------------------------------------------------------------------}
+
+GLOBAL ROUTINE lock_required_record ( VALUE table_id ,
+                      VALUE field_id ,
+                      VALUE identity ,
+                      VALUE do_lock ,
+                        record_found )
+
+DECLARE required_record  , leave_loop , record_locked , lock_window ,
+    key_entered
+
+record_locked = FALSE
+record_found  = TRUE
+leave_loop    = FALSE
+
+
+    IF do_lock THEN
+
+        required_record = select 'table_id'.'field_id'
+                  for update
+                  where 'field_id' = identity
+                {  order on 'field_id' }
+
+    ELSE
+
+        required_record = select 'table_id'.'field_id'
+                  where 'field_id' = identity
+                {  order on 'field_id' }
+
+    ENDIF
+
+    IF required_record = LOCKED THEN
+
+        record_found = FALSE
+
+    ELSEIF required_record = EMPTY THEN
+
+        record_found = FALSE
+                leave_loop   = TRUE
+
+    ELSE
+
+        leave_loop = TRUE
+
+    ENDIF
+
+
+RETURN ( ( required_record <> LOCKED ) AND ( required_record <> EMPTY ) )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_old_identity_and_lock  ( VALUE table ,
+                        VALUE field ,
+                              screen ,
+                              identity ,
+                        VALUE prompt_line ,
+                            VALUE prompt_column ,
+                                VALUE do_lock ,
+                            VALUE OBSELETE )
+
+DECLARE record_found , got_record , leave_loop
+
+get_table_details 'table' , "BROWSE_FIELD" , key0
+leave_loop = FALSE
+
+REPEAT
+
+    IF do_lock THEN
+
+        PROMPT FOR identity IN WINDOW screen
+               ON LINE prompt_line
+               FROM prompt_column
+                   BROWSE ON 'table'
+               THEN SELECT FOR UPDATE
+
+    ELSE
+
+        PROMPT FOR identity IN WINDOW screen
+               ON LINE prompt_line
+               FROM prompt_column
+                   BROWSE ON 'table'
+               THEN SELECT
+
+    ENDIF
+
+    IF lastkey = "EXIT" THEN
+
+        RETURN ( FALSE )
+
+        ELSE
+
+        leave_loop = strip ( identity ) <> " "
+
+    ENDIF
+
+UNTIL leave_loop
+
+RETURN ( TRUE )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_choose_value (       choose_array ,
+                  VALUE data_value ,
+                  VALUE the_array_size )
+
+    DECLARE count, found, done
+
+    count = 1
+    found = FALSE
+        done  = FALSE
+
+    WHILE NOT done DO
+
+        IF count = the_array_size + 1 THEN
+
+            done = TRUE
+
+        ELSEIF choose_array [ count , 1 ] = empty THEN
+
+            done = TRUE
+
+        ELSEIF choose_array [ count , 2] = data_value THEN
+
+            found = TRUE
+            done  = TRUE
+
+        ELSE
+
+            count = count + 1
+
+        ENDIF
+
+    ENDWHILE
+
+    IF NOT found THEN
+
+        count = 1
+
+    ENDIF
+
+    RETURN ( choose_array [ count , 1 ] )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE setup_boolean_array ( boolean_array )
+
+ARRAY boolean_array ARRAY_SIZE ( 2 , 2 )
+
+boolean_array [ 1 , 1 ] = get message ( 1345 , 1 )
+boolean_array [ 1 , 2 ] = FALSE
+
+boolean_array [ 2 , 1 ] = get message ( 1344 , 1 )
+boolean_array [ 2 , 2 ] = TRUE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+{ Routines to support foreign language browse on boolean }
+
+GLOBAL ROUTINE display_boolean_value ( VALUE boolean_value ,
+                       VALUE line ,
+                       VALUE column ,
+                         screen )
+
+DECLARE boolean_array
+
+setup_boolean_array ( boolean_array )
+
+DISPLAY get_choose_value ( boolean_array ,
+               boolean_value ,
+               2 ) ON LINE line FROM column
+                   IN WINDOW screen
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE prompt_boolean_value (       boolean_value ,
+                      VALUE line ,
+                      VALUE column ,
+                        screen )
+DECLARE boolean_array
+
+setup_boolean_array ( boolean_array )
+
+PROMPT FOR boolean_value ON LINE line FROM column
+             IN WINDOW screen choose outof boolean_array
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_boolean_text ( VALUE boolean_value )
+
+DECLARE boolean_array
+
+setup_boolean_array ( boolean_array )
+
+RETURN ( get_choose_value ( boolean_array ,
+                boolean_value ,
+                2 ))
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE display_date ( VALUE data_info )
+
+RETURN ( substring ( data_info , 1, 17 ))
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE output_message ( VALUE message_text )
+
+DECLARE temp , message_window , status
+
+temp = get_user_message ( message_text , 1 )
+
+IF temp <>  error THEN
+
+    message_text = temp
+
+ENDIF
+
+IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+    window_set_status ( message_text )
+
+    wait ()
+
+    window_set_status ( "" )
+
+ELSEIF global ( "mode" ) <> "INTERACTIVE" THEN
+
+    LOG_MESSAGE "LOGFILE", message_text , status
+
+ELSE
+
+    CREATE TEXT WINDOW message_window
+                HEIGHT 1
+                WIDTH GLOBAL ( "SCREEN_WIDTH" )
+                HELP CONTEXT = "$LIB_UTILS_OUTPUT"
+
+    DISPLAY message_text IN WINDOW message_window AT 1 , 1
+
+    PASTE TEXT WINDOW message_window ON LINE GLOBAL ( "SCREEN_HEIGHT" ) FROM 1
+
+    wait ()
+
+    UNPASTE TEXT WINDOW message_window
+
+ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE get_sample_for_anal( VALUE analysis_id,
+                    VALUE test_statuses,
+                    VALUE prompt_text )
+
+DECLARE win_width, sampleid, sample_statuses
+
+  sample_statuses = GLOBAL( "SAMPLE_STATUS" )
+  prompt_text = STRIP( prompt_text ) : " "
+  sampleid = ""
+
+  SET SAMPLESTATUS "V"
+
+  win_width = STRINGLENGTH( prompt_text ) + 32
+
+  IF ( win_width > 80 ) THEN win_width = 80 ENDIF
+
+  CREATE TEXT WINDOW win_sample HEIGHT 4
+                    WIDTH win_width
+                    BORDER
+                    HEADER=GET_USER_MESSAGE("LIB_UTILS_HEAD" ,1)
+                HELP CONTEXT = "$LIB_UTILS_SAMPLE"
+
+  PASTE TEXT WINDOW win_sample AT 12,8
+
+  PROMPT FOR sampleid IN WINDOW win_sample
+              USING prompt_text
+              AT 2,3
+              BROWSE ON sample
+
+  UNPASTE TEXT WINDOW win_sample
+
+  SET SAMPLESTATUS sample_statuses
+
+  RETURN( sampleid )
+
+ENDROUTINE { get_samp_for_anal }
+
+
+{------------------------------------------------------------------------------}
+
+{******************************************************************************}
+
+    GLOBAL ROUTINE
+
+    confirm_with_message ( VALUE message_id )
+
+{
+*   Put up a confirm window based on a message. Return whether user hits
+*   DO (TRUE) or EXIT (FALSE)
+*
+*******************************************************************************}
+
+
+    DECLARE form , window_width , help_context , message , lines , loop ,
+            screen_row , position , total_text
+
+    IF GLOBAL( "CONFIRMSUPPRESSED" ) THEN
+        RETURN ( TRUE )
+    ENDIF
+
+    message_fetch ( message_id , message )
+
+    IF message <> EMPTY THEN
+        lines = message_get_lines ( message )
+        help_context = message_get_help ( message )
+    ELSE
+        lines = 1
+        help_context = "$LIB_UTILS_CONFIRM_MESSAGE"
+    ENDIF
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+        IF message <> EMPTY THEN
+
+            total_text = ""
+            loop = 1
+            WHILE ( loop <= lines ) DO
+
+                text = message_get_text ( message , loop )
+
+                total_text = total_text : " " : text
+                loop = loop + 1
+
+            ENDWHILE
+
+            total_text = STRIP ( total_text )
+
+        ELSE
+            total_text = STRIP ( message_id )
+        ENDIF
+
+        RETURN ( confirm_gui ( total_text , help_context ) )
+
+    ENDIF
+
+    header_message = GET_USER_MESSAGE ( "LIB_UTILS_CONFIRM_HEADER" , 1 )
+    footer_message = GET_USER_MESSAGE ( "LIB_UTILS_CONFIRM_FOOTER" , 1 )
+
+    help_context = message_get_help ( message )
+
+    IF blank ( help_context ) THEN
+        help_context = "$LIB_UTILS_CONFIRM_MESSAGE"
+    ENDIF
+
+    screen_row = ( GLOBAL ( "SCREEN_HEIGHT" ) - lines + 1 ) / 2
+
+    PROMPT OBJECT form
+           CLASS PROMPT_CLASS_FORM
+           WITH ( row          = screen_row     ,
+                  height       = lines          ,
+                  border       = TRUE           ,
+                  header       = header_message ,
+                  footer       = footer_message ,
+                  help_context = help_context   )
+
+    window_width = LENGTH ( header_message )
+    window_width = find_max_number ( window_width              ,
+                                     LENGTH ( footer_message ) )
+
+    loop = 1
+    WHILE ( loop <= lines ) DO
+
+        text = message_get_text ( message , loop )
+
+        window_width = find_max_number ( window_width    ,
+                                         LENGTH ( text ) )
+        loop = loop + 1
+
+    ENDWHILE
+
+    loop = 1
+    WHILE ( loop <= lines ) DO
+
+        text = message_get_text ( message , loop )
+        position = ( window_width - LENGTH ( text ) ) / 2 + 1
+        form . add_display ( text , position , loop , 0 )
+
+        loop = loop + 1
+
+    ENDWHILE
+
+    form . width  = window_width
+    form . column = ( GLOBAL ( "SCREEN_WIDTH" ) - window_width ) / 2 + 1
+
+    form . start_prompt ( )
+    form . wait_prompt ( )
+    form . end_prompt ( )
+
+    RETURN ( form . get_lastkey ( ) = "DO" )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE confirm_with_text ( VALUE text_message )
+
+    { Put up a confirm window with the message text in it.
+      Return whether user hits DO (TRUE) or EXIT (FALSE)
+
+      This routine should be used in preference to confirm_with_message
+      only when the confirmation text has to be built up, rather than
+      simply stored as a message
+    }
+
+    DECLARE form , window_width , help_context ,
+            screen_row , position , header_msg, footer_msg
+    DECLARE return_status
+
+    IF GLOBAL( "CONFIRMSUPPRESSED" ) THEN
+        RETURN ( TRUE )
+    ENDIF
+
+    help_context = "$LIB_UTILS_CONFIRM_MESSAGE"
+
+    IF ( GLOBAL ( "TERMTYPE" ) = "GUI" ) THEN
+
+        return_status = confirm_gui ( text_message , help_context )
+
+    ELSE
+        header_msg = GET_USER_MESSAGE ( "LIB_UTILS_CONFIRM_HEADER" , 1 )
+        footer_msg = GET_USER_MESSAGE ( "LIB_UTILS_CONFIRM_FOOTER" , 1 )
+
+        screen_row = ( GLOBAL ( "SCREEN_HEIGHT" ) - 1 ) / 2
+
+        PROMPT OBJECT form
+               CLASS PROMPT_CLASS_FORM
+               WITH ( row          = screen_row     ,
+                      height       = 1              ,
+                      border       = TRUE           ,
+                      header       = header_msg     ,
+                      footer       = footer_msg     ,
+                      help_context = help_context   )
+
+        window_width = LENGTH ( header_msg )
+        window_width = find_max_number ( window_width              ,
+                                         LENGTH ( footer_msg ) )
+
+        window_width = find_max_number ( window_width              ,
+                                         LENGTH ( text_message ) )
+
+        position = ( window_width - LENGTH ( text_message ) ) / 2 + 1
+
+        form . add_display ( text_message , position , 1, 0 )
+
+        form . width  = window_width
+        form . column = ( GLOBAL ( "SCREEN_WIDTH" ) - window_width ) / 2 + 1
+
+        form . start_prompt ( )
+        form . wait_prompt ( )
+        form . end_prompt ( )
+
+        return_status = ( form . get_lastkey ( ) = "DO" )
+    ENDIF
+
+    RETURN ( return_status )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE lib_utils_is_part_of_key0 (       key0_fields    ,
+                        VALUE the_field_name )
+
+    DECLARE count            ,
+        is_part_of_key0
+
+    is_part_of_key0 = FALSE
+
+    count = 1
+
+    WHILE count <= size_of_array ( key0_fields ) DO
+
+        IF key0_fields [ count ] = the_field_name THEN
+
+            is_part_of_key0 = TRUE
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( is_part_of_key0 )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+
+ROUTINE lib_utils_initialise_table_copy ( field_values )
+
+{
+*
+*
+******************************************************************************}
+
+    ARRAY field_values ARRAY_SIZE ( 0 , 2 )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+
+ROUTINE lib_utils_copy_from_table ( VALUE the_table_name ,
+                      object         ,
+                      field_values   )
+
+{
+*   Copy all non-key0 fields from the given table into an array.
+*
+*
+*******************************************************************************}
+
+    DECLARE count       ,
+        next_field  ,
+        table_info  ,
+        key0_fields
+
+    lib_utils_initialise_table_copy ( field_values )
+
+    get_table_details 'the_table_name' ,
+              "KEY0_FIELD"     ,
+               key0_fields
+
+
+    get_field_names( the_table_name ,
+                 table_info     )
+
+    count      = 1
+    next_field = 1
+
+    WHILE count <= size_of_array ( table_info ) DO
+
+        IF ( NOT table_info[ count, 2 ] ) AND
+           ( NOT lib_utils_is_part_of_key0 ( key0_fields ,
+                             table_info [ count , 1])) THEN
+
+            field_values [ next_field , 1 ] = table_info [ count, 1 ]
+
+            IF variable_is_assigned ( object ) THEN
+
+                field_values [ next_field , 2 ] =
+                    SELECT 'the_table_name' . 'table_info [ count, 1 ]'
+                    IN OBJECT object
+
+            ELSE
+
+                field_values [ next_field , 2 ] =
+                    SELECT 'the_table_name' . 'table_info [ count, 1 ]'
+
+            ENDIF
+
+            next_field = next_field + 1
+
+        ENDIF
+
+        count = count + 1
+
+        ENDWHILE
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+GLOBAL
+
+ROUTINE lib_utils_copy_to_table ( VALUE the_table_name ,
+                    object         ,
+                    field_values   )
+
+{
+*   Copy all the field values into the given table.
+*
+******************************************************************************}
+
+    DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( field_values ) DO
+
+        IF variable_is_assigned ( object ) THEN
+
+            ASSIGN 'the_table_name' . 'field_values [count,1]'
+                IN OBJECT object = field_values [ count , 2 ]
+
+        ELSE
+
+            ASSIGN 'the_table_name' . 'field_values [count,1]' =
+                    field_values [ count , 2 ]
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{**************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_set_field_value (       field_values  ,
+                        VALUE field_name    ,
+                        VALUE new_value     )
+
+    DECLARE count   ,
+        found
+
+    found = FALSE
+    count = 1
+
+    WHILE count <= size_of_array ( field_values ) DO
+
+        IF strip ( field_values [ count , 1 ] ) =
+                strip ( field_name ) THEN
+
+            field_values [ count , 2 ] = new_value
+                        found = TRUE
+            count = size_of_array ( field_values )
+
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF NOT found THEN
+
+        count = size_of_array ( field_values ) + 1
+
+        field_values [ count , 1 ] = field_name
+        field_values [ count , 2 ] = new_value
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_contract_version ( VALUE string_to_contract )
+
+{
+*   Return a string with a slash separator between the ID and the
+*   version number with all spaces removed.
+*
+*******************************************************************************}
+
+DECLARE space_pos
+
+string_to_contract = strip ( string_to_contract )
+
+space_pos = index ( string_to_contract, " " )
+
+IF space_pos > 0 THEN
+
+    string_to_contract = substring ( string_to_contract, 1, space_pos - 1 ):
+                         "/" :
+                         substring ( string_to_contract,
+                                     space_pos + 1,
+                                     length ( string_to_contract ) -
+                                       space_pos )
+    string_to_contract = contract ( string_to_contract )
+
+ENDIF
+
+RETURN ( string_to_contract )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_table_has_approval ( VALUE name_of_table )
+
+{
+* Returns boolean indicating if passed table has approval on it's records.
+*
+* Parameters   : name_of_table - Name of table to check
+* Return Value : Boolean - indicating if passed table has approval
+*
+*******************************************************************************}
+
+    DECLARE inspection_field , approval_status
+
+    GET_TABLE_DETAILS 'name_of_table'    ,
+                      "INSPECTION_FIELD" ,
+                      inspection_field
+
+    GET_TABLE_DETAILS 'name_of_table'   ,
+                      "APPROVAL_STATUS" ,
+                      approval_status
+
+    RETURN ( ( NOT ( inspection_field = EMPTY ) ) AND
+         ( NOT ( approval_status  = EMPTY ) )     )
+
+ENDROUTINE { lib_utils_table_has_approval }
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_find_highest_version ( VALUE the_table_name  ,
+                                         VALUE the_table_key0  ,
+                                         VALUE include_removed )
+
+{
+*   Return the highest version number allowed for use.
+*   If include_removed is set then if an active version can't be found
+*   the select is repeated to include removed records.
+*
+*******************************************************************************}
+
+    DECLARE select_array, remove_field, version_field
+
+    select_array = array_select_key0_to_array ( the_table_name,
+                                                the_table_key0 )
+
+    GET_TABLE_DETAILS 'the_table_name' ,
+              "VERSION_FIELD"  ,
+              version_field
+
+    GET_TABLE_DETAILS 'the_table_name' ,
+              "REMOVE_FIELD"   ,
+              remove_field
+
+    IF remove_field <> EMPTY THEN
+
+        array_select_add ( select_array    ,
+                           ARRAY_SELECT_EQ ,
+                           remove_field    ,
+                           FALSE           )
+
+    ENDIF
+
+    IF lib_utils_table_has_approval ( the_table_name ) THEN
+
+        array_select_add ( select_array      ,
+                           ARRAY_SELECT_EQ   ,
+                           "APPROVAL_STATUS" ,
+                           "A"               )
+
+    ENDIF
+
+    version = array_select_max ( the_table_name ,
+                                 version_field  ,
+                                 select_array   )
+
+    IF ( version = EMPTY ) AND ( include_removed ) THEN
+
+        select_array = array_select_key0_to_array ( the_table_name,
+                                                    the_table_key0 )
+
+        version = array_select_max ( the_table_name ,
+                                     version_field  ,
+                                     select_array   )
+
+    ENDIF
+
+    IF ( version = EMPTY ) AND ( include_removed ) THEN
+
+        message_fetch         ( "LIB_UTILS_BAD_VERSION" , message )
+        message_add_parameter ( message, STRIP ( the_table_key0 ))
+        message_add_parameter ( message, STRIP ( the_table_name ))
+
+        fatal_error ( message_get_text ( message, 1 ))
+
+    ENDIF
+
+    RETURN ( version )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_highest_version ( VALUE the_table_name ,
+                                    VALUE the_table_key0 )
+
+{
+*   Return the highest version number allowed for use.
+*
+*******************************************************************************}
+
+    return ( lib_utils_find_highest_version ( the_table_name ,
+                                              the_table_key0 ,
+                                              FALSE          ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_key0_to_fields ( VALUE the_table_name ,
+                                   VALUE the_table_key0 ,
+                                         identity       ,
+                                         version        )
+
+{
+*   Split the key0 into id and version.
+*
+*******************************************************************************}
+
+    DECLARE select_array
+
+    select_array = array_select_key0_to_array ( the_table_name,
+                                                the_table_key0 )
+
+    identity = select_array [ 1, 3 ]
+
+    IF size_of_array ( select_array ) >= 2 THEN
+
+        version = select_array [ 2, 3 ]
+
+    ELSE
+
+        version = lib_utils_highest_version ( the_table_name ,
+                                              the_table_key0 )
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE capitalise ( VALUE in_string )
+
+{
+*   Capitalise the string
+*
+*******************************************************************************}
+
+    DECLARE head, tail, capitalised
+
+    IF in_string = "" THEN
+
+        capitalised = ""
+
+    ELSE
+
+        head = LEFTSTRING ( in_string, 1 )
+        tail = RIGHTSTRING ( in_string, STRINGLENGTH ( in_string ) - 1 )
+
+        capitalised =  TOUPPER( head ) : TOLOWER( tail )
+
+    ENDIF
+
+    RETURN ( capitalised )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_popup_menu ( menu_array )
+
+{
+*   Performs a client_do_popup_menu, returning a number instead
+*   of the item text.
+*   Defaults the last 3 params of client_do_popup_menu to zero.
+*
+*******************************************************************************}
+
+    DECLARE result_text , result_number , no_of_menu_items
+
+    no_of_menu_items = size_of_array ( menu_array )
+
+    result_text = client_do_popup_menu ( menu_array , 0 , 0 , 0 )
+
+    result_number = 0
+    REPEAT
+        result_number = result_number + 1
+
+    UNTIL ( result_number = no_of_menu_items           ) OR
+          ( result_text = menu_array [ result_number ] )
+
+    IF result_text = EMPTY THEN
+        result_number = 0
+    ENDIF
+
+    RETURN ( result_number )
+
+ENDROUTINE { popup_menu }
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_logical_to_string ( VALUE logical_name )
+
+{
+*
+*   Return the first directory name from a logical string
+*
+*******************************************************************************}
+
+DECLARE temp_file, semi_colon
+
+    temp_file = LOGICAL ( logical_name )
+
+    semi_colon = INDEX ( temp_file, ";" )
+
+    IF semi_colon > 1 THEN
+
+        temp_file = SUBSTRING ( temp_file, 1, semi_colon - 1 )
+
+    ELSEIF semi_colon = 1 THEN
+
+        temp_file = SUBSTRING ( temp_file, 2, LENGTH ( temp_file ) - 1 )
+
+    ENDIF
+
+    RETURN ( STRIP ( temp_file ))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_logical_containing_file ( VALUE logical_name ,
+                                                VALUE file_name    )
+
+{
+*
+*   Return the first directory name that contains the specified file
+*
+*******************************************************************************}
+
+    DECLARE logical_path ,
+                searching ,
+                found ,
+                extension_pos ,
+                exe_path ,
+                check_file
+
+
+    logical_path = LOGICAL ( logical_name )
+    searching = TRUE
+    found = FALSE
+
+    WHILE searching DO
+
+        extension_pos = INDEX ( logical_path, ";" )
+
+        IF ( extension_pos > 1 ) THEN
+
+            exe_path     = SUBSTRING ( logical_path, 1, extension_pos - 1 )
+            logical_path = SUBSTRING ( logical_path                            ,
+                                       extension_pos + 1                       ,
+                                       LENGTH ( logical_path ) - extension_pos )
+
+        ELSE
+
+            exe_path     = logical_path
+            logical_path = ""
+
+        ENDIF
+
+        check_file = exe_path : "\" : STRIP ( file_name )
+
+        FILE FIND check_file , file_list , status
+
+        IF file_list[1] <> EMPTY THEN
+
+            searching = FALSE
+            found     = TRUE
+
+        ELSEIF logical_path = "" THEN
+
+            exe_path = EMPTY
+
+            searching = FALSE
+            found     = FALSE
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( exe_path )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_spawn_with_log ( VALUE spawn_command ,
+                                       VALUE log_file_name )
+
+{
+*   Performs the spawn command redirecting the output to the
+*   specified log file.
+*
+*******************************************************************************}
+
+DECLARE script_file_name, status, spare_status
+
+    IF GLOBAL ( "PLATFORM" ) = "NT" THEN
+
+        spawn_command = spawn_command : " >> " :
+                        ascii ( 34 ) : STRIP ( log_file_name ) : ascii ( 34 ) :
+                        " 2>&1"
+
+        SPAWN "cmd /E:ON /D /A /C " : spawn_command, status QUIETLY
+
+    ELSEIF GLOBAL ( "PLATFORM") = "UNIX" THEN
+
+        SPAWN spawn_command : " >> " : log_file_name : " 2>&1", status QUIETLY
+
+    ELSE
+
+        script_file_name = "SMP$TEXTREPORTS:spawn_" :
+                           STRIP ( GLOBAL ( "PROCESS_ID" )) : ".com"
+
+        FILE CREATE script_file_name, status
+
+        IF status = EMPTY THEN
+
+            FILE WRITE script_file_name, "$ SET COMMAND SMP$ROOT:[000000]SMPSYS.CLD",
+                       spare_status
+            FILE WRITE script_file_name, "$ DEFINE SYS$ERROR SYS$OUTPUT",
+                       spare_status
+            FILE WRITE script_file_name, "$ DEFINE SYS$OUTPUT " : log_file_name,
+                       spare_status
+            FILE WRITE script_file_name, "$ " : spawn_command,
+                       spare_status
+            FILE WRITE script_file_name, "$ EXIT",
+                       spare_status
+
+            FILE CLOSE script_file_name, spare_status
+
+        ENDIF
+
+        IF status = EMPTY THEN
+
+            SPAWN "@" : script_file_name, status QUIETLY
+
+        ENDIF
+
+        FILE DELETE script_file_name, spare_status
+
+    ENDIF
+
+    RETURN ( status )
+
+ENDROUTINE { lib_utils_spawn_with_log }
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_build_phrase_choose_array ( VALUE phrase_header )
+
+{
+*   Returns a choose array built from the passed phrase header id.
+*
+*******************************************************************************}
+
+    DECLARE choose_array, count, phrase_id
+
+    ARRAY choose_array ARRAYSIZE ( 0 , 2 )
+
+    count = 1
+    phrase_id = SELECT phrase . phrase_id
+                WHERE phrase_type = phrase_header
+                ORDER ON order_num
+
+    WHILE phrase_id <> EMPTY DO
+
+        phrase_text = SELECT phrase . phrase_text
+
+        choose_array[count , 1] = phrase_id
+        choose_array[count , 2] = phrase_text
+
+        NEXT phrase
+        phrase_id = SELECT phrase . phrase_id
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN( choose_array )
+
+ENDROUTINE
+
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE add_array_params ( param_val ,
+                   mess_obj  )
+
+{
+*       Adds the array of parameters to the message object.
+*
+*******************************************************************************}
+
+DECLARE count
+
+    count = 1
+
+    WHILE count <= size_of_array ( param_val ) DO
+
+        message_add_parameter ( mess_obj , param_val [ count ] )
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE    { add_array_params }
+
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE flash_message_with_param ( VALUE message_id ,
+                         param_val  )
+
+{
+*       Reads the message, adds the parameter and then displays.
+*
+*******************************************************************************}
+
+DECLARE mess_obj , mess_txt, no_lines, line_index
+
+    message_fetch ( message_id , mess_obj )
+
+    IF variable_get_type ( param_val ) = "Array" THEN
+        add_array_params ( param_val , mess_obj )
+    ELSE
+        message_add_parameter ( mess_obj , param_val )
+    ENDIF
+
+    no_lines = message_get_lines ( mess_obj )
+
+    line_index = 1
+    mess_txt   = ""
+
+    WHILE line_index <= no_lines DO
+
+        mess_txt = mess_txt : message_get_text ( mess_obj , line_index )
+
+        IF ( ( no_lines - line_index ) >= 1 ) THEN
+
+            mess_txt = mess_txt : ASCII ( 13 )
+
+        ENDIF
+
+        line_index = line_index + 1
+
+    ENDWHILE
+
+    flash_message ( mess_txt , FALSE )
+
+    RETURN ( mess_txt )
+
+ENDROUTINE   { flash_message_with_param }
+
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE confirm_message_with_param ( VALUE message_id ,
+                           param_val  )
+
+{
+*       Reads the message, adds the parameter and then displays.
+*
+*******************************************************************************}
+
+DECLARE mess_obj , mess_txt
+
+    message_fetch ( message_id , mess_obj )
+
+    IF variable_get_type ( param_val ) = "Array" THEN
+        add_array_params ( param_val , mess_obj )
+    ELSE
+        message_add_parameter ( mess_obj , param_val )
+    ENDIF
+
+    mess_txt = message_get_text ( mess_obj , 1 )
+
+    RETURN ( confirm_with_text ( mess_txt ) )
+
+ENDROUTINE   { confirm_message_with_param }
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_utils_get_common_fields_array ( VALUE table_1 ,
+                                                VALUE table_2 )
+
+{
+*
+*       Returns an array of common fields in table_1 and table_2 which aren't
+*   key0 fields in table one.
+*
+*******************************************************************************}
+
+    DECLARE common_entries,
+            table_1_array ,
+            table_2_array ,
+            table_1_count ,
+            table_2_count ,
+            common_count  ,
+            is_key
+
+    ARRAY common_entries ARRAY_SIZE ( 0 )
+
+    GET_FIELD_NAMES ( table_1, table_1_array )
+    GET_FIELD_NAMES ( table_2, table_2_array )
+
+    table_1_count = 1
+    table_2_count = 1
+    common_count = 1
+
+    WHILE ( table_1_array [ table_1_count, 1 ] <> EMPTY ) DO
+
+        { Only process table_1 fields that aren't aliases }
+
+        IF NOT ( table_1_array [ table_1_count, 2 ] ) THEN
+
+            GET_FIELD_DETAILS 'table_1' . 'table_1_array [ table_1_count, 1 ]',
+                      "KEY0_FIELD",
+                      is_key
+
+            IF NOT ( is_key ) THEN
+
+                table_2_count = 1
+
+                WHILE ( table_2_array [ table_2_count, 1 ] <> EMPTY ) DO
+
+                    IF ( table_1_array [ table_1_count, 1 ] =
+                         table_2_array [ table_2_count, 1 ] ) THEN
+
+                        common_entries [ common_count ] =
+                                 table_1_array [ table_1_count, 1 ]
+
+                        common_count = common_count + 1
+
+                    ENDIF
+
+                    table_2_count = table_2_count + 1
+
+                ENDWHILE
+
+            ENDIF
+
+        ENDIF
+
+        table_1_count = table_1_count + 1
+
+    ENDWHILE
+
+    RETURN ( common_entries )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_get_callback ( VALUE callback,
+                                 VALUE default ,
+                                       lib     ,
+                                       rout    )
+
+{
+*   Breakup a Callback string into its components.
+*
+*******************************************************************************}
+
+    DECLARE message, len, retval, pos
+
+    retval = FALSE
+
+    IF ( callback <> EMPTY ) AND ( NOT BLANK ( callback ) ) THEN
+
+        pos = INDEX ( callback, "/" )
+
+        IF pos <> 0 THEN
+
+            len  = STRINGLENGTH ( callback )
+            lib  = LEFTSTRING   ( callback, pos - 1   )
+            rout = RIGHTSTRING  ( callback, len - pos )
+
+        ELSE
+
+            lib  = default
+            rout = callback
+
+        ENDIF
+
+        IF vgl_validate_routine ( lib, rout ) THEN
+
+            retval = TRUE
+
+        ELSE
+
+            message_fetch ( "LIST_BADCALL", message )
+            message_add_parameter ( message, callback )
+            message = message_get_text ( message, 1 )
+            flash_message ( message, TRUE )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( retval )
+
+ENDROUTINE { lib_utils_get_callback }
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_coerce ( initial_value, VALUE datatype )
+{
+*     Returns 'initial value' after it has been coerced to the passed
+*     datatype. If it can't be coerced ERROR is returned.
+*     initial_value needs to be reference to allow objects through - dont
+*     change it.though.
+*
+******************************************************************************}
+
+    DECLARE coerced_value, temp_value, current_type
+
+    coerced_value = ERROR
+
+    datatype = TOUPPER( datatype )
+    current_type = TOUPPER ( variable_get_type ( initial_value ))
+
+    IF datatype = "TEXT" THEN
+
+        IF current_type <> "OBJECT" THEN
+            coerced_value = STRING( initial_value )
+        ENDIF
+
+    ELSEIF datatype = "INTEGER" THEN
+
+        IF NUMTEXT( initial_value ) THEN
+            coerced_value = TRUNC( NUMERIC( initial_value ) )
+        ENDIF
+
+    ELSEIF datatype = "REAL" THEN
+
+        IF NUMTEXT( initial_value ) THEN
+            coerced_value = NUMERIC( initial_value )
+        ENDIF
+
+    ELSEIF datatype = "PACKED DECIMAL" THEN
+
+        IF NUMTEXT( initial_value ) THEN
+            coerced_value = PACKED_DECIMAL( NUMERIC( initial_value ) )
+        ENDIF
+
+    ELSEIF datatype = "DATE" THEN
+
+        IF DATE( initial_value ) <> ERROR THEN
+            coerced_value = DATE( initial_value )
+        ENDIF
+
+    ELSEIF datatype = "INTERVAL" THEN
+
+        IF IS_INTERVAL( initial_value ) THEN
+            coerced_value = INTERVAL( initial_value )
+        ENDIF
+
+    ELSEIF datatype = "BOOLEAN" THEN
+
+        temp_value = TOUPPER( STRIP( initial_value ) )
+
+        IF ( temp_value = FALSE ) OR ( temp_value = TRUE ) THEN
+
+            coerced_value = ( temp_value = TRUE )
+
+        ENDIF
+
+    ENDIF
+
+    RETURN( coerced_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_can_coerce( VALUE initial_value, VALUE datatype )
+{
+*     Returns True if 'initial value' can be coerced to the passed datatype.
+*
+******************************************************************************}
+
+    RETURN( lib_utils_coerce( initial_value, datatype ) <> ERROR )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+GLOBAL
+
+ROUTINE iif( VALUE boolean_expression, VALUE true_return, VALUE false_return )
+{
+* Returns true_return if boolean_expression evaluates to true otherwise
+* false_return
+*
+******************************************************************************}
+
+    DECLARE retval
+
+    IF boolean_expression = TRUE THEN
+        retval = true_return
+    ELSE
+        retval = false_return
+    ENDIF
+
+    RETURN( retval )
+
+ENDROUTINE
+
+{*******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_utils_escape_field ( VALUE field )
+{
+*       Adds escape characters to the table/field name if required
+*
+*       Parameters  field : input raw table/field name
+*       Returns     escaped field name
+*
+********************************************************************************}
+
+    IF ( GLOBAL ( "DATABASE_TYPE" ) = LIB_UTILS_SQLSERVER ) THEN
+        field = "[" : STRIP ( field ) : "]"
+    ENDIF
+
+        RETURN ( field )
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE fm(VALUE msg)
+{
+* Purpose      : Shows popup to user
+* Parameters   : Msg - what to show
+* Return Value : N/A
+**************************************************************************}
+DECLARE user, authority
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+    user = global("operator")
+    authority = SELECT personnel . authority WHERE identity = user
+{
+    IF authority = "10" THEN
+        msg   = "LIBRARY                    ROUTINE                              LINE":ASCII(10):
+                vgl_tools_get_call_stack_entry (3):ASCII(10):
+                vgl_tools_get_call_stack_entry (2):ASCII(10):ASCII(10):
+                msg
+    ENDIF
+}
+    window_set_status(vgl_tools_get_call_stack_entry (2))
+    flash_message(msg, true)
+    window_set_status("")
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE debug(VALUE msg)
+{
+* Purpose      : Shows popup to user
+* Parameters   : Msg - what to show
+* Return Value : N/A
+**************************************************************************}
+DECLARE user, authority
+JOIN STANDARD_LIBRARY STD_WINDOW
+
+    IF GLOBAL("OPERATOR") = "DKTBG" then
+        msg   = {"LIBRARY                    ROUTINE                              LINE":ASCII(10): }
+                vgl_tools_get_call_stack_entry (3):ASCII(10):
+                vgl_tools_get_call_stack_entry (2):ASCII(10):ASCII(10):
+                msg
+    ENDIF
+    flash_message(msg, true)
+
+ENDROUTINE
+
+{*************************************************************************}
+GLOBAL ROUTINE ArrayGrid(VALUE title, messages, input, VALUE HeaderRow)
+{
+* Purpose      : Shows popup to user
+* Parameters   : title      : Window Title
+                 messages   : Array of messages to be displayed above grid
+                 input      : Array of values to be displayed in gri
+                 HeaderRow     : Boolean, if TRUE, use first row of input for 
+                              column title in grid
+* Return Value : N/A
+**************************************************************************}
+
+    DECLARE r, c, columns, rows, msg, index_array, indent, title_array
+    ARRAY index_array
+    ARRAY title_array
+
+    rows    = STRIP(size_of_array(input))
+    rows    = NUMERIC(rows)
+    r = 1
+    columns = 0
+    msg = ""
+
+    IF rows >= 1 THEN
+        index_array[1] = 1 {row}
+        index_array[2] = 1 {column}
+        WHILE (array_element_exists(input, index_array)) AND
+              (index_array[2] < 15) DO
+            columns = index_array[2]
+            index_array[2] = index_array[2] + 1
+        ENDWHILE
+
+        r = 1
+        WHILE r <= rows
+            c = 1
+            WHILE c <= columns
+                window_set_status("[":r:",":c:"] ":input[r, c])
+                IF (input[r, c] = "") OR
+                   (LEFTSTRING(input[r, c], 5) = "-----") THEN
+                    input[r, c] = EMPTY
+                ENDIF   
+                c = c + 1
+            ENDWHILE
+            r = r + 1
+        ENDWHILE
+
+        r = 1
+        c = 1
+
+        Remove = TRUE
+        WHILE (columns >= 1) AND (Remove = TRUE) 
+            r = 1
+            WHILE r <= rows DO
+                window_set_status("[":r:",":columns:"] ":input[r, columns])
+                IF (input[r,columns] = EMPTY)  OR
+                   (LEFTSTRING(input[r, c], 5) = "-----") THEN
+                    input[r,columns] = ""
+                ELSE
+                    Remove = FALSE
+                ENDIF
+                r = r + 1
+            ENDWHILE
+            window_set_status("Remove column ":STRIP(columns):" ":remove)
+            IF Remove = TRUE THEN
+                Columns = Columns - 1
+            ENDIF
+        ENDWHILE
+    ENDIF
+
+    IF HeaderRow THEN
+        c = 1
+        WHILE c <= columns
+            title_array[c, 1] = input[1, c]
+            c = c + 1
+        ENDWHILE
+        array_remove_slice(input, 1, 1)
+    ENDIF
+
+    CREATE OBJECT PROMPT_CLASS_FORM, form
+
+        form.header                 = title
+        form.column                 = columns
+        form.row                    = rows
+        form.height                 = size_of_array(input) + size_of_array(messages) + 2
+        form.width                  = 20 + (10 * columns)
+        form.return_behaviour       = FORM_RETURN_LEAVE
+        form.button_style           = FORM_BUTTON_CLOSE
+
+    r = 1
+    WHILE (r <= size_of_array(messages))
+        IF (messages[r] = EMPTY) THEN
+            messages[r] = ""
+        ENDIF
+        form.add_display(messages[r], 1, r, 0 )
+        r = r + 1
+    ENDWHILE
+
+    r = r + 1
+    CREATE OBJECT PROMPT_CLASS_GRID, grid
+
+        ARRAY grid.userinfo ARRAYSIZE (rows, columns)
+        grid.userinfo = input
+
+        grid.row                    = r
+        grid.column                 = 2
+        grid.width                  = form.width  - 2
+        grid.height                 = size_of_array(input) + 1
+        grid.cell_rows              = 0
+        grid.cell_columns           = columns
+        grid.display_cell_routine   = "DISPLAY_GRID_CELL"
+        grid.prompt_cell_routine    = "PROMPT_GRID_CELL"
+        grid.title_size_top         = 1
+        grid.title_rendition_top    = PROMPT_RENDITION_BOLD
+        grid.title_separator_top    = GRID_SEPARATOR_BOTH
+        row                         = form.height - 1
+
+        c = 1
+        WHILE c <= columns
+            grid.title_text_top   [c, 1] = ""
+            w = 1
+            i = 1
+            WHILE i <= size_of_array(input)
+                IF LENGTH(STRIP(input[i, c])) > w THEN
+                    w = LENGTH(STRIP(input[i, c]))
+                ENDIF
+                i = i + 1
+            ENDWHILE
+            IF HeaderRow THEN
+                grid.title_text_top [c, 1] = title_array[c, 1]
+            ELSE
+                grid.title_text_top [c, 1] = "Column ":STRIP(c)
+            ENDIF
+            grid.column_size      [c]    = w
+            grid.column_separator [c]    = GRID_SEPARATOR_BOTH
+            c = c + 1
+        ENDWHILE
+        
+        form.add_prompt(grid)
+
+        form.start_prompt()
+            i = 1
+            WHILE i <= size_of_array(input)
+                grid.insert_row (i ,1 ,GRID_SEPARATOR_NONE )
+                i = i + 1
+            ENDWHILE    
+        form.wait_prompt()
+        form.end_prompt()
+
+ENDROUTINE
+
+{***********************************************
+Routine: display_grid_cell
+Purpose: Standard routine to display grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE display_grid_cell(self ,
+                    VALUE cell_column ,
+                    VALUE cell_row ,
+                          window ,
+                    VALUE column ,
+                    VALUE row ,
+                    VALUE cell_width ,
+                    VALUE cell_height )
+
+    DISPLAY self.user_info [cell_row, cell_column]
+        AT column, row
+        IN WINDOW window
+
+ENDROUTINE
+
+{***********************************************
+Routine: prompt_grid_cell
+Purpose: Standard routine to prompt grid cells
+Parameters: Multiple...
+***********************************************}
+ROUTINE prompt_grid_cell(self ,
+                         VALUE cell_column ,
+                         VALUE cell_row ,
+                               window ,
+                         VALUE column ,
+                         VALUE row ,
+                         VALUE cell_width ,
+                         VALUE cell_height )
+
+    PROMPT FOR self.user_info [cell_row, cell_column]
+        BOLD UNDERLINE
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+        WITH (display_only = TRUE)
+        
+ENDROUTINE
+
+
+{*****************************************************************************}
+GLOBAL ROUTINE GetArray(input)
+{
+* Purpose      : Shows popup to user
+* Parameters   : Msg - what to show
+* Return Value : N/A
+**************************************************************************}
+
+    DECLARE r, c, columns, rows, msg, index_array, indent
+    ARRAY index_array
+
+    DECLARE row, stack
+    indent  = ""
+    row = 1
+    stack = vgl_tools_get_call_stack_entry (row)
+    WHILE (NOT(BLANK(stack))) AND (row <= 100)
+        stack = vgl_tools_get_call_stack_entry (row)
+        {window_set_status("INDEX(stack, 'JOB_VALIDATION'): ":INDEX(stack, "JOB_VALIDATION")) }
+        IF (INDEX(TOUPPER(stack), "JOB_VALIDATION") > 0) THEN
+            indent  = "                                                  "
+            stack = ""
+        ENDIF
+        row = row + 1
+    ENDWHILE
+
+    rows    = STRIP(size_of_array(input))
+    rows    = NUMERIC(rows)
+    r = 1
+    columns = 0
+    msg = ""
+
+    IF rows >= 1 THEN
+        index_array[1] = 1 {row}
+        index_array[2] = 1 {column}
+        WHILE (array_element_exists(input, index_array)) AND
+              (index_array[2] < 15) DO
+            {WriteToLog("Found array item [1; ":index_array[2]:"] = ":STRIP(input[1,index_array[2]]))}
+            columns = index_array[2]
+            index_array[2] = index_array[2] + 1
+        ENDWHILE
+        {WriteToLog("columns: ":columns)}
+
+        r = 1
+        c = 1
+
+        IF columns > 1 THEN
+            Remove = TRUE
+            WHILE r <= rows DO
+                IF NOT (input[r,columns] = EMPTY) THEN
+                    Remove = FALSE
+                ENDIF
+                r = r + 1
+            ENDWHILE
+
+            IF Remove = TRUE THEN
+                Columns = Columns - 1
+            ENDIF
+        ENDIF
+    ENDIF
+
+    r = 1
+
+    IF columns < 1 THEN
+        {msg = "Variable is not an array. Array size[":rows:",":columns:"]"}
+        WHILE r <= SIZE_OF_ARRAY(input) DO
+            IF msg = "" THEN
+                {msg = "(":STRIP(rows):")":ASCII(10)}
+                msg = "    ":indent:STRIP(r):") "
+            ELSE
+                msg = msg:ASCII(10):"    ":indent:STRIP(r):") "
+            ENDIF
+            IF (input[r] = EMPTY) THEN
+                text = "EMPTY"
+            ELSE
+                text = input[r]
+            ENDIF
+            msg = msg:STRIP(text){:"<" :ASCII(10)}
+            r = r + 1
+        ENDWHILE
+    ELSE
+        WHILE r <= SIZE_OF_ARRAY(input) DO
+            IF msg = "" THEN
+                {msg = "(":STRIP(rows):";":STRIP(columns):")":ASCII(10)}
+                {msg = msg:ASCII(10):"    ":STRIP(r):") " }
+                msg = "    ":indent:STRIP(r):") "
+            ELSE
+                msg = msg:ASCII(10):indent:"    ":STRIP(r):") "
+            ENDIF
+            WHILE c <= columns DO
+                IF (input[r,c] = EMPTY) THEN
+                    text = "EMPTY"
+                ELSE
+                    text = input[r,c]
+                ENDIF
+                IF c = 1 THEN
+                    msg = msg:STRIP(text)
+                ELSE
+                    msg = msg:": ":STRIP(text)
+                ENDIF
+                c = c + 1
+            ENDWHILE
+            msg = msg{:"<" :ASCII(10)}
+            c = 1
+        r = r + 1
+        ENDWHILE
+    ENDIF
+    RETURN (ASCII(10):msg)
+
+
+ENDROUTINE
+{*************************************************************************
+* Purpose      : Writes to predefined log
+* Parameters   : Msg - what to write in log
+*                Current user
+*                Name for calling report
+* Return Value : N/A
+**************************************************************************}
+GLOBAL ROUTINE WriteLog(VALUE msg, VALUE library)
+DECLARE pos, len, user, report, postfix, calling_routine, file_name, report_file, check_ok, string_to_execute, inst, is_ok
+
+    WHILE     INDEX(msg, "----------------------------------------------------------------------------------------------------------------------------------") > 0 DO
+        Pos = (INDEX(msg, "----------------------------------------------------------------------------------------------------------------------------------") - 1)
+        Len = (LENGTH(msg)+1)
+        msg = SUBSTRING(msg, 1, pos):"EMPTY":SUBSTRING(msg, Pos + 256, Len - Pos - 256)
+        {WriteToLog("Pos: ":Pos) }
+        {WriteToLog("Len:":Len) }
+        {WriteToLog("msg = SUBSTRING(msg, 1, ":Pos:"):'EMPTY':SUBSTRING(msg, ":(Pos + 256):", ":(Len - Pos - 256):")") }
+    ENDWHILE
+
+    WHILE     INDEX(msg, "***************************************************************************************************************************************************************************************************************************************************************") > 0 DO
+        Pos = (INDEX(msg, "***************************************************************************************************************************************************************************************************************************************************************") - 1)
+        Len = (LENGTH(msg)+1)
+        msg = SUBSTRING(msg, 1, pos):"EMPTY":SUBSTRING(msg, Pos + 256, Len - Pos - 256)
+        {WriteToLog("Pos: ":Pos) }
+        {WriteToLog("Len:":Len) }
+        {WriteToLog("msg = SUBSTRING(msg, 1, ":Pos:"):'EMPTY':SUBSTRING(msg, ":(Pos + 256):", ":(Len - Pos - 256):")") }
+    ENDWHILE
+
+    authority = SELECT personnel . authority WHERE identity = GLOBAL("OPERATOR")
+    library   = STRIP(library)
+    report    = STRIP(GLOBAL("current_report"))
+    postfix   = ""
+
+    {IF authority = "10" THEN }
+        i = 1
+       {calling_routine   = vgl_tools_get_call_stack_entry (3)}
+        calling_routine   = vgl_tools_get_call_stack_entry (i)
+        l = INDEX(calling_routine, " WRITE")
+        WHILE (INDEX(calling_routine, " WRITE") > 1)
+          AND (STRIP(calling_routine) <> "")
+            i = i + 1
+            calling_routine   = vgl_tools_get_call_stack_entry (i)
+        ENDWHILE
+        postfix         = RIGHTSTRING("     ":STRIP(SUBSTRING(calling_routine, 71, 100)), 5):" "
+        calling_routine = SUBSTRING(calling_routine, 22,  15):" " {STRIP(SUBSTRING(calling_routine, 22,  48))}
+        IF calling_routine = "" THEN 
+            calling_routine = "MAIN           " 
+            ENDIF
+        calling_routine = postfix:calling_routine
+    {ELSE
+        calling_routine = ""
+    ENDIF }
+
+    file_name = "smp$logfiles:":library:".log"
+    inst      = LOGICAL("smp$logfiles")
+    l = LENGTH(inst) - 1
+    WHILE SUBSTRING(inst, l, 1) <> "\"
+        l = l - 1
+    ENDWHILE
+    inst        = LEFTSTRING(inst, l)
+    report_file = "smp$reports:":library:".rpf"
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    IF NOT (FILE EXISTS (file_name))
+       AND (FILE EXISTS (report_file)) THEN
+        {FILE CREATE file_name, is_ok}
+        string_to_execute = "echo ---------- %computername% ---------- >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+        string_to_execute = "FIND /i ":ASCII(34):"join":" ":ASCII(34):" "
+        string_to_execute = string_to_execute:ASCII(34):inst:"report\":library:".rpf":ASCII(34):" >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+        string_to_execute = "echo ":"---------------------------------------------------------------------------------------------------------------------------------------------":" >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+        string_to_execute = "echo ":"Date       Time     User   Line  Routine       Log":" >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+        string_to_execute = "echo ":"---------------------------------------------------------------------------------------------------------------------------------------------":" >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+        string_to_execute = "echo. >> ":ASCII(34):inst:"logfile\":library:".log":ASCII(34)
+        SPAWN string_to_execute, check_ok QUIETLY
+    ENDIF
+
+{fm( "library         = ":library:ASCII(10):
+    "report          = ":report:ASCII(10):
+    "calling_routine = ":calling_routine:ASCII(10):
+    "file_name       = smp$logfiles":report:".log")}
+
+    FILE EXTEND file_name, check_ok
+    IF msg = "" THEN
+        FILE WRITE file_name, msg, check_ok
+    ELSE
+        FILE WRITE file_name, Now():" ":PAD(GLOBAL("OPERATOR"), " ",6):" ":calling_routine:" ":msg, check_ok
+    ENDIF
+    FILE CLOSE file_name, check_ok
+
+    IF (GLOBAL("MODE") <> "INTERACTIVE") OR
+       (INDEX("LIMS,SAP,MES,SYSTEM,INSTRUMENT", OPERATOR) > 0) THEN
+        filename = "smp$logfiles:":STRIP(GLOBAL("MODE")):".log"
+        IF NOT (FILE EXISTS (filename))
+            FILE CREATE filename, check_ok
+        ELSE
+        FILE EXTEND filename, check_ok
+        ENDIF
+        IF msg = "" THEN
+            FILE WRITE filename, msg, check_ok
+        ELSE
+            FILE WRITE filename, Now():" ":PAD(GLOBAL("OPERATOR"), " ",6):" ":calling_routine:" ":msg, check_ok
+        ENDIF
+        FILE CLOSE filename, check_ok
+    ENDIF
+
+    RESTORE DATE FORMAT
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Convert input time to server_time
+* Parameters   : time
+* Return Value : server_time
+**************************************************************************}
+{GLOBAL ROUTINE UTC(VALUE client_time)
+
+    DECLARE server_time, group_name, server, dls, offset, client
+
+    SET DATE FORMAT "DZ-MZ-YYYY H24:MI:SS"
+
+    IF (client_time = EMPTY) OR (client_time = 0) THEN
+        client_time = NOW
+    ENDIF
+
+    server = SELECT config_header . value WHERE identity   = "TIMEZONE_SERVER"
+    server = SUBSTRING(server, 6,3)
+    dls    = SELECT config_header . value WHERE identity   = "TIMEZONE_SERVER_DLS"
+    IF NUMTEXT(server) THEN
+        server = NUMERIC(server)
+    ELSE
+        server = 0
+    ENDIF
+
+    IF dls THEN
+        server = server + 1
+    ENDIF
+
+    group_name = SELECT personnel . group_id WHERE identity = GLOBAL ("operator")
+    client     = SELECT config_item . value WHERE group_name = group_name AND   identity   = "TIMEZONE_CLIENT"
+    dls        = SELECT config_item . value WHERE group_name = group_name AND   identity   = "TIMEZONE_CLIENT_DLS"
+
+    IF client  = EMPTY THEN
+        client = SELECT config_header . value WHERE identity   = "TIMEZONE_CLIENT"
+        dls    = SELECT config_header . value WHERE identity   = "TIMEZONE_CLIENT_DLS"
+    ENDIF
+
+    client = SUBSTRING(client, 5,3)
+    IF NUMTEXT(client) THEN
+        client = NUMERIC(client)
+    ELSE
+        client = 0
+    ENDIF
+
+    IF dls THEN
+        client = client + 1
+    ENDIF
+
+    offset = server - client
+
+    IF offset < 0 THEN
+        offset = STRING(ROUND(ABS(offset)))
+        offset = "0 ":offset:":00"
+        offset = INTERVAL(offset)
+        server_time = client_time - offset
+    ELSE
+        offset = STRING(ROUND(offset))
+        offset = "0 ":offset:":00"
+        offset = INTERVAL(offset)
+        server_time = client_time + offset
+    ENDIF
+
+    RETURN (server_time)
+
+ENDROUTINE}
+{******************************************************************************}
+
+GLOBAL ROUTINE set_file_name ( VALUE file_prompt, VALUE default_filename )
+{
+*   Set a filename and a folder, used for save file
+*   Input: default_filename
+*
+*******************************************************************************}
+
+    DECLARE header_txt, file_ext, save_form, file_object, prompt_width, can_exit, exit_key, real_exit, start_column
+
+    header_txt = "Save ":TOLOWER(SUBSTITUTE(LEFTSTRING(vgl_tools_get_call_stack_entry (2), INDEX(vgl_tools_get_call_stack_entry (2), " ")), "_", " ")):" as..."
+
+    { Create the form }
+    file_ext = "*"
+
+    IF INDEX(default_filename, ".") <> 0 THEN
+        file_ext = SUBSTRING(default_filename, INDEX(default_filename, ".") + 1,3)
+    ENDIF
+
+    CREATE OBJECT PROMPT_CLASS_FORM , save_form
+    save_form . width            = 70
+    save_form . row              = 12
+    save_form . column           =
+        ( ( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) DIV 2 )
+    save_form . border           = TRUE
+    save_form . header           = header_txt
+    save_form . footer           = GET_USER_MESSAGE ( "TABLE_SAVER_FORM_FOOTER" , 1 )
+    save_form . confirm_required = FALSE
+    save_form . return_behaviour = FORM_RETURN_WRAP
+    save_form . help_context     = "$TABLE_SAVER_FORM_PROMPT"
+    save_form . prompt_id        = "$TABLE_SAVER_FORM_PROMPT"
+
+    { Prepare the prompts }
+
+    {file_prompt     = "Save template as"}
+    prompt_width    = LENGTH ( file_prompt  )
+
+    file_prompt          = PAD ( file_prompt  , " " , prompt_width )
+
+    IF global ( "TERMTYPE" ) = "GUI" THEN
+        save_form . height = 5
+        prompt_width = prompt_width + 1
+        start_column = 2
+    ELSE
+        save_form . height   = 3
+        prompt_width         = prompt_width + 3
+        start_column         = 1
+        file_prompt          = file_prompt : " : "
+    ENDIF
+
+    save_form . add_display ( "Browse for file location..."           ,
+                              start_column          ,
+                              1                     ,
+                              PROMPT_RENDITION_RAISED +
+                              PROMPT_RENDITION_BOLD   )
+
+    save_form . add_display ( file_prompt           ,
+                              start_column          ,
+                              2                     ,
+                              PROMPT_RENDITION_RAISED +
+                              PROMPT_RENDITION_BOLD   )
+
+    PROMPT OBJECT file_object
+        FORMAT FILE
+        ON LINE 2
+        FROM ( start_column + prompt_width )
+        TO save_form . width - 3
+        WITH ( file_directory  = "smp$userfiles\change_tools"{DEFAULT_CLIENT_CSV_FILE_DIR} ,
+               file_extension  = file_ext ,
+               value           = default_filename,
+               client_file     = TRUE                        ,
+               may_browse      = FALSE                       ,
+               user_info       = TRUE                        )
+
+    save_form . add_prompt ( file_object )
+
+    save_form . add_frame ( "", 1, 1, 2, save_form . width )
+
+    REPEAT
+        save_form . start_prompt ( )
+        REPEAT
+            save_form . wait_prompt ( )
+            IF ( save_form . get_lastkey ( ) = "EXIT" ) THEN
+                can_exit = TRUE
+            ELSEIF (BLANK ( file_object . value )) THEN
+                save_form . active_prompt = 1
+                can_exit = FALSE
+            ELSEIF (INDEX ( file_object . value, "\" ) = 0) THEN
+                save_form . active_prompt = 1
+                can_exit = FALSE
+            ELSE
+                can_exit = TRUE
+                real_exit = TRUE
+            ENDIF
+        UNTIL can_exit
+
+        exit_key = save_form . get_lastkey ( )
+        save_form . end_prompt ( )
+
+        IF ( exit_key = "EXIT" ) THEN
+            real_exit = TRUE
+        ENDIF
+    UNTIL real_exit
+
+    RETURN(file_object . value)
+
+ENDROUTINE
+{******************************************************************************}
+
+GLOBAL ROUTINE get_file_name(VALUE file_prompt)
+{******************************************************************************
+*   Picks a filename from a folder, used for open file
+*   Input: text used for file prompt
+*
+*******************************************************************************}
+
+    DECLARE header_txt, load_form, file_object, can_exit, prompt_width, exit_key, real_exit, start_column
+
+    header_txt = "Open ":TOLOWER(SUBSTITUTE(LEFTSTRING(vgl_tools_get_call_stack_entry (2), INDEX(vgl_tools_get_call_stack_entry (2), " ")), "_", " "))
+    prompt_width = LENGTH ( file_prompt )
+
+    CREATE OBJECT PROMPT_CLASS_FORM , load_form
+
+    load_form . width            = 70
+    load_form . row              = 12
+    load_form . column           = ( ( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) DIV 2 )
+    load_form . border           = TRUE
+    load_form . header           = header_txt
+    load_form . footer           = GET_USER_MESSAGE ( "TABLE_LOADER_FORM_FOOTER" , 1 )
+    load_form . confirm_required = FALSE
+    load_form . return_behaviour = FORM_RETURN_WRAP
+    load_form . help_context     = "$TABLE_LOADER_FORM_PROMPT"
+    load_form . prompt_id        = "$TABLE_LOADER_FORM_PROMPT"
+
+    load_form . height = 3
+
+    file_prompt  = PAD ( file_prompt  , " " , prompt_width )
+
+    prompt_width = prompt_width + 1
+
+    start_column = 2
+
+    PROMPT OBJECT file_object
+        BROWSE ON FILE
+        ON LINE 2 FROM ( start_column + prompt_width )
+        TO load_form . width - 3
+        WITH ( file_directory = "smp$userfiles\change_tools" ,
+               file_extension = "txt"                        ,
+               client_file    = TRUE                         ,
+               user_info      = FALSE                        ,
+               vgl_library    = GLOBAL ( "CURRENT_LIBRARY" ) ,
+               allow_multiple = TRUE                         ,
+               format_only    = FALSE                        )
+
+    load_form . add_display ( file_prompt             ,
+                              start_column            ,
+                              2                       ,
+                              PROMPT_RENDITION_RAISED +
+                              PROMPT_RENDITION_BOLD   )
+
+    load_form . add_prompt ( file_object )
+
+    load_form . add_frame ( "", 1, 1, 2, load_form . width )
+
+    REPEAT
+        load_form . start_prompt ( )
+        REPEAT
+            load_form . active_prompt = 1
+            load_form . wait_prompt ( )
+            IF ( load_form . get_lastkey ( ) <> "EXIT" ) AND
+               ( BLANK ( file_object . value ) ) THEN
+                can_exit = FALSE
+            ELSE
+                can_exit = TRUE
+            ENDIF
+        UNTIL can_exit
+
+        load_form . active_prompt = 2
+        exit_key = load_form . get_lastkey ( )
+        load_form . end_prompt ( )
+        IF ( exit_key = "EXIT" ) THEN
+            real_exit = TRUE
+        ELSE
+            real_exit = FALSE
+        ENDIF
+
+        IF ( exit_key <> "EXIT" ) THEN
+            RETURN(file_object . value)
+        ENDIF
+    UNTIL ( real_exit )
+
+ENDROUTINE
+
+GLOBAL ROUTINE get_file(VALUE file_prompt, VALUE dir, VALUE ext)
+{******************************************************************************
+*   Picks a filename from a folder, used for open file
+*   Input: text used for file prompt
+*
+*******************************************************************************}
+
+    DECLARE header_txt, load_form, file_object, can_exit, prompt_width, exit_key, real_exit, start_column
+
+    header_txt = "Open ":TOLOWER(SUBSTITUTE(LEFTSTRING(vgl_tools_get_call_stack_entry (2), INDEX(vgl_tools_get_call_stack_entry (2), " ")), "_", " "))
+    prompt_width = LENGTH ( file_prompt )
+
+    CREATE OBJECT PROMPT_CLASS_FORM , load_form
+
+    load_form . width            = 70
+    load_form . row              = 12
+    load_form . column           = ( ( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) DIV 2 )
+    load_form . border           = TRUE
+    load_form . header           = header_txt
+    load_form . footer           = GET_USER_MESSAGE ( "TABLE_LOADER_FORM_FOOTER" , 1 )
+    load_form . confirm_required = FALSE
+    load_form . return_behaviour = FORM_RETURN_WRAP
+    load_form . help_context     = "$TABLE_LOADER_FORM_PROMPT"
+    load_form . prompt_id        = "$TABLE_LOADER_FORM_PROMPT"
+
+    load_form . height = 3
+
+    file_prompt  = PAD ( file_prompt  , " " , prompt_width )
+
+    prompt_width = prompt_width + 1
+
+    start_column = 2
+
+    PROMPT OBJECT file_object
+        BROWSE ON FILE
+        ON LINE 2 FROM ( start_column + prompt_width )
+        TO load_form . width - 3
+        WITH ( file_directory = dir ,
+               file_extension = ext                        ,
+               client_file    = TRUE                         ,
+               user_info      = FALSE                        ,
+               vgl_library    = GLOBAL ( "CURRENT_LIBRARY" ) ,
+               allow_multiple = TRUE                         ,
+               format_only    = FALSE                        )
+
+    load_form . add_display ( file_prompt             ,
+                              start_column            ,
+                              2                       ,
+                              PROMPT_RENDITION_RAISED +
+                              PROMPT_RENDITION_BOLD   )
+
+    load_form . add_prompt ( file_object )
+
+    load_form . add_frame ( "", 1, 1, 2, load_form . width )
+
+    REPEAT
+        load_form . start_prompt ( )
+        REPEAT
+            load_form . active_prompt = 1
+            load_form . wait_prompt ( )
+            IF ( load_form . get_lastkey ( ) <> "EXIT" ) AND
+               ( BLANK ( file_object . value ) ) THEN
+                can_exit = FALSE
+            ELSE
+                can_exit = TRUE
+            ENDIF
+        UNTIL can_exit
+
+        load_form . active_prompt = 2
+        exit_key = load_form . get_lastkey ( )
+        load_form . end_prompt ( )
+        IF ( exit_key = "EXIT" ) THEN
+            real_exit = TRUE
+        ELSE
+            real_exit = FALSE
+        ENDIF
+
+        IF ( exit_key <> "EXIT" ) THEN
+            RETURN(file_object . value)
+        ENDIF
+    UNTIL ( real_exit )
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Start debugging tool
+* Parameters   : object
+* Return Value :N/A
+**************************************************************************}
+GLOBAL ROUTINE DebugObject(object)
+
+    SET NAME "DISPLAY/"
+
+    CALL_ROUTINE "CheckMe"
+    USING object . current
+    DEBUG CONTEXT
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Debug the content of an object
+* Parameters   : object
+* Return Value :N/A
+**************************************************************************}
+ROUTINE CheckMe(object)
+
+    {Right-click 'object' and select Show Full, to view content}
+
+ENDROUTINE
+
+
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value :N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE table_has_approval ( VALUE name_of_table )
+
+{
+* Returns boolean indicating if passed table has approval on it's records.
+*
+* Parameters   : name_of_table - Name of table to check
+* Return Value : Boolean - indicating if passed table has approval
+*
+*******************************************************************************}
+
+    DECLARE inspection_field , approval_status
+
+    GET_TABLE_DETAILS 'name_of_table'    ,
+                      "INSPECTION_FIELD" ,
+                      inspection_field
+
+    GET_TABLE_DETAILS 'name_of_table'   ,
+                      "APPROVAL_STATUS" ,
+                      approval_status
+
+    RETURN ( ( NOT ( inspection_field = EMPTY ) ) AND
+         ( NOT ( approval_status  = EMPTY ) )     )
+
+ENDROUTINE { table_has_approval }
+
+{*************************************************************************
+* Purpose      : Insert record to be handled in INCIDENTS_UPDATE-table
+* Parameters   : record_key0, record_key1, a_library, a_routine
+* Return Value : N/A
+**************************************************************************}
+GLOBAL ROUTINE insert_iu(VALUE a_library, VALUE a_routine, VALUE record_key0, VALUE record_key1)
+
+    IF (0 = (SELECT COUNT incidents_update 
+             WHERE record_key0 = record_key0
+               AND record_key1 = record_key1
+               AND library = a_library
+               AND routine = a_routine)) THEN
+        SET FORMAT "9999999999"
+        NextId = RIGHTSTRING(STRIP(INCREMENT("INCIDENT_UPDATE", "IDENTITY" )), 6)
+        SQL    = "INSERT INTO INCIDENTS_UPDATE ( [IDENTITY], LIBRARY, ROUTINE, RECORD_KEY0, RECORD_KEY1, ENTERED_ON) VALUES "
+        VALUES = "('": nextid:"', '":a_library:"', '":a_routine:"', '":record_key0:"', '":record_key1:"', GETDATE())"
+        execute_sql(SQL:VALUES)
+        IF NOT transaction_is_write() THEN
+            execute_sql("COMMIT")
+        ENDIF
+        WriteToLog(VALUES)
+    {**************************************************************************************************************
+        status = SELECT timerqueue.entry_number WHERE report_name = "BGR_UPDATE" AND suspended = FALSE
+        SLEEP FOR INTERVAL("    0 00:00:01") 
+        IF (status = EMPTY) THEN
+            status = SELECT timerqueue.entry_number FOR UPDATE WHERE report_name = "BGR_UPDATE" AND suspended = TRUE
+            IF (NUMTEXT(status)) AND (status <> LOCKED) AND (status <> EMPTY) THEN
+                IF NOT transaction_is_write() THEN
+                    START WRITE TRANSACTION "Activate BGR_UPDATE"
+                    ASSIGN timerqueue.suspended = FALSE
+                    ASSIGN timerqueue.run_time = NOW
+                    UPDATE timerqueue
+                    COMMIT
+                ELSE
+                    ASSIGN timerqueue.suspended = FALSE
+                    ASSIGN timerqueue.run_time = NOW
+                    UPDATE timerqueue
+                ENDIF
+            ENDIF 
+
+            WriteToLog("Activate BGR_UPDATE")
+        ELSEIF NUMTEXT(status) THEN
+            WriteToLog("bgr_update: ACTIVE; transaction_is_write = ":transaction_is_write())
+        ELSE
+            WriteToLog("bgr_update: ACTIVE; status = ":status:"; transaction_is_write = ":transaction_is_write())
+        ENDIF
+    ***************************************************************************************************************}
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Trim text - to avoid EMPTY field represented as "------..."
+* Parameters   : field
+* Return Value : trimmed field
+**************************************************************************}
+GLOBAL ROUTINE Trim(VALUE field)
+
+    IF field = EMPTY
+        field = ""
+    ELSEIF BLANK(field) THEN
+        field = ""
+    ELSE
+        field = STRIP(field)
+    ENDIF
+
+    RETURN(field)
+
+ENDROUTINE

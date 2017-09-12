@@ -1,0 +1,176 @@
+{ This definition is required at the top of all calculations }
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN LIBRARY $LIB_UTILS
+
+GLOBAL ROUTINE calculation ( current_sample, current_test_number, current_component_name )
+
+DECLARE REF, RT, SG, DEN, SM, D1, V2, D2, VOL, CHY, STR, AC, AB, RT_CHY, RT_BOV, RT_MIC, RT_STD 
+DECLARE complist, worksheet, standards, r, res, text, test_num, c, b, m
+ARRAY standards
+
+{**************************************************************************************************************
+ORDER_NUMBER    NAME                REP_CONTROL RESULT_TYPE UNITS
+         1      Reference           REF         O   
+         2      Runtime             RT          N           s
+         3      Sample (g)          SG          N           g
+         4      Density (g/mL)      DEN         N           g/mL
+         5      Sample (mL)         SM          N           mL
+         6      Dilution 1          D1          N           mL
+         7      Vol. 2nd Dil        V2          N           mL
+         8      Dilution 2          D2          N           mL
+         9      Volume for test     VOL         N           µL
+        10      % Chymosin          CHY         N           %
+        11      Strength            STR         K           IMCU
+        12      Activity Chyomsin   AC          K           IMCU
+        13      Activity Bovine     AB          K           IMCU 
+***************************************************************************************************************}
+
+    complist  = SELECT test.component_list WHERE test_number = current_test_number
+    worksheet = SELECT test.worksheet
+
+    IF (worksheet = 0) OR BLANK(worksheet) THEN
+        fm("Test not assigned to a worksheet")
+        RETURN (EMPTY)
+    ENDIF
+
+    REF       = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "REF")
+    RT        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "RT ") 
+    SG        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "SG ") 
+    DEN       = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "DEN") 
+    SM        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "SM ") 
+    D1        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "D1 ") 
+    V2        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "V2 ") 
+    D2        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "D2 ") 
+    VOL       = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "VOL") 
+    CHY       = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "CHY") 
+    STR       = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "STR") 
+    AC        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "AC ") 
+    AB        = Trim(SELECT result.text WHERE test_number = current_test_number AND REP_CONTROL = "AB ")
+
+    IF BLANK(SM) AND NUMTEXT(SG) AND NUMTEXT(DEN) AND (SG > 0) AND (DEN > 0) THEN
+        SM = SG / DEN
+    ELSEIF BLANK(SM) THEN
+        text = STRIP(SELECT result.name WHERE test_number = current_test_number AND REP_CONTROL = "SM ")
+        fm("Missing result for component '":text:"'")
+        RETURN (EMPTY)
+    ELSEIF (BLANK(SG) OR BLANK(DEN)) AND BLANK(SM) THEN    
+        text = STRIP(SELECT result.name WHERE test_number = current_test_number AND REP_CONTROL = "SG ")
+        text = text:"' and/or '"STRIP(SELECT result.name WHERE test_number = current_test_number AND REP_CONTROL = "DEN")
+        fm("Missing result for components '":text:"'")
+        RETURN (EMPTY)
+    ENDIF
+    
+    IF BLANK(D2) AND BLANK(V2) THEN
+        D2 = 1
+        v2 = 1
+    ENDIF
+    
+    test_num  = SELECT test.test_number WHERE worksheet = worksheet AND component_list = "STD"
+    WHILE test_num <> EMPTY DO
+        standards[size_of_array(standards) + 1, 1] = test_num
+    NEXT test
+        test_num  = SELECT test.test_number
+    ENDWHILE
+    
+    r = 1
+    c = 0
+    b = 0
+    m = 0
+    RT_CHY = 0
+    RT_BOV = 0
+    RT_MIC = 0
+        
+    WHILE r <= size_of_array(standards) DO
+        text = SELECT result.text WHERE test_number = standards[r, 1] AND REP_CONTROL = "REF"
+        IF text = "Chymosin" THEN
+            text = SELECT result.text WHERE test_number = standards[r, 1] AND REP_CONTROL = "RT" 
+            IF NOT(BLANK(text)) THEN
+                RT_CHY = RT_CHY + NUMERIC(text)
+                c = c + 1
+            ENDIF    
+        ELSEIF text = "Bovine" THEN
+            text = SELECT result.text WHERE test_number = standards[r, 1] AND REP_CONTROL = "RT" 
+            IF NOT(BLANK(text)) THEN
+                RT_BOV = RT_BOV + NUMERIC(text) 
+                b = b + 1
+            ENDIF    
+        ELSEIF text = "Microbilogical" THEN
+            text = SELECT result.text WHERE test_number = standards[r, 1] AND REP_CONTROL = "RT" 
+            IF NOT(BLANK(text)) THEN
+                RT_MIC = RT_MIC + NUMERIC(text) 
+                m = m + 1
+            ENDIF    
+        ENDIF
+        r = r + 1
+    ENDWHILE
+
+    IF c > 0 THEN
+        RT_CHY = RT_CHY / c
+    ELSE
+        RT_CHY = EMPTY
+    ENDIF
+    
+    IF b > 0 THEN
+        RT_BOV = RT_BOV / b
+    ELSE
+        RT_BOV = EMPTY
+    ENDIF
+    
+    IF m > 0 THEN
+        RT_MIC = RT_MIC / m
+    ELSE
+        RT_MIC = EMPTY
+    ENDIF
+    
+    IF (REF = "Chymosin") THEN
+            RT_STD = RT_CHY
+    ELSEIF (REF = "Bovine") THEN
+            RT_STD = RT_BOV
+    ELSEIF (REF = "Microbilogical") THEN
+            RT_STD = RT_MIC
+        ELSE
+            fm("No '":STRIP(text):"' standard for sample":STRIP(current_sample):ASCII(10):
+               "found in worksheet ":(SELECT worksheet.identity WHERE link_number = worksheet))
+            RETURN (EMPTY)   
+        ENDIF
+
+    IF (INDEX(complist, "MIX") = 0) AND
+       (INDEX(complist, "RATIO") = 0) THEN
+        res = RT_STD / RT * D1 / V2 * D2 / SM * 3 * 500 / VOL
+    ELSEIF (INDEX(complist, "MIX") > 0) OR
+           (INDEX(complist, "RATIO") > 0) THEN
+        IF (INDEX(STRIP(current_component_name), STRIP(REF)) > 0) THEN
+            res = RT_STD / RT * D1 / V2 * D2 / SM * 3 * 500 / VOL
+        ELSE
+            res = EMPTY
+            fm("INDEX(current_component_name, REF)":ASCII(10):
+               "Reference: '":REF:"' is not valid ":ASCII(10):
+               "for component: '":STRIP(current_component_name):"'")
+        ENDIF
+    ELSE
+        res = EMPTY
+    ENDIF
+    
+    RETURN (res)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Trim text
+* Parameters   : field
+* Return Value : trimmed field
+**************************************************************************}
+ROUTINE Trim(VALUE field)
+
+    IF field = EMPTY
+        field = ""
+    ELSEIF BLANK(field) THEN
+        field = ""
+    ELSE
+        field = STRIP(field)
+    ENDIF
+
+    RETURN(field)
+
+ENDROUTINE

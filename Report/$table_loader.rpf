@@ -1,0 +1,595 @@
+{******************************************************************************
+*
+* Module Name   : $TABLE_LOADER
+*
+* Purpose       : To load CSV files into database tables
+*
+* Document Ref. : SE/T/TVGL-WORK-INSTALL/1/13
+*
+* Specification : SE/T/TVGL-WORK-INSTALL/1/10
+*
+* Portability   : Not Checked
+*
+* Re-entrant    : No
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_CLIENT
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+JOIN STANDARD_LIBRARY STD_TRANSFER
+JOIN STANDARD_LIBRARY STD_UTILS
+
+JOIN LIBRARY $CRITERIA_EDIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $TABLE_LOAD_SAVE_LIB
+
+ENABLE WINDOWS
+
+{******************************************************************************}
+
+IF ( GLOBAL ( "MODE" ) = "INTERACTIVE" ) THEN
+
+	inter_initialise ( )
+	inter_csv_file_to_table ( )
+ELSE
+	batch_initialise ( )
+	batch_csv_file_to_table ( )
+ENDIF
+
+
+{* INITIALISATION ROUTINES ****************************************************}
+
+{******************************************************************************}
+
+	ROUTINE inter_initialise
+
+{
+*       Initialisation routine - do nothing
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE batch_initialise
+
+{
+*       Initialisation routine - do nothing
+*
+*******************************************************************************}
+
+ENDROUTINE
+
+
+{* OTHER ROUTINES *************************************************************}
+
+{******************************************************************************}
+
+	ROUTINE leave_cs_prompt ( self )
+
+{
+*       When the user changes the type of file clear the file name field.
+*
+*******************************************************************************}
+
+	IF self . value <> self . user_info . user_info THEN
+
+		self . user_info . user_info = self . value
+
+		self . user_info . set_text ( " " )
+		self . user_info . repaste ( )
+
+		IF self . value THEN
+
+			self . user_info . file_directory =
+			                           DEFAULT_CLIENT_CSV_FILE_DIR
+			self . user_info . file_extension =
+			                           DEFAULT_CLIENT_CSV_FILE_EXTN
+			self . user_info . client_file = TRUE
+
+		ELSE
+
+			self . user_info . file_directory =
+			                           DEFAULT_CSV_FILE_DIR
+			self . user_info . file_extension =
+			                           DEFAULT_CSV_FILE_EXTN
+			self . user_info . client_file = FALSE
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE inter_csv_file_to_table
+
+{
+*       The main interactive load routine - prompts for all necessary
+*	information then calls routines to load the data.
+*
+*******************************************************************************}
+
+	DECLARE load_form , file_prompt , file_object , mode_array ,
+		mode_prompt , mode_object , can_exit , prompt_width ,
+	        exit_key , trans_prompt , trans_object , multi_trans_size ,
+		transaction_size , real_exit, next_line, start_column ,
+		trans_true , trans_false , cs_object
+
+	file_prompt  = GET_USER_MESSAGE ( "TABLE_LOADER_FILE_PR"   , 1 )
+	mode_prompt  = GET_USER_MESSAGE ( "TABLE_LOADER_MODE_PR"   , 1 )
+	trans_prompt = GET_USER_MESSAGE ( "TABLE_LOADER_TRANS_PR"  , 1 )
+
+	load_mode_array ( mode_array )
+	load_trans_true_false ( trans_true , trans_false )
+
+	prompt_width = find_max_number ( LENGTH ( file_prompt ) ,
+	                                 LENGTH ( mode_prompt ) )
+
+	prompt_width = find_max_number ( prompt_width            ,
+	                                 LENGTH ( trans_prompt ) )
+
+	CREATE OBJECT PROMPT_CLASS_FORM , load_form
+
+	load_form . width            = 70
+	load_form . row              = 12
+	load_form . column           =
+		( ( GLOBAL ( "SCREEN_WIDTH" ) - 70 ) DIV 2 )
+	load_form . border           = TRUE
+	load_form . header           =
+		GET_USER_MESSAGE ( "TABLE_LOADER_FORM_HEADER" , 1 )
+	load_form . footer           =
+		GET_USER_MESSAGE ( "TABLE_LOADER_FORM_FOOTER" , 1 )
+	load_form . confirm_required = FALSE
+	load_form . return_behaviour = FORM_RETURN_WRAP
+	load_form . help_context     = "$TABLE_LOADER_FORM_PROMPT"
+	load_form . prompt_id        = "$TABLE_LOADER_FORM_PROMPT"
+
+	IF global ( "TERMTYPE" ) = "GUI" THEN
+
+		load_form . height = 6
+
+		file_prompt  = PAD ( file_prompt  , " " , prompt_width )
+		mode_prompt  = PAD ( mode_prompt  , " " , prompt_width )
+		trans_prompt = PAD ( trans_prompt , " " , prompt_width )
+
+		prompt_width = prompt_width + 1
+
+		start_column = 2
+
+		PROMPT OBJECT file_object
+			BROWSE ON FILE
+			ON LINE 2 FROM ( start_column + prompt_width )
+			TO load_form . width - 3
+			WITH ( file_directory = DEFAULT_CSV_FILE_DIR         ,
+			       file_extension = DEFAULT_CSV_FILE_EXTN        ,
+			       client_file    = FALSE                        ,
+			       user_info      = FALSE                        ,
+			       vgl_library    = GLOBAL ( "CURRENT_LIBRARY" ) ,
+			       allow_multiple = TRUE                         ,
+			       format_only    = FALSE                        )
+
+		load_form . add_display ( file_prompt             ,
+		                          start_column            ,
+		                          2                       ,
+		                          PROMPT_RENDITION_RAISED +
+		                          PROMPT_RENDITION_BOLD   )
+
+		PROMPT OBJECT cs_object
+			BROWSE ON BOOLEAN
+			ON LINE 1 FROM ( start_column + prompt_width )
+			WITH ( leave_prompt_routine = "LEAVE_CS_PROMPT" ,
+			       value                = FALSE              ,
+			       user_info            = file_object       ,
+			       is_check             = TRUE              ,
+			       caption = GET_USER_MESSAGE ( "TABLE_LOADER_CLIENT_PR" , 1 ))
+
+		load_form . add_prompt ( cs_object )
+
+		load_form . add_prompt ( file_object )
+
+		load_form . add_frame ( "", 1, 1, 2, load_form . width )
+
+		next_line = 5
+
+	ELSE
+
+		load_form . height = 4
+
+		file_prompt  = PAD ( file_prompt  , " " , prompt_width ) : " : "
+		mode_prompt  = PAD ( mode_prompt  , " " , prompt_width ) : " : "
+		trans_prompt = PAD ( trans_prompt , " " , prompt_width ) : " : "
+
+		prompt_width = prompt_width + 3
+
+		start_column = 1
+
+		PROMPT OBJECT file_object
+			BROWSE ON FILE
+			ON LINE 1 FROM ( start_column + prompt_width )
+			WITH ( file_directory  = DEFAULT_CSV_FILE_DIR  ,
+			       file_extension  = DEFAULT_CSV_FILE_EXTN ,
+		               client_file     = FALSE                 ,
+			       always_validate = TRUE                  ,
+		               user_info       = FALSE                 )
+
+		load_form . add_display ( file_prompt             ,
+		                          start_column            ,
+		                          1                       ,
+		                          PROMPT_RENDITION_RAISED +
+		                          PROMPT_RENDITION_BOLD   )
+
+		load_form . add_prompt ( file_object )
+
+		next_line = 3
+
+	ENDIF
+
+	PROMPT OBJECT mode_object
+		CHOOSE OUTOF mode_array
+		ON LINE next_line FROM ( start_column + prompt_width )
+	        TO load_form . width - 3
+
+	mode_object . value  = DEFAULT_OVERWRITE_MODE
+
+	PROMPT OBJECT trans_object
+		BROWSE ON BOOLEAN
+		ON LINE ( next_line + 1 ) FROM ( start_column + prompt_width )
+		WITH ( trueword  = trans_true  ,
+		       falseword = trans_false )
+
+	trans_object . value = DEFAULT_TRANSACTION_MODE
+
+	load_form . add_display ( mode_prompt             ,
+	                          start_column            ,
+	                          next_line               ,
+	                          PROMPT_RENDITION_RAISED +
+	                          PROMPT_RENDITION_BOLD   )
+
+	load_form . add_prompt ( mode_object )
+
+	load_form . add_display ( trans_prompt            ,
+	                          start_column            ,
+	                          next_line + 1           ,
+	                          PROMPT_RENDITION_RAISED +
+	                          PROMPT_RENDITION_BOLD   )
+
+	load_form . add_prompt ( trans_object )
+
+	load_form . add_frame ( "", 1, next_line, 
+	                            2, load_form . width )
+
+	multi_trans_size = MULTI_TRANSACTION_DEFAULT
+
+	REPEAT
+		load_form . start_prompt ( )
+
+		REPEAT
+
+			IF global ( "TERMTYPE" ) = "GUI" THEN
+				load_form . active_prompt = 2
+			ELSE
+				load_form . active_prompt = 1
+			ENDIF
+
+			load_form . wait_prompt ( )
+
+			IF ( load_form . get_lastkey ( ) <> "EXIT" ) AND
+			   ( BLANK ( file_object . value ) ) THEN
+				can_exit = FALSE
+			ELSE
+				can_exit = TRUE
+			ENDIF
+
+		UNTIL can_exit
+
+		exit_key = load_form . get_lastkey ( )
+
+		load_form . end_prompt ( )
+
+		IF ( exit_key = "EXIT" ) THEN
+
+			real_exit = TRUE
+
+		ELSE
+			real_exit = FALSE
+
+			IF ( trans_object . value = USE_MULTI_TRANSACTION ) THEN
+
+				exit_key = get_new_transaction_size ( multi_trans_size )
+
+				transaction_size = multi_trans_size
+			ELSE
+
+				transaction_size = SINGLE_TRANSACTION_NUMBER
+			ENDIF
+		ENDIF
+
+		IF ( exit_key <> "EXIT" ) THEN
+
+			do_the_import ( file_object         ,
+			                mode_object . value ,
+			                transaction_size    )
+
+			file_object . text = ""
+			file_object . value = ""
+
+		ENDIF
+
+	UNTIL ( real_exit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE do_the_import (       file_object      ,
+	                        VALUE import_mode      ,
+	                        VALUE transaction_size )
+
+{
+*	Call the import routine for each file specified
+*
+*******************************************************************************}
+
+	DECLARE temp_name,
+	        status,
+	        file_name_array,
+	        file_name_count,
+	        files_to_import
+
+	file_object . get_file_names ( file_name_array )
+	files_to_import = size_of_array ( file_name_array )
+
+	file_name_count = 1
+
+	WHILE file_name_count <= files_to_import DO
+
+		IF file_object . user_info THEN
+
+			temp_name = file_name_array [ file_name_count ]
+
+			file_name_array [ file_name_count ] =
+			  "smp$userfiles:temp" : global ( "PROCESS_ID" ) : ".csv"
+
+			transfer_to_server ( temp_name                           ,
+			                     file_name_array [ file_name_count ] )
+
+		ENDIF
+
+		IF files_to_import > 1 THEN
+			input_csv_file ( STRIP ( file_name_array [ file_name_count ] ) ,
+			                 import_mode                                   ,
+			                 LOADER_NOT_ALLOWED_TO_PROMPT                  ,
+			                 transaction_size                              ,
+			                 FALSE                                         )
+		ELSE
+			input_csv_file ( STRIP ( file_name_array [ file_name_count ] ) ,
+			                 import_mode                                   ,
+			                 LOADER_ALLOWED_TO_PROMPT                      ,
+			                 transaction_size                              ,
+			                 TRUE                                          )
+		ENDIF
+
+		IF file_object . user_info THEN
+
+			FILE DELETE file_name_array [ file_name_count ] , status
+			file_name_array [ file_name_count ] = temp_name
+
+		ENDIF
+
+		file_name_count = file_name_count + 1
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE get_new_transaction_size ( transaction_size )
+
+{
+*	Allow user to edit the number of records per transaction
+*
+*******************************************************************************}
+
+	DECLARE size_window , size_prompt , window_width , window_hdr ,
+	        window_ftr , prompt_size , prompt_pos
+
+	size_prompt = GET_USER_MESSAGE ( "TABLE_LOADER_NEW_SIZE" , 1 )
+	prompt_size = LENGTH ( size_prompt ) + 10
+
+	window_hdr  = GET_USER_MESSAGE ( "TABLE_LOADER_FORM_HEADER" , 1 )
+	window_ftr  = GET_USER_MESSAGE ( "TABLE_LOADER_SIZE_FOOTER" , 1 )
+
+	window_width = find_max_number ( LENGTH ( window_ftr ) ,
+	                                 LENGTH ( window_hdr ) )
+
+	window_width = 10 + find_max_number ( window_width , prompt_size )
+
+	CREATE TEXT WINDOW size_window
+		HEIGHT 5  WIDTH window_width
+		HEADER = window_hdr
+		FOOTER = window_ftr
+		BORDER
+		HELP CONTEXT = "$TABLE_LOADER_TRANS_SIZE"
+
+	prompt_pos = ( window_width - prompt_size ) DIV 2
+
+	PASTE TEXT WINDOW size_window
+		AT ( ( GLOBAL ( "SCREEN_WIDTH" ) - window_width ) DIV 2 ) ,
+	           ( ( GLOBAL ( "SCREEN_HEIGHT" ) - 5 ) DIV 2 )
+
+	PROMPT FOR transaction_size
+		AT prompt_pos , 3 IN WINDOW size_window
+		USING size_prompt
+		BROWSE ON INTEGER
+		WITH ( minimum = 1 )
+
+	UNPASTE TEXT WINDOW size_window
+
+	RETURN ( LASTKEY )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+	ROUTINE batch_csv_file_to_table
+
+{
+*       The main batch mode load routine - reads in the necessary information
+*	from the command line, then calls routines to load the data.
+*
+*******************************************************************************}
+
+	DECLARE file_name , overwrite_mode , error_message , error_occured ,
+		mess_ptr , transaction_text , transaction_size
+
+	error_occured = FALSE
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		PROMPT FOR file_name
+
+	ELSE
+		file_name = "smp$datafiles:table_dump.csv"
+
+		send_message ( "TABLE_LOADER_USING_DEF_CSV" ,
+		               TABLE_LOADER                 ,
+		               FALSE                        )
+
+		overwrite_mode = IGNORE_FILE
+	ENDIF
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		PROMPT FOR overwrite_mode
+
+	ELSE
+		overwrite_mode = DEFAULT_OVERWRITE_MODE
+
+		send_message ( "TABLE_LOADER_USING_DEF_MODE" ,
+		               TABLE_LOADER                  ,
+		               FALSE                         )
+	ENDIF
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		PROMPT FOR transaction_text
+
+	ELSE
+		IF ( DEFAULT_TRANSACTION_MODE = USE_SINGLE_TRANSACTION ) THEN
+
+			transaction_text = STRING ( TRUNC ( SINGLE_TRANSACTION_NUMBER ) )
+
+		ELSE
+			transaction_text = STRING ( TRUNC ( MULTI_TRANSACTION_DEFAULT ) )
+		ENDIF
+
+		send_message ( "TABLE_LOADER_USING_DEF_TRANS" ,
+		               TABLE_LOADER                   ,
+		               FALSE                          )
+	ENDIF
+
+	IF ( GLOBAL ( "PARAM_ACTIVE" ) ) THEN
+
+		error_message = "TABLE_LOADER_TOO_MANY_PAR"
+		error_occured = TRUE
+	ENDIF
+
+	IF ( NOT valid_overwrite_mode ( overwrite_mode ) ) THEN
+
+		error_occured = TRUE
+		message_fetch ( "TABLE_LOADER_INV_MODE" , mess_ptr )
+		message_add_parameter ( mess_ptr , TOUPPER ( overwrite_mode ) )
+		error_message = message_get_text ( mess_ptr , 1 )
+	ENDIF
+
+	IF ( NOT error_occured ) THEN
+
+		IF ( NUMTEXT ( transaction_text ) ) THEN
+
+			transaction_size = TRUNC ( NUMERIC ( transaction_text ) )
+
+			IF ( transaction_size < 0 ) THEN
+
+				transaction_size = 0
+			ENDIF
+		ELSE
+
+			error_occured = TRUE
+			error_message =
+			       GET_USER_MESSAGE ( "TABLE_LOADER_INV_TRANS" , 1 )
+		ENDIF
+	ENDIF
+
+	IF ( NOT error_occured ) THEN
+
+		IF ( NOT ( FILE EXISTS ( file_name ) ) ) THEN
+
+			error_occured = TRUE
+			message_fetch ( "TABLE_LOADER_INV_FILE" , mess_ptr )
+			message_add_parameter ( mess_ptr , file_name )
+			error_message = message_get_text ( mess_ptr , 1 )
+		ENDIF
+	ENDIF
+
+	IF ( NOT error_occured ) THEN
+
+		message_fetch ( "TABLE_LOADER_NAME_CSV" , mess_ptr )
+		message_add_parameter ( mess_ptr , file_name )
+
+		send_message ( message_get_text ( mess_ptr , 1 ) ,
+		               TABLE_LOADER                      ,
+		               FALSE                             )
+
+		send_message ( "TABLE_LOADER_MODE_" :
+		                    TOUPPER ( SUBSTITUTE
+		                        ( overwrite_mode , "_" , "" ) ) ,
+		               TABLE_LOADER                             ,
+		               FALSE                                    )
+
+		IF ( transaction_size = SINGLE_TRANSACTION_NUMBER ) THEN
+
+			send_message ( "TABLE_LOADER_USING_SINGLE_TR" ,
+			               TABLE_LOADER                   ,
+			               FALSE                          )
+		ELSE
+
+			message_fetch ( "TABLE_LOADER_USING_MULTI_TR" ,
+			                mess_ptr                      )
+
+			message_add_parameter ( mess_ptr                   ,
+			                        STRIP ( transaction_size ) )
+
+			send_message ( message_get_text ( mess_ptr , 1 ) ,
+			               TABLE_LOADER                      ,
+			               FALSE                             )
+		ENDIF
+
+		input_csv_file ( file_name        ,
+		                 overwrite_mode   ,
+		                 FALSE            ,
+		                 transaction_size ,
+				 TRUE             )
+	ELSE
+		send_message ( error_message , TABLE_LOADER , FALSE )
+		send_message ( "TABLE_LOADER_ABORTED" , TABLE_LOADER , FALSE )
+	ENDIF
+
+	send_message ( "TABLE_LOADER_FINISHED" , TABLE_LOADER , FALSE )
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}

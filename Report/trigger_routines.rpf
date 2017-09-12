@@ -1,0 +1,597 @@
+SET NAME "DEFER/"
+SET NOTPROTECTED
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_VGL_TOOLS
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $INCIDENT_LOGIN
+
+{  ---------------------------- RECEIVING_SAMPLES ----------------------------------- }
+GLOBAL ROUTINE recieving_samples (self)
+
+
+DECLARE cur_location, saturday, sunday, days_start, days_end, start_delay, finish_delay, day_start_no
+DECLARE old_date_req, old_ideal_date, cur_smpid, oneday, maxtime, date_rec, anal, exp_dur, day_compl_no
+DECLARE date_req, {ideal_date,} login_date, smp_location
+{DECLARE product_before_smp }
+
+cur_location       = SELECT personnel.location_id
+                     WHERE identity = OPERATOR
+
+saturday           = SELECT location_details.saturday_work
+                     WHERE location_id = cur_location
+                     AND removeflag = FALSE
+                     IF ( (saturday = EMPTY) OR (BLANK(saturday)) ) THEN
+                        FLASH_MESSAGE("No QC setup for location " : STRIP(cur_location) : ". Using Predefined Values", TRUE)
+                        saturday = FALSE
+                     ENDIF
+
+sunday             = SELECT location_details.sunday_work
+                     IF ( (sunday = EMPTY) OR (BLANK(sunday)) ) THEN
+                        sunday = FALSE
+                     ENDIF
+
+
+days_start         = SELECT location_details.days_to_start
+                     IF ( (days_start = EMPTY) OR (BLANK(days_start)) ) THEN
+                        days_start = 1
+                     ENDIF
+
+days_end           = SELECT location_details.days_to_end
+                     IF ( (days_end = EMPTY) OR (BLANK(days_end)) ) THEN
+                        days_end = 2
+                     ENDIF
+
+cur_smpid          = SELECT sample.id_numeric
+login_date         = SELECT sample.login_date
+{product_before_smp = SELECT sample.product_before }
+
+one_day  = INTERVAL("0001 00:00:00.00")
+max_time = INTERVAL("0000 00:00:00.00")
+
+
+start_delay = STRING(days_start)
+start_delay = INTERVAL("000":STRIP(start_delay):" 00:00:00.00")
+
+finish_delay = STRING(days_end)
+finish_delay = INTERVAL("000":STRIP(finish_delay):" 00:00:00.00")
+
+date_rec = NOW
+day_start_no = DAYNUMBER(date_rec + start_delay)
+
+IF day_start_no = 6 THEN { Saturday }
+   IF NOT saturday THEN
+      start_delay = start_delay + one_day
+   ENDIF
+   IF NOT sunday THEN
+      start_delay = start_delay + one_day
+   ENDIF
+ENDIF
+
+IF day_start_no = 7 THEN { Sunday }
+   IF NOT sunday THEN
+      start_delay = start_delay + one_day
+   ENDIF
+ENDIF
+
+
+anal  = SELECT test.analysis_id
+                  WHERE sample_id = cur_smpid and status <>"A" and status <> "C" and status <>"X"
+                  ORDER ON sample_id
+
+
+WHILE  anal <> EMPTY DO
+   exp_dur  = SELECT analysis.expected_time
+                           WHERE identity = anal
+                           ORDER ON identity
+
+   IF (exp_dur <> " ")  and (exp_dur <> EMPTY) and (NOT BLANK(exp_dur)) THEN
+
+      IF exp_dur >= max_time THEN
+         max_time = exp_dur
+      ENDIF
+   ENDIF
+   NEXT test
+   anal = SELECT test.analysis_id
+ENDWHILE
+
+day_compl_no = DAYNUMBER(date_rec + start_delay + max_time) {Finding the day of week, where sample should be complete}
+IF day_compl_no = 6 THEN {Saturday}
+   IF NOT saturday THEN
+      finish_delay = finish_delay + one_day
+   ENDIF
+   IF NOT sunday THEN
+      finish_delay = finish_delay + one_day
+   ENDIF
+ENDIF
+IF day_compl_no = 7 THEN {Sunday}
+   IF NOT sunday THEN
+      finish_delay = finish_delay + one_day
+   ENDIF
+ENDIF
+
+date_req = date_rec + start_delay + max_time + finish_delay
+{ideal_date  = date_rec + max_time}
+
+old_date_req = SELECT sample.dateresreq
+IF ((old_date_req = EMPTY) OR BLANK(old_date_req) OR (SUBSTRING(old_date_req,1,11) = SUBSTRING(login_date,1,11))) THEN
+   ASSIGN sample.dateresreq = date_req
+ENDIF
+
+old_ideal_date = SELECT sample.date_ideal_complete
+IF ((old_ideal_date = EMPTY) OR BLANK(old_ideal_date) OR (SUBSTRING(old_ideal_date,1,11) = SUBSTRING(login_date,1,11))) THEN
+   {ASSIGN sample.date_ideal_complete = ideal_date}
+ENDIF
+
+smp_location = SELECT sample.location_id
+IF ((smp_location = EMPTY) OR BLANK(smp_location)) THEN
+   ASSIGN sample.location_id = cur_location
+ENDIF
+
+{**AS1771 HBe 29-1-2007}
+IF global("MODE") = "INTERACTIVE"
+  THEN handle_warnings ({product_before_smp })
+ENDIF
+{**AE1771}
+
+ENDROUTINE
+
+
+
+{**AS1771 HBe 29-1-2007 - 2/4-2007}
+{ ---------------------------- HANDLE_WARNINGS ----------------------------------- }
+
+GLOBAL ROUTINE handle_warnings  {Handle warning of previous packed product}
+
+DECLARE the_job, log_txt, warn_msg, product_before, product_before_smp, material_before, version_before, message_arr, no_sets, 
+        err_mes, counter, sampling_point, check_sampling_point, group_checking
+        
+ARRAY message_arr
+
+    check_sampling_point = TRUE
+    JOIN LIBRARY TOOLBOX
+
+    DECLARE row, stack
+    row = 1
+    stack = vgl_tools_get_call_stack_entry (row)
+    WHILE (NOT(BLANK(stack))) AND (row <= 100)
+        stack = vgl_tools_get_call_stack_entry (row)
+        IF (INDEX(stack, "RECEIVE_MULT_SAMP") > 0) THEN
+            RETURN
+        ENDIF
+        row = row + 1
+    ENDWHILE
+
+    the_job             = SELECT sample.job_name
+    product_before_smp  = SELECT sample.product_before 
+    IF BLANK(product_before_smp) THEN
+        product_before_smp  = SELECT job_header.material_before WHERE job_name = (SELECT sample.job_name)
+        IF NOT(BLANK(product_before_smp)) THEN
+            log_txt = ", reported from SAP."
+        ELSE
+            log_txt = ""
+        ENDIF    
+    ELSE
+        log_txt = ", reported from MES."
+ENDIF    
+    sampling_point      = SELECT sample.sampling_point   
+    IF (sampling_point <> EMPTY) AND NOT BLANK(sampling_point) THEN
+        { *** Disengage security when looking up the sample point setup *** }
+        group_checking = global ( "CHECK_GROUPS" )
+        SET SECURITY FALSE
+            check_sampling_point = SELECT sample_point.check_product_before WHERE identity = sampling_point
+        SET SECURITY group_checking
+    ELSE {Sampling Point is empty}
+        {fm("No sampling Point information found, unable to determine if Product Before should be evaluated...") }
+        check_sampling_point = FALSE
+    ENDIF
+
+    IF (LEFTSTRING(product_before_smp, 6) = "(!)   ") THEN
+        product_before_smp = STRIP(SUBSTRING(product_before_smp,7, LENGTH(product_before_smp)))
+    ENDIF
+    
+    IF BLANK(product_before_smp) THEN
+        material_before = ""
+    ELSE
+        IF NUMTEXT(product_before_smp) THEN
+            material_before = product_before_smp
+        ELSE
+            material_before = SELECT mlp_header.identity
+                              WHERE description = product_before_smp
+                              ORDER ON modified_on DESCENDING
+        ENDIF
+    ENDIF
+
+    IF check_sampling_point THEN
+        IF (material_before = EMPTY) OR BLANK(material_before) THEN
+            fm("CRITICAL WARNING!":ASCII(10):ASCII(10):
+               "(Sample ID: ":STRIP(SELECT sample.id_numeric):")":ASCII(10):
+               "Sample point '":STRIP(sampling_point):"' requires check for critical 'product before',":ASCII(10):ASCII(10):
+               "NO 'product before' found for ":STRIP(SELECT sample.id_text))
+        ELSE
+            version_before = SELECT max_active_mlp_ver.max_version WHERE identity = material_before
+            product_before = SELECT mlp_header.description WHERE identity = material_before AND product_version = version_before
+            warn_msg       = SELECT mlp_header.warn_msg 
+            IF warn_msg THEN
+                IF ("V" = SELECT sample.status) THEN
+                    fm("Warning!":ASCII(10):ASCII(10):
+                       "Sample point '":STRIP(sampling_point):"' requires check for critical 'product before',":ASCII(10):ASCII(10):
+                       STRIP(product_before):log_txt:ASCII(10):ASCII(10):
+                       "Remember to implement extra test(s) for cross contaminants!")
+                ELSE
+                    fm("Warning!":ASCII(10):ASCII(10):
+                       "Sample point '":STRIP(sampling_point):"' requires check for critical 'product before',":ASCII(10):ASCII(10):
+                       STRIP(product_before):log_txt:ASCII(10):ASCII(10):
+                       "Were extra test(s) for cross contaminants included?")
+                ENDIF
+            ENDIF
+        ENDIF
+    ENDIF
+
+    RETURN
+
+IF (the_job <> EMPTY) AND (NOT BLANK(the_job)) THEN
+    product_before_smp = SELECT sample.product_before 
+    IF LEFTSTRING(product_before_smp, 9) = "WARNING! " THEN
+        product_before_smp = SUBSTRING(product_before_smp, 10, 60)
+    ENDIF
+    material_before = product_before_smp
+    IF (material_before <> EMPTY) AND (NOT BLANK(material_before)) THEN
+        material_before = SELECT job_header.material_before WHERE job_name = the_job
+    ELSE
+        material_before = SELECT mlp_header.identity WHERE description = product_before_smp ORDER ON modified_on DESCENDING
+    ENDIF 
+    IF (material_before <> EMPTY) AND (NOT BLANK(material_before)) THEN
+        version_before = SELECT max_active_mlp_ver.max_version WHERE identity = material_before
+        IF (version_before <> EMPTY) AND (NOT BLANK(version_before)) THEN
+            product_before_smp = SELECT mlp_header.description WHERE identity = material_before and product_version = version_before
+            IF mlp_analysis_parameters("M", "WARN_MSG", "1", material_before, version_before, message_arr, no_sets, err_mes  ) THEN
+                counter = 0
+                WHILE counter < no_sets
+                    counter = counter + 1
+                    fm(message_arr[counter, 1])
+                    IF counter = 1 THEN
+                        ASSIGN sample.product_before = SUBSTRING("WARNING! " : product_before_smp,1,60)
+                    ENDIF
+                ENDWHILE
+            ELSE
+                ASSIGN sample.product_before = SUBSTRING(product_before_smp,1,60)
+                IF (err_mes <> EMPTY) AND (NOT BLANK(err_mes) AND (err_mes <> "No setup for this identifier")) THEN
+                    fm("Error getting MLP parameters " : err_mes)
+                ENDIF
+            ENDIF
+        ENDIF
+    ELSE{Material Before was empty}
+        sampling_point = SELECT sample.sampling_point
+        IF (sampling_point <> EMPTY) AND NOT BLANK(sampling_point) THEN
+            {**MS1787 HBe 11/6-2007: Disengage security when looking up the sample point setup.}
+            group_checking = global ( "CHECK_GROUPS" )
+            SET SECURITY FALSE
+            check_sampling_point = SELECT sample_point.check_product_before WHERE identity = sampling_point
+            SET SECURITY group_checking
+            {**ME1787}
+            IF check_sampling_point THEN
+                fm("Critical Warning: No Product Before was found for Job ":the_job)
+            ENDIF
+        ELSE {Sampling Point is empty}
+            fm("No sampling Point information found, unable to determine if Product Before should be evaluated...")
+        ENDIF
+    ENDIF
+ELSE {No job found}
+    {fm("Warning - the Sample is not assigned to a Job, no Information about Product before can be found!")}
+ENDIF
+
+ENDROUTINE
+{**AE1771}
+
+{*********************************************************************************************************************}
+
+
+GLOBAL ROUTINE update_recieving_samples (self)
+
+
+DECLARE cur_location, saturday, sunday, days_start, days_end, start_delay, finish_delay, day_start_no
+DECLARE cur_smpid, oneday, maxtime, date_rec, anal, exp_dur, day_compl_no, date_req
+
+
+cur_location       = SELECT personnel.location_id
+                     WHERE identity = OPERATOR
+
+saturday           = SELECT location_details.saturday_work
+                     WHERE location_id = cur_location
+                     AND removeflag = FALSE
+                     IF ( (saturday = EMPTY) OR (BLANK(saturday)) ) THEN
+                        FLASH_MESSAGE("No QC setup for location " : STRIP(cur_location) : ". Using Predefined Values", TRUE)
+                        saturday = FALSE
+                     ENDIF
+
+sunday             = SELECT location_details.sunday_work
+                     IF ( (sunday = EMPTY) OR (BLANK(sunday)) ) THEN
+                        sunday = FALSE
+                     ENDIF
+
+
+days_start         = SELECT location_details.days_to_start
+                     IF ( (days_start = EMPTY) OR (BLANK(days_start)) ) THEN
+                        days_start = 1
+                     ENDIF
+
+days_end           = SELECT location_details.days_to_end
+                     IF ( (days_end = EMPTY) OR (BLANK(days_end)) ) THEN
+                        days_end = 2
+                     ENDIF
+
+cur_smpid          = SELECT sample.id_numeric
+
+WriteToLog("update_recieving_sample ":cur_smpid)
+
+
+one_day  = INTERVAL("0001 00:00:00.00")
+max_time = INTERVAL("0000 00:00:00.00")
+
+
+start_delay = STRING(days_start)
+start_delay = INTERVAL("000":STRIP(start_delay):" 00:00:00.00")
+
+finish_delay = STRING(days_end)
+finish_delay = INTERVAL("000":STRIP(finish_delay):" 00:00:00.00")
+
+date_rec = NOW
+day_start_no = DAYNUMBER(date_rec + start_delay)
+
+IF day_start_no = 6 THEN { Saturday }
+   IF NOT saturday THEN
+      start_delay = start_delay + one_day
+      WriteToLog("start_delay  = ":start_delay:" (saturday)")
+   ENDIF
+   IF NOT sunday THEN
+      start_delay = start_delay + one_day
+      WriteToLog("start_delay  = ":start_delay)
+   ENDIF
+ENDIF
+
+IF day_start_no = 7 THEN { Sunday }
+   IF NOT sunday THEN
+      start_delay = start_delay + one_day
+      WriteToLog("start_delay  = ":start_delay:" (sunday)")
+   ENDIF
+ENDIF
+
+
+anal  = SELECT test.analysis_id
+                  WHERE sample_id = cur_smpid
+                  ORDER ON sample_id
+
+
+WHILE  anal <> EMPTY DO
+   exp_dur  = SELECT analysis.expected_time
+                           WHERE identity = anal
+                           ORDER ON identity
+
+   IF (exp_dur <> " ")  and (exp_dur <> EMPTY) and (NOT BLANK(exp_dur)) THEN
+
+      IF exp_dur >= max_time THEN
+         max_time = exp_dur
+      ENDIF
+   ENDIF
+   NEXT test
+   anal = SELECT test.analysis_id
+ENDWHILE
+
+day_compl_no = DAYNUMBER(date_rec + start_delay + max_time) {Finding the day of week, where sample should be complete}
+IF day_compl_no = 6 THEN {Saturday}
+   IF NOT saturday THEN
+      finish_delay = finish_delay + one_day
+      WriteToLog("finish_delay  = ":finish_delay:" (saturday)")
+ENDIF
+   IF NOT sunday THEN
+      finish_delay = finish_delay + one_day
+      WriteToLog("finish_delay  = ":finish_delay:" (saturday)")
+   ENDIF
+ENDIF
+IF day_compl_no = 7 THEN {Sunday}
+   IF NOT sunday THEN
+      finish_delay = finish_delay + one_day
+      WriteToLog("finish_delay  = ":finish_delay:" (sunday)")
+   ENDIF
+ENDIF
+
+date_req = date_rec + start_delay + max_time + finish_delay
+
+WriteToLog(ASCII(10):"                        ":"  date_rec     = ":date_rec:
+           ASCII(10):"                        ":"+ start_delay  =        ":start_delay:
+           ASCII(10):"                        ":"+ max_time     =        ":max_time:
+           ASCII(10):"                        ":"+ finish_delay =        ":finish_delay:
+           ASCII(10):"                        ":"= date_req     = ":date_req)
+
+RETURN (date_req)
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Change status for specific sample
+* Parameters   : Sample ID, Status
+* Return Value : N/A
+**************************************************************************}
+GLOBAL ROUTINE ChangeSampleStatus(Sample, NewStatus)
+    DECLARE Status, Tests
+    Sample = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = Sample
+    IF Sample = EMPTY THEN
+        RETURN
+    ENDIF
+    Status = SELECT sample.status
+    Tests  = SELECT COUNT test WHERE sample = sample
+    WriteToLog("Change sample status for ":STRIP(sample):" to ":NewStatus:" (":status:"); OldStatus: ":Status:"; Tests: ":Tests)
+    IF (Status = "C")    AND
+       (Tests > 0)       AND
+       (NewStatus = "X") THEN
+       WriteToLog("Status for sample ":STRIP(Sample):" not changed to '":NewStatus:"' because sample holds ":STRIP(Tests):" test(s)")
+       RETURN
+    ENDIF
+    CHANGE SAMPLE STATUS TO NewStatus, status
+    UPDATE SAMPLE
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE
+
+GLOBAL ROUTINE RejectTest(VALUE test_n)
+{*************************************************************************
+* Purpose      : To be triggered when a test is rejected
+*                prompt for reason and create incident
+* Parameters   : test_number
+* Return Value : N/A
+**************************************************************************}
+DECLARE Reject_Form, Reject, key
+
+    create_form(Reject_Form, Reject, test_n)
+    key = Reject_Form.get_lastkey()
+
+    IF key = "DO" THEN
+        create_incident(test_n, Reject.Text)
+    ELSEIF key = "EXIT" THEN
+        ROLLBACK
+    ELSE
+       {No incident created
+        fm("Unknown key: '":key:"'")}
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE create_form (form, Reject, test_n)
+{***********************************************
+Routine:    create_form
+Purpuse:    Create incidents form
+Parameters: test_number
+Returns:    Reject object
+***********************************************}
+
+CREATE OBJECT PROMPT_CLASS_FORM, form
+DECLARE  sample, test, id_txt, location, phrase_list, reason_arr, Reason, i, Rejected
+
+ARRAY reason_arr
+
+sample = SELECT test.sample where test_number = test_n
+test   = STRIP(SELECT test.analysis):"/":STRIP(SELECT test.test_count)
+id_txt = SELECT sample.id_text WHERE id_numeric = sample
+location = SELECT sample.location_id
+
+Rejected =  test:" was rejected, from sample ":STRIP(sample):" (":STRIP(id_txt):") by ":GLOBAL("OPERATOR")
+
+IF     location = "ARPAJON"     THEN    phrase_list = "SGA_REJECT"
+ELSEIF location = "AVEDOERE"    THEN    phrase_list = "AVE_REJECT"
+ELSEIF location = "HOERSHOLM"   THEN    phrase_list = "HOR_REJECT"
+ELSEIF location = "HOR-PIM"     THEN    phrase_list = "PIM_REJECT"
+ELSEIF location = "HUNGERFORD"  THEN    phrase_list = "HUN_REJECT"
+ELSEIF location = "MA-POH"      THEN    phrase_list = "MA_REJECT"
+ELSEIF location = "MILWAUKEE"   THEN    phrase_list = "MKE_REJECT"
+ELSEIF location = "NEW_BERLIN"  THEN    phrase_list = "NB_REJECT"
+ELSEIF location = "POHLHEIM"    THEN    phrase_list = "POH_REJECT"
+ELSEIF location = "RDA-HOR"     THEN    phrase_list = "RDA_REJECT"
+ELSEIF location = "ROSKILDE"    THEN    phrase_list = "ROS_REJECT"
+ELSEIF location = "WEST_ALLIS"  THEN    phrase_list = "WA_REJECT"
+ELSE   RETURN
+ENDIF
+
+phrase_list = SELECT phrase_header . identity WHERE identity = phrase_list and removeflag = FALSE
+
+IF phrase_list = EMPTY THEN
+    RETURN
+ENDIF
+
+Reason = SELECT phrase . phrase_text WHERE phrase_type = phrase_list ORDER on order_num
+
+IF Reason = EMPTY THEN
+    RETURN
+ENDIF
+
+i = 1
+    reason_arr[i,1] = "                    "
+
+WHILE Reason <> EMPTY DO
+    reason_arr[SIZE_OF_ARRAY(reason_arr) + 1,1] = Reason
+NEXT phrase
+Reason = SELECT phrase . phrase_text
+ENDWHILE
+
+
+form.header    = "Reject test..."
+form.column    = 5
+form.row       = 3
+form.height    = 10
+form.width     = 70
+form.return_behaviour = FORM_RETURN_LEAVE
+
+form.add_display (Rejected, 2,1,PROMPT_RENDITION_NORMAL)
+
+form.add_display ("Select Reason: ", 2,3,PROMPT_RENDITION_NORMAL)
+
+
+    PROMPT OBJECT Reject
+              AT 20, 3
+              CHOOSE OUTOF reason_arr
+    form.add_prompt (Reject)
+
+form.start_prompt()
+form.wait_prompt()
+form.end_prompt()
+
+ENDROUTINE
+
+ROUTINE create_incident(test_number, description)
+{***********************************************
+* Routine:    create_incident
+* Purpuse:    Create incidents form
+* Parameters: test_number, description
+***********************************************}
+
+DECLARE Template, JobID, Product, BatchName, SampleId, Analysis, TestCount, incidents_array, status_array, incident_obj
+
+CONSTANT LOGIN_FORM_CLASS = "LOGIN_FORM_CLASS"
+
+    setup_incident_login_class ()
+    CREATE OBJECT LOGIN_FORM_CLASS , incident_obj
+
+ARRAY incidents_array
+ARRAY status_array
+status_array = EMPTY
+
+    Template    = "REJECT"
+    Analysis    = SELECT test . analysis WHERE test_number = test_number
+    TestCount   = SELECT test . test_count WHERE test_number = test_number
+    SampleId    = SELECT test . sample WHERE test_number = test_number
+    JobID       = SELECT sample .job_name WHERE id_numeric = SampleId
+    BatchName   = SELECT sample . batch_name WHERE id_numeric = SampleId
+    Product     = SELECT sample . product WHERE id_numeric = SampleId
+
+    incidents_array[1] = JobID
+    incidents_array[2] = Product
+    incidents_array[3] = BatchName
+    incidents_array[4] = SampleId
+    incidents_array[5] = test_number
+    incidents_array[6] = Analysis
+    incidents_array[7] = TestCount
+    incidents_array[8] = Description
+
+    setup_incident_login_class ()
+    CREATE OBJECT LOGIN_FORM_CLASS , incident_obj
+    incident_obj . can_update_db = FALSE
+    incident_obj . auto_login_background (Template, test_number, incidents_array)
+    ASSIGN incidents . description IN OBJECT incidents_array [ size_of_array (incidents_array)] = Description
+    UPDATE incidents IN OBJECT incidents_array [ size_of_array (incidents_array)]
+
+
+ENDROUTINE

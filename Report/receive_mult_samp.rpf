@@ -1,0 +1,1031 @@
+{***************************************************************************
+* Module Name   : RECEIVE_MULT_SAMP
+* Purpose       : Receive multiple samples using a barcode 
+* Document Ref. : CS/T/
+* Specification : 
+****************************************************************************
+* Modification History
+* Version   Date        Author      Modify Details
+****************************************************************************
+* 1.0       2016/02/13  DKTBG       Created
+****************************************************************************}
+
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_PROMPT { needed for form }
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN LIBRARY TRIGGER_ROUTINES
+JOIN LIBRARY $PROMPT_LIST
+JOIN LIBRARY $PROMPT_FOR_TEXT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY IBS_LABELS
+
+{***************************************************************************
+ *                              MAIN CODE                                  *
+ ***************************************************************************}
+DECLARE form, criteria_array
+
+CONSTANT C_ACTION   = 1
+CONSTANT C_SAMPLE   = 2
+CONSTANT C_STATUS   = 3
+CONSTANT C_IDTEXT   = 4
+CONSTANT C_TANK     = 5
+CONSTANT C_COMMENT  = 6
+CONSTANT C_BEFORE   = 7
+CONSTANT C_OPERATOR = 8
+CONSTANT C_SAMPLED  = 9
+
+REPEAT  
+    main_form()
+UNTIL form.get_lastkey() = "EXIT"    
+
+EXIT
+
+ROUTINE main_form
+{*************************************************************************
+* Purpose       : 
+*               : 
+*               : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+    DECLARE list, location, printer, sample_id, job_id, button_left, button_row, receive_button, print_button, cancel_button
+    ARRAY   criteria_array
+
+    array_select_add(criteria_array, ARRAY_SELECT_PUSH, EMPTY,    EMPTY)
+    array_select_add(criteria_array, ARRAY_SELECT_EQ,   "STATUS", "U"  )
+    array_select_add(criteria_array, ARRAY_SELECT_OR,   EMPTY,    EMPTY)
+    array_select_add(criteria_array, ARRAY_SELECT_EQ,   "STATUS", "H"  )
+    array_select_add(criteria_array, ARRAY_SELECT_OR,   EMPTY,    EMPTY)
+    array_select_add(criteria_array, ARRAY_SELECT_EQ,   "STATUS", "V"  )
+    array_select_add(criteria_array, ARRAY_SELECT_POP,  EMPTY,    EMPTY)
+
+    set_up_std_prompt_list_class()
+
+    CREATE OBJECT PROMPT_CLASS_FORM, form      { create the form object }
+    CREATE OBJECT PROMPT_LIST_CLASS, list      { create the list object }
+
+    form.header    = "Receive Samples"       { form header }
+    form.row       = 3                       { Row to paste form }
+    form.column    = 5                       { Column to paste form }
+    form.width     = 70                      { Width of form, in columns }
+    form.height    = 13                      { Height of form, in rows }
+    form.return_behaviour = FORM_RETURN_WRAP { wrap when on last prompt }
+    form.button_style = FORM_BUTTON_NONE
+
+    { Operators default location }
+    PROMPT OBJECT location
+           AT 14, 1
+           BROWSE ON location_details.location_id
+           WITH ( VALUE  = (SELECT personnel.location_id WHERE identity = OPERATOR), 
+                  TAB_STOP = FALSE)
+
+    form.add_prompt(location)        { add prompt object to form }
+    form.add_display("Location:", 1, 1, PROMPT_RENDITION_BOLD)
+
+    { Operators default label printer }
+    PROMPT OBJECT printer
+           AT 14, 2
+           BROWSE ON printer
+           WITH ( VALUE  = GLOBAL("LABEL_ID"), 
+                  TAB_STOP = FALSE)
+
+    form.add_prompt(printer)        { add prompt object to form }
+    form.add_display("Printer:", 1, 2, PROMPT_RENDITION_BOLD)
+
+    { Sample ID prompt }
+    PROMPT OBJECT sample_id
+           AT 14, 3
+           BROWSE ON sample
+           WITH ( enter_prompt_routine = "enter_sample_prompt", 
+                  leave_prompt_routine = "leave_sample_prompt", 
+                  VGL_library          = GLOBAL( "CURRENT_LIBRARY"), 
+                  select_array         = criteria_array, 
+                  VALUE                = "")
+
+    form.add_prompt(sample_id)        { add prompt object to form }
+    form.add_display("Sample ID:", 1, 3, PROMPT_RENDITION_BOLD)
+
+    PROMPT OBJECT job_id
+           AT 14, 4
+           BROWSE ON job_header
+           WITH ( enter_prompt_routine = "enter_job_prompt", 
+                  leave_prompt_routine = "leave_job_prompt", 
+                  VGL_library          = GLOBAL( "CURRENT_LIBRARY"), 
+                  VALUE                = "")
+
+    form.add_prompt(job_id)        { add prompt object to form }
+    form.add_display("or Job name:", 1, 4, PROMPT_RENDITION_BOLD)
+
+    create_grid(form)
+
+    button_left = 2 {(form.width DIV 2) - 16} 
+    button_row = form.height - 1
+
+    PROMPT OBJECT receive_button
+           CLASS PROMPT_CLASS_BUTTON
+           AT button_left, button_row
+           WITH(width = 10, 
+                  caption = "Print labels", 
+                  mouse_click_routine = "print_lbl")
+    form.add_prompt(receive_button)
+    button_left = button_left + 12
+
+    PROMPT OBJECT receive_button
+           CLASS PROMPT_CLASS_BUTTON
+           AT button_left, button_row
+           WITH(width = 10, 
+                  caption = "Receive", 
+                  mouse_click_routine = "receive_smp")
+    form.add_prompt(receive_button)
+    button_left = button_left + 12
+
+    PROMPT OBJECT  print_button
+           CLASS PROMPT_CLASS_BUTTON
+           AT button_left, button_row
+           WITH(width = 16, 
+                  caption = "Receive && Print labels", 
+                  mouse_click_routine = "recv_print_lbl")
+    form.add_prompt(print_button)
+    button_left = button_left + 18
+
+    PROMPT OBJECT cancel_button
+           CLASS PROMPT_CLASS_BUTTON
+           AT button_left, button_row
+           WITH(width = 10, 
+                  caption = "Close", 
+                  send_lastkey = "EXIT")
+    form.add_prompt(cancel_button)
+
+    form.start_prompt()        { paste form on screen }
+    form.wait_prompt()         { active the form }
+    form.set_position(2)
+
+    RETURN
+
+ENDROUTINE
+
+{***************************************************************************
+ *                                ROUTINES                                 *
+ ***************************************************************************}
+
+ROUTINE print_lbl(self)
+{*************************************************************************
+* Purpose       : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+DECLARE grid, printer
+
+    printer = form.prompt_objects[2]
+    printer = printer.text
+    grid    = form.prompt_objects[5]
+    
+    Print(self, grid, printer)
+    Result(self, grid)
+
+ENDROUTINE
+
+ROUTINE recv_print_lbl(self)
+{*************************************************************************
+* Purpose       : 
+*               : 
+*               : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+DECLARE location, printer, grid
+
+    location = form.prompt_objects[1]
+    location = location.text
+    printer  = form.prompt_objects[2]
+    printer  = printer.text
+    grid     = form.prompt_objects[5]
+
+    Receive(self, grid, location)
+    Print(self, grid, printer)
+    Result(self, grid)
+    
+ENDROUTINE {print_lbl}
+{*************************************************************************}
+
+ROUTINE receive_smp(self)
+{*************************************************************************
+* Purpose       : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+DECLARE location, printer, grid
+
+    location = form.prompt_objects[1]
+    location = location.text
+    printer  = form.prompt_objects[2]
+    printer  = printer.text
+    grid     = form.prompt_objects[5]
+
+    Receive(self, grid, location)
+    Result(self, grid)
+
+ENDROUTINE
+
+
+ROUTINE Print(self, grid, printer)
+{*************************************************************************
+* Purpose       : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+DECLARE ArrSmps, i , status, ExcludePrevPrinted, confirm_mess
+ARRAY ArrSmps    
+
+    ExcludePrevPrinted = FALSE
+    confirm_mess = "Exclude labels that has already been printed?"
+    i = 1
+    WHILE (i <= size_of_array(grid.userinfo)) AND 
+          (ExcludePrevPrinted = FALSE)
+        IF grid.userinfo[i, C_ACTION] <> " - " THEN
+            IF (LEFTSTRING(grid.userinfo[i, C_STATUS], 1) = "V") THEN
+                IF confirm_with_text(confirm_mess) THEN
+                   ExcludePrevPrinted = TRUE
+                ELSE
+                   i = size_of_array(grid.userinfo) 
+                ENDIF
+            ENDIF    
+        ENDIF
+        i = i + 1
+    ENDWHILE
+    
+    IF NOT(BLANK(GLOBAL("LABEL_ID"))) THEN
+    i = 1
+    WHILE i <= size_of_array(grid.userinfo)
+        IF grid.userinfo[i, C_ACTION] <> " - " THEN
+            status = LEFTSTRING(grid.userinfo[i, C_STATUS], 1)
+            IF (status = "H") OR (status = "U") OR (status = "V") THEN
+                ArrSmps[size_of_array(ArrSmps) + 1] = grid.userinfo[i, C_SAMPLE]
+            ENDIF    
+        ENDIF
+        i = i + 1
+    ENDWHILE
+
+    IF size_of_array(ArrSmps) > 0 THEN
+        fm(PrintRVS(ArrSmps, printer, ExcludePrevPrinted):" labels printed")
+    ELSE
+        fm("No samples selected")
+    ENDIF    
+    ELSE
+        fm("Labels not printed, no printer defined.")
+    ENDIF   
+    
+    form.stop_prompt()
+
+ENDROUTINE {print}
+{*************************************************************************}
+
+ROUTINE Receive(self, grid, location)
+{*************************************************************************
+* Purpose       : 
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+DECLARE row, SampleCount, check_ok, sample_status, sample, status {, mode } 
+
+    row = 1
+    SampleCount = 0
+
+     IF size_of_array(form.prompt_objects[5].userinfo) > 0 THEN
+        WHILE row <= size_of_array(grid.userinfo) DO
+            IF grid.userinfo[row, C_ACTION] <> " - " THEN
+                 IF (INDEX ( " HUV", LEFTSTRING(grid.userinfo[row, C_STATUS], 1) ) <> 0 ) THEN
+                    ARRAY check_ok ARRAYSIZE(2)
+                    sample_status = SELECT sample.status WHERE id_numeric = grid.userinfo[row, C_SAMPLE]
+
+                    START WRITE TRANSACTION "Recieve sample"
+                        sample = SELECT sample.id_numeric FOR UPDATE WHERE id_numeric = grid.userinfo[row, C_SAMPLE]
+                        IF sample = LOCKED THEN
+                        ELSEIF (grid.userinfo[row, C_TANK] <> " - ") OR (grid.userinfo[row, C_COMMENT] <> (SELECT sample.sample_comment))  THEN
+                            ASSIGN sample.tank_number = grid.userinfo[row, C_TANK]
+                            ASSIGN sample.sample_comment = grid.userinfo[row, C_COMMENT]
+                        ENDIF
+                        IF (sample = grid.userinfo[row, C_SAMPLE]) AND 
+                          ((sample_status = "H") OR (sample_status = "U")) THEN
+                            ASSIGN sample.recd_date = NOW
+                            ASSIGN sample.location_id = location
+                            CHANGE SAMPLE STATUS TO "V", status
+                            SampleCount = SampleCount + 1
+                        ENDIF
+                        UPDATE sample
+                    COMMIT 
+                ENDIF
+            ENDIF
+            row = row + 1
+        ENDWHILE
+     ENDIF
+
+    IF SampleCount = 0 THEN
+        fm("No samples received.")
+    ELSEIF SampleCount = 1 THEN
+        fm(STRIP(SampleCount): " sample received succesfully.")
+    ELSE
+        fm(STRIP(SampleCount): " samples received succesfully.")
+    ENDIF
+    form.stop_prompt()
+ENDROUTINE
+{***************************************************************************}
+
+ROUTINE Result(self, grid)
+{*************************************************************************
+* Purpose       :  Enter or Diplay Results
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+
+DECLARE row, status, mode 
+
+     row = 1
+     WHILE row <= size_of_array(form.prompt_objects[5].userinfo)
+        IF grid.userinfo[row, C_ACTION] = "Result" THEN
+            
+            status = SELECT sample.status WHERE id_numeric = grid.userinfo[row, C_SAMPLE]
+            IF (status = "V") OR (status = "C") THEN
+                mode = "MODIFY"
+            ELSE
+                mode = "DISPLAY"
+            ENDIF
+            CALL_ROUTINE "RESULT_LIST_SAMPLE"
+            IN LIBRARY "$RESULT_LIST"
+            USING grid.userinfo[row, C_SAMPLE], mode
+            NEW CONTEXT
+            
+        ENDIF
+        row = row + 1
+     ENDWHILE
+
+
+ENDROUTINE
+{***************************************************************************}
+
+ROUTINE Enter_TankNumber(a_sample, Tank_Number)
+{*************************************************************************
+* Purpose       :  Enter_TankNumber
+*               :  Prompt for tank_number
+*               :  Sample, Tank_Number
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+
+DECLARE check_ok, DefaultText, UpdateTank, {FindSample, } title, sample_template, field_lbl
+
+    title         = STRIP(a_sample):", ":(SELECT sample.sampling_point WHERE id_numeric = a_sample)
+    sample_template = SELECT sample.template_id 
+    field_lbl       = SELECT template_fields.text_prompt
+                      WHERE template_id = sample_template
+                        AND table_name = "SAMPLE"
+                        AND field_name = "TANK_NUMBER"
+    IF (field_lbl <> EMPTY) THEN
+        field_lbl = STRIP(SUBSTITUTE(field_lbl, ".", ""))
+        REPEAT
+            check_ok = TRUE
+            DefaultText = STRIP(Tank_Number)
+            IF (DefaultText = "NONE") OR 
+               (DefaultText = "") OR 
+               (DefaultText = "-") THEN
+                DefaultText = ""
+            ENDIF
+            UpdateTank = STRIP(prompt_for_text_with_default (STRIP(title), 
+                                                             "Enter: ":field_lbl, 20, DefaultText))
+            IF (INDEX(TOUPPER(field_lbl), "AMOUNT") > 0) OR
+               (INDEX(TOUPPER(field_lbl), "MENGE")  > 0) THEN
+                DefaultText = SUBSTITUTE(DefaultText, ", ", ".")
+                IF NOT(NUMTEXT(DefaultText)) THEN
+                    fm(field_lbl:": must be reported as numeric VALUE .")
+                    check_ok = FALSE
+                ELSE    
+                    DefaultText = NUMERIC(DefaultText)
+                ENDIF
+            ELSE 
+                IF (LENGTH(DefaultText)>10) THEN
+                    fm("Max. length of ":field_lbl:": 10 characters.")
+                    check_ok = FALSE
+                ENDIF
+            ENDIF   
+        UNTIL check_ok
+        IF UpdateTank and check_ok THEN
+            Tank_Number = STRIP(DefaultText)
+        ENDIF
+     ELSE
+        Tank_Number = " - "
+     ENDIF
+     RETURN (TRUE)
+ENDROUTINE
+
+ROUTINE create_grid (form)
+{*************************************************************************
+* Purpose       : Create_grid
+*               : Create grid
+*               : form    object  form to paste grid to
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+
+    DECLARE grid
+
+    CREATE OBJECT PROMPT_CLASS_GRID, grid
+
+    ARRAY grid.userinfo ARRAYSIZE (0, 10)
+
+    grid.row = 6.5
+    grid.column = 2
+    grid.width = form.width - 2
+    grid.height = form.height - 8
+    grid.cell_rows = 0
+    grid.cell_columns = 9
+
+    grid.column_size[C_ACTION]     =  9
+    grid.column_size[C_SAMPLE]     = 10
+    grid.column_size[C_STATUS]     =  6
+    grid.column_size[C_IDTEXT]     = 25
+    grid.column_size[C_TANK]       = 13
+    grid.column_size[C_COMMENT]    = 20
+    grid.column_size[C_BEFORE]     = 30
+    grid.column_size[C_OPERATOR]   =  6
+    grid.column_size[C_SAMPLED]    = 14
+
+    grid.title_separator_top   = GRID_SEPARATOR_BOTH
+    grid.column_separator[C_ACTION] = GRID_SEPARATOR_BOTH
+    grid.column_separator[C_SAMPLE] = GRID_SEPARATOR_BOTH
+    grid.column_separator[C_STATUS] = GRID_SEPARATOR_BOTH
+    grid.column_separator[C_IDTEXT] = GRID_SEPARATOR_BOTH
+
+    grid.title_size_top = 1
+    grid.title_rendition_top = PROMPT_RENDITION_BOLD
+
+    grid.title_text_top[C_ACTION  , 1] = "Action"
+    grid.title_text_top[C_SAMPLE  , 1] = "Sample"
+    grid.title_text_top[C_STATUS  , 1] = "Status"
+    grid.title_text_top[C_IDTEXT  , 1] = "ID text"
+    grid.title_text_top[C_TANK    , 1] = "Tank/Bag/Amount"
+    grid.title_text_top[C_COMMENT , 1] = "Comment"
+    grid.title_text_top[C_BEFORE  , 1] = "Product before (Batch)"
+    grid.title_text_top[C_OPERATOR, 1] = "Operator"
+    grid.title_text_top[C_SAMPLED , 1] = "Sampled date"
+
+    grid.display_cell_routine = "DISPLAY_GRID_CELL"
+    grid.prompt_cell_routine  = "PROMPT_GRID_CELL"
+    grid.mouse_click_routine  = "GRID_MOUSE_CLICKED"
+    {grid.enter_cell_routine  = "ENTER_CELL_ROUTINE" }
+
+    grid.fixed_columns_left = 4
+    grid.return_behaviour = GRID_RETURN_FOLLOW
+    form.add_prompt(grid)
+    RETURN (grid)
+
+ENDROUTINE
+
+ROUTINE enter_sample_prompt (self)
+{*************************************************************************
+* Purpose       : enter_sample_prompt
+*               : set the prompt value to ""
+*               : 
+* Parameters    : self - prompt object
+* Return VALUE  : None
+*************************************************************************}
+    self.text = ""
+ENDROUTINE
+
+ROUTINE enter_job_prompt (self)
+{*************************************************************************
+* Purpose       : enter_sample_prompt
+*               : set the prompt value to ""
+*               : 
+* Parameters    : self - prompt object
+* Return VALUE  : None
+*************************************************************************}
+    self.text = ""
+ENDROUTINE
+
+ROUTINE leave_sample_prompt (self)
+{*************************************************************************
+* Purpose       : leave_sample_prompt
+*               : populates the grid
+*               : 
+* Parameters    : self - prompt object
+* Return VALUE  : None
+*************************************************************************}
+
+DECLARE sample, form, grid, tank_number, a_sample, smp, row, j, col, test_array, job, s_status, s_tests, 
+        rowInGrid, s_job, id_text, sampled_by, sampled_date, sample_comment, product_before, recv,
+        prompt_tank_smp, check_product
+
+    prompt_tank_smp     = 0
+    check_product   = FALSE
+    sample          = self.text
+    form            = self.parent_prompt
+    grid            = form.prompt_objects[5]
+    row             = InGrid(sample, form)
+    IF NOT BLANK(sample) THEN
+        IF row <> 0 THEN
+            recv = grid.userinfo[row, C_ACTION]
+            IF recv <> "Receive" 
+                recv = "Receive"
+                tank_number = SELECT sample.tank_number WHERE id_numeric = sample
+                IF BLANK(Tank_Number) OR (STRIP(Tank_Number) = "-") THEN
+                    prompt_tank_smp = sample
+                    {Enter_TankNumber(sample, Tank_Number) }
+                ENDIF
+                grid.userinfo[row, C_ACTION] = Recv
+                grid.userinfo[row, C_TANK]   = tank_number
+                product_before               = CheckProductBefore(sample)
+                grid.userinfo[row, C_BEFORE] = product_before
+                form.active_prompt = 3
+            ENDIF
+        ENDIF
+
+        { Add the current sample to the select array      }
+        { this is to assure it is not added a second time }
+        array_select_add(criteria_array, ARRAY_SELECT_AND, EMPTY,        EMPTY)
+        array_select_add(criteria_array, ARRAY_SELECT_NE,  "ID_NUMERIC", sample)        
+
+        IF LENGTH(STRIP(self.VALUE ))> 0 THEN
+            ARRAY test_array ARRAYSIZE (0, 4)
+            IF (sample <> 0) AND (sample <> EMPTY) THEN
+                a_sample    = SELECT sample.id_numeric WHERE id_numeric = sample
+                job         = SELECT sample.job_name
+                s_status    = SELECT sample.status
+                s_tests     = SELECT sample.tests_to_do
+                tank_number = SELECT sample.tank_number
+                smp = SELECT sample.id_numeric
+                        WHERE job_name = job
+                        ORDER ON id_numeric ASCENDING
+
+                WHILE smp <> EMPTY
+                    IF NUMTEXT(smp) THEN
+                        IF NUMERIC(smp) <> 0 THEN
+                            rowInGrid = InGrid(smp, form)
+                            IF (rowInGrid = 0) THEN
+                                test_array[size_of_array(test_array) + 1, 1] = smp
+                            ELSEIF (smp = a_sample) AND (INDEX ( "AXRC", s_status ) = 0 )
+                            ENDIF
+                        ENDIF
+                    ENDIF
+                    NEXT sample
+                    smp = SELECT sample.id_numeric
+                ENDWHILE
+
+                IF SIZE_OF_ARRAY(test_array) > 0 THEN
+                    j = 1
+                    WHILE j <= SIZE_OF_ARRAY(test_array)
+                        smp = test_array[j, 1]
+                        s_job = SELECT sample.job_name WHERE id_numeric = smp
+                        
+                        IF s_job = job THEN
+                            sample          = SELECT sample.id_numeric WHERE id_numeric = smp
+                            rowInGrid       = InGrid(smp, form)
+                            id_text         = SELECT sample.id_text
+                            sampled_by      = SELECT sample.sampled_by
+                            sampled_date    = SELECT sample.sampled_date
+                            sample_comment  = SELECT sample.sample_comment
+                            s_status        = SELECT sample.status
+                            s_tests         = SELECT sample.tests_to_do
+                            tank_number     = SELECT sample.tank_number
+                            product_before  = SELECT sample.product_before
+                            Recv = " - "
+
+                            IF s_status = "V" THEN
+                                Recv = "Receive"
+                            ENDIF
+
+                            IF (sample = a_sample)  THEN
+                                Recv = "Receive"
+                                IF (Tank_Number = "NONE") OR 
+                                   (Tank_Number = "          ") OR 
+                                   (STRIP(Tank_Number) = "-") THEN
+                                        IF (InGrid(smp, form) = 0) THEN
+                                        prompt_tank_smp = sample
+                                    ENDIF    
+                                ENDIF
+                            ELSE
+                                IF (tank_number = "NONE") OR 
+                                   (tank_number = "          ") THEN
+                                    tank_number = " - "
+                                ENDIF
+                            ENDIF
+
+                            row = SIZE_OF_ARRAY(grid.userinfo) + 1
+                            grid.insert_row( row, 1, GRID_SEPARATOR_NONE )
+                                grid.userinfo[row, C_ACTION] = Recv
+                                grid.userinfo[row, C_SAMPLE] = sample
+                                IF s_tests > 0 THEN
+                                    grid.userinfo[row, C_STATUS] = STRIP(SELECT sample.status):"   (":STRIP(s_tests):")"
+                                ELSE
+                                    grid.userinfo[row, C_STATUS] = STRIP(SELECT sample.status)
+                                ENDIF
+                                grid.userinfo[row, C_IDTEXT]    = STRIP(id_text)
+                                grid.userinfo[row, C_TANK]      = tank_number
+                                grid.userinfo[row, C_COMMENT]   = sample_comment
+                                grid.userinfo[row, C_BEFORE]    = product_before
+                                grid.userinfo[row, C_OPERATOR]  = sampled_by
+                                grid.userinfo[row, C_SAMPLED]   = sampled_date
+                                IF grid.userinfo[row, C_ACTION] <> " - " THEN
+                                    check_product = TRUE
+                                ENDIF    
+                                grid.rebuild()
+                            ENDIF
+                        j = j + 1
+                    NEXT test
+                    ENDWHILE
+                ENDIF
+
+                row = 1
+                WHILE row <= size_of_array(grid.userinfo) DO
+                    col = 1
+                    WHILE col <= 8 DO
+                        grid.set_position ( col, row )
+                        col = col + 1
+                    ENDWHILE
+                    row = row + 1
+                ENDWHILE
+                grid.rebuild()
+            ENDIF
+        ENDIF
+        
+        row = 1
+        WHILE row <= size_of_array(grid.userinfo)
+            IF grid.userinfo[row, C_SAMPLE] = prompt_tank_smp THEN
+                IF prompt_tank_smp > 0 THEN
+                    Enter_TankNumber(prompt_tank_smp, Tank_Number)
+                    grid.userinfo[row, C_TANK] = tank_number
+                ENDIF
+
+                IF check_product THEN
+                    grid.userinfo[row, C_BEFORE] = CheckProductBefore(grid.user_info[row, C_SAMPLE])
+                ENDIF
+            ENDIF
+            row = row + 1
+        ENDWHILE
+
+        grid.rebuild()
+        form.active_prompt = 2
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE leave_job_prompt (self)
+{*************************************************************************
+* Purpose       : leave_job_prompt
+*               : populates the grid
+*               : 
+* Parameters    : self - prompt object
+* Return VALUE  : None
+*************************************************************************}
+
+DECLARE job, sample, form, grid, tank_number, smp, row, j, col, test_array, s_status, s_tests, 
+        rowInGrid, s_job, id_text, sampled_by, sampled_date, sample_comment, product_before, recv
+
+    job    = self.text
+    form   = self.parent_prompt
+    grid   = form.prompt_objects[5]
+
+    IF NOT BLANK(job) THEN
+        IF LENGTH(STRIP(self.TEXT ))> 0 THEN
+            ARRAY test_array ARRAYSIZE (0, 4)
+                smp = SELECT sample.id_numeric
+                        WHERE job_name = job
+                        ORDER ON id_numeric ASCENDING
+
+                WHILE smp <> EMPTY
+                    IF NUMTEXT(smp) THEN
+                        IF NUMERIC(smp) <> 0 THEN
+                            rowInGrid = InGrid(smp, form)
+                            IF (rowInGrid = 0) THEN
+                                test_array[size_of_array(test_array) + 1, 1] = smp
+                            ENDIF
+                        ENDIF
+                    ENDIF
+                    NEXT sample
+                    smp = SELECT sample.id_numeric
+                ENDWHILE
+
+                IF SIZE_OF_ARRAY(test_array) > 0 THEN
+                    j = 1
+                    WHILE j <= SIZE_OF_ARRAY(test_array)
+                        smp = test_array[   j, C_ACTION]
+                        s_job = SELECT sample.job_name WHERE id_numeric = smp
+                        IF s_job = job THEN
+                            sample          = SELECT sample.id_numeric WHERE id_numeric = smp
+                            rowInGrid       = InGrid(smp, form)
+                            id_text         = SELECT sample.id_text
+                            sampled_by      = SELECT sample.sampled_by
+                            sampled_date    = SELECT sample.sampled_date
+                            sample_comment  = SELECT sample.sample_comment
+                            s_status        = SELECT sample.status
+                            s_tests         = SELECT sample.tests_to_do
+                            tank_number     = SELECT sample.tank_number
+                            IF s_status = "V" THEN
+                                Recv = "Receive"
+                            ENDIF
+                            IF (Tank_Number = "NONE")     OR 
+                               (STRIP(Tank_Number) = "-") OR 
+                               (BLANK(Tank_Number))       THEN
+                                    tank_number = ""
+                            ENDIF
+                            
+                            Recv = " - "
+
+                            IF s_status = "V" THEN
+                                Recv = "Receive"
+                            ENDIF
+
+                            IF LENGTH(STRIP(SELECT sample.batch_before)) = 0 THEN
+                                product_before = SELECT sample.product_before
+                            ELSE
+                                product_before = STRIP(SELECT sample.product_before):" (":STRIP(SELECT sample.batch_before):")"
+                            ENDIF
+
+                            row = SIZE_OF_ARRAY(grid.userinfo) + 1
+                            grid.insert_row( row, 1, GRID_SEPARATOR_NONE )
+                                grid.userinfo[row, C_ACTION] = Recv
+                                grid.userinfo[row, C_SAMPLE] = sample
+                                IF s_tests > 0 THEN
+                                    grid.userinfo[row, C_STATUS] = STRIP(s_status):"   (":STRIP(s_tests):")"
+                                ELSE
+                                    grid.userinfo[row, C_STATUS] = STRIP(s_status)
+                                ENDIF
+                                grid.userinfo[row, C_IDTEXT]    = STRIP(id_text)
+                                grid.userinfo[row, C_TANK]      = tank_number
+                                grid.userinfo[row, C_OPERATOR]  = sampled_by
+                                grid.userinfo[row, C_SAMPLED]   = sampled_date
+                                grid.userinfo[row, C_COMMENT]   = sample_comment
+                                grid.rebuild()
+                                product_before                  = CheckProductBefore(grid.user_info[row, C_SAMPLE])
+                                grid.userinfo[row, C_BEFORE]    = product_before
+                                grid.rebuild()
+                        ENDIF
+                        j = j + 1
+                        NEXT test
+                    ENDWHILE
+                ENDIF
+
+                row = 1
+                WHILE row <= size_of_array(grid.userinfo) DO
+                    col = 1
+                    WHILE col <= 8 DO
+                        grid.set_position ( col, row )
+                        col = col + 1
+                    ENDWHILE
+                    row = row + 1
+                ENDWHILE
+                grid.rebuild()
+            ENDIF
+            form.active_prompt = 3
+        ENDIF
+        
+ENDROUTINE
+
+ROUTINE InGrid (VALUE  Input, form)
+{*************************************************************************
+* Purpose       : InGrid
+*               : Checks if current testnumber is in grid
+*               : TestNumber
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+
+DECLARE Answer, i, grid
+
+    Answer  = 0
+    i       = 1
+    grid    = form.prompt_objects[5]
+
+    IF size_of_array(grid.userinfo) <> 0 THEN
+
+        WHILE i <= size_of_array(grid.userinfo) DO
+
+            IF STRIP(grid.userinfo[i, C_SAMPLE]) = STRIP(Input) THEN
+                Answer = i {TRUE}
+                i = size_of_array(grid.userinfo)
+            ENDIF
+            i = i + 1
+        ENDWHILE
+    ENDIF
+
+RETURN (Answer)
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    ENTER_CELL_ROUTINE
+Purpuse:    Activated when user clicked in cell
+Parameters: self        object  the grid
+            cell_column integer what column was clicked
+            cell_row    integer what row was clicked
+*************************************************************************}
+ROUTINE ENTER_CELL_ROUTINE ( self, 
+                VALUE  cell_column, 
+                VALUE  cell_row)
+
+ENDROUTINE
+
+{************************************************************************
+Routine:    grid_mouse_clicked
+Purpuse:    Activated when user clicked in cell
+Parameters: self        object  the grid
+            cell_column integer what column was clicked
+            cell_row    integer what row was clicked
+*************************************************************************}
+ROUTINE grid_mouse_clicked ( self, 
+                VALUE  cell_column, 
+                VALUE  cell_row )
+
+DECLARE sample, recv, tank_number
+
+    IF cell_row < 1 THEN
+        RETURN
+        cell_row = 1
+    ENDIF
+
+    recv            = self.user_info[cell_row, C_ACTION]
+    sample          = self.user_info[cell_row, C_SAMPLE]
+    tank_number     = self.user_info[cell_row, C_TANK]
+    IF (cell_row <> "-1") THEN
+        IF (recv <> " - ") THEN
+            IF (cell_column = "2") THEN
+                MENUPROC 57 USING sample
+            ELSEIF (cell_column = "5") THEN
+                Enter_TankNumber(sample, tank_number)
+            ENDIF
+            self.user_info[cell_row, C_TANK]    = tank_number
+            self.rebuild()
+        ENDIF
+    ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose       :  display_grid_cell
+*               :  Standard routine to display grid cells
+*               :  Multiple...
+* Parameters    : 
+* Return VALUE  : None
+*************************************************************************}
+ROUTINE display_grid_cell(self, VALUE cell_column, VALUE cell_row, window, VALUE column, VALUE row, VALUE cell_width, VALUE cell_height)
+
+    DISPLAY self.user_info[cell_row, cell_column]
+        AT column, row
+        IN WINDOW window
+        TO column + cell_width -1
+
+ENDROUTINE
+
+ROUTINE prompt_grid_cell(self, VALUE cell_column, VALUE cell_row, window, VALUE column, VALUE row, VALUE cell_width, VALUE cell_height)
+{*************************************************************************
+* Purpose       : prompt_grid_cell
+*               : Standard routine to prompt grid cells
+*               : Multiple...
+* Parameters    : 
+* Return Value  : None
+*************************************************************************}
+
+{fm("prompt_grid_cell:(":STRIP(cell_column):", ":STRIP(cell_row):")") } 
+
+DECLARE choices, pre_value
+ARRAY choices
+    
+    IF cell_column = C_ACTION THEN
+        pre_value = self.user_info[cell_row, cell_column]
+        choices[1, 1] = " - "
+        choices[1, 2] = " - "
+        choices[2, 1] = "Receive"
+        choices[2, 2] = "Receive"
+        choices[3, 1] = "Result"
+        choices[3, 2] = "Result"
+        PROMPT FOR self.user_info[cell_row, cell_column]
+            USING self.user_info[cell_row, cell_column]
+            AT column, row
+            CHOOSE OUTOF choices
+            IN WINDOW window
+            TO column + cell_width -1
+            WITH (display_only = FALSE)
+        IF (pre_value <> self.user_info[cell_row, cell_column]) AND
+           (pre_value = " - ") AND
+           BLANK(self.user_info[cell_row, C_TANK]) THEN
+            Enter_TankNumber(self.user_info[cell_row, C_SAMPLE], self.user_info[cell_row, C_TANK])
+            self.userinfo[cell_row, C_BEFORE] = CheckProductBefore(self.user_info[cell_row, C_SAMPLE])
+            self.rebuild()
+        ENDIF   
+    ELSEIF (cell_column = C_COMMENT) AND 
+           (self.user_info[cell_row, C_ACTION] <> " - ") THEN
+        PROMPT FOR self.user_info[cell_row, cell_column]
+            USING self.user_info[cell_row, cell_column]
+            FORMAT sample.sample_comment
+            AT column, row
+            IN WINDOW window
+            TO column + cell_width -1
+            WITH (display_only = FALSE)
+    ELSE
+        PROMPT FOR self.user_info[cell_row, cell_column]
+            AT column, row
+            IN WINDOW window
+            TO column + cell_width -1
+            WITH (display_only = TRUE)
+    ENDIF
+
+ENDROUTINE
+
+ROUTINE CheckProductBefore(SampleID)
+{*************************************************************************
+* Purpose       : prompt_grid_cell
+*               : Standard routine to prompt grid cells
+*               : Multiple...
+* Parameters    : 
+* Return Value  : None
+*************************************************************************}
+
+DECLARE product_before, batch_before
+
+    product_before = STRIP(SELECT sample.product_before)
+    batch_before   = STRIP(SELECT sample.batch_before)
+    IF BLANK(product_before) THEN
+        product_before = SELECT job_header.material_before WHERE job_name = (SELECT sample.job_name)
+        batch_before   = SELECT job_header.batch_before
+    ENDIF
+    
+    IF (NOT(BLANK(product_before))) AND 
+       (NOT(NUMTEXT(product_before))) THEN
+        product_before = SELECT mlp_header.identity
+                         WHERE description = product_before
+                         ORDER ON product_version DESCENDING
+    ENDIF
+    
+    IF (BLANK(product_before)) AND
+       (NOT(BLANK(batch_before))) THEN
+        product_before = SELECT job_header.product_name 
+                             WHERE batch_name = batch_before
+                               AND inspection_type = "04"
+    ENDIF
+
+    IF NOT(SELECT sample_point.check_product_before WHERE identity = (SELECT sample.sampling_point WHERE id_numeric = SampleID)) THEN
+        product_before = SELECT mlp_header.description 
+                         WHERE identity = product_before
+                           AND removeflag = FALSE
+                         ORDER ON product_version DESCENDING
+        IF NOT(BLANK(batch_before)) THEN
+            product_before = STRIP(product_before):" (":STRIP(batch_before):")"
+        ENDIF
+        IF LEFTSTRING(product_before, 5) = "-----" THEN
+            product_before = ""
+        ENDIF
+        RETURN(product_before)
+    ENDIF
+
+    IF BLANK(product_before) THEN
+        fm("CRITICAL WARNING!":ASCII(10):ASCII(10):
+           "(Sample ID: ":STRIP(SELECT sample.id_numeric):")":ASCII(10):
+           "Sample point '":STRIP(SELECT sample.sampling_point):"' requires check for critical 'product before'.":ASCII(10):ASCII(10):
+           "NO 'product before' found for ":STRIP(SELECT sample.id_text):ASCII(10):ASCII(10):
+           "Contact producing department to verify if":ASCII(10): 
+           "testing for cross contaminants is required!")
+        IF LEFTSTRING(product_before, 5) = "-----" THEN
+            product_before = ""
+        ENDIF
+        RETURN(product_before)
+    ENDIF
+    
+    IF (SELECT mlp_header.warn_msg 
+        WHERE identity = product_before
+          AND removeflag = FALSE
+        ORDER ON product_version DESCENDING) THEN
+        product_before = SELECT mlp_header.description 
+                         WHERE identity = product_before
+                           AND removeflag = FALSE
+                         ORDER ON product_version DESCENDING
+        fm("Warning!":ASCII(10):ASCII(10):
+           "Sample point '":STRIP(SELECT sample.sampling_point):"' requires check for critical 'product before'.":ASCII(10):ASCII(10):
+           "Product before: ":STRIP(product_before):ASCII(10):ASCII(10):
+           "Remember to implement extra test(s) for cross contaminants!")
+        IF NOT(BLANK(batch_before)) THEN
+            product_before = STRIP(product_before):" (":STRIP(batch_before):")"
+        ENDIF
+        RETURN(product_before)    
+    ENDIF    
+
+    IF LEFTSTRING(product_before, 5) = "-----" THEN
+        product_before = ""
+    ENDIF
+
+    product_before = SELECT mlp_header.description 
+                     WHERE identity = product_before
+                       AND removeflag = FALSE
+                     ORDER ON product_version DESCENDING
+
+    IF NOT(BLANK(batch_before)) THEN
+        product_before = STRIP(product_before):" (":STRIP(batch_before):")"
+    ENDIF
+
+    RETURN(product_before)    
+
+ENDROUTINE
+

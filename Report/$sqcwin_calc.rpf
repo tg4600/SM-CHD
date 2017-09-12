@@ -1,0 +1,4106 @@
+{******************************************************************************
+*
+* Module Name   : sqcwin_calc
+*
+* Purpose       : Performs chart calculations.
+*                 
+*
+*******************************************************************************}
+
+SET NOT_PROTECTED
+
+SET COMPILE_OPTION DECLARE
+
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+JOIN LIBRARY $lib_utils
+
+JOIN LIBRARY $sqcwin_class
+JOIN LIBRARY $sqcwin_lib
+JOIN LIBRARY $sqcwin_glbl
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_shewhart_constants ( VALUE subgroup_size ,
+                                        VALUE chart_type,
+                                        VALUE first_graph,
+                                        VALUE second_graph,
+                                              shewhart_constants )
+
+{ 
+* Gets the shewhart constants to sue on control limit calculation, based on
+* parameters passed.
+* 
+*
+* Parameters   : subgroup_size, chart_type, first_graph, second_graph
+*                shewhart_constants
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE array_index, shewhart_arrays, chart_index
+
+	define_shewhart_constant_arrays ( )
+
+	CREATE OBJECT "SHEWHART_CONSTANT_ARRAYS", shewhart_arrays
+
+	array_index = 0
+	chart_index = 0
+
+	IF ( chart_type = IND_MR ) THEN
+
+	    array_index = 1
+
+	ELSE
+
+	    array_index = subgroup_size
+
+	ENDIF
+
+	IF ( first_graph = CALC_DATA ) OR ( first_graph = USE_MLP ) THEN
+
+	    IF ( chart_type <> MEAN_STD ) THEN
+
+		shewhart_constants . x1 =
+		    shewhart_arrays . shewhart_x_constant [ 1 , array_index ]
+
+	    ELSE
+
+		shewhart_constants . x1 =
+		    shewhart_arrays . shewhart_x_constant [ 2 , array_index ]
+
+	    ENDIF
+
+	ELSEIF ( first_graph = CALC_TARGET ) THEN
+
+	    shewhart_constants . x1 =
+		    shewhart_arrays . shewhart_x_constant [ 3 , array_index ]
+
+	ELSE
+
+	    shewhart_constants . x1 = 0
+
+	ENDIF
+
+	IF ( chart_type = MEAN_STD ) THEN
+
+	    chart_index = 2
+
+	ELSE
+
+	    chart_index = 1
+
+	ENDIF
+
+	IF ( second_graph = CALC_DATA ) OR ( second_graph = USE_MLP ) THEN
+
+	    shewhart_constants . r1 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 1, array_index ]
+	IF ( second_graph = USE_MLP )
+
+		shewhart_constants . r2 = 
+		shewhart_arrays . shewhart_x_constant[ chart_index, array_index ]
+
+	ELSE
+	
+		shewhart_constants . r2 = 1
+
+	ENDIF
+	    shewhart_constants . r3 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 2, array_index ]
+
+	ELSEIF ( second_graph = CALC_TARGET ) THEN
+
+	    shewhart_constants . r1 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 3, array_index ]
+
+	    IF chart_type = IND_MR THEN
+
+		shewhart_constants . r2 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 4, 3 ]
+
+	    ELSE
+
+		shewhart_constants . r2 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 4, array_index ]
+
+	    ENDIF
+
+	    shewhart_constants . r3 =
+		shewhart_arrays . shewhart_r_constant [ chart_index, 5, array_index ]
+	ELSE
+
+	    shewhart_constants . r1 = 0
+	    shewhart_constants . r2 = 0
+	    shewhart_constants . r3 = 0
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE do_shewhart_calculations (        sqc_chart,
+                                          VALUE chart_type)
+
+{ 
+* High level control of shewhart calculations
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE first, last, display_seg, shewhart_type, point_count
+
+	point_count = 0
+	display_seg = TRUE
+
+	IF ( sqc_chart . next_screen <> "NEXT" ) THEN
+
+		get_subgroups    ( sqc_chart, chart_type, shewhart_type )
+
+		get_default_subgrp_bounds ( sqc_chart,
+					    chart_type,
+					    first,
+					    last )
+
+		erase_window_objects ( sqc_chart, chart_type )
+
+		IF ( shewhart_type = SIZE ) THEN
+
+		    calculate_limits_and_trends ( sqc_chart   ,
+						  chart_type  ,
+						  first       ,
+						  last        ,
+						  display_seg )
+
+		ELSEIF ( shewhart_type = TIME ) THEN
+
+		    WHILE ( point_count < last ) DO
+
+			point_count = point_count + 1
+			calculate_limits_and_trends ( sqc_chart   ,
+						      chart_type  ,
+						      point_count ,
+						      point_count ,
+						      display_seg )
+
+		    ENDWHILE
+
+		ELSEIF ( shewhart_type = NAME ) THEN
+
+		    WHILE ( point_count < last ) DO
+
+			point_count = point_count + 1
+			calculate_limits_and_trends ( sqc_chart   ,
+						      chart_type  ,
+						      point_count ,
+						      point_count ,
+						      display_seg )
+
+		    ENDWHILE
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_subgroups ( sqc_chart, chart_type, select_subgrp )
+
+{ 
+* Routine to get the first point for the appropriate chart_id. The relevant
+* subgroups are created. These overwrite previous subgroups. If any subgroups
+* are left over they are deleted.
+*
+* Parameters   : sqc_chart, chart_type, select_subgrp
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE first_point, chart_id, number_subgroups,
+            subgrp_size, id_and_type, exit_loop,
+            last_point_bad, write_subgroup, select_crit
+
+	ARRAY select_crit
+
+	array_select_add (  select_crit    ,
+			ARRAY_SELECT_EQ    ,
+			"CHART_ID"         ,
+			sqc_chart.chart_id )
+
+	sqc_chart . sqc_subgroup . select (select_crit)
+
+	last_point_bad = FALSE
+
+	first_point = PAD ( sqc_chart . chart_id, " ", 20 ) :
+	JUSTIFY ( PAD ( "1"                 , " ",  6 ), "RIGHT" )
+
+	sqc_chart . sqc_point . set_by_index ( "KEY0", first_point )
+
+	number_subgroups = 0
+
+	id_and_type = PAD ( sqc_chart . chart_id  , " ", 20 ) :
+		  PAD ( chart_type,             " ", 10 )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", id_and_type )
+
+	select_subgrp = SELECT sqcwin_chart_type . subgroup_chosen_by
+		    IN OBJECT sqc_chart . sqc_chart_type . current
+
+	IF ( select_subgrp = SIZE ) THEN
+
+		subgrp_size  = SELECT sqcwin_chart_type . subgroup_size_wanted
+			       IN OBJECT sqc_chart . sqc_chart_type . current
+	ENDIF
+
+	chart_id = sqc_chart . chart_id
+
+	exit_loop = FALSE
+
+	WHILE ( NOT ( exit_loop ) )
+
+		number_subgroups = number_subgroups + 1
+
+		write_subgroup = TRUE
+
+		create_a_subgroup ( sqc_chart       ,
+				    chart_type      ,
+				    number_subgroups,
+				    select_subgrp   ,
+				    subgrp_size     ,
+				    last_point_bad  ,
+				    write_subgroup  )
+
+		IF ( sqc_chart . sqc_point . current <> EMPTY ) THEN
+
+		    chart_id = SELECT sqcwin_point . chart_id
+			       IN OBJECT sqc_chart . sqc_point . current
+
+		ELSE
+
+		    exit_loop = TRUE
+
+		ENDIF
+
+		IF ( sqc_chart . chart_id <> chart_id ) THEN
+
+		    exit_loop = TRUE
+
+		ENDIF
+
+	ENDWHILE
+
+	define_graph_limits ()
+
+	delete_unwanted_subgroups ( sqc_chart, chart_type, number_subgroups )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE create_a_subgroup ( sqc_chart,
+                            chart_type,
+                            no_subgroups,
+                            select_subgrp,
+                            subgrp_size,
+                            last_point_bad,
+                            write_subgroup )
+
+{ 
+* Creates a subgroup.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, no_subgroups, select_subgrp, 
+*                subgrp_size, last_point_bad, write_subgroup
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE bad_group, first_date, first_name, first_point,
+        point_value, this_point_bad, sum, good_points,
+        sum_squared, present_name, subgrp_ndx, min_value, max_value,
+        new_record, prev_no_subgroup, key_field,
+        prev_mean, this_subgroup_size, no_exit,
+        mean, range, sigma, plot_group, bad_subgroup, got_subgroup,
+        present_time, present_chart_id, a_bad_man, b_bad_man
+
+	ARRAY bad_group    ARRAY_SIZE ( 2 ) = FALSE
+	ARRAY plot_group   ARRAY_SIZE ( 2 ) = FALSE
+	ARRAY bad_subgroup ARRAY_SIZE ( 3 ) = FALSE
+
+	sum = 0
+	sum_squared = 0
+	good_points = 0
+
+	this_subgroup_size = 0
+	got_subgroup = FALSE
+
+	first_date  = LEFTSTRING ( SELECT sqcwin_point . point_date IN OBJECT
+			       sqc_chart . sqc_point . current,
+			       11 )
+
+	first_name  = SELECT sqcwin_point.point_name
+		  IN OBJECT sqc_chart . sqc_point . current
+
+	first_point = SELECT sqcwin_point . point_number
+		  IN OBJECT sqc_chart . sqc_point . current
+
+	point_value = SELECT sqcwin_point . point_value
+		  IN OBJECT sqc_chart . sqc_point . current
+
+	REPEAT
+
+		this_point_bad = SELECT sqcwin_point . bad
+				 IN OBJECT sqc_chart . sqc_point . current
+
+		 ASSIGN sqcwin_point . subgroup_number 
+		     IN OBJECT sqc_chart . sqc_point . current = STRIP ( no_subgroups )
+
+		IF NOT ( ( ( chart_type = MEAN_RANGE ) OR ( chart_type = MEAN_STD ) )
+			 AND ( this_point_bad ) ) THEN
+
+		    sum = sum + point_value
+
+		    IF variable_is_assigned( max_value ) THEN
+
+			    IF ( point_value > max_value )THEN
+
+			       max_value = point_value
+
+			    ENDIF
+
+			    IF ( point_value < min_value )THEN
+
+			       min_value = point_value
+
+			    ENDIF
+
+		    ELSE
+
+			max_value = point_value
+			min_value = point_value
+
+		    ENDIF
+
+		    sum_squared = sum_squared + ( point_value ^ 2 )
+
+		    good_points = good_points + 1
+
+		ENDIF
+
+		this_subgroup_size = this_subgroup_size + 1
+
+		sqc_chart . sqc_point . set_next ()
+
+		no_exit = TRUE
+
+		WHILE ( no_exit ) DO
+
+		    IF ( sqc_chart . sqc_point . current <> EMPTY ) THEN
+
+			IF ( sqc_chart . sqc_point . current . deleted ) THEN
+
+			    sqc_chart . sqc_point . set_next ()
+
+			ELSE
+
+			   no_exit = FALSE
+
+			ENDIF
+
+		    ELSE
+
+			no_exit = FALSE
+
+		    ENDIF
+
+		ENDWHILE
+
+		IF ( chart_type = IND_MR ) THEN
+
+		    got_subgroup = TRUE
+
+		ELSEIF ( sqc_chart . sqc_point . current <> EMPTY ) THEN
+
+		    present_chart_id = SELECT sqcwin_point . chart_id
+				       IN OBJECT sqc_chart . sqc_point . current
+
+		    IF ( present_chart_id = sqc_chart . chart_id ) THEN
+
+			point_value = SELECT sqcwin_point . point_value
+				      IN OBJECT sqc_chart . sqc_point . current
+
+			IF ( select_subgrp = SIZE ) THEN
+
+			    got_subgroup = ( subgrp_size  = this_subgroup_size )
+
+			ELSEIF ( select_subgrp = TIME ) THEN
+
+			    present_time = LEFTSTRING ( SELECT sqcwin_point . point_date IN OBJECT
+						    sqc_chart . sqc_point . current,
+						    11 )
+			    got_subgroup = ( present_time <> first_date )
+
+			ELSEIF ( select_subgrp = NAME ) THEN
+
+			    present_name = SELECT sqcwin_point . point_name
+					   IN OBJECT sqc_chart . sqc_point . current
+			    got_subgroup = ( present_name <> first_name )
+
+			ENDIF
+
+		    ELSE
+
+			got_subgroup = TRUE
+
+		    ENDIF
+
+		ELSE
+
+		    got_subgroup = TRUE
+
+		ENDIF
+
+	UNTIL ( got_subgroup )
+
+	IF ( chart_type = IND_MR ) THEN
+
+		prev_no_subgroup = no_subgroups - 1
+
+		IF ( prev_no_subgroup <= 0 ) THEN
+
+		    prev_mean = 0
+
+		ELSE
+
+		    subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+				 PAD ( chart_type          , " ", 10 ) :
+		       JUSTIFY ( PAD ( STRIP ( prev_no_subgroup ), " ",  4 ), "RIGHT" )
+
+		    sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+		    prev_mean = SELECT sqcwin_subgroup . x_bar
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		ENDIF
+
+	ENDIF
+
+	IF ( this_subgroup_size > 0 ) THEN
+
+		IF ( good_points > 0 ) THEN
+
+		   mean = sum / good_points
+
+		ELSE
+
+		   mean = 0
+
+		ENDIF
+
+		IF ( chart_type = IND_MR ) THEN
+
+		    IF ( no_subgroups > 1 ) THEN
+
+			range = ABS ( mean - prev_mean )
+
+		    ELSE
+
+			range = 0
+
+		    ENDIF
+
+		ELSE
+
+		    IF ( good_points = 0 ) THEN
+
+			range = 0
+
+		    ELSE
+
+			range = max_value - min_value
+
+		    ENDIF
+
+		ENDIF
+
+		IF ( good_points < 2 ) THEN
+
+		    sigma = 0
+
+		ELSE
+
+		    sigma = sqrt ( ( sum_squared - ( sum^2 / good_points ) ) /
+				 ( good_points - 1 ) )
+
+		ENDIF
+
+		bad_group [1] = ( good_points <= 0 )
+		plot_group[1] = ( good_points >= 1 )
+
+		IF ( ( chart_type = MEAN_RANGE ) OR ( chart_type = MEAN_STD ) ) THEN
+
+		    bad_group [2] = ( good_points <= 1 )
+		    plot_group[2] = ( good_points >= 2 )
+
+		ELSEIF ( chart_type = IND_MR ) THEN
+
+		    bad_group [2] = ( no_subgroups = 1 )
+		    plot_group[2] = ( no_subgroups > 1 )
+
+		    IF ( last_point_bad ) THEN
+
+			bad_group [ 2 ] = TRUE
+
+		    ENDIF
+
+		    IF ( this_point_bad ) THEN
+
+			bad_group [1]  = TRUE
+			bad_group [2]  = TRUE
+			last_point_bad = TRUE
+
+		    ELSE
+
+			last_point_bad = FALSE
+
+		    ENDIF
+
+		ENDIF
+
+		bad_subgroup [ 1 ] = bad_group [ 1 ]
+
+		IF ( chart_type = MEAN_STD ) THEN
+		   bad_subgroup [ 2 ] = TRUE
+		   bad_subgroup [ 3 ] = bad_group [ 2 ]
+		ELSE
+
+		   bad_subgroup [ 2 ] = bad_group [ 2 ]
+		   bad_subgroup [ 3 ] = TRUE
+
+		ENDIF
+
+		key_field  = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			     PAD ( chart_type          , " ", 10 ) :
+		   JUSTIFY ( PAD ( STRIP ( no_subgroups ), " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", key_field )
+
+		IF ( write_subgroup ) THEN
+
+		    IF ( sqc_chart . sqc_subgroup . current = EMPTY ) THEN
+
+			CREATE OBJECT "STD_OBJECT_RECORD", new_record
+
+			new_record . new   = TRUE
+			new_record . table = "SQCWIN_SUBGROUP"
+
+			object_add_table ( new_record, "SQCWIN_SUBGROUP" )
+
+			RESERVE ENTRY sqcwin_subgroup IN OBJECT new_record, key_field
+
+			sqc_chart . sqc_subgroup . add ( new_record )
+			sqc_chart . sqc_subgroup . re_index ( "KEY0" )
+
+			sqc_chart . sqc_subgroup . set_by_index ( "KEY0", key_field )
+
+			a_bad_man = FALSE
+			b_bad_man = FALSE
+
+
+		    ELSE
+
+			a_bad_man = SELECT sqcwin_subgroup . a_bad_manual IN OBJECT
+				sqc_chart . sqc_subgroup . current
+
+			b_bad_man = SELECT sqcwin_subgroup . b_bad_manual IN OBJECT
+				 sqc_chart . sqc_subgroup . current
+
+		    ENDIF
+
+		    ASSIGN sqcwin_subgroup . first_point
+			IN OBJECT sqc_chart . sqc_subgroup . current = first_point
+
+		    ASSIGN sqcwin_subgroup . subgroup_date
+			IN OBJECT sqc_chart . sqc_subgroup . current = first_date
+
+		    ASSIGN sqcwin_subgroup . subgroup_size
+			IN OBJECT sqc_chart . sqc_subgroup . current = good_points
+
+		    ASSIGN sqcwin_subgroup . x_bar
+			IN OBJECT sqc_chart . sqc_subgroup . current = mean
+
+		    ASSIGN sqcwin_subgroup . range
+			IN OBJECT sqc_chart . sqc_subgroup . current = range
+
+		    ASSIGN sqcwin_subgroup . sigma
+			IN OBJECT sqc_chart . sqc_subgroup . current = sigma
+
+		    IF a_bad_man THEN
+
+			ASSIGN sqcwin_subgroup . a_plot
+			    IN OBJECT sqc_chart . sqc_subgroup . current = TRUE
+
+		    ELSE
+
+			ASSIGN sqcwin_subgroup . a_plot
+			    IN OBJECT sqc_chart . sqc_subgroup . current = plot_group[1]
+
+		    ENDIF
+
+		    IF b_bad_man THEN
+
+			ASSIGN sqcwin_subgroup . b_plot
+			    IN OBJECT sqc_chart . sqc_subgroup . current = TRUE
+
+		    ELSE
+
+			ASSIGN sqcwin_subgroup . b_plot
+			    IN OBJECT sqc_chart . sqc_subgroup . current = plot_group[2]
+
+		    ENDIF
+
+		    IF ( a_bad_man ) THEN
+
+			ASSIGN sqcwin_subgroup . a_bad  IN OBJECT
+			    sqc_chart . sqc_subgroup . current = TRUE
+
+		    ELSE
+
+			ASSIGN sqcwin_subgroup . a_bad  IN OBJECT
+			    sqc_chart . sqc_subgroup . current = bad_group [1]
+
+		    ENDIF
+
+		    IF b_bad_man THEN
+
+			ASSIGN sqcwin_subgroup . b_bad
+			    IN OBJECT sqc_chart . sqc_subgroup . current = TRUE
+
+		    ELSE
+
+			ASSIGN sqcwin_subgroup . b_bad
+			    IN OBJECT sqc_chart . sqc_subgroup . current = bad_group[2]
+
+		    ENDIF
+
+		    IF ( sqc_chart . sqc_subgroup . current . deleted ) THEN
+
+			sqc_chart . sqc_subgroup . current . undelete ( )
+
+		    ENDIF
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE delete_unwanted_subgroups ( sqc_chart,
+                                    chart_type,
+                                    number_subgroups )
+
+{ 
+* Deletes unwanted subgroups.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, number_subgroups
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE del_subgroup, subgroup_counter
+
+	subgroup_counter = number_subgroups + 1
+
+	del_subgroup = PAD ( sqc_chart . chart_id, " ", 20 ) :
+		   PAD ( chart_type          , " ", 10 ) :
+		   JUSTIFY (
+		       PAD ( STRIP ( subgroup_counter ), " ",  4 ),
+		       "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index  ( "KEY0", del_subgroup )
+
+	WHILE ( sqc_chart . sqc_subgroup . current <> EMPTY ) DO
+
+		sqc_chart . sqc_subgroup . current . delete ()
+
+		subgroup_counter = subgroup_counter + 1
+
+		del_subgroup = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			       PAD ( chart_type          , " ", 10 ) :
+		     JUSTIFY ( PAD ( STRIP ( subgroup_counter ), " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index  ( "KEY0", del_subgroup )
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_mean_of_subgroup (       sqc_chart  ,
+                                     chart_type ,
+                               VALUE gr_lims_ndx,
+                               VALUE first      ,
+                               VALUE last       )
+
+{ 
+* Gets the mean between two subgroup numbers.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, gr_lims_ndx, first, last
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE mean_a_field, mean_b_field, sqc_subgroup_ndx, present_record,
+        exit_loop, a_total, a_count, b_total, b_count, point_a_bad,
+        point_b_bad
+
+	present_record = first
+	exit_loop      = FALSE
+
+	a_total = 0
+	b_total = 0
+
+	a_count = 0
+	b_count = 0
+
+	IF ( chart_type = IND_MR ) THEN
+
+		mean_a_field = "x_bar"
+		mean_b_field = "range"
+
+	ELSEIF ( chart_type = MEAN_RANGE ) THEN
+
+		mean_a_field = "x_bar"
+		mean_b_field = "range"
+
+	ELSEIF ( chart_type = MEAN_STD   ) THEN
+
+		mean_a_field = "x_bar"
+		mean_b_field = "sigma"
+
+	ENDIF
+
+	last  = JUSTIFY ( PAD ( STRIP ( last  ), " ", "4" ), "RIGHT" )
+
+	sqc_subgroup_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) :
+		       PAD ( chart_type          , " ", "10" ) :
+	     JUSTIFY ( PAD ( STRIP ( present_record ), " ",  "4" ), "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgroup_ndx )
+
+	WHILE NOT ( exit_loop )
+
+		point_a_bad  = SELECT sqcwin_subgroup . a_bad  IN OBJECT
+				  sqc_chart . sqc_subgroup . current
+
+		IF NOT ( point_a_bad ) THEN
+
+		    a_total = a_total + SELECT sqcwin_subgroup . 'mean_a_field'  IN OBJECT
+					    sqc_chart . sqc_subgroup . current
+		    a_count = a_count + 1
+
+		ENDIF
+
+		point_b_bad  = SELECT sqcwin_subgroup . b_bad  IN OBJECT
+				  sqc_chart . sqc_subgroup . current
+
+		IF NOT ( point_b_bad ) THEN
+
+		    b_total = b_total + SELECT sqcwin_subgroup . 'mean_b_field'  IN OBJECT
+					    sqc_chart . sqc_subgroup . current
+		    b_count = b_count + 1
+
+		ENDIF
+
+		present_record = present_record + 1
+
+		IF ( present_record > last ) THEN
+
+		    exit_loop = TRUE
+
+		    IF a_count = 0 THEN
+
+			sqc_chart . graph_limits_array [ gr_lims_ndx ] . mean_a = 0
+
+		    ELSE
+
+			sqc_chart . graph_limits_array [ gr_lims_ndx ] . mean_a =
+					  a_total / a_count
+		    ENDIF
+
+		    IF b_count = 0 THEN
+
+			sqc_chart . graph_limits_array [ gr_lims_ndx ] . mean_b = 0
+
+		    ELSE
+
+			sqc_chart . graph_limits_array [ gr_lims_ndx ] . mean_b =
+					  b_total / b_count
+
+		    ENDIF
+
+		ELSE
+
+		    sqc_subgroup_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) :
+				       PAD ( chart_type          , " ", "10" ) :
+			JUSTIFY ( PAD ( STRIP ( present_record ), " ",  "4" ), "RIGHT" )
+
+		    sqc_chart . sqc_subgroup . set_by_index ( "KEY0",sqc_subgroup_ndx )
+
+		ENDIF
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE calculate_limits_and_trends  ( sqc_chart   ,
+                                              chart_type  ,
+                                              first       ,
+                                              last        ,
+                                              display_seg )
+
+{ 
+* Controls the creation of win_obj limits and trends.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, first, last, display_seg
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE graph_lims_ndx
+
+	graph_lims_ndx = 1
+
+	WHILE NOT ( ( sqc_chart . graph_limits_array [ graph_lims_ndx ] . chart_type_id
+			     = chart_type ) OR
+		( sqc_chart . graph_limits_array [ graph_lims_ndx ] . chart_type_id
+			     = "" ) ) DO
+
+		graph_lims_ndx = graph_lims_ndx + 1
+
+	ENDWHILE
+
+	get_mean_of_subgroup ( sqc_chart,
+			   chart_type,
+			   graph_lims_ndx,
+			   first,
+			   last )
+
+	calculate_limits  ( sqc_chart, chart_type, graph_lims_ndx )
+	initialise_trends ( sqc_chart, chart_type, first, last )
+	check_trends      ( sqc_chart, chart_type, graph_lims_ndx, first, last )
+
+	IF ( TRUE ) THEN
+
+		get_shewhart_graph_data ( sqc_chart ,
+					  chart_type,
+					  TRUE      ,
+					  first     ,
+					  last      ,
+					  display_seg)
+
+		get_shewhart_graph_data ( sqc_chart ,
+					  chart_type,
+					  FALSE     ,
+					  first     ,
+					  last      ,
+					  display_seg)
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE calculate_limits ( sqc_chart     ,
+                           chart_type    ,
+                           chart_type_num)
+
+{ 
+* Calculates limits for a chart type. Only need to 'calculate' if
+* limits_type is calculate by data or target, otherwise take from MLP or 
+* values specified by user. Purpose is to populate the correct object in
+* sqc_chart . graph_limits_array
+*
+* Parameters   : sqc_chart, chart_type, chart_type_num
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE shewhart_constants, std_dev, subgroup_size,
+    ucl_a, uwl_a, usd_a, new_centre, lsd_a, lwl_a, lcl_a,
+    ucl_b, uwl_b, usd_b, lsd_b, lwl_b, lcl_b, chart_type_ndx,
+    mean_value, first_graph, second_graph, upper_spec, lower_spec, 
+    level_a, level_b, spec_level, spec_type
+
+
+	define_shewhart_constants()
+	CREATE OBJECT "SHEWHART_CONSTANTS", shewhart_constants
+
+	chart_type_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+		     PAD ( chart_type          , " ", 10 )
+
+	sqc_chart . sqc_header . set_by_index ( "KEY0", chart_type_ndx )
+
+	first_graph  = SELECT sqcwin_chart_type . limits_calc_type_a
+		   IN OBJECT sqc_chart . sqc_chart_type . current
+
+	second_graph = SELECT sqcwin_chart_type . limits_calc_type_b
+		   IN OBJECT sqc_chart . sqc_chart_type . current
+
+	spec_type  = SELECT sqcwin_chart_type . spec_type
+		   IN OBJECT sqc_chart . sqc_chart_type . current
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", chart_type_ndx )
+
+	IF ( spec_type = 1 ) THEN 
+
+
+	    upper_spec = SELECT sqcwin_chart_type . upper_spec
+			 IN OBJECT sqc_chart . sqc_chart_type . current
+
+	    lower_spec = SELECT sqcwin_chart_type . lower_spec
+			 IN OBJECT sqc_chart . sqc_chart_type . current
+
+	ELSEIF( spec_type = 3 ) THEN
+
+
+		spec_level = SELECT sqcwin_chart_type . mlp_level
+			     IN OBJECT sqc_chart . sqc_chart_type . current
+
+		upper_spec = get_mlp_level( sqc_chart, spec_level, "upper" )
+
+		lower_spec = get_mlp_level( sqc_chart, spec_level, "lower" )
+
+	ELSEIF( spec_type = 2 ) THEN
+
+		upper_spec = EMPTY
+
+		lower_spec = EMPTY
+
+	ENDIF
+
+	IF ( first_graph = USE_SPECIFIED ) THEN
+
+		ucl_a = SELECT sqcwin_chart_type . upper_control_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		uwl_a = SELECT sqcwin_chart_type . upper_warning_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		usd_a = SELECT sqcwin_chart_type . upper_sigma_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		new_centre = SELECT sqcwin_chart_type . target_value_a
+			     IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lsd_a = SELECT sqcwin_chart_type . lower_sigma_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lwl_a = SELECT sqcwin_chart_type . lower_warning_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lcl_a = SELECT sqcwin_chart_type . lower_control_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+	ELSEIF ( first_graph = USE_MLP ) THEN
+
+		subgroup_size = SELECT sqcwin_chart_type . subgroup_size_wanted
+				IN OBJECT sqc_chart . sqc_chart_type . current
+
+		level_a = SELECT sqcwin_chart_type . mlp_level_a
+		          IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ucl_a = get_mlp_level( sqc_chart, level_a, "upper" )
+
+		lcl_a = get_mlp_level( sqc_chart, level_a, "lower" )
+
+		get_shewhart_constants ( subgroup_size ,
+					 chart_type,
+					 first_graph,
+					 second_graph,
+					 shewhart_constants )
+
+		new_centre = ( ucl_a + lcl_a ) / 2
+		std_dev    = ( ucl_a - new_centre ) / 3
+
+		uwl_a = ucl_a      - std_dev
+		usd_a = uwl_a      - std_dev
+		lsd_a = new_centre - std_dev
+		lwl_a = lsd_a      - std_dev
+
+	ELSEIF ( ( first_graph = CALC_DATA   )   OR
+	     ( first_graph = CALC_TARGET ) ) THEN
+
+		subgroup_size = SELECT sqcwin_chart_type . subgroup_size_wanted
+				IN OBJECT sqc_chart . sqc_chart_type . current
+
+		get_shewhart_constants ( subgroup_size ,
+					 chart_type,
+					 first_graph,
+					 second_graph,
+					 shewhart_constants )
+
+		IF ( first_graph = CALC_DATA ) THEN
+
+			    new_centre =
+				  sqc_chart . graph_limits_array [ chart_type_num ] . mean_a
+
+			    mean_value =
+				  sqc_chart . graph_limits_array [ chart_type_num ] . mean_b
+
+		ELSE
+
+			    sqc_chart . sqc_chart_type . set_by_index ( "KEY0",
+									chart_type_ndx )
+
+			    new_centre = SELECT sqcwin_chart_type . target_mean
+					 IN OBJECT sqc_chart . sqc_chart_type . current
+
+			    mean_value = SELECT sqcwin_chart_type . target_sigma
+					 IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ENDIF
+
+		ucl_a   = new_centre + ( mean_value * shewhart_constants . x1 )
+		lcl_a   = new_centre - ( mean_value * shewhart_constants . x1 )
+		std_dev = ( ucl_a - new_centre ) / 3
+		uwl_a   = ucl_a      - std_dev
+		usd_a   = uwl_a      - std_dev
+		lsd_a   = new_centre - std_dev
+		lwl_a   = lsd_a      - std_dev
+
+	ENDIF
+
+	sqc_chart . graph_limits_array [ chart_type_num ] . US_a    = upper_spec
+	sqc_chart . graph_limits_array [ chart_type_num ] . UCL_a   = ucl_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . UWL_a   = uwl_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . USD_a   = usd_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . mean_a  = new_centre
+	sqc_chart . graph_limits_array [ chart_type_num ] . LSD_a   = lsd_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . LWL_a   = lwl_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . LCL_a   = lcl_a
+	sqc_chart . graph_limits_array [ chart_type_num ] . LS_a    = lower_spec
+
+	IF ( second_graph = USE_SPECIFIED ) THEN
+
+		ucl_b = SELECT sqcwin_chart_type . upper_control_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		uwl_b = SELECT sqcwin_chart_type . upper_warning_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		usd_b = SELECT sqcwin_chart_type . upper_sigma_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		new_centre = SELECT sqcwin_chart_type . target_value_b
+			     IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lsd_b = SELECT sqcwin_chart_type . lower_sigma_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lwl_b = SELECT sqcwin_chart_type . lower_warning_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+		lcl_b = SELECT sqcwin_chart_type . lower_control_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+	ELSEIF ( second_graph = USE_MLP ) THEN
+
+		subgroup_size = SELECT sqcwin_chart_type . subgroup_size_wanted
+				IN OBJECT sqc_chart . sqc_chart_type . current
+
+		level_b = SELECT sqcwin_chart_type . mlp_level_b
+		          IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ucl_b = get_mlp_level( sqc_chart, level_b, "upper" )
+
+		lcl_b = get_mlp_level( sqc_chart, level_b, "lower" )
+
+		get_shewhart_constants ( subgroup_size ,
+					 chart_type,
+					 first_graph,
+					 second_graph,
+					 shewhart_constants )
+
+		new_centre = ( ucl_b - lcl_b ) / ( 2 * shewhart_constants . r2 )
+
+		ucl_b = new_centre * shewhart_constants . r1
+		lcl_b = new_centre * shewhart_constants . r3
+
+		std_dev = ( ucl_b - new_centre ) / 3
+		uwl_b   = ucl_b      - std_dev
+		usd_b   = uwl_b      - std_dev
+		lsd_b   = new_centre - std_dev
+		lwl_b   = lsd_b      - std_dev
+
+
+	ELSEIF ( ( second_graph = CALC_DATA ) OR
+	     ( second_graph = CALC_TARGET ) ) THEN
+
+		subgroup_size = SELECT sqcwin_chart_type . subgroup_size_wanted
+				IN OBJECT sqc_chart . sqc_chart_type . current
+
+		get_shewhart_constants ( subgroup_size ,
+					 chart_type,
+					 first_graph,
+					 second_graph,
+					 shewhart_constants )
+
+		IF ( second_graph = CALC_DATA ) THEN
+
+		    new_centre =
+			  sqc_chart . graph_limits_array [ chart_type_num ] . mean_b
+
+		    mean_value =
+			  sqc_chart . graph_limits_array [ chart_type_num ] . mean_b
+
+		ELSE
+
+		    sqc_chart . sqc_chart_type . set_by_index ( "KEY0",
+								chart_type_ndx )
+
+		    new_centre = SELECT sqcwin_chart_type . target_mean
+				 IN OBJECT sqc_chart . sqc_chart_type . current
+
+		    mean_value = SELECT sqcwin_chart_type . target_sigma
+				 IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ENDIF
+
+		ucl_b   = mean_value * shewhart_constants . r1
+		new_centre = mean_value * shewhart_constants . r2
+		lcl_b   = mean_value * shewhart_constants . r3
+		std_dev = ( ucl_b - new_centre ) / 3
+		uwl_b   = ucl_b      - std_dev
+		usd_b   = uwl_b      - std_dev
+		lsd_b   = new_centre - std_dev
+		lwl_b   = lsd_b      - std_dev
+
+	ENDIF
+
+	sqc_chart . graph_limits_array [ chart_type_num ] . US_b   = upper_spec
+	sqc_chart . graph_limits_array [ chart_type_num ] . UCL_b  = ucl_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . UWL_b  = uwl_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . USD_b  = usd_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . mean_b = new_centre
+	sqc_chart . graph_limits_array [ chart_type_num ] . LSD_b  = lsd_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . LWL_b  = lwl_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . LCL_b  = lcl_b
+	sqc_chart . graph_limits_array [ chart_type_num ] . LS_b   = lower_spec
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE check_trends ( sqc_chart    ,
+                       chart_type   ,
+                       chart_type_id,
+                       first        ,
+                       last         )
+
+{ 
+* Check trends.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, chart_type_id, first, last
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE trend_chart_for_a, trend_chart_for_b, trend_record,
+        mean_a, ucl_a, lcl_a, uwl_a, lwl_a, usd_a, lsd_a,
+        mean_b, ucl_b, lcl_b, uwl_b, lwl_b, usd_b, lsd_b,
+        trend_type, trend_para, trend_fac_1, trend_fac_2,
+        subgrp_ndx, previous_chart_type, next_chart_type, x_bar,
+        subgrp_no, trend_a, trend_b, is_a, last_x_bar, exit_loop,
+        chart_type_ndx, field_name, us_a, ls_a, us_b, ls_b,
+        subgrp_counter
+
+	ARRAY trend_record ARRAYSIZE ( 0 ) = FALSE
+
+	mean_a = sqc_chart . graph_limits_array [ chart_type_id ] . mean_a
+	ucl_a  = sqc_chart . graph_limits_array [ chart_type_id ] . ucl_a
+	uwl_a  = sqc_chart . graph_limits_array [ chart_type_id ] . uwl_a
+	usd_a  = sqc_chart . graph_limits_array [ chart_type_id ] . usd_a
+	lcl_a  = sqc_chart . graph_limits_array [ chart_type_id ] . lcl_a
+	lwl_a  = sqc_chart . graph_limits_array [ chart_type_id ] . lwl_a
+	lsd_a  = sqc_chart . graph_limits_array [ chart_type_id ] . lsd_a
+	us_a   = sqc_chart . graph_limits_array [ chart_type_id ] . us_a
+	ls_a   = sqc_chart . graph_limits_array [ chart_type_id ] . ls_a
+
+	mean_b = sqc_chart . graph_limits_array [ chart_type_id ] . mean_b
+	ucl_b  = sqc_chart . graph_limits_array [ chart_type_id ] . ucl_b
+	uwl_b  = sqc_chart . graph_limits_array [ chart_type_id ] . uwl_b
+	usd_b  = sqc_chart . graph_limits_array [ chart_type_id ] . usd_b
+	lcl_b  = sqc_chart . graph_limits_array [ chart_type_id ] . lcl_b
+	lwl_b  = sqc_chart . graph_limits_array [ chart_type_id ] . lwl_b
+	lsd_b  = sqc_chart . graph_limits_array [ chart_type_id ] . lsd_b
+	us_b   = sqc_chart . graph_limits_array [ chart_type_id ] . us_b
+	ls_b   = sqc_chart . graph_limits_array [ chart_type_id ] . ls_b
+
+	chart_type_ndx = PAD ( sqc_chart . chart_id      , " ", "20" ) :
+		     PAD ( chart_type, " ", "10" )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", chart_type_ndx )
+
+	trend_chart_for_a = SELECT sqcwin_chart_type . trend_chart_a
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+	trend_chart_for_b = SELECT sqcwin_chart_type . trend_chart_b
+			IN OBJECT sqc_chart . sqc_chart_type . current
+
+	get_trend_table ( sqc_chart,
+		      trend_chart_for_a ,
+		      trend_chart_for_b )
+
+	trend_chart_for_a = PAD ( trend_chart_for_a, " ", 10 ) :
+			PAD ( " 1",              " ",  2 )
+
+	sqc_chart . sqc_trend_point_a . set_by_index ( "KEY0", trend_chart_for_a )
+
+	is_a = TRUE
+
+	WHILE ( sqc_chart . sqc_trend_point_a . current <> EMPTY ) DO
+
+		ARRAY trend_record ARRAYSIZE ( 0 ) = FALSE
+
+		trend_type  = SELECT sqcwin_trend_point . trend_type
+			      IN OBJECT sqc_chart . sqc_trend_point_a . current
+
+		trend_para  = SELECT sqcwin_trend_point . trend_parameter
+			      IN OBJECT sqc_chart . sqc_trend_point_a . current
+
+		trend_fac_1 = SELECT sqcwin_trend_point . trend_factor_one
+			      IN OBJECT sqc_chart . sqc_trend_point_a . current
+
+		trend_fac_2 = SELECT sqcwin_trend_point . trend_factor_two
+			      IN OBJECT sqc_chart . sqc_trend_point_a . current
+
+		subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			     PAD ( chart_type          , " ", 10 ) :
+		   JUSTIFY ( PAD ( STRIP ( first )     , " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+		subgrp_counter = first
+
+		previous_chart_type = chart_type
+		next_chart_type     = chart_type
+
+		exit_loop = FALSE
+
+		last_x_bar = 0
+
+		WHILE NOT ( exit_loop ) DO
+
+		    x_bar     = SELECT sqcwin_subgroup . x_bar
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    subgrp_no = SELECT sqcwin_subgroup . subgroup_number
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    trend_a   = SELECT sqcwin_subgroup . trend_a
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    IF ( trend_type = ABOVE_CENTRE_LINE ) THEN
+
+			IF ( x_bar > mean_a ) THEN
+
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_ONE_STD ) THEN
+			IF ( x_bar > usd_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_WARNING ) THEN
+			IF ( x_bar > uwl_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_CONTROL ) THEN
+			IF ( x_bar > ucl_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_CENTRE_LINE ) THEN
+			IF ( x_bar < mean_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_ONE_STD ) THEN
+			IF ( x_bar < lsd_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_WARNING ) THEN
+			IF ( x_bar < lwl_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_CONTROL ) THEN
+			IF ( x_bar < lcl_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = RISING ) THEN
+			IF ( x_bar > last_x_bar ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+			last_x_bar = x_bar
+		    ELSEIF ( trend_type = FALLING ) THEN
+			IF ( x_bar < last_x_bar ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+			last_x_bar = x_bar
+		    ELSEIF ( trend_type = HUGGING_IN_ONE_STD ) THEN
+			IF ( ( x_bar < usd_a ) AND ( x_bar > lsd_a ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = HUGGING_OUT_ONE_STD ) THEN
+			IF ( ( x_bar > usd_a ) OR ( x_bar < lsd_a ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = HUGGING_OUT_WARNING ) THEN
+			IF ( ( x_bar > uwl_a ) OR ( x_bar < lwl_a ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_SPEC ) AND
+		           ( us_a <> EMPTY                 ) THEN
+			IF ( x_bar > us_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_SPEC ) AND
+		           ( ls_a <> EMPTY                 ) THEN
+			IF ( x_bar < ls_a ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_a,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ENDIF
+
+		    sqc_chart . sqc_subgroup . set_next ()
+
+		    subgrp_counter = subgrp_counter + 1
+
+		    IF subgrp_counter > last THEN
+			exit_loop = TRUE
+		    ELSEIF ( ( sqc_chart . sqc_subgroup . current = EMPTY   )   OR
+			     ( sqc_chart . sqc_subgroup . current . deleted ) ) THEN
+			exit_loop = TRUE
+		    ELSE
+			previous_chart_type = next_chart_type
+			next_chart_type = SELECT sqcwin_subgroup . chart_type_id
+					  IN OBJECT sqc_chart . sqc_subgroup . current
+			IF ( next_chart_type <> previous_chart_type ) THEN
+			    exit_loop = TRUE
+			ENDIF
+		    ENDIF
+
+		ENDWHILE
+
+		sqc_chart . sqc_trend_point_a . set_next ()
+
+	ENDWHILE
+
+	trend_chart_for_b = PAD ( trend_chart_for_b, " ", 10 ) :
+			PAD ( " 1",              " ",  2 )
+
+	sqc_chart . sqc_trend_point_b . set_by_index ( "KEY0", trend_chart_for_b )
+
+	is_a = FALSE
+
+	WHILE ( sqc_chart . sqc_trend_point_b . current <> EMPTY ) DO
+
+		ARRAY trend_record ARRAYSIZE ( 0 ) = FALSE
+		trend_type  = SELECT sqcwin_trend_point . trend_type
+			      IN OBJECT sqc_chart . sqc_trend_point_b . current
+
+		trend_para  = SELECT sqcwin_trend_point . trend_parameter
+			      IN OBJECT sqc_chart . sqc_trend_point_b . current
+
+		trend_fac_1 = SELECT sqcwin_trend_point . trend_factor_one
+			      IN OBJECT sqc_chart . sqc_trend_point_b . current
+
+		trend_fac_2 = SELECT sqcwin_trend_point . trend_factor_two
+			      IN OBJECT sqc_chart . sqc_trend_point_b . current
+
+		subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			     PAD ( chart_type          , " ", 10 ) :
+		   JUSTIFY ( PAD ( STRIP ( first )     , " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+		previous_chart_type = chart_type
+		next_chart_type     = chart_type
+
+		exit_loop = FALSE
+
+		last_x_bar = 0
+
+		WHILE NOT ( exit_loop ) DO
+
+		    IF chart_type = MEAN_STD THEN
+			field_name = "sigma"
+		    ELSEIF chart_type = MEAN_RANGE THEN
+			field_name = "range"
+		    ELSEIF chart_type = INDMR THEN
+			field_name = "range"
+		    ENDIF
+
+		    x_bar     = SELECT sqcwin_subgroup . 'field_name'
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    subgrp_no = SELECT sqcwin_subgroup . subgroup_number
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    trend_a   = SELECT sqcwin_subgroup . trend_a
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    trend_b   = SELECT sqcwin_subgroup . trend_b
+				IN OBJECT sqc_chart . sqc_subgroup . current
+
+		    is_a = FALSE
+
+		    IF ( trend_type = ABOVE_CENTRE_LINE ) THEN
+			IF ( x_bar > mean_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_ONE_STD ) THEN
+			IF ( x_bar > usd_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_WARNING ) THEN
+			IF ( x_bar > uwl_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_CONTROL ) THEN
+			IF ( x_bar > ucl_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_CENTRE_LINE ) THEN
+			IF ( x_bar < mean_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_ONE_STD ) THEN
+			IF ( x_bar < lsd_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_WARNING ) THEN
+			IF ( x_bar < lwl_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_CONTROL ) THEN
+			IF ( x_bar < lcl_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = RISING ) THEN
+			IF ( x_bar > last_x_bar ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+			last_x_bar = x_bar
+		    ELSEIF ( trend_type = FALLING ) THEN
+			IF ( x_bar < last_x_bar ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+			last_x_bar = x_bar
+		    ELSEIF ( trend_type = HUGGING_IN_ONE_STD ) THEN
+			IF ( ( x_bar < usd_b ) AND ( x_bar > lsd_b ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = HUGGING_OUT_ONE_STD ) THEN
+			IF ( ( x_bar > usd_b ) OR ( x_bar < lsd_b ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = HUGGING_OUT_WARNING ) THEN
+			IF ( ( x_bar > uwl_b ) OR ( x_bar < lwl_b ) ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = ABOVE_UPPER_SPEC ) AND
+		           ( us_b <> EMPTY                 ) THEN
+			IF ( x_bar > us_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ELSEIF ( trend_type = BELOW_LOWER_SPEC ) AND
+		           ( ls_b <> EMPTY                 ) THEN
+			IF ( x_bar < ls_b ) THEN
+			    check_trend_factor ( sqc_chart,
+						 subgrp_no,
+						 trend_record,
+						 trend_b,
+						 is_a,
+						 trend_type,
+						 trend_para,
+						 trend_fac_1,
+						 trend_fac_2 )
+			ENDIF
+		    ENDIF
+
+		    sqc_chart . sqc_subgroup . set_next ()
+
+		    IF ( ( sqc_chart . sqc_subgroup . current = EMPTY   ) OR
+			 ( sqc_chart . sqc_subgroup . current . deleted ) )
+		    THEN
+			exit_loop = TRUE
+		    ELSE
+			previous_chart_type = next_chart_type
+			next_chart_type = SELECT sqcwin_subgroup . chart_type_id
+					  IN OBJECT sqc_chart . sqc_subgroup . current
+			IF ( next_chart_type <> previous_chart_type ) THEN
+			    exit_loop = TRUE
+			ENDIF
+		    ENDIF
+
+		ENDWHILE
+
+		sqc_chart . sqc_trend_point_b . set_next ()
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE check_trend_factor (       sqc_chart,
+                             VALUE subgrp_no,
+                                   trend_record,
+                             VALUE trend,
+                             VALUE is_a,
+                             VALUE trend_type,
+                             VALUE trend_para,
+                             VALUE trend_fac_1,
+                             VALUE trend_fac_2 )
+
+{ 
+* Check the truth of a trend over the previous history.
+* 
+* 
+*
+* Parameters   : sqc_chart, subgrp_no, trend_record, trend, is_a,
+*                trend_type, trend_para, trend_fac_1, trend_fac_2
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE counter , no_true
+
+	counter = 0
+	no_true = 0
+
+	IF trend_para = 2 THEN
+
+		trend_fac_2 = trend_fac_1
+
+	ENDIF
+
+	trend_record [ subgrp_no ] = TRUE
+
+	IF ( trend = 0 ) THEN
+
+		counter = subgrp_no - ( trend_fac_2 - 1 )
+
+		IF ( counter < 1 ) THEN 
+		
+			counter = 1 
+			
+		ENDIF
+
+		WHILE ( counter <= subgrp_no )
+
+		    IF ( trend_record [ counter ] ) THEN
+			no_true = no_true + 1
+		    ENDIF
+
+		    counter = counter + 1
+
+		ENDWHILE
+
+		IF ( no_true >= trend_fac_1 ) THEN
+
+		    IF ( is_a ) THEN
+
+			ASSIGN sqcwin_subgroup . trend_a IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_type
+
+			ASSIGN sqcwin_subgroup . trend_a_p IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_para
+
+			ASSIGN sqcwin_subgroup . trend_a_1 IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_fac_1
+
+			ASSIGN sqcwin_subgroup . trend_a_2 IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_fac_2
+
+		    ELSE
+
+			ASSIGN sqcwin_subgroup . trend_b IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_type
+
+			ASSIGN sqcwin_subgroup . trend_b_p IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_para
+
+			ASSIGN sqcwin_subgroup . trend_b_1 IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_fac_1
+
+			ASSIGN sqcwin_subgroup . trend_b_2 IN OBJECT sqc_chart . sqc_subgroup . current
+			    = trend_fac_2
+
+		    ENDIF
+
+		ENDIF
+
+	ENDIF
+
+
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_shewhart_graph_data (       sqc_chart,
+                                         VALUE chart_type,
+                                         VALUE is_A_set  ,
+                                               first     ,
+                                               last      ,
+                                               display_seg)
+
+{ 
+* Get shewhart graph data
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, is_A_set, first, last, display_seg
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE subgrp_ndx, y_value_field, good_pt, bad_pt, y_value,
+        point_counter, trend, trend_field, trend_pt,
+        graph_lims_ndx, graph_obj, graph_object_ndx,
+        bad_point_field, exit_loop,
+        bad_pt_count, plot_field, plot_value,
+        sqc_chart_type_ndx
+
+	good_pt = 0
+	bad_pt_count = 0
+	trend_pt = 0
+	point_counter = first
+
+	graph_lims_ndx   = 1
+	graph_object_ndx = 1
+
+	define_graph_object ()
+
+	CREATE OBJECT "graph_object", graph_obj
+
+	IF ( is_A_set ) THEN
+
+		bad_point_field = "a_bad"
+		trend_field     = "trend_a"
+		plot_field      = "a_plot"
+
+	ELSE
+
+		bad_point_field = "b_bad"
+		trend_field     = "trend_b"
+		plot_field      = "b_plot"
+
+	ENDIF
+
+	IF ( chart_type = MEAN_RANGE ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field = "x_bar"
+		    graph_obj . graph_type = MEAN_R_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_SUBGROUP", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_MEAN_R_GR", 1 )
+
+		ELSE
+
+		    y_value_field = "range"
+		    graph_obj . graph_type = RANGE_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_SUBGROUP", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_RANGE_GR", 1 )
+
+		ENDIF
+
+	ELSEIF ( chart_type = MEAN_STD ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field   = "x_bar"
+		    graph_obj . graph_type = MEAN_S_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_SUBGROUP", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_MEAN_S_GR", 1 )
+
+		ELSE
+
+		    y_value_field = "sigma"
+		    graph_obj . graph_type = STD_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_SUBGROUP", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_STD_GR", 1 )
+
+		ENDIF
+
+	ELSEIF ( chart_type = IND_MR ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field   = "x_bar"
+		    graph_obj . graph_type = IND_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_POINT", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_IND_GR", 1 )
+
+		ELSE
+
+		    y_value_field = "range"
+		    graph_obj . graph_type = MR_GR
+		    graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_POINT", 1 )
+		    graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_MR_GR", 1 )
+
+		ENDIF
+
+	ENDIF
+
+	graph_obj . chart_type = chart_type
+
+	sqc_chart_type_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			 PAD ( chart_type          , " ", 10 )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", sqc_chart_type_ndx )
+
+	graph_obj . disp_sp = SELECT sqcwin_chart_type . display_spec
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . us      = SELECT sqcwin_chart_type . upper_spec
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . ls      = SELECT sqcwin_chart_type . lower_spec
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . disp_sp = SELECT sqcwin_chart_type . display_spec
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . disp_cl = SELECT sqcwin_chart_type . display_control
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . disp_wl = SELECT sqcwin_chart_type . display_warning
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	graph_obj . disp_sd = SELECT sqcwin_chart_type . display_one_sigma
+			  IN OBJECT sqc_chart . sqc_chart_type . current
+
+	subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+		 PAD ( chart_type             , " ", 10 ) :
+	JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+	WHILE ( point_counter <= last ) DO
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+		bad_pt  = SELECT sqcwin_subgroup . 'bad_point_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		y_value = SELECT sqcwin_subgroup . 'y_value_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		trend   = SELECT sqcwin_subgroup . 'trend_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		plot_value =  SELECT sqcwin_subgroup . 'plot_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+
+		IF ( ( plot_value ) AND ( point_counter >= first ) ) THEN
+
+		    IF NOT ( bad_pt ) THEN
+
+			good_pt = good_pt + 1
+			graph_obj . x_points [ good_pt ] = point_counter
+			graph_obj . y_points [ good_pt ] = y_value
+
+		    ELSE
+
+			bad_pt_count = bad_pt_count + 1
+			graph_obj . x_bad [ bad_pt_count ] = point_counter
+			graph_obj . y_bad [ bad_pt_count ] = y_value
+
+		    ENDIF
+
+		    IF ( trend <> 0 ) THEN
+
+			trend_pt = trend_pt + 1
+			graph_obj . x_trend [ trend_pt ] = point_counter
+			graph_obj . y_trend [ trend_pt ] = y_value
+
+		    ENDIF
+
+		    IF ( graph_obj . min_y > y_value ) THEN
+
+			graph_obj . min_y = y_value
+
+		    ENDIF
+
+		    IF ( graph_obj . max_y < y_value ) THEN
+
+			graph_obj . max_y = y_value
+
+		    ENDIF
+
+		ENDIF
+
+		point_counter = point_counter + 1
+
+		subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+			     PAD ( chart_type             , " ", 10 ) :
+		   JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+	ENDWHILE
+
+	graph_obj . no_x      = point_counter
+
+	WHILE NOT ( ( sqc_chart . graph_limits_array [ graph_lims_ndx ] . chart_type_id
+		       = chart_type ) OR
+		( sqc_chart . graph_limits_array [ graph_lims_ndx ] . chart_type_id
+		       = "" ) ) DO
+
+		graph_lims_ndx   = graph_lims_ndx + 1
+
+	ENDWHILE
+
+	IF ( is_A_set ) THEN
+
+		graph_obj.ucl  = sqc_chart.graph_limits_array[graph_lims_ndx].ucl_a
+		graph_obj.lcl  = sqc_chart.graph_limits_array[graph_lims_ndx].lcl_a
+		graph_obj.uwl  = sqc_chart.graph_limits_array[graph_lims_ndx].uwl_a
+		graph_obj.lwl  = sqc_chart.graph_limits_array[graph_lims_ndx].lwl_a
+		graph_obj.usd  = sqc_chart.graph_limits_array[graph_lims_ndx].usd_a
+		graph_obj.lsd  = sqc_chart.graph_limits_array[graph_lims_ndx].lsd_a
+		graph_obj.mean = sqc_chart.graph_limits_array[graph_lims_ndx].mean_a
+
+	ELSE
+
+		graph_obj.ucl  = sqc_chart.graph_limits_array[graph_lims_ndx].ucl_b
+		graph_obj.lcl  = sqc_chart.graph_limits_array[graph_lims_ndx].lcl_b
+		graph_obj.uwl  = sqc_chart.graph_limits_array[graph_lims_ndx].uwl_b
+		graph_obj.lwl  = sqc_chart.graph_limits_array[graph_lims_ndx].lwl_b
+		graph_obj.usd  = sqc_chart.graph_limits_array[graph_lims_ndx].usd_b
+		graph_obj.lsd  = sqc_chart.graph_limits_array[graph_lims_ndx].lsd_b
+		graph_obj.mean = sqc_chart.graph_limits_array[graph_lims_ndx].mean_b
+
+	ENDIF
+
+	exit_loop = FALSE
+
+	WHILE ( NOT ( exit_loop ) ) DO
+
+		IF ( sqc_chart . graph_object_array [ graph_object_ndx ] = EMPTY ) THEN
+
+		    exit_loop = TRUE
+
+		ELSEIF ( sqc_chart . graph_object_array [ graph_object_ndx ] .
+				   graph_type = graph_obj . graph_type ) THEN
+
+		    graph_obj . win_obj_array = sqc_chart.
+						   graph_object_array[graph_object_ndx].
+						       win_obj_array
+		    exit_loop = TRUE
+
+		ELSE
+
+		    graph_object_ndx   = graph_object_ndx + 1
+
+		ENDIF
+
+	ENDWHILE
+
+	sqc_chart . graph_object_array [ graph_object_ndx ] = graph_obj
+
+	write_to_window_obj ( sqc_chart, graph_object_ndx, first, last, is_a_set,
+			  display_seg )
+
+	get_yaxis_bounds ( sqc_chart . graph_object_array [ graph_object_ndx ], sqc_chart, is_A_set )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_yaxis_bounds ( graph_obj, sqc_chart, is_A )
+
+{ 
+* Calculates the man and min y axis values.
+* 
+* 
+*
+* Parameters   : graph_obj
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE max_ucl, min_lcl, max_uwl, min_lwl, max_usd, min_lsd, range,
+        y_min, y_max, user_y_axis
+
+	y_min = graph_obj . mean
+	y_max = graph_obj . mean
+
+	
+	user_y_axis = SELECT sqcwin_chart_type . user_defined_y_axis
+	              IN OBJECT sqc_chart . sqc_chart_type . current
+
+	IF user_y_axis THEN
+	
+		IF is_A THEN
+
+
+		graph_obj . y_min = SELECT sqcwin_chart_type . y_min_chart_a 
+		                    IN OBJECT sqc_chart . sqc_chart_type . current
+
+		graph_obj . y_max = SELECT sqcwin_chart_type . y_max_chart_a 
+		        IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ELSE
+
+		graph_obj . y_min = SELECT sqcwin_chart_type . y_min_chart_b 
+		        IN OBJECT sqc_chart . sqc_chart_type . current
+
+		graph_obj . y_max = SELECT sqcwin_chart_type . y_max_chart_b 
+		        IN OBJECT sqc_chart . sqc_chart_type . current
+
+		ENDIF
+
+	ELSE
+
+		IF ( graph_obj . disp_sp ) THEN
+
+			IF ( y_max < graph_obj . us ) THEN
+
+			    y_max = graph_obj . us
+
+			ENDIF
+
+			IF ( y_min > graph_obj . ls ) THEN
+
+			    y_min = graph_obj . ls
+
+			ENDIF
+
+		ENDIF
+
+		IF (  graph_obj . disp_cl ) THEN
+
+			max_ucl = maximum_bound_in_win_obj ( graph_obj, "HIGH", "ucl" )
+
+			IF ( y_max < max_ucl ) THEN
+
+			    y_max = max_ucl
+
+			ENDIF
+
+			min_lcl = maximum_bound_in_win_obj ( graph_obj, "LOW", "lcl" )
+
+			IF ( y_min > min_lcl ) THEN
+
+			    y_min = min_lcl
+
+			ENDIF
+
+		ENDIF
+
+		IF ( graph_obj . disp_wl ) THEN
+
+			max_uwl = maximum_bound_in_win_obj ( graph_obj, "HIGH", "uwl" )
+
+			IF ( y_max < max_uwl ) THEN
+
+			    y_max = max_uwl
+
+			ENDIF
+
+			min_lwl = maximum_bound_in_win_obj ( graph_obj, "LOW", "lwl" )
+
+			IF ( y_min > min_lwl ) THEN
+
+			    y_min = min_lwl
+
+			ENDIF
+
+		ENDIF
+
+		IF ( graph_obj . disp_sd ) THEN
+
+			max_usd = maximum_bound_in_win_obj ( graph_obj, "HIGH", "usd" )
+
+			IF ( y_max < max_usd ) THEN
+
+			    y_max = max_usd
+
+			ENDIF
+
+			min_lsd = maximum_bound_in_win_obj ( graph_obj, "LOW", "lsd" )
+
+			IF ( y_min > min_lsd ) THEN
+
+			    y_min = min_lsd
+
+			ENDIF
+
+		ENDIF
+
+		range = ABS ( graph_obj . max_y ) + ABS ( graph_obj . min_y )
+
+		IF ( y_max < graph_obj . max_y ) THEN
+
+			y_max = graph_obj . max_y + ( range * 0.1 )
+
+		ENDIF
+
+		IF ( y_min > graph_obj . min_y ) THEN
+
+			y_min = graph_obj . min_y - ( range * 0.1 )
+
+		ENDIF
+
+		IF ( graph_obj . y_min <> 0 ) AND ( graph_obj . y_min > y_min ) THEN
+
+			graph_obj . y_min = y_min
+
+		ENDIF
+
+		IF ( graph_obj . y_max <> 0 ) AND ( graph_obj . y_max < y_max ) THEN
+
+			graph_obj . y_max = y_max
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_pc_subgroup ( sqc_chart )
+
+{ 
+* Copy points to subgroup format
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE sqc_point_ndx, sqc_subgrp_ndx, point_counter, chart_type_id,
+        point_value, point_bad, new_record, point_date
+
+	chart_type_id = PROC_CAP
+
+	point_counter  = 1
+
+	sqc_point_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+	  JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  6 ), "RIGHT" )
+
+	sqc_chart . sqc_point . set_by_index ( "KEY0", sqc_point_ndx )
+
+	WHILE ( sqc_chart . sqc_point . current <> EMPTY ) DO
+
+		point_value = SELECT sqcwin_point . point_value
+			      IN OBJECT sqc_chart . sqc_point . current
+
+		point_date  = SELECT sqcwin_point . point_date
+			      IN OBJECT sqc_chart . sqc_point . current
+
+		point_bad   = SELECT sqcwin_point . bad
+			      IN OBJECT sqc_chart . sqc_point . current
+
+		sqc_subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+				 PAD ( chart_type_id          , " ", 10 ) :
+		       JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+		IF ( sqc_chart . sqc_subgroup . current = EMPTY ) THEN
+
+		    CREATE OBJECT "STD_OBJECT_RECORD", new_record
+
+		    new_record . new   = TRUE
+		    new_record . table = "SQCWIN_SUBGROUP"
+		    object_add_table ( new_record, "SQCWIN_SUBGROUP" )
+
+		    RESERVE ENTRY sqcwin_subgroup IN OBJECT new_record, sqc_subgrp_ndx
+
+		    sqc_chart . sqc_subgroup . add ( new_record )
+
+		    sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+		ENDIF
+
+		ASSIGN sqcwin_subgroup . x_bar
+		    IN OBJECT sqc_chart . sqc_subgroup . current = point_value
+
+		ASSIGN sqcwin_subgroup . a_bad
+		    IN OBJECT sqc_chart . sqc_subgroup . current = point_bad
+
+		ASSIGN sqcwin_subgroup . subgroup_date
+		    IN OBJECT sqc_chart . sqc_subgroup . current = point_date
+
+		IF ( sqc_chart . sqc_subgroup . current . deleted ) THEN
+
+		    sqc_chart . sqc_subgroup . current . undelete ( )
+
+		ENDIF
+
+		point_counter = point_counter + 1
+
+		sqc_point_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+		      JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  6 ), "RIGHT" )
+
+		sqc_chart . sqc_point . set_by_index ( "KEY0", sqc_point_ndx )
+
+	ENDWHILE
+
+	sqc_subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+		     PAD ( chart_type_id          , " ", 10 ) :
+	   JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+	WHILE ( sqc_chart . sqc_subgroup . current <> EMPTY )
+
+		sqc_chart . sqc_subgroup . current . delete ()
+
+		point_counter = point_counter + 1
+
+		sqc_subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+				 PAD ( chart_type_id          , " ", 10 ) :
+		       JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE calculate_process_capability ( sqc_chart )
+
+{ 
+* First Cut.                                     
+* Calculates the graph object for proc_cap       
+* Formula changed from sqc 2.0 to                
+*                                                                              
+* n/(n-1)(n-2) SUM ( ( x - xbar ) / std ) ^ 3 )  
+*
+* This loops through all subgroup points ( x-bar ) and does the
+*  following:
+*  (1) works out key statistical quantities such as skewness, kurtosis,
+*      sigma, mean, capability ratio, capability index, cpk index. See
+*      routine get_subgroup_stuff in $sqc_pc.
+*
+*  (2) It then works out point values for the normal distribution curve.
+*      See routine initialise_arrays in $sqc_pc.
+*
+*  (3) It then works out the points needed to draw the histogram.
+*      See routine get_histo_stuff in $sqc_pc
+*
+* Parameters   : sqc_chart
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE count, s1, s2, s3, s4
+DECLARE subg_no, x_val, a_bad, f_val, pos, x_min, x_max,
+    cell_width, half_width, pi, num_points, step, x_value,
+    div_fact, y_max, z, x_pos, max_y_histo, y_pos, height_factor,
+    dif_val , proc_cap_obj
+
+DECLARE subgrp_no_ndx, graph_obj_ndx
+DECLARE first_subgroup, last_subgroup,
+    capability_ratio, capability_index, cpk_index, points_sigma,
+    spec_min, spec_max, end_pos, start_pos, points_mean,
+    number_of_cells, subgroup_number, exit_loop, chart_type_ndx,
+    first, last
+
+DECLARE x_array, normal_value, normal_axis, x_histo, y_histo
+
+DECLARE std_dev, x_count, x_mean, skew_x, kurt_x, skewness, kurtosis,
+    skew_fac, kurt_fac, kurt_load, std_x
+
+DECLARE good_point
+
+	good_point = FALSE
+
+	ARRAY x_array
+	ARRAY normal_value
+	ARRAY normal_axis
+	ARRAY x_histo
+	ARRAY y_histo
+
+	points_mean = 0
+	points_sigma = 0
+	capability_index = EMPTY
+	capability_ratio = EMPTY
+
+	cpk_index = EMPTY
+
+	get_default_subgrp_bounds ( sqc_chart, PROC_CAP, first, last )
+
+	chart_type_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) :
+		     PAD ( PROC_CAP            , " ", "10" )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", chart_type_ndx )
+
+	number_of_cells = SELECT sqcwin_chart_type . number_of_cells
+		      IN OBJECT sqc_chart . sqc_chart_type . current
+
+	spec_max        = SELECT sqcwin_chart_type . upper_spec
+		      IN OBJECT sqc_chart . sqc_chart_type . current
+
+	spec_min        = SELECT sqcwin_chart_type . lower_spec
+		      IN OBJECT sqc_chart . sqc_chart_type . current
+
+	IF ( spec_max = 0 ) AND ( spec_min = 0 ) THEN
+
+	flash_message ( GET_USER_MESSAGE ( "PROCC_ERR_INVALID_SPECS", 1 ), TRUE )
+
+	ELSE
+
+		define_graph_object ()
+		CREATE OBJECT "GRAPH_OBJECT", proc_cap_obj
+
+						{ get graph_object_index }
+		exit_loop = FALSE
+		graph_obj_ndx = 1
+
+		WHILE ( NOT ( exit_loop ) ) DO
+
+			IF ( sqc_chart . graph_object_array [ graph_obj_ndx ] = EMPTY ) THEN
+
+			    exit_loop = TRUE
+
+			ELSEIF ( sqc_chart . graph_object_array [ graph_obj_ndx ] .
+					   graph_type = PROC_CAP_GR ) THEN
+
+			    exit_loop = TRUE
+
+			ELSE
+
+			    graph_obj_ndx   = graph_obj_ndx + 1
+
+			ENDIF
+
+		ENDWHILE
+
+		sqc_chart.graph_object_array[graph_obj_ndx] = proc_cap_obj
+		sqc_chart.graph_object_array[graph_obj_ndx].graph_type = PROC_CAP_GR
+
+		count          = 0
+		s1             = 0
+		s2             = 0
+		s3             = 0
+		s4             = 0
+
+		subgroup_number = first
+
+		subgrp_no_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+			    PAD ( PROC_CAP            , " ", 10 ) :
+		  JUSTIFY ( PAD ( STRIP ( subgroup_number ), " ", "4" ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_no_ndx )
+
+		first_subgroup = subgroup_number
+
+		WHILE ( subgroup_number <= last ) DO
+
+			subg_no = NUMERIC ( subg_no )
+
+			x_val   = SELECT sqcwin_SUBGROUP . x_bar
+				  IN OBJECT sqc_chart . sqc_subgroup . current
+
+			a_bad   = SELECT sqcwin_SUBGROUP . a_bad
+				  IN OBJECT sqc_chart . sqc_subgroup . current
+
+							{ initiate the max/min/initial x_value }
+
+			IF ( count = 0 ) THEN
+
+			    x_min = x_val
+			    x_max = x_val
+			    f_val = x_val                { first x_value in the distribution    }
+
+			ENDIF
+
+
+			IF NOT a_bad THEN
+
+			   good_point = TRUE
+
+			   count = count + 1
+			   x_array [ count ] = x_val
+							{ reset the max/min                    }
+			   IF x_val > x_max THEN
+			       x_max = x_val
+			   ELSEIF x_val<x_min THEN
+			       x_min=x_val
+			   ENDIF
+							{ variables for Kurtosis & Skewness    }
+
+			   dif_val = x_val - f_val
+			   s1 = s1 + dif_val
+			   s2 = s2 + ( dif_val ^ 2 )
+			   s3 = s3 + ( dif_val ^ 3 )
+			   s4 = s4 + ( dif_val ^ 4 )
+
+			ENDIF
+
+			subgroup_number = subgroup_number + 1
+
+			subgrp_no_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+				       PAD ( PROC_CAP            , " ", 10 ) :
+			     JUSTIFY ( PAD ( STRIP ( subgroup_number ), " ", "4" ), "RIGHT" )
+
+			sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_no_ndx )
+
+			IF ( sqc_chart . sqc_subgroup . current <> EMPTY ) THEN
+			  last_subgroup = subgroup_number
+			ENDIF
+
+		ENDWHILE
+
+		IF good_point THEN
+
+			{ . . . . . . . . . . . calculate statistical params . . . . . . . . . . . }
+
+			skewness = 0
+			kurtosis = 0
+
+			IF count > 0 THEN
+
+				s1 = s1 / count                  { final form of variables              }
+				s2 = s2 / count
+				s3 = s3 / count
+				s4 = s4 / count
+
+				points_mean = s1 + f_val         { mean of distribution                }
+
+				IF count > 1 THEN                { calculate statistical parameters    }
+
+				   points_sigma     = SQRT( count * ( s2 - ( s1 * s1 ) ) /
+							  ( count - 1 ) )
+
+				   std_dev = cal_std_dev ( x_array )
+				   x_mean  = mean_points ( x_array )
+
+				   skew_x = 0
+				   kurt_x = 0
+
+				   x_count = 0
+
+				   IF std_dev <> 0 THEN
+
+					   WHILE ( x_count < size_of_array ( x_array ) ) DO
+
+					       x_count = x_count + 1
+					       std_x = ( x_array [ x_count ] - x_mean ) / std_dev
+
+					       skew_x = skew_x + ( std_x ^ 3 )
+					       kurt_x = kurt_x + ( std_x ^ 4 )
+
+					   ENDWHILE
+
+				   ENDIF
+
+				   IF ( ( x_count - 2 ) > 0 ) THEN
+
+				       skew_fac  = ( x_count ) / ( ( x_count - 1 ) * ( x_count - 2 ) )
+
+				       skewness  =  skew_fac * skew_x
+
+				   ELSE
+
+				       skewness = "U"
+
+				   ENDIF
+
+				   IF ( x_count - 3 ) > 0 THEN
+
+				       kurt_fac  = ( ( x_count ) * ( x_count + 1 ) ) /
+						   ( ( x_count - 1 ) * ( x_count - 2 ) * ( x_count - 3 ) )
+
+				       kurt_load = ( 3 * ( ( count - 1 ) ^ 2 ) ) /
+						   ( ( x_count - 2 ) * ( x_count - 3 ) )
+
+				       kurtosis  = ( kurt_fac * kurt_x ) - kurt_load
+
+				   ELSE
+
+				       kurtosis = "U"
+
+				   ENDIF
+
+				   IF points_sigma <> 0 THEN
+
+					   capability_index = ( spec_max - spec_min ) / ( 6 * points_sigma )
+					   capability_ratio = 1 / capability_index
+
+
+					   IF ( spec_max + spec_min ) < ( points_mean * 2 ) THEN
+
+					       cpk_index = ( spec_max - points_mean ) / ( 3 * points_sigma )
+
+					   ELSE
+
+					       cpk_index = ( points_mean - spec_min ) / ( 3 * points_sigma )
+
+					   ENDIF
+
+				   ENDIF
+
+				ENDIF
+
+			ENDIF                               { end count > 0                        }
+
+			{ . . . . . . . . . . . get start position . . . . . . . . . . . . . . . . }
+
+			IF ( ( points_mean - 3.5 * points_sigma ) < spec_min ) THEN
+
+				start_pos = points_mean - 3.5 * points_sigma
+
+			ELSE
+
+				IF ( spec_min < x_min ) THEN
+
+					 start_pos = spec_min
+
+				ELSE
+
+					start_pos = x_min
+
+				ENDIF
+
+			ENDIF
+
+			{ . . . . . . . . . . . get end position . . . . . . . . . . . . . . . . . }
+
+			IF ( ( points_mean + 3 * points_sigma ) > spec_max ) THEN
+
+				end_pos = points_mean + 3 * points_sigma
+
+			ELSE
+
+				IF ( spec_max > x_max ) THEN
+
+				  end_pos = spec_max
+
+				ELSE
+
+				  end_pos = x_max
+
+				ENDIF
+
+			ENDIF
+
+			{ . . . . . . . . . . . get geometrical values for plot  . . . . . . . . . }
+
+			cell_width = ( x_max - x_min ) / number_of_cells
+			half_width = cell_width / 2
+
+			pos = x_min + half_width
+
+			IF cell_width <> 0.0 THEN
+
+				REPEAT
+
+				    pos = pos - cell_width
+
+				UNTIL ( pos < start_pos )
+	
+				start_pos = pos - half_width
+
+				pos = x_max - half_width
+
+				REPEAT
+
+				    pos = pos + cell_width
+
+				UNTIL ( pos > end_pos )
+
+				end_pos = pos + half_width
+
+				number_of_cells = ROUND ( ( end_pos - start_pos ) / cell_width )
+
+			ENDIF
+
+
+			{ . . . . . . . . . get values for normal distribution curve . . . . . }
+
+			pi = 3.142
+
+			num_points = 101
+			step = ( end_pos - start_pos ) / ( num_points - 1 )
+
+			x_value = start_pos
+			count = 0
+			div_fact = sqrt ( 2 * pi )
+			y_max = -1
+
+			IF points_sigma <> 0.0 THEN
+
+				REPEAT
+
+				    z = ( x_value - points_mean ) / points_sigma
+				    normal_axis [ count ] = x_value
+				    normal_value[ count ] = ( EXP ( - ( z * z ) / 2 ) ) / div_fact
+
+				    IF normal_value[ count ] > y_max THEN
+					y_max = normal_value[ count ]
+				    ENDIF
+
+				    count = count + 1
+				    x_value = x_value + step
+
+				UNTIL ( x_value > end_pos )
+
+			ENDIF
+
+			{ . . . . . . . . . . . get x values for histogram . . . . . . . . . . . . }
+
+			x_pos = start_pos + ( cell_width / 2 )
+			count = 0
+
+			REPEAT
+
+				count = count + 1
+
+				y_histo[count] = 0
+				x_histo[count] = x_pos
+
+				x_pos = x_pos + cell_width
+
+			UNTIL ( count = number_of_cells )
+
+			max_y_histo = - 9
+			count       = 0
+
+			REPEAT
+
+				count = count + 1
+
+				IF cell_width <> 0.0 THEN
+
+				    y_pos = ( x_array[count] - start_pos ) / cell_width
+
+				ELSE
+
+				    y_pos = 0.0
+
+				ENDIF
+
+				IF ( x_array[count] <= x_min ) THEN
+
+				   y_pos = y_pos + 1.5
+
+				ELSEIF ( x_array[count] < x_max ) THEN
+
+				   y_pos = y_pos + 1
+
+				ENDIF
+
+				y_pos = TRUNC( y_pos )
+				y_histo[y_pos] = y_histo[y_pos] + 1
+
+				IF ( y_histo[y_pos] > max_y_histo ) THEN
+
+				   max_y_histo = y_histo[y_pos]
+
+				ENDIF
+
+			UNTIL ( count >= size_of_array ( x_array ) )
+
+			height_factor = (( y_max ) / ( max_y_histo ))
+
+			count = 0
+
+			REPEAT
+
+				count=count+1
+				y_histo[count] = y_histo[count] * height_factor
+
+			UNTIL count = number_of_cells
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . first_subgroup =
+									      first_subgroup
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . last_subgroup =
+									      last_subgroup
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . skewness = skewness
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . kurtosis = kurtosis
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . cap_ratio =
+									  capability_ratio
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . cap_index =
+									  capability_index
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . cpk_index = cpk_index
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . sigma =
+									  points_sigma
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . mean = points_mean
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . spec_min = spec_min
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . spec_max = spec_max
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . x_points  = normal_axis
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . y_points  = normal_value
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . x_trend   = x_histo
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . y_trend   = y_histo
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . start_pos = start_pos
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . end_pos   = end_pos
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . max_y = y_max
+
+			sqc_chart . graph_object_array [ graph_obj_ndx ] . y_legend =
+			GET_USER_MESSAGE ( "SQCWIN_GRAPH_PROC_CAP_GR", 1 )
+
+		ENDIF
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_last_point ( sqc_chart )
+
+{ 
+* Gets the last point and returns the point number.
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : counter
+*
+*******************************************************************************}
+
+DECLARE subptr_ndx, counter, exit_loop, chart_id
+
+    subptr_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) : "     1"
+
+    sqc_chart . sqc_point . set_by_index ( "KEY0", subptr_ndx )
+
+    counter = 0
+    exit_loop = FALSE
+
+    WHILE ( NOT ( exit_loop ) ) DO
+
+        chart_id = SELECT sqcwin_point . chart_id IN OBJECT
+                       sqc_chart . sqc_point . current
+
+        IF ( chart_id <> sqc_chart . chart_id ) THEN
+
+            exit_loop = TRUE
+
+        ELSE
+
+            counter = counter + 1
+            sqc_chart . sqc_point . set_next ()
+
+            IF ( sqc_chart . sqc_point . current = EMPTY ) THEN
+
+                exit_loop = TRUE
+
+            ENDIF
+
+        ENDIF
+
+    ENDWHILE
+
+    RETURN ( counter )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_default_subgrp_bounds (       sqc_chart     ,
+                                    VALUE chart_type_id,
+                                          first        ,
+                                          last         )
+
+
+{ 
+* Gets the first and last subgroup number and the chart type. 
+* Bound should stop if a deleted subgroup is found.
+* 
+*
+* Parameters   : sqc_chart, chart_type_id, first, last
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE sqc_subgrp_ndx, point_counter, exit_loop, gr_lims_array,
+        chart_id, sqc_chart_type_ndx, test_len
+
+	ARRAY gr_lims_array
+
+	first = 1
+	point_counter = first
+	exit_loop = FALSE
+
+	sqc_subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+		     PAD ( chart_type_id          , " ", 10 ) :
+	   JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+	WHILE NOT ( exit_loop )
+
+		chart_id = SELECT sqcwin_subgroup . chart_id IN OBJECT
+			       sqc_chart . sqc_subgroup . current
+
+		point_counter = point_counter + 1
+
+		sqc_subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+				 PAD ( chart_type_id          , " ", 10 ) :
+		       JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  4 ), "RIGHT")
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", sqc_subgrp_ndx )
+
+		IF ( ( chart_id <> sqc_chart . chart_id )           OR
+		     ( sqc_chart . sqc_subgroup . current = EMPTY ) OR
+		     ( sqc_chart . sqc_subgroup . current . deleted ) ) THEN
+
+		    exit_loop = TRUE
+		    last      = point_counter - 1
+
+		ENDIF
+
+	ENDWHILE
+
+	sqc_chart_type_ndx = PAD ( sqc_chart . chart_id   , " ", 20 ) :
+			 PAD ( chart_type_id          , " ", 10 )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "key0", sqc_chart_type_ndx )
+
+	test_len = SELECT sqcwin_chart_type . test_length IN OBJECT
+		   sqc_chart . sqc_chart_type . current
+
+	IF ( test_len = 0 ) THEN
+
+		first = 1
+
+	ELSE
+		first = last - test_len + 1
+
+		IF first < 1 THEN
+
+		    first = 1
+
+		ENDIF
+
+	ENDIF
+
+	IF test_len > last THEN
+
+		ASSIGN sqcwin_chart_type . test_length
+		    IN OBJECT sqc_chart . sqc_chart_type . current = last
+
+	ELSE
+
+		ASSIGN sqcwin_chart_type . test_length
+		    IN OBJECT sqc_chart . sqc_chart_type . current = test_len
+
+	ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE write_to_window_obj ( sqc_chart ,
+                              gr_obj_ndx,
+                              first     ,
+                              last      ,
+                              is_A_set  ,
+                              display_seg)
+
+{ 
+* Write to window object.
+* 
+* 
+*
+* Parameters   : 
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE win_count, first_window, second_window, win_objs, last_pt_fw,
+        count, total, tmp_win, load, graph_obj
+
+	first_window  = 0
+	second_window = 0
+
+	total = 0
+
+	win_objs  = sqc_chart . graph_object_array [ gr_obj_ndx ] . win_obj_array
+	graph_obj = sqc_chart . graph_object_array [ gr_obj_ndx ]
+
+	count = 1
+
+	WHILE ( count <= size_of_array ( win_objs ) ) DO
+
+		IF ( ( first >= win_objs [ count ] . first_point ) AND
+		     ( first <= win_objs [ count ] . last_point  ) ) THEN
+
+		    first_window = count
+
+		ENDIF
+
+		IF ( ( last >= win_objs [ count ] . first_point ) AND
+		     ( last <= win_objs [ count ] . last_point  ) ) THEN
+
+		    second_window = count
+
+		ENDIF
+
+		count = count + 1
+
+	ENDWHILE
+
+	IF ( ( count = 1 ) OR ( first_window + second_window = 0 ) ) THEN
+
+		get_points ( sqc_chart, win_objs [ count ],
+			     gr_obj_ndx, first, last, is_A_set, TRUE )
+
+		sqc_chart . graph_object_array [ gr_obj_ndx ] . start_col = first
+
+	ELSEIF ( ( count > 1 ) AND ( first_window <> 0 ) ) THEN
+
+		last_pt_fw = win_objs [ first_window ] . last_point
+
+		IF ( first > win_objs [ first_window ] . first_point ) THEN
+
+		    win_objs [ first_window ] . last_point = first - 1
+
+		    get_points ( sqc_chart, win_objs [ first_window ],
+				 gr_obj_ndx,
+				 win_objs [ first_window ] . first_point,
+				 first - 1,
+				 is_A_set, FALSE )
+
+		    array_insert_slice ( win_objs, 1, first_window + 1 )
+
+		    IF ( first_window <> second_window ) THEN
+
+			second_window = second_window + 1
+
+		    ENDIF
+
+		    get_points ( sqc_chart, win_objs [ first_window + 1 ],
+				 gr_obj_ndx, first, last, is_A_set, TRUE )
+
+		    tmp_win = copy_win_obj ( win_objs [ first_window ] )
+
+		    load = 2
+
+		ELSE
+
+		    tmp_win = copy_win_obj ( win_objs [ first_window ] )
+
+		    get_points ( sqc_chart, win_objs [ first_window ],
+				 gr_obj_ndx, first, last, is_A_set, TRUE )
+
+		    load = 1
+
+		ENDIF
+
+		IF ( first_window = second_window ) THEN
+
+		    IF ( last < last_pt_fw ) THEN
+
+			array_insert_slice ( win_objs, 1, first_window + load )
+
+			win_objs [ first_window + load ] = copy_win_obj ( tmp_win )
+
+			get_points ( sqc_chart, win_objs [ first_window + load ],
+				     gr_obj_ndx, last + 1, last_pt_fw, is_A_set, FALSE )
+
+		    ELSEIF ( last = last_pt_fw ) THEN
+
+		    ENDIF
+
+		ELSE
+
+		    IF ( last < win_objs [ second_window ] . last_point ) THEN
+
+			get_points ( sqc_chart, win_objs [ second_window ],
+				     gr_obj_ndx, last + 1,
+				     win_objs [ second_window ] . last_point ,
+				     is_A_set, FALSE )
+
+		    ELSEIF ( last = win_objs [ second_window ] . last_point ) THEN
+
+			array_remove_slice ( win_objs, 1, second_window )
+
+		    ENDIF
+
+		ENDIF
+
+		count = first_window + load
+
+		WHILE ( count < second_window ) DO
+
+		    array_remove_slice ( win_objs, 1, count )
+		    count = count + 1
+
+		ENDWHILE
+
+	ENDIF
+
+	win_count = 1
+
+	graph_obj . no_x = 0
+
+	WHILE ( win_count <= size_of_array ( win_objs ) ) DO
+
+		 total = total                                +
+			 win_objs [ win_count ] . last_point  -
+			 win_objs [ win_count ] . first_point
+
+		 win_objs [ win_count ] . window_number = win_count
+
+		 IF ( graph_obj . y_max < win_objs [ win_count ] . y_max ) THEN
+
+		     graph_obj . y_max = win_objs [ win_count ] . y_max
+
+		 ENDIF
+
+		 IF ( graph_obj . y_min > win_objs [ win_count ] . y_min ) THEN
+
+		     graph_obj . y_min = win_objs [ win_count ] . y_min
+
+		 ENDIF
+
+		 win_count = win_count + 1
+
+	ENDWHILE
+
+	win_count = win_count - 1
+
+	graph_obj . no_x = total + win_count
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_points (       sqc_chart     ,
+                           win_objs      ,
+                           gr_obj_ndx    ,
+                     VALUE first         ,
+                     VALUE last          ,
+                     VALUE is_A_set      ,
+                     VALUE update_limits )
+
+{ 
+* Get points.
+* 
+* 
+*
+* Parameters   : 
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE point_counter, bad_point_field, trend_field, plot_field,
+        bad_pt, plot_value, trend, win_obj,
+        y_value, y_value_field, subgrp_ndx, trend_pt,
+        bad_pt_count, good_pt, graph_obj,
+        x_points, y_points, x_bad, y_bad, x_trend, y_trend,
+        y_max, y_min
+
+	ARRAY x_points ARRAYSIZE ( 0 ) = EMPTY
+	ARRAY y_points ARRAYSIZE ( 0 ) = EMPTY
+	ARRAY x_bad    ARRAYSIZE ( 0 ) = EMPTY
+	ARRAY y_bad    ARRAYSIZE ( 0 ) = EMPTY
+	ARRAY x_trend  ARRAYSIZE ( 0 ) = EMPTY
+	ARRAY y_trend  ARRAYSIZE ( 0 ) = EMPTY
+
+	IF ( win_objs = EMPTY ) THEN
+	
+		define_window_object ()
+		CREATE OBJECT "WINDOW_OBJECT", win_obj
+
+	ELSE
+
+		win_obj = copy_win_obj ( win_objs )
+
+	ENDIF
+
+	win_obj . first_point = first
+	win_obj . last_point = last
+
+	point_counter = first
+
+	graph_obj = sqc_chart . graph_object_array [ gr_obj_ndx ]
+
+	IF ( is_A_set ) THEN
+
+		bad_point_field = "a_bad"
+		trend_field     = "trend_a"
+		plot_field      = "a_plot"
+
+	ELSE
+
+		bad_point_field = "b_bad"
+		trend_field     = "trend_b"
+		plot_field      = "b_plot"
+
+	ENDIF
+
+	IF ( graph_obj . chart_type = MEAN_RANGE ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field = "x_bar"
+
+		ELSE
+
+		    y_value_field = "range"
+
+		ENDIF
+
+	ELSEIF ( graph_obj . chart_type = MEAN_STD ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field   = "x_bar"
+
+		ELSE
+
+		    y_value_field = "sigma"
+
+		ENDIF
+
+	ELSEIF ( graph_obj . chart_type = IND_MR ) THEN
+
+		IF ( is_A_set ) THEN
+
+		    y_value_field   = "x_bar"
+
+		ELSE
+
+		    y_value_field = "range"
+
+		ENDIF
+
+	ENDIF
+
+	subgrp_ndx = PAD ( sqc_chart . chart_id  , " ", "20" ) :
+		 PAD ( graph_obj . chart_type, " ", "10" ) :
+	JUSTIFY ( PAD ( STRIP ( first )       , " ",  "4" ), "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+	y_min = SELECT sqcwin_subgroup . 'y_value_field'
+		IN OBJECT sqc_chart . sqc_subgroup . current
+
+	y_max = SELECT sqcwin_subgroup . 'y_value_field'
+		IN OBJECT sqc_chart . sqc_subgroup . current
+
+	good_pt = 0
+	trend_pt = 0
+	bad_pt_count = 0
+
+	WHILE ( point_counter <= last ) DO
+
+		bad_pt  = SELECT sqcwin_subgroup . 'bad_point_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		y_value = SELECT sqcwin_subgroup . 'y_value_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		trend   = SELECT sqcwin_subgroup . 'trend_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		plot_value =  SELECT sqcwin_subgroup . 'plot_field'
+			      IN OBJECT sqc_chart . sqc_subgroup . current
+
+		IF ( plot_value ) THEN
+
+		    IF NOT ( bad_pt ) THEN
+
+			good_pt = good_pt + 1
+			x_points [ good_pt ] = point_counter
+			y_points [ good_pt ] = y_value
+
+		    ELSE
+
+			bad_pt_count = bad_pt_count + 1
+			x_bad [ bad_pt_count ] = point_counter
+			y_bad [ bad_pt_count ] = y_value
+
+		    ENDIF
+
+		    IF ( trend <> 0 ) THEN
+
+			trend_pt = trend_pt + 1
+			x_trend [ trend_pt ] = point_counter
+			y_trend [ trend_pt ] = y_value
+
+		    ENDIF
+
+		    IF ( y_value > y_max ) THEN
+
+			y_max = y_value
+
+		    ENDIF
+
+		    IF ( y_value < y_min ) THEN
+
+			y_min = y_value
+
+		    ENDIF
+
+		ENDIF
+
+		point_counter = point_counter + 1
+
+		subgrp_ndx = PAD ( sqc_chart . chart_id   , " ", "20" ) :
+			     PAD ( graph_obj . chart_type , " ", "10" ) :
+		   JUSTIFY ( PAD ( STRIP ( point_counter ), " ",  "4" ), "RIGHT" )
+
+		sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+	ENDWHILE
+
+	win_obj . x_points = x_points
+	win_obj . y_points = y_points
+	win_obj . x_bad    = x_bad
+	win_obj . y_bad    = y_bad
+	win_obj . x_trend  = x_trend
+	win_obj . y_trend  = y_trend
+	win_obj . y_max    = y_max
+	win_obj . y_min    = y_min
+
+	IF ( update_limits ) THEN
+
+		win_obj . us   = graph_obj . us
+		win_obj . ucl  = graph_obj . ucl
+		win_obj . uwl  = graph_obj . uwl
+		win_obj . usd  = graph_obj . usd
+		win_obj . mean = graph_obj . mean
+		win_obj . lsd  = graph_obj . lsd
+		win_obj . lwl  = graph_obj . lwl
+		win_obj . lcl  = graph_obj . lcl
+		win_obj . ls   = graph_obj . ls
+
+	ENDIF
+
+	win_objs = copy_win_obj ( win_obj )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE erase_window_objects ( sqc_chart, chart_type )
+
+{ 
+* Erase window objects.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE count, graph_obj_size
+
+    count = 1
+
+    graph_obj_size = size_of_array( sqc_chart . graph_object_array )
+
+    WHILE ( count <= graph_obj_size ) DO
+
+        IF ( sqc_chart.graph_object_array[count].chart_type = chart_type ) THEN
+
+            sqc_chart.graph_object_array[count].win_obj_array = EMPTY
+            ARRAY sqc_chart.graph_object_array[count].win_obj_array
+                ARRAYSIZE (0)
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE erase_previous_trends ( sqc_chart, chart_type )
+
+{ 
+* Erase previous trends
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE subgrp_ndx, trend_fields, ic, counter
+
+    ARRAY trend_fields
+
+    trend_fields [ 1 ] = "trend_a"
+    trend_fields [ 2 ] = "trend_a_p"
+    trend_fields [ 3 ] = "trend_a_1"
+    trend_fields [ 4 ] = "trend_a_2"
+    trend_fields [ 5 ] = "trend_b"
+    trend_fields [ 6 ] = "trend_b_p"
+    trend_fields [ 7 ] = "trend_b_1"
+    trend_fields [ 8 ] = "trend_b_2"
+
+    counter = 1
+
+    subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+                 PAD ( chart_type          , " ", 10 ) :
+             JUSTIFY ( PAD ( STRIP ( counter ), " ",  4 ), "RIGHT" )
+
+    sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+    WHILE ( sqc_chart . sqc_subgroup . current <> EMPTY ) DO
+
+        ic = 0
+
+        WHILE ( ic <= size_of_array ( trend_fields ) ) DO
+
+            object_assign_field ( sqc_chart . sqc_subgroup . current,
+                                  "sqcwin_subgroup"                 ,
+                                  trend_fields [ ic ]               ,
+                                  0                                 )
+            ic = ic + 1
+
+        ENDWHILE
+
+        counter = counter + 1
+
+        subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+                     PAD ( chart_type          , " ", 10 ) :
+           JUSTIFY ( PAD ( STRIP ( counter ), " ",  4 ), "RIGHT" )
+
+        sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+    ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE do_cusum_calculations ( sqc_chart )
+
+{ 
+* Do calculations for CUSUM graph.
+* 
+* 
+*
+* Parameters   : 
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE sqc_chart_type_ndx, cusum_graph_obj
+
+DECLARE counter,point_value,point
+DECLARE target, not_deleted_counter, cusum_value
+DECLARE decision_point, decision_interval, decision_slope, display_dep_lines
+DECLARE departure_slope, number_of_points, value_at_dec_point
+DECLARE dep_end_y_plus, dep_end_y_minus, x_dep_plus, x_dep_minus, point_bad
+
+DECLARE dec_end_point_y_plus, dec_end_point_y_minus
+DECLARE dec_start_point_y_plus,dec_start_point_y_minus
+DECLARE cusum_min,cusum_max
+DECLARE dec_start_point_x_plus, dec_start_point_x_minus
+DECLARE dec_end_point_x_plus,dec_end_point_x_minus
+DECLARE graph_obj_ndx, exit_loop, test_length
+DECLARE subgroup_ndx, new_record, point_date, user_y_axis
+
+	define_graph_object ()
+	CREATE OBJECT "graph_object", cusum_graph_obj
+
+	sqc_chart_type_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) :
+			 PAD ( CUSUM               , " ", "10" )
+
+	sqc_chart . sqc_chart_type . set_by_index ( "KEY0", sqc_chart_type_ndx )
+
+	target            = SELECT sqcwin_chart_type . target_cusum IN OBJECT
+		 sqc_chart . sqc_chart_type . current
+	decision_point    = SELECT sqcwin_chart_type . subgroup_size_wanted IN OBJECT
+		 sqc_chart . sqc_chart_type . current
+	decision_interval = SELECT sqcwin_chart_type . y_min_chart_a IN OBJECT
+		sqc_chart . sqc_chart_type . current
+	decision_slope    = SELECT sqcwin_chart_type . y_min_chart_b IN OBJECT
+		sqc_chart . sqc_chart_type . current
+	display_dep_lines = SELECT sqcwin_chart_type . display_spec IN OBJECT
+		sqc_chart . sqc_chart_type . current
+	departure_slope   = SELECT sqcwin_chart_type . upper_spec IN OBJECT
+		sqc_chart . sqc_chart_type . current
+	test_length       = SELECT sqcwin_chart_type . test_length IN OBJECT
+		sqc_chart . sqc_chart_type . current
+
+	IF ( target = "M" ) OR ( target = "m" ) THEN
+
+		target = get_mean_sqc_point ( sqc_chart )
+
+	ENDIF
+
+	IF ( test_length = 0 ) THEN
+
+		counter = 1
+
+	ELSE
+
+		counter = sqc_chart . sqc_point . size () - test_length + 1
+
+		IF counter < 1 THEN
+
+		    counter = 1
+
+		ENDIF
+
+	ENDIF
+
+	cusum_value         = 0
+	not_deleted_counter = 1
+
+	cusum_min=0
+	cusum_max=0
+
+	WHILE ( counter <= sqc_chart . sqc_point . size () ) DO
+
+		sqc_chart . sqc_point . set_by_index_number("KEY0",counter)
+
+		IF NOT ( sqc_chart . sqc_point . current . deleted ) THEN
+
+		    point = NUMERIC ( SELECT sqcwin_point . point_number IN OBJECT
+					 sqc_chart . sqc_point . current )
+
+		    point_date  = SELECT sqcwin_point . point_date IN OBJECT
+				      sqc_chart . sqc_point . current
+
+		    point_value = NUMERIC ( SELECT sqcwin_point.point_value IN OBJECT
+						sqc_chart . sqc_point . current )
+
+		    point_bad   = SELECT sqcwin_point . bad IN OBJECT
+				      sqc_chart . sqc_point . current
+
+		    IF NOT ( point_bad ) THEN
+
+			cusum_value = cusum_value + ( point_value - target )
+			cusum_graph_obj . x_points [ not_deleted_counter ] = point
+			cusum_graph_obj . y_points [ not_deleted_counter ] = cusum_value
+			not_deleted_counter = not_deleted_counter + 1
+
+		    ENDIF
+
+		    IF ( cusum_value < cusum_min ) THEN
+
+			cusum_min = cusum_value
+
+		    ENDIF
+
+		    IF ( cusum_value > cusum_max ) THEN
+
+			cusum_max = cusum_value
+
+		    ENDIF
+
+		    subgroup_ndx = PAD ( sqc_chart . chart_id, " ", "20" ) :
+				   PAD ( CUSUM               , " ", "10" ) :
+			 JUSTIFY ( PAD ( STRIP ( counter )   , " ",  "4" ), "RIGHT" )
+
+		    sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgroup_ndx )
+
+		    IF ( sqc_chart . sqc_subgroup . current = EMPTY ) THEN
+
+			new_record = empty
+
+			CREATE OBJECT "STD_OBJECT_RECORD", new_record
+
+			new_record . new   = TRUE
+			new_record . table = "SQCWIN_SUBGROUP"
+
+			object_add_table ( new_record, "SQCWIN_SUBGROUP" )
+
+			RESERVE ENTRY sqcwin_subgroup IN OBJECT new_record, subgroup_ndx
+
+			sqc_chart . sqc_subgroup . add ( new_record )
+			sqc_chart . sqc_subgroup . re_index ( "KEY0" )
+
+			sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgroup_ndx )
+
+		    ENDIF
+
+		    ASSIGN sqcwin_subgroup . x_bar IN OBJECT
+			sqc_chart . sqc_subgroup . current = point_value
+
+		    ASSIGN sqcwin_subgroup . subgroup_date IN OBJECT
+			sqc_chart . sqc_subgroup . current = point_date
+
+		    ASSIGN sqcwin_subgroup . cusum IN OBJECT
+			sqc_chart . sqc_subgroup . current = cusum_value
+
+		    ASSIGN sqcwin_subgroup . c_bad IN OBJECT
+			sqc_chart . sqc_subgroup . current = point_bad
+
+		    IF ( counter = decision_point ) THEN
+			value_at_dec_point = cusum_value
+		    ENDIF
+
+		ENDIF
+
+		counter=counter+1
+
+	ENDWHILE
+
+	number_of_points = not_deleted_counter - 2
+
+	IF NOT ( variable_is_assigned ( value_at_dec_point ) ) THEN
+
+		value_at_dec_point = cusum_value
+		decision_point     = point { number_of_points + 1 }
+
+	ENDIF
+
+	dep_end_y_plus=(number_of_points * departure_slope)
+	dep_end_y_minus=(number_of_points * departure_slope)
+	x_dep_plus = number_of_points
+	x_dep_minus = number_of_points
+
+	IF ( dep_end_y_plus > cusum_max) THEN
+
+		dep_end_y_plus = cusum_max
+		x_dep_plus = ABS(cusum_max DIV departure_slope)
+
+	ENDIF
+
+	IF ( dep_end_y_minus > ABS(cusum_min)) THEN
+
+		dep_end_y_minus=cusum_min
+		x_dep_minus = ABS ( cusum_min DIV departure_slope )
+
+	ENDIF
+
+	dec_start_point_x_plus=0
+	dec_start_point_x_minus=0
+	dec_end_point_x_plus=decision_point
+	dec_end_point_x_minus=decision_point
+
+	dec_end_point_y_plus   = value_at_dec_point + decision_interval
+	dec_end_point_y_minus  = value_at_dec_point - decision_interval
+	dec_start_point_y_plus = ( (decision_slope * decision_point) +
+				    dec_end_point_y_plus )
+	dec_start_point_y_minus = (dec_end_point_y_minus -
+				    (decision_slope * decision_point))
+
+	IF (dec_start_point_y_plus > cusum_max) THEN
+
+		cusum_max = dec_start_point_y_plus
+
+	ENDIF
+
+	IF (dec_start_point_y_minus < cusum_min) THEN
+
+		cusum_min = dec_start_point_y_minus
+
+	ENDIF
+
+	cusum_graph_obj . chart_type              = CUSUM
+	cusum_graph_obj . graph_type              = CUSUM_GR
+	cusum_graph_obj . no_x                    = number_of_points + 1
+	cusum_graph_obj . cusum_max               = cusum_max
+	cusum_graph_obj . cusum_min               = cusum_min
+	cusum_graph_obj . cusum_target            = target
+	cusum_graph_obj . x_dep_minus             = x_dep_minus
+	cusum_graph_obj . x_dep_plus              = x_dep_plus
+	cusum_graph_obj . dep_end_y_plus          = dep_end_y_plus
+	cusum_graph_obj . dep_end_y_minus         = dep_end_y_minus
+	cusum_graph_obj . dep_slope               = departure_slope
+	cusum_graph_obj . dec_end_point_x_plus    = dec_end_point_x_plus
+	cusum_graph_obj . dec_end_point_y_plus    = dec_end_point_y_plus
+	cusum_graph_obj . dec_start_point_x_plus  = dec_start_point_x_plus
+	cusum_graph_obj . dec_start_point_y_plus  = dec_start_point_y_plus
+	cusum_graph_obj . dec_end_point_x_minus   = dec_end_point_x_minus
+	cusum_graph_obj . dec_end_point_y_minus   = dec_end_point_y_minus
+	cusum_graph_obj . dec_start_point_x_minus = dec_start_point_x_minus
+	cusum_graph_obj . dec_start_point_y_minus = dec_start_point_y_minus
+	cusum_graph_obj . dec_point               = decision_point
+	cusum_graph_obj . dec_interval            = decision_interval
+	cusum_graph_obj . dec_slope               = decision_slope
+	cusum_graph_obj . disp_dec                = display_dep_lines
+
+	user_y_axis = SELECT sqcwin_chart_type . user_defined_y_axis
+	              IN OBJECT sqc_chart . sqc_chart_type . current
+
+
+	IF user_y_axis THEN
+
+	     cusum_graph_obj . cusum_max =
+	     SELECT sqcwin_chart_type . cusum_y_max
+	     IN OBJECT sqc_chart . sqc_chart_type . current
+	     
+	     cusum_graph_obj . cusum_min =
+	     SELECT sqcwin_chart_type . cusum_y_min
+	     IN OBJECT sqc_chart . sqc_chart_type . current
+	     
+	ENDIF
+	cusum_graph_obj . x_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_X_POINT" , 1 )
+	cusum_graph_obj . y_legend = GET_USER_MESSAGE ( "SQCWIN_GRAPH_CUSUM_GR", 1 )
+
+	graph_obj_ndx = 1
+
+	exit_loop = FALSE
+
+	WHILE ( NOT ( exit_loop ) )
+
+		IF ( sqc_chart . graph_object_array [ graph_obj_ndx ] = EMPTY ) THEN
+
+		    exit_loop = TRUE
+
+		ELSEIF ( sqc_chart . graph_object_array [ graph_obj_ndx ] .
+				   graph_type = CUSUM_GR ) THEN
+
+		    exit_loop = TRUE
+
+		ELSE
+
+		    graph_obj_ndx   = graph_obj_ndx + 1
+
+		ENDIF
+
+	ENDWHILE
+
+	sqc_chart . graph_object_array [ graph_obj_ndx ] = cusum_graph_obj
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE get_trend_table ( sqc_chart,
+                          trend_id_a,
+                          trend_id_b )
+
+{ 
+* Gets the trend point table entries given the trend_ids
+* 
+* 
+*
+* Parameters   : sqc_chart, trend_id_a, trend_id_b
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE select_crit
+
+    ARRAY select_crit
+
+    sqc_chart . sqc_trend_a       = EMPTY
+    sqc_chart . sqc_trend_point_a = EMPTY
+    sqc_chart . sqc_trend_b       = EMPTY
+    sqc_chart . sqc_trend_point_b = EMPTY
+
+    CREATE OBJECT "STD_OBJECT_DATABASE", sqc_chart . sqc_trend_a
+    CREATE OBJECT "STD_OBJECT_DATABASE", sqc_chart . sqc_trend_point_a
+    CREATE OBJECT "STD_OBJECT_DATABASE", sqc_chart . sqc_trend_b
+    CREATE OBJECT "STD_OBJECT_DATABASE", sqc_chart . sqc_trend_point_b
+
+    sqc_chart . sqc_trend_a       . initialise ( "SQCWIN_TREND"       )
+    sqc_chart . sqc_trend_point_a . initialise ( "SQCWIN_TREND_POINT" )
+    sqc_chart . sqc_trend_b       . initialise ( "SQCWIN_TREND"       )
+    sqc_chart . sqc_trend_point_b . initialise ( "SQCWIN_TREND_POINT" )
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        trend_id_a )
+
+    sqc_chart . sqc_trend_a  . select ( select_crit )
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "TREND_ID"      ,
+                        trend_id_a )
+
+    sqc_chart . sqc_trend_point_a . select ( select_crit )
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "IDENTIFIER"    ,
+                        trend_id_b )
+
+    sqc_chart . sqc_trend_b  . select ( select_crit )
+
+    ARRAY select_crit
+
+    array_select_add (  select_crit     ,
+                        ARRAY_SELECT_EQ ,
+                        "TREND_ID"      ,
+                        trend_id_b )
+
+    sqc_chart . sqc_trend_point_b . select ( select_crit )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE initialise_trends (       sqc_chart  ,
+                                  chart_type ,
+                            VALUE first      ,
+                            VALUE last       )
+
+{ 
+* Initialises all subgroups for a chart_type as not satisfying a trend.
+* 
+* 
+*
+* Parameters   : sqc_chart, chart_type, first, last
+* Return Value : n/a
+*
+*******************************************************************************}
+
+DECLARE subgrp_ndx, previous_chart_type, next_chart_type, exit_loop,
+        count
+
+	exit_loop = FALSE
+
+	subgrp_ndx = PAD ( sqc_chart . chart_id, " ", 20 ) :
+	     PAD ( chart_type          , " ", 10 ) :
+	     JUSTIFY ( PAD ( STRIP ( first )     , " ",  4 ), "RIGHT" )
+
+	sqc_chart . sqc_subgroup . set_by_index ( "KEY0", subgrp_ndx )
+
+	previous_chart_type = chart_type
+	next_chart_type     = chart_type
+
+	exit_loop = FALSE
+	count = first
+
+	WHILE NOT ( exit_loop ) DO
+
+		ASSIGN sqcwin_subgroup . trend_a IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_a_p IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_a_1 IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_a_2 IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_b IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_b_p IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_b_1 IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		ASSIGN sqcwin_subgroup . trend_b_2 IN OBJECT
+		sqc_chart . sqc_subgroup . current = 0
+
+		sqc_chart . sqc_subgroup . set_next ()
+
+		count = count + 1
+
+		IF count = last + 1 THEN
+
+			exit_loop = TRUE
+
+		ELSEIF ( sqc_chart . sqc_subgroup . current = EMPTY ) THEN
+
+			exit_loop = TRUE
+
+		ELSE
+
+			previous_chart_type = next_chart_type
+			next_chart_type = SELECT sqcwin_subgroup . chart_type_id
+						  IN OBJECT sqc_chart . sqc_subgroup . current
+
+			IF ( next_chart_type <> previous_chart_type ) THEN
+
+			    exit_loop = TRUE
+
+			ENDIF
+
+		ENDIF
+
+	ENDWHILE
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE maximum_bound_in_win_obj (       graph_obj,
+                                   VALUE limit_type,
+                                   VALUE prop )
+
+{ 
+* Gets the maximum bound in a win object.
+* 
+* 
+*
+* Parameters   : graph_obj, limit_type, prop
+* Return Value : return_value
+*
+*******************************************************************************}
+
+DECLARE count, return_value
+
+    count = 1
+
+    return_value = graph_obj . win_obj_array [ count ] . ?prop?
+
+    WHILE ( count <= size_of_array ( graph_obj . win_obj_array ) ) DO
+
+        IF ( limit_type = "HIGH" ) THEN
+
+            IF ( graph_obj . win_obj_array [ count ] . ?prop? > return_value ) THEN
+
+                return_value = graph_obj . win_obj_array [ count ] . ?prop?
+
+            ENDIF
+
+        ELSEIF ( limit_type = "LOW" ) THEN
+
+            IF ( graph_obj . win_obj_array [ count ] . ?prop? < return_value ) THEN
+
+                return_value = graph_obj . win_obj_array [ count ] . ?prop?
+
+            ENDIF
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE get_mean_sqc_point (sqc_chart)
+
+{ 
+* Gets the mean of all the sqc_points
+* 
+* 
+*
+* Parameters   : sqc_chart
+* Return Value : mean
+*
+*******************************************************************************}
+
+DECLARE counter, point_counter, mean, sum
+
+	counter = 1
+	point_counter = 0
+	sum = 0
+
+	sqc_chart . sqc_point . set_first ()
+
+	WHILE (counter <= sqc_chart . sqc_point . size() ) DO
+
+	    IF (sqc_chart . sqc_point . current . deleted <> TRUE) THEN
+
+		IF ( NOT SELECT sqcwin_point . bad
+			   IN OBJECT sqc_chart . sqc_point . current ) THEN
+
+			sum = sum + ( SELECT sqcwin_point . point_value
+					IN OBJECT sqc_chart . sqc_point . current )
+			point_counter = point_counter + 1
+
+		ENDIF
+
+	    ENDIF
+
+	    counter = counter + 1
+	    sqc_chart . sqc_point . set_next ()
+
+	ENDWHILE
+
+	IF point_counter = 0 THEN
+
+		mean = 0.0
+
+	ELSE
+
+		mean = sum / point_counter
+
+	ENDIF
+
+	RETURN (mean)
+
+ENDROUTINE

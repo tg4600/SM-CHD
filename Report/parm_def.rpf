@@ -1,0 +1,642 @@
+SET NOTPROTECTED
+SET NAME "DEFER/"
+SET COMPILE_OPTION DECLARE
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_UTILS
+JOIN STANDARD_LIBRARY STD_BLOCK
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIST_GRID
+JOIN LIBRARY $LINE_EDITOR
+JOIN LIBRARY $INSTALL_WINDOW
+JOIN LIBRARY TOOLBOX
+
+DECLARE gui, empty_arr, field_types, acc_lev_arr, acc_levels, table_names, tabs, t, field_names, 
+        ins_mode, mod_mode, mode, parm_type, the_last_key
+
+    ARRAY empty_arr
+    ARRAY field_types
+    ARRAY table_names
+    ARRAY field_names
+    ARRAY acc_lev_arr
+
+    CONSTANT options = 6
+
+    IF GLOBAL("TERMTYPE") = "GUI" THEN 
+        gui = TRUE
+    ELSE 
+        gui = FALSE
+    ENDIF
+
+    field_types[1, 1] = "B"
+    field_types[1, 2] = "Browse"
+    field_types[2, 1] = "O"
+    field_types[2, 2] = "Options"
+    field_types[3, 1] = "N"
+    field_types[3, 2] = "Number"
+    field_types[4, 1] = "T"
+    field_types[4, 2] = "Text"
+    field_types[5, 1] = "L"
+    field_types[5, 2] = "booLean"
+    field_types[6, 1] = "D"
+    field_types[6, 2] = "Date"
+
+    IF NOT load_phrase("AUTHLEVEL", acc_lev_arr){, acc_levels)} THEN 
+        RETURN
+    ENDIF
+    acc_levels = size_of_array(acc_lev_arr)
+
+    get_table_names(table_names)
+    tabs = size_of_array(table_names)
+    t = 0
+    WHILE t < tabs DO
+        t = t + 1
+        table_names[t, 2] = table_names[t, 1]
+    ENDWHILE
+
+    ins_mode = "Insert"
+    mod_mode = "Modify"
+    mode = mod_mode
+    parm_type = EMPTY
+
+    WHILE prompt_user("parm_types", 
+                      "Mode = ":mode:". Press INSERT(F5)AND ENTER to change mode", EMPTY, 
+                      TRUE, "Enter Parameter Type:", empty_arr, 
+                      parm_type, the_last_key) DO
+        IF the_last_key = "INSERT" THEN
+            IF mode = mod_mode THEN 
+                mode = ins_mode
+            ELSE 
+                mode = mod_mode
+            ENDIF
+        ENDIF
+        handle_parm_type(parm_type)
+    ENDWHILE
+
+EXIT
+
+ROUTINE handle_parm_type(VALUE parm_type)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE sel_arr, parm_id, rc, the_key
+    
+    ARRAY sel_arr
+
+    sel_arr[1, 1] = ARRAY_SELECT_EQ
+    sel_arr[1, 2] = "PARM_TYPE"
+    sel_arr[1, 3] = parm_type
+
+    parm_id = EMPTY
+
+    REPEAT
+        IF mode = mod_mode THEN
+            rc = prompt_user("PARM_DEF_HEADERS", "Edit Existing Parameter", EMPTY, 
+                              TRUE, "Enter Parameter ID:", sel_arr, 
+                              parm_id, the_key)
+        ELSE
+            rc = prompt_user("PARM_DEF_HEADERS", "Create New Parameter", "PARM_ID", 
+                              FALSE, "Enter Parameter ID:", empty_arr, 
+                              parm_id, the_key)
+        ENDIF
+        IF (rc)AND(NOT BLANK(parm_id))THEN
+            handle_parm(parm_type, parm_id)
+        ENDIF
+    UNTIL rc = FALSE
+
+ENDROUTINE
+
+ROUTINE get_parm_header_info(parm_desc, parm_lev)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE parm_desc_tmp, parm_lev_tmp, rc1, rc2, the_key1, the_key2
+    
+    parm_desc_tmp = parm_desc
+    parm_lev_tmp  = parm_lev
+
+    rc1 = prompt_user("PARM_DEF_HEADERS", 
+                     "Parameter Description", "DESCRIPTION", 
+                      FALSE, "Enter Parameter Description:", empty_arr, 
+                      parm_desc_tmp, the_key1)
+    rc2 = prompt_user(EMPTY, "Parameter User Level", 
+                      EMPTY, TRUE, 
+                      "User Level", acc_lev_arr, 
+                      parm_lev_tmp, the_key2)
+
+    IF NOT(rc1 AND rc2) THEN 
+        RETURN(FALSE)
+    ENDIF
+
+    IF rc1 THEN 
+        parm_desc = parm_desc_tmp
+    ENDIF
+
+    IF rc2 THEN 
+        parm_lev  = parm_lev_tmp
+    ENDIF
+
+    RETURN(TRUE)
+
+ENDROUTINE
+
+ROUTINE handle_parm(VALUE parm_type, VALUE parm_id)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE id, parm_desc, parm_lev, block_head, key_str, f_size, ok
+    
+    id = SELECT parm_def_headers.parm_id
+         WHERE  parm_type = parm_type
+           AND  parm_id   = parm_id
+    parm_desc = SELECT parm_def_headers.description
+    parm_lev  = SELECT parm_def_headers.authority
+
+    {  If insert - Check if id is already used      }
+    IF mode = ins_mode THEN
+        IF id <> EMPTY THEN 
+            flash_message("Warning:This Parameter Id already exists", TRUE)
+        ELSE 
+            block_head = "Insert Header"
+            IF block_init(block_head, "PARM_DEF_HEADERS") THEN 
+                get_field_details parm_def_headers.parm_id, "FIELD_SIZE", f_size
+                key_str = PAD(parm_id, " ", f_size):parm_type
+                START WRITE TRANSACTION "Insert Header"
+                ok = TRUE
+                IF block_row_create_last(block_head, key_str) THEN 
+                    block_row_last(block_head)
+                    parm_desc = EMPTY
+                    parm_lev = EMPTY
+                    ok = get_parm_header_info(parm_desc, parm_lev)
+                    block_row_field_assign(block_head, "DESCRIPTION", parm_desc)
+                    block_row_field_assign(block_head, "AUTHORITY",   parm_lev)
+                    block_row_update(block_head)
+                ELSE 
+                    ok = FALSE
+                ENDIF
+                block_row_release(block_head)
+                IF ok THEN 
+                    COMMIT
+                ELSE 
+                    ROLLBACK
+                    RETURN(FALSE)
+                ENDIF
+            ELSE 
+                RETURN(FALSE)
+            ENDIF
+        ENDIF
+    ENDIF
+
+{  Handle Parameter Fields definition   }
+   DECLARE parm_grid, sel_arr, get_parms, f_typ, r, block_del_f, block_fields, p_size, t_size, p, n, f_key_str, c
+   
+   CREATE OBJECT PROMPT_CLASS_GRID, parm_grid
+
+   ARRAY parm_grid.user_info
+   ARRAY sel_arr
+
+   parm_grid.title_size_top = 2
+   parm_grid.title_text_top[1, 2] = "Type"
+   parm_grid.title_text_top[2, 1] = "Field"
+   parm_grid.title_text_top[2, 2] = "Description"
+   parm_grid.title_text_top[3, 1] = "Browse"
+   parm_grid.title_text_top[3, 2] = "Object"
+   parm_grid.title_text_top[4, 1] = "Browse"
+   parm_grid.title_text_top[4, 2] = "Details"
+   parm_grid.title_text_top[5, 1] = "Access"
+   parm_grid.title_text_top[5, 2] = "Level"
+
+   parm_grid.column_size[1] = 10
+   parm_grid.column_size[2] = 20
+   parm_grid.column_size[3] = 30
+   parm_grid.column_size[4] = 30
+   parm_grid.column_size[5] = 15
+
+   parm_grid.title_separator_top = GRID_SEPARATOR_BOTH
+
+   CREATE OBJECT PROMPT_CLASS_FORM, get_parms
+
+   get_parms.height                 = 15
+   get_parms.column                 =  5
+   get_parms.width                  = GLOBAL("SCREEN_WIDTH")-(get_parms.column*2)
+   get_parms.row                    =  5
+   get_parms.border                 = TRUE
+   get_parms.header                 = "Parameter Fields"
+   get_parms.footer                 = "Press Insert/Remove Row / DO: accept ":
+                                      "/ SELECT: Header Info / Exit: quit"
+   get_parms.button_style           = FORM_BUTTON_NONE
+   parm_grid.height                 = get_parms.height - 2
+   parm_grid.column                 = 1
+   parm_grid.cell_columns           = 5
+   parm_grid.enabled                = TRUE
+   parm_grid.display_cell_routine   = "display_parm"
+   parm_grid.prompt_cell_routine    = "prompt_parm"
+   parm_grid.remove_routine         = "delete_parm_row"
+   parm_grid.insert_routine         = "insert_parm_row"
+   parm_grid.select_routine         = "parm_header_info"
+   parm_grid.width                  = get_parms.width
+   parm_grid.current_column         = 1
+   parm_grid.current_row            = 1
+
+{  Load parm setup   }
+   f_typ = SELECT parm_def_fields.field_type
+           WHERE  parm_id   = parm_id
+           AND    parm_type = parm_type
+           ORDER ON order_num
+    r = 0
+    WHILE f_typ <> EMPTY DO
+        r = r + 1
+        parm_grid.user_info[r, 1] = f_typ
+        parm_grid.user_info[r, 2] = SELECT parm_def_fields.description
+        parm_grid.user_info[r, 3] = SELECT parm_def_fields.browse_object
+        parm_grid.user_info[r, 4] = SELECT parm_def_fields.browse_field
+        parm_grid.user_info[r, 5] = SELECT parm_def_fields.authority
+        IF (NOT BLANK(parm_grid.user_info[r, 4])) AND
+           (parm_grid.user_info[r, 5]<> EMPTY) THEN
+            option_switch(acc_levels, acc_lev_arr, 1, 2, parm_grid.user_info[r, 4])
+        ENDIF
+    NEXT parm_def_fields
+        f_typ = SELECT parm_def_fields.field_type
+    ENDWHILE
+
+    IF r = 0 THEN 
+        parm_grid.cell_rows = 1
+        parm_grid.user_info[1, 1] = ""
+        parm_grid.user_info[1, 2] = ""
+        parm_grid.user_info[1, 3] = ""
+        parm_grid.user_info[1, 4] = ""
+        parm_grid.user_info[1, 5] = ""
+    ELSE 
+        parm_grid.cell_rows = r
+    ENDIF
+
+   get_parms.add_prompt(parm_grid)
+
+   IF gui THEN
+      gui_adjustments(get_parms, 5)
+      add_button(get_parms, "INSERT", 3, 5, "insert_parm_row", "PARM_DEF", "Insert")
+      add_button(get_parms, "REMOVE", 4, 5, "delete_parm_row", "PARM_DEF", "Remove")
+      add_button(get_parms, "SELECT", 5, 5, "parm_header_info", "PARM_DEF", "Info")
+   ENDIF
+
+   get_parms.add_frame("" , 1 , 1 , get_parms.height, get_parms.width)
+   get_parms.start_prompt()
+
+    REPEAT
+        get_parms.wait_prompt()
+    UNTIL (get_parms.get_lastkey() = "EXIT") OR
+          (get_parms.get_lastkey() = "DO")
+
+    { Save parameter setup }
+    IF get_parms.get_lastkey() = "DO" THEN
+        START WRITE TRANSACTION "Save Setup"
+        { Delete current setup for this report }
+        block_del_f = "Delete Fields"
+
+        IF NOT block_init(block_del_f, "PARM_DEF_FIELDS") THEN
+            ROLLBACK       {  Out of WRITE TRANSACTION mode        }
+            RETURN(FALSE)
+        ENDIF
+
+        sel_arr[1, 1] = ARRAY_SELECT_EQ
+        sel_arr[1, 2] = "PARM_ID"
+        sel_arr[1, 3] = parm_id
+        sel_arr[2, 1] = ARRAY_SELECT_EQ
+        sel_arr[2, 2] = "PARM_TYPE"
+        sel_arr[2, 3] = parm_type
+
+        delete_block(block_del_f, sel_arr)
+
+        block_row_update(block_del_f)
+        block_row_release(block_del_f)
+
+        {     Store new setup   }
+        block_fields = "Insert Fields"
+
+        IF NOT block_init(block_fields, "PARM_DEF_FIELDS") THEN
+            ROLLBACK       {  Out of WRITE TRANSACTION mode        }
+            RETURN(FALSE)
+        ENDIF
+
+        get_field_details parm_def_fields.parm_id  , "FIELD_SIZE", p_size
+        get_field_details parm_def_fields.parm_type, "FIELD_SIZE", t_size
+        key_str = PAD(parm_id, " ", p_size):PAD(parm_type, " ", t_size)
+
+        p = 0
+        n = 0
+        WHILE p < parm_grid.cell_rows DO
+            p = p + 1
+            IF (parm_grid.user_info[p, 1]<> EMPTY) AND
+               (NOT BLANK(parm_grid.user_info[p, 1])) THEN
+                n = n + 1
+                f_key_str = key_str:strip(n)
+                IF block_row_create_last(block_fields, f_key_str) THEN 
+                    block_row_last(block_fields)
+                    c = 1
+                    WHILE c < parm_grid.cell_columns DO
+                        c = c + 1
+                        IF parm_grid.user_info[p, c] = EMPTY THEN
+                            parm_grid.user_info[p, c] = ""
+                        ENDIF
+                    ENDWHILE
+                    block_row_field_assign(block_fields, "FIELD_TYPE",    parm_grid.user_info[p, 1])
+                    block_row_field_assign(block_fields, "DESCRIPTION",   parm_grid.user_info[p, 2])
+                    block_row_field_assign(block_fields, "BROWSE_OBJECT", parm_grid.user_info[p, 3])
+                    block_row_field_assign(block_fields, "BROWSE_FIELD",  parm_grid.user_info[p, 4])
+                    option_switch(acc_levels, acc_lev_arr, 2, 1, parm_grid.user_info[p, 5])
+                    block_row_field_assign(block_fields, "AUTHORITY",     parm_grid.user_info[p, 5])
+                ELSE 
+                    flash_message("Error:Could not create parameter", TRUE)
+                    block_row_release(block_fields)
+                    ROLLBACK
+                    RETURN(FALSE)
+                ENDIF
+            ENDIF
+        ENDWHILE
+        block_row_update(block_fields)
+        block_row_release(block_fields)
+        COMMIT
+    ENDIF { End Save }
+    get_parms.end_prompt()
+
+ENDROUTINE
+
+
+ROUTINE display_parm(self, VALUE cell_col, VALUE cell_row, window, VALUE col, VALUE row, VALUE cell_w, VALUE cell_h)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE val
+
+    val = self.user_info[cell_row, cell_col]
+    IF val = EMPTY THEN 
+        val = pad("", " ", cell_w)
+    ELSE 
+        val = substring(val, 1, cell_w)
+    ENDIF
+
+    DISPLAY  val
+        AT col, row
+        BOLD = FALSE
+        INVERSE = FALSE
+        IN WINDOW window
+
+ENDROUTINE
+
+
+ROUTINE prompt_parm(self, VALUE cell_col, VALUE cell_row, window, VALUE col, VALUE row, VALUE cell_w, VALUE cell_h)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE opt, old_opt, v, val, browse_fields, count
+    
+    IF cell_col = 1 THEN
+        opt = self.user_info[cell_row, cell_col]
+        old_opt = opt
+        option_switch(options, field_types, 1, 2, opt)
+        PROMPT FOR opt
+            AT col, row
+            IN WINDOW window
+            TO col + cell_w - 1
+            BOLD = TRUE
+            CHOOSE OUTOF field_types
+        option_switch(options, field_types, 2, 1, opt)
+        IF (BLANK(old_opt)) OR (old_opt = EMPTY) THEN     
+            opt = opt
+        ELSEIF (opt = EMPTY) OR (BLANK(opt)) THEN
+            opt = old_opt
+        ELSEIF old_opt <> opt THEN
+            v = 1
+            WHILE v < self.cell_columns DO
+                v = v + 1
+                self.user_info[cell_row, v] = EMPTY
+            ENDWHILE
+            self.redisplay_row(cell_row)
+        ENDIF
+        self.user_info[cell_row, cell_col] = opt
+
+    ELSEIF cell_col = 3 THEN 
+        IF self.user_info[cell_row, 1] = "B" THEN
+        PROMPT FOR self.user_info[cell_row, cell_col]
+            AT col, row
+            IN WINDOW window
+            TO col + cell_w - 1
+            BOLD = TRUE
+            CHOOSE OUTOF table_names
+        ELSEIF self.user_info[cell_row, 1] = "O" THEN
+            PROMPT FOR self.user_info[cell_row, cell_col]
+            AT col, row
+            IN WINDOW window
+            TO col + cell_w - 1
+            BOLD = TRUE
+            BROWSE ON PHRASE_HEADER
+        ELSEIF (self.user_info[cell_row, 1] = "N") OR
+               (self.user_info[cell_row, 1] = "T") OR
+               (self.user_info[cell_row, 1] = "L") OR
+               (self.user_info[cell_row, 1] = "D") THEN
+            no_prompt (window, cell_row, cell_col)
+        ELSE
+            flash_message("Warning:Unknown Field Type:":self.user_info[cell_row, 1], TRUE)
+            no_prompt (window, cell_row, cell_col)
+        ENDIF
+
+    ELSEIF cell_col = 2 THEN
+        prompt for self.user_info[cell_row, cell_col]
+            AT col, row
+            IN WINDOW window
+            TO col + cell_w - 1
+            BOLD = TRUE
+            FORMAT TEXT80
+
+    ELSEIF cell_col = 5 THEN
+        val = self.user_info[cell_row, cell_col]
+        val = SELECT phrase.phrase_text
+              WHERE phrase_type = "AUTHLEVEL"
+              AND phrase_id = val
+        PROMPT FOR self.user_info[cell_row, cell_col]
+            AT col, row
+            IN WINDOW window
+            TO col + cell_w - 1
+            BOLD = TRUE
+            CHOOSE OUTOF acc_lev_arr
+            WITH (value = val)
+
+    ELSEIF cell_col = 4 THEN 
+        IF ((self.user_info[cell_row, 1] = "B") AND
+            (strip(self.user_info[cell_row, 3])<>"")) THEN
+                 GET_FIELD_NAMES(self.user_info[cell_row, 3], field_names)
+                 browse_fields = size_of_array(field_names)
+                 count = browse_fields
+                 WHILE count > 0 DO
+                     field_names[count+1, 2] = field_names[count, 1]
+                     field_names[count+1, 1] = field_names[count, 1]
+                     count = count -1
+                 ENDWHILE
+                 field_names[1, 1] = " No Details"
+                 field_names[1, 2] = ""
+                 PROMPT FOR self.user_info[cell_row, cell_col]
+                    AT col, row
+                    IN WINDOW window
+                    TO col + cell_w - 1
+                    BOLD = TRUE
+                    CHOOSE OUTOF field_names
+
+        ELSEIF (self.user_info[cell_row, 1] = "N") OR
+            (self.user_info[cell_row, 1] = "T") OR
+            (self.user_info[cell_row, 1] = "L") OR
+            (self.user_info[cell_row, 1] = "O") OR
+            (self.user_info[cell_row, 1] = "D") THEN 
+            no_prompt (window, cell_row, cell_col)
+        
+        ELSE
+            flash_message("Warning:Unknown Field Type:":self.user_info[cell_row, 1], TRUE)
+            no_prompt (window, cell_row, cell_col)
+        ENDIF
+
+    ELSE
+        flash_message("Warning:No more than 4 columns are supported", TRUE)
+        no_prompt (window, cell_row, cell_col)
+    ENDIF
+
+    display_parm(self, cell_col, cell_row, window, col, row, cell_w, cell_h)
+
+ENDROUTINE
+
+
+ROUTINE no_prompt (window, cell_row, cell_col)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    IF NOT(gui) THEN 
+        getkey
+    ELSE 
+        PROMPT IN WINDOW window ON LINE cell_row FROM cell_col
+    ENDIF
+    
+ENDROUTINE
+
+ROUTINE delete_parm_row(self)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE  parm_grid, r, c
+    
+    parm_grid = self.parm_grid {**???***}
+    
+    IF parm_grid.cell_rows > 1 THEN
+        r = parm_grid.current_row
+        WHILE r < parm_grid.cell_rows DO
+            c = 0
+            WHILE c < parm_grid.cell_columns DO
+                c = c + 1
+                parm_grid.user_info[r, c] = parm_grid.user_info[r + 1, c]
+            ENDWHILE
+            r = r + 1
+        ENDWHILE
+
+    ELSE c = 0
+        WHILE c < parm_grid.cell_columns DO
+            c = c + 1
+            parm_grid.user_info[1, c] = ""
+        ENDWHILE
+    ENDIF
+
+    IF parm_grid.current_row > 0 THEN
+        parm_grid.remove_row(parm_grid.current_row)
+    ENDIF
+
+    IF parm_grid.cell_rows = 0 THEN
+        parm_grid.insert_row(parm_grid.current_row, 1, GRID_SEPARATOR_NONE)
+        parm_grid.current_row = 1
+    ENDIF
+
+    parm_grid.redisplay_row(parm_grid.current_row)
+
+ENDROUTINE
+
+
+ROUTINE parm_header_info(self)
+{**************************************************************************************************************
+ 
+***************************************************************************************************************}
+    DECLARE head_sel_arr, ok, block_upd
+    
+    ARRAY head_sel_arr
+
+    ok = get_parm_header_info(parm_desc, parm_lev)
+
+    START WRITE TRANSACTION "Save Setup"
+
+    block_upd = "Update Header"
+
+    IF NOT block_init(block_upd, "PARM_DEF_HEADERS")THEN
+    ROLLBACK       {  Out of WRITE TRANSACTION mode        }
+    RETURN(FALSE)
+    ENDIF
+
+    head_sel_arr[1, 1] = ARRAY_SELECT_EQ
+    head_sel_arr[1, 2] = "PARM_ID"
+    head_sel_arr[1, 3] = parm_id
+    head_sel_arr[2, 1] = ARRAY_SELECT_EQ
+    head_sel_arr[2, 2] = "PARM_TYPE"
+    head_sel_arr[2, 3] = parm_type
+
+    IF block_row_SELECT(block_upd, head_sel_arr, TRUE) THEN 
+        block_row_field_assign(block_upd, "DESCRIPTION", parm_desc)
+        block_row_field_assign(block_upd, "AUTHORITY"  , parm_lev)
+        block_row_update(block_upd)
+    ELSE 
+        ok = FALSE
+    ENDIF
+
+    block_row_release(block_upd)
+
+    IF ok THEN 
+        COMMIT
+    ELSE 
+        ROLLBACK
+    ENDIF
+
+ENDROUTINE
+
+
+ROUTINE insert_parm_row(self)
+{**************************************************************************************************************
+     form = self . parent_prompt
+         grid = form . prompt_objects [ form . grid_id ]
+ 
+         samp_job_insert_sample ( grid )
+
+***************************************************************************************************************}
+    DECLARE  parm_grid, r, c
+    
+    form = self.parent_prompt
+    grid = form.prompt_objects[form.get_parms]
+    
+    parm_grid = self.parent_prompt.prompt_objects[self.parent_prompt.parm_grid]
+
+    r = parm_grid.cell_rows
+    WHILE r > parm_grid.current_row DO
+        c = 0
+        WHILE c < parm_grid.cell_columns DO
+            c = c + 1
+            parm_grid.user_info[r+1, c] = parm_grid.user_info[r, c]
+        ENDWHILE
+        r = r - 1
+    ENDWHILE
+
+    c = 0
+    WHILE c < parm_grid.cell_columns DO
+        c = c + 1
+        parm_grid.user_info[parm_grid.current_row+1, c] = EMPTY
+    ENDWHILE
+
+    parm_grid.insert_row(parm_grid.current_row, 1, GRID_SEPARATOR_NONE)
+    parm_grid.current_column = 1
+    parm_grid.redisplay_row(parm_grid.current_row)
+
+ENDROUTINE
+

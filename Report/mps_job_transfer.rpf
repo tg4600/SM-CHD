@@ -1,0 +1,2333 @@
+SET NAME "DISPLAY/"
+
+ENABLE WINDOWS
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+{ JOIN LIBRARY ROSSAMPLAB }
+JOIN LIBRARY MPS_JOB_LOG
+
+
+{JOIN STANDARD_LIBRARY STD_DATABASE}
+JOIN STANDARD_LIBRARY STD_UTILS
+
+{JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN LIBRARY MPS_JOB_TRANSFER
+JOIN LIBRARY MPS_JOB_LOG
+}
+
+
+CONSTANT max_mlp = 10
+CONSTANT line_length = 177
+CONSTANT mps_trans = "MPS-TRANS"
+CONSTANT ora_trans = "ORA-TRANS"
+CONSTANT mps_samps = "MPS-SAMPLES"
+CONSTANT sample_plan_update = "SAMPLE-PLAN-UPDATE"
+CONSTANT max_templates_allowed = 200    { Check for wild loops }
+{**AS1462 HBe 12-5-03: Added extra checks for wild loops on tests, samples}
+
+CONSTANT max_samples_allowed = 2000    { Check for wild loops }
+CONSTANT max_tests_allowed = 20000     { Check for wild loops }
+
+SET GLOBAL "SAMPLE_TRIGGER_ENABLE" TO "FALSE"
+
+{**AE1462}
+
+ARRAY parm_arr
+ARRAY sp_arr
+ARRAY sch_list
+
+
+DECLARE log_file, i_line
+{**AS1796 HBe 6-8-2007}
+DECLARE include_oracle_jobs
+
+include_oracle_jobs = FALSE
+{**AE1796}
+
+IF   get_global( "MPS-LOG-FILE", log_file, FALSE )
+THEN
+
+{**AS1336 HBe 9-8-01}
+{**MS1363}
+
+  hour = STRIP(SUBSTRING(NOW, 13,2))
+
+{**AS1450 HBe 21-1-2003: Include minutes in file name}
+  minute = STRIP(SUBSTRING(NOW, 16,2))
+{**AE1450}
+
+  use_manual = FALSE
+  IF global("MODE") = "INTERACTIVE"
+  THEN
+     log_file = STRIP(log_file):"_man.log"
+     confirm_manual_file ( use_manual )
+  ELSE
+
+{**MS1450 HBe 21-1-2003
+     log_file = STRIP(log_file):"_":hour:".log"
+**}
+     log_file = STRIP(log_file):"_":hour:"_":minute:".log"
+{**ME1450}
+
+  ENDIF
+{**ME1363}
+{**AE1336}
+
+  IF mps_init ( log_file )
+  THEN
+
+    {FILE WRITE log_file, "Start transfer of MPS Jobs at:":NOW, rc}
+    WriteToLog("Start transfer of MPS Jobs")
+    {IF (rc = EMPTY) THEN }
+    IF TRUE THEN
+
+      new_jobs    = 0
+      upd_jobs    = 0
+      new_samples = 0
+      new_tests   = 0
+      lines_read  = 0
+      jobs_canc   = 0
+
+      IF get_global( "MPS-UPLOAD-FILE",       mps_load_file, TRUE ) AND
+         get_global( "MPS-JOB-TEMPLATE",      job_template,  TRUE ) AND
+         get_global( "MPS-SAMPLE-TEMPLATE",   smp_template,  TRUE ) AND
+         get_global( "MPS-JOB-TEMPLATE-VIEW", job_temp_view, TRUE ) AND
+         get_global( "MPS-SAMPLE-SYNTAX"    , smp_syntax   , TRUE ) AND
+         get_global( "MPS-USERID"           , mps_userid   , TRUE ) AND
+         get_global( "MPS-PASSWORD"         , mps_password , TRUE ) AND
+         get_global( "MPS-NODE"             , mps_node     , TRUE )
+      THEN
+         mps_load_file = strip(mps_load_file)
+
+{**MS1363 HBe 23-10-2001: Manual file handling}
+         IF use_manual THEN
+            WriteToLog(" Using manual file, no MPS file transfer used")
+            load_file = "C:\Temp\job_creation_file.txt"
+            IF NOT FILE EXISTS ( load_file ) THEN
+               FLASH_MESSAGE("Load file not present, exiting.", TRUE)
+               RETURN
+            ENDIF
+         ELSE
+            WriteToLog(" Start MPS file transfer")
+            IF   NOT transfer_mps_file ( mps_load_file, mps_node,
+                                         mps_user_id  , mps_password,
+                                         load_file, err_mes )
+            THEN WriteToLog( err_mes )
+                 return
+            ENDIF
+
+            WriteToLog(" End   MPS file transfer")
+
+            load_file = "C:\Temp\" : mps_load_file : ".txt"
+
+         ENDIF
+{**ME1363}
+         IF   FILE EXISTS( load_file )
+         THEN
+{**AS1793 HBe 27/7/2007: Session specific file used}
+            copy_status = EMPTY
+            session_file = "C:\Temp\" : mps_load_file:"_":STRIP(GLOBAL("SESSION_ID")):"_":hour:"_":minute : ".txt"
+            FILE COPY load_file, session_file, copy_status
+            IF (STRIP(copy_status) <> EMPTY) THEN
+               WriteToLog("Copy to file:" : session_file)
+               load_file = session_file
+            ELSE
+               WriteToLog(" Session specific file not used, error message copying file: ": copy_status)
+            ENDIF
+{**AE1793}
+
+
+            FILE OPEN load_file, rc
+            IF   rc = EMPTY
+            THEN
+               IF check_job_template( job_template ) AND
+                  check_job_template( job_temp_view)
+               THEN
+                  smp_temp_id = select samp_tmpl_header.identity
+                                where  removeflag = FALSE
+                                and    identity = strip(smp_template)
+                  IF smp_temp_id = EMPTY
+                  THEN WriteToLog("ERROR: Sample Template:":strip(smp_template):
+                              " does not exist")
+                  ELSE
+                     syn_id = select syntax . identity
+                              where  identity = smp_syntax
+                     IF   syn_id = EMPTY
+                     THEN WriteToLog("ERROR: Sample Syntax":smp_syntax:
+                                  " does not exist")
+                     else handle_mps_lines ( load_file, smp_syntax )
+                          WriteToLog("Completing transfer of MPS Jobs at:":NOW)
+{**M1618 HBe 18-4-2005}
+{**MS1796 HBe 6-8-2007}
+                          include_oracle_jobs = TRUE
+{**ME1796}
+                     endif
+
+
+{  No printing used ...
+                     prt_id = select printer.identity
+                              where  removeflag = FALSE
+                              and    identity = strip(lab_printer)
+                     IF prt_id = EMPTY
+                     THEN WriteToLog("ERROR: Label printer:":
+                                    strip(lab_printer):" does not exist")
+                     ELSE handle_mps_lines( load_file )
+                     ENDIF
+ .......... }
+
+                  ENDIF
+               ENDIF
+            ELSE WriteToLog("ERROR: Could not open MPS file:":strip(load_file))
+            ENDIF
+            FILE CLOSE load_file
+{**AS1793}
+            FILE DELETE load_file
+
+{**AS1796 HBe 6-8-2007}
+            IF include_oracle_jobs THEN
+               handle_oracle_jobs (smp_syntax)
+           WriteToLog("Completing transfer of Oracle Jobs at:":NOW)
+            ENDIF
+{**AE1796}
+{**AE1793}
+         ELSE WriteToLog("ERROR: Load file:":strip(load_file) :
+                        " does not exist")
+{**AS1823 HBe 23-1-2008}
+            handle_oracle_jobs (smp_syntax)
+            WriteToLog("Completing transfer of Oracle Jobs at:":NOW)
+{**AE1823}
+         ENDIF
+      ENDIF
+      WriteToLog("End transfer of Jobs at:":NOW)
+      WriteToLog("Jobs (Read: ":STRIP(lines_read):
+                       "Created: ":STRIP(new_jobs):
+                       "Updated: ":STRIP(upd_jobs):
+                       "Cancelled: ":STRIP(jobs_canc):"); ":
+                 "Samples created:":STRIP(new_samples):"; ":
+                 "Tests created:":STRIP(new_tests))
+{      WriteToLog("Jobs read      :":lines_read)
+      WriteToLog("Jobs created   :":new_jobs)
+      WriteToLog("Jobs updated   :":upd_jobs)
+      WriteToLog("Jobs canceled  :":jobs_canc)
+      WriteToLog("Samples created:":new_samples)
+      WriteToLog("Tests   created:":new_tests)}
+      FILE CLOSE log_file
+
+{**MS1302 HBe 27-3-01: Show_file removed and flash_message included instead}
+      IF global("MODE") = "INTERACTIVE" THEN
+         {show_file ( log_file )}
+         FLASH_MESSAGE("Finished logging in jobs from MPS system", TRUE)
+      ENDIF
+{**ME1302}
+    ENDIF
+  ENDIF
+ENDIF
+
+GLOBAL
+ROUTINE mps_init ( VALUE the_log_file )
+{   i_line = EMPTY
+   log_file = the_log_file
+
+   FILE CREATE log_file, rc
+
+   IF   rc = EMPTY
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF}
+   return ( TRUE  )
+ENDROUTINE
+
+GLOBAL
+ROUTINE  set_i_line ( VALUE the_line )
+   i_line = the_line
+ENDROUTINE
+
+GLOBAL
+ROUTINE  transfer_mps_file ( VALUE mps_load_file, VALUE mps_node,
+                             VALUE mps_user_id  , VALUE mps_password,
+                             load_file, err_mes )
+
+   load_file = "C:\Temp\" : mps_load_file : ".txt"
+
+   ftp_input_file = "C:\Temp\ftp_input.com"
+
+{  Start FTP file transfer part from MPS system           }
+{ VMS way to delete .....
+   command_string = "delete smp$textfiles:" : mps_load_file : "*.txt;*"
+   SPAWN command_string, rc QUIETLY .........}
+   FILE DELETE load_file,rc
+
+{ VMS way to delete ......
+   command_string = "delete " : ftp_input_file : ";*"
+   SPAWN command_string, rc QUIETLY ........}
+   FILE DELETE ftp_input_file, rc
+   FILE CREATE ftp_input_file, rc
+   IF rc <> EMPTY THEN
+      err_mes = "ERROR: Could not create FTP transfer command file. " :
+                "Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+   tmp_mps_load = "C:\Temp\":mps_load_file:".txt"
+   {WriteToLog("Transfer to file:":tmp_mps_load)}
+   FILE WRITE ftp_input_file, "user ":strip(mps_user_id):" ":strip(mps_password), rc
+{**AS1396 HBe 10-6-2002}
+   FILE WRITE ftp_input_file, "cd /chdksap/lims ", rc
+{**AE1396 HBe}
+   FILE WRITE ftp_input_file, "get ":mps_load_file:" ":
+                                     tmp_mps_load, rc
+{**AS SM2003R1}
+   FILE WRITE ftp_input_file, "quit"
+{**AE SM2003R1}
+
+   FILE CLOSE ftp_input_file
+{ VMS file protection
+   command_string = "set file " : ftp_input_file : " /prot=(W:RWD)"
+   SPAWN command_string, rc1 QUIETLY    ...........}
+
+   IF rc <> EMPTY THEN
+      err_mes = "ERROR: Could not write FTP transfer command file. " :
+                "Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+{  OpenVMS way ...........
+   command_string = "ftp " : strip(mps_node)    :
+                    " /username=" : strip(mps_user_id) :
+                    " /password=" : strip(mps_password):
+                    " /input="    : ftp_input_file         }
+   command_string = "ftp -n -s:":ftp_input_file:" ":strip(mps_node)
+
+   SPAWN command_string, rc QUIETLY
+   IF rc <> EMPTY THEN
+      err_mes = "ERROR: Could not transfer MPS load file. Return code:" : rc
+      return ( FALSE )
+   ENDIF
+
+{ VMS File Protection ...
+   IF   file exists( tmp_mps_load )
+   THEN command_string = "set file ":tmp_mps_load:" /prot=(W:RWD)"
+        SPAWN command_string, rc QUIETLY
+        IF rc <> EMPTY THEN
+           err_mes = "ERROR: Could not set protection flag on file. ":
+                     "Return code:": rc
+           return ( FALSE )
+        ENDIF
+   ENDIF    ...........}
+
+   RETURN ( TRUE )
+
+ENDROUTINE
+
+
+ROUTINE  check_job_template (VALUE template_id)
+
+   job_temp_id = select job_template.identity
+                 where  removeflag = FALSE
+                 and    identity = strip(template_id)
+
+   IF job_temp_id = EMPTY
+   THEN WriteToLog("ERROR: Job Template:":STRIP(template_id):" does not exist")
+        return ( FALSE )
+   ENDIF
+
+   return ( TRUE )
+
+ENDROUTINE
+
+ROUTINE  handle_mps_lines ( VALUE load_file, VALUE syntax_id )
+
+   SET NOTPROTECTED
+
+
+   old_lock_parm = GLOBAL("LOCK_SCREEN")
+   SET GLOBAL "LOCK_SCREEN" TO "FALSE"
+
+{**AS 1265 HBe 10-8-00}
+   ARRAY group_ids
+   get_group_ids(group_ids, groups)
+{**AE 1265 HBe 10-8-00}
+
+{**MS1383 HBe 6-2-2002: Stop loop if load file is overwritten due to procesing taking more than 1 hour }
+{                       If this is the case no return code is generated by FILE READ, but the line     }
+{                       contains all *'s.                                                              }
+
+   mlp_id      = EMPTY
+   mlp_ver     = EMPTY
+   mlp_splogin = FALSE
+
+   FILE READ load_file, i_line, rc
+   WHILE (rc = EMPTY) AND (SUBSTRING(mlp_id,1,1) <> "*") DO
+
+{**ME1383}
+      lines_read = lines_read + 1
+{Remark **1408: date_OK added below}
+      IF   FALSE {line_ok( i_line, job_id, mlp_id, mlp_ver, stat, date_created,
+                    mlp_template, mlp_desc, mlp_smp_type, mlp_code,
+                    wc_id, pot_qty, line_err, group_ids,
+                    groups, order, ref_order, layered,
+                    mat_before, batch_before, org_template_code,
+                    mps_group_id, job_group_id, sample_group_id,
+                    delete_flag, is_batch, date_OK, insp_lot, insp_type,
+                    vendor_batch, mlp_splogin, smat_code_before, production_date, shelf_exp_date)}
+      THEN
+{**TEMP HBe 8-8-01
+       IF mlp_group_id <> "2020" THEN
+ **TEMP HBe 8-8-01}
+
+         START READ TRANSACTION mps_trans
+{**MS1386 HBe 13-3-02
+         the_name = mlp_id:"/":job_id
+}
+         IF is_batch THEN
+            the_name = mlp_id:"/":job_id
+         ELSE
+{**M1525 HBe 29-1-04}
+         job_order = order
+         WHILE (LENGTH(job_order) > 0) AND (SUBSTRING(job_order, 1, 1) = "0")
+            job_order = SUBSTRING(job_order, 2, LENGTH(job_order) - 1)
+         ENDWHILE
+            the_name = mlp_id:"/":job_order
+{**ME1525}
+         ENDIF
+{**ME1386}
+         job_stat = SELECT job_header.job_status FOR UPDATE
+                    WHERE  job_name = the_name
+         start_date  = SELECT job_header.date_to_start
+         old_pot_qty = select job_header.potency
+         old_wc      = select job_header.work_center
+{**AS1349 HBe 17-9-2001}
+         old_layered      = select job_header.layered
+         old_batch_before = select job_header.batch_before
+         old_mat_before   = select job_header.material_before
+{**AS1531 HBe 5-2-04: Selecting old vendor batch}
+         old_vendor_batch = select job_header.vendor_batch
+{**AE1349}
+{**AS1350 HBe 19-9-2001}
+         old_delete_flag  = select job_header.delete_flag
+{**AS1465 HBe 15-5-03}
+         old_insp_lot     = select job_header.inspection_lot
+         old_insp_type    = select job_header.inspection_type
+{**AE1465}
+
+{**AS1549 HBe 10-3-2004}
+         old_production_date = SELECT job_header.production_date
+         old_shelf_exp_date  = SELECT job_header.shelflife_exp_date
+{**AE1549}
+{**AS1545}
+         old_sample_type     = SELECT job_header.sample_type
+{**AE1545}
+
+{flash_message(date_ok:job_stat:stat, TRUE)}
+{**AE1350}
+{**AS1408}
+         IF     (NOT date_OK) and (job_stat = EMPTY) AND ((stat = "O") OR (stat = "C") OR (stat = "Z"))
+         THEN   WriteToLog("(":STRIP(the_name):") Production date more than one month old, creating nothing")
+{**AE1408}
+         ELSEIF  date_OK and (job_stat = EMPTY) AND ((stat = "O") OR (stat = "C") OR (stat = "Z"))
+         THEN
+
+ create_job(syntax_id,the_name, mps_group_id)
+         ELSEIF (job_stat= LOCKED)
+         THEN    WriteToLog("(":STRIP(the_name):") Job Locked by other user")
+{**M1336 HBe 6-8-01: Z included in line below}
+{**M1350 HBe 19-9-01: Z removed in line below}
+{**M1349 HBe 17-9-2001: checking for update of batch before, material before and layered included below}
+{**M1350 HBe 19-9-2001: checking for update of deletion flag included below}
+{**M1465 HBe 15-5-2003: checking for update of insp_lot and insp_type below}
+{**M1531 HBe 05-2-2004: checking for update of vendor batch included below}
+         ELSEIF (job_stat != "X")  AND (stat != "X") AND
+                ((start_date != date_created)
+                 OR ((old_pot_qty!= pot_qty) AND (pot_qty != 0))
+                 OR (old_wc      != wc_id)
+                 OR ((old_layered <> layered) AND (layered <> "U"))
+                 OR ((old_batch_before <> batch_before) AND NOT BLANK(batch_before))
+                 OR ((old_vendor_batch <> vendor_batch) AND NOT BLANK(vendor_batch))
+                 OR ((old_mat_before  <> mat_before)  AND NOT BLANK(mat_before))
+                 OR ((old_delete_flag <> delete_flag) AND NOT BLANK(delete_flag))
+                 OR ((old_insp_lot <> insp_lot) AND (insp_lot <> "            " ))
+                 OR ((old_insp_type <> insp_type) AND (insp_type <> "        "))
+                 OR ((old_production_date <> production_date) AND NOT BLANK(production_date) AND (production_date <> EMPTY))
+                 OR ((old_shelf_exp_date <> shelf_exp_date)  AND NOT BLANK(shelf_exp_date) AND (shelf_exp_date <> EMPTY))
+                 OR ((old_sample_type <> mlp_smp_type)  AND NOT BLANK(mlp_smp_type)))
+         THEN    update_job()
+         ELSEIF (job_stat!="X") AND (job_stat!="A") AND (job_stat!="R") AND
+                (job_stat!=EMPTY) AND (stat = "X")
+         THEN    cancel_job()
+         ELSE    {WriteToLog("(":STRIP(the_name):") Have done nothing")}
+         ENDIF  { Job Stat }
+
+         COMMIT
+
+{**TEMP HBe 8-8-01
+        ENDIF
+ HBe}
+
+
+      ELSE {WriteToLog("Line [":STRIP(lines_read):"] skipped":line_err)}
+      ENDIF { Line Ok }
+
+      FILE READ load_file, i_line, rc
+   ENDWHILE
+
+   SET GLOBAL "LOCK_SCREEN" TO old_lock_parm
+
+ENDROUTINE
+
+
+ROUTINE  create_job ( VALUE smp_syntax_id, VALUE the_name, VALUE external_group_id )
+
+   DECLARE job_stat
+
+   SET MODE COMMITTED
+   job_stat = SELECT job_header.job_status
+              WHERE  job_name = the_name
+   SET MODE ACTIVE
+   IF job_stat <> EMPTY THEN
+      WriteToLog("Job (":STRIP(the_name):") is committed. No action")
+      return
+   ENDIF
+
+   job_created = NEWJOB( job_template, the_name )
+
+   IF   job_created = ERROR
+   THEN WriteToLog("Error when trying to create New Job")
+   ELSE
+      WriteToLog("Job created: ":the_name)
+      new_jobs = new_jobs + 1
+
+      create_samples( n_samps, n_tests, smp_syntax_id, external_group_id )
+
+      START READ TRANSACTION mps_trans
+      job_created = SELECT job_header.job_name FOR UPDATE
+                    WHERE  job_name = the_name
+      IF   job_created = LOCKED
+      THEN WriteToLog("Job Created but Could not update - Record locked")
+           COMMIT
+      ELSE
+         ASSIGN job_header.product_name        = mlp_id
+         ASSIGN job_header.batch_name          = job_id
+         ASSIGN job_header.date_to_start       = date_created
+         ASSIGN job_header.product_description = mlp_desc
+         ASSIGN job_header.browse_description  = mlp_desc : " " :
+                                                 SUBSTRING(TODAY,1,11) : " " :
+                                                "MPS"
+         ASSIGN job_header.samples_to_do       = n_samps
+         ASSIGN job_header.template_id         = job_temp_view
+         ASSIGN job_header.potency             = pot_qty
+         ASSIGN job_header.work_center         = wc_id
+{**AS 1265 HBe 11-8-00}
+         ASSIGN job_header.group_id            = job_group_id
+{**AE 1265 HBe 11-8-00}
+{**AS 1346 HBe 19-9-01}
+         ASSIGN job_header.login_plant         = external_group_id
+{**AE 1346}
+{**AS 1336 HBe 13-7-01}
+         ASSIGN job_header.material_before     = mat_before
+         ASSIGN job_header.batch_before        = batch_before
+{**AS 1531 HBe  5-2-04: Assigning vendor batch to the job header}
+         ASSIGN job_header.vendor_batch        = vendor_batch
+{**AE 1531}
+         ASSIGN job_header.layered             = layered
+         ASSIGN job_header.process_order       = order
+         ASSIGN job_header.reference_order     = ref_order
+         ASSIGN job_header.mps_source          = org_template_code
+         ASSIGN job_header.mps_load_status     = stat
+         ASSIGN job_header.delete_flag         = delete_flag
+{**AE1336}
+{**AS1465 HBe 15-5-2003}
+         ASSIGN job_header.inspection_lot      = insp_lot
+         ASSIGN job_header.inspection_type     = insp_type
+{**AE1465}
+{**AS1549 HBe 10-3-2004}
+         ASSIGN job_header.production_date      = production_date
+         ASSIGN job_header.shelflife_exp_date   = shelf_exp_date
+         ASSIGN job_header.sap_update_date      = NOW
+{**AE1549}
+{**AS1545}
+         ASSIGN job_header.sample_type          = mlp_smp_type
+{**AE1545}
+
+         START WRITE TRANSACTION mps_trans
+         CHANGE JOB STATUS TO "V", rc
+         IF rc <> EMPTY THEN
+            WriteToLog("ERROR when updating job status:":rc)
+         ENDIF
+         UPDATE job_header
+         COMMIT
+
+{**AS1537 HBe 16-2-2004: raw material login with SamplePlan}
+
+     row_idx = 0
+
+     IF (job_created <> ERROR) AND mlp_splogin THEN
+        do_splan_login (the_name, job_id, date_created, mlp_ver, mlp_smp_type, job_group_id, external_group_id, insp_lot, insp_type, line_com, row_idx, batch_before, smat_code_before)
+        line_com = line_com : " Logged in " : STRIP(row_idx) : " SamplePlan samples"
+         ENDIF
+
+{**AE1537}
+
+
+{**MS1274 HBe 25-10-00: Line_com added.}
+         WriteToLog(STRIP(the_name):": ":STRIP(n_samps) :" samples and ": STRIP(n_tests):" tests created":line_com)
+{**ME1274}
+         new_samples = new_samples + n_samps
+         new_tests   = new_tests   + n_tests
+{**AS1462 HBe 12-5-2003:Extra check on sample and test count}
+         IF new_samples > max_samples_allowed THEN
+            wildloop_exit ("NEW_SAMPLES", new_samples, max_samples_allowed)
+         ENDIF
+         IF new_tests > max_tests_allowed THEN
+            wildloop_exit ("NEW_TESTS", new_tests, max_tests_allowed)
+         ENDIF
+{**AE1462}
+      ENDIF
+   ENDIF
+ENDROUTINE
+
+
+ROUTINE  create_samples( n_samps, n_tests, smp_syntax_id, VALUE external_group_id)
+
+ARRAY template_arr
+ARRAY extra_samples
+
+{**M1621: Including ag, assigned_sample_group_id}
+   DECLARE ag, assigned_sample_group_id
+
+   ag                       = EMPTY
+   assigned_sample_group_id = sample_group_id
+   n_samps                  = 0
+
+{  Find sample templates to use }
+   n_temps = 1
+   n_row   = 1
+   any_super_templates = FALSE
+   template_arr[1,1] = mlp_template
+   WHILE (n_row <= n_temps) AND (n_temps<max_templates_allowed) DO
+         template_arr[n_row,2] = SELECT samp_tmpl_header.supertemplate
+                                 WHERE  identity = template_arr[n_row,1]
+                                 AND    removeflag = FALSE
+         template_arr[n_row,3] = SELECT samp_tmpl_header.sample_status
+         template_arr[n_row,4] = SELECT samp_tmpl_header.syntax_id
+         IF template_arr[n_row,2] = TRUE
+         THEN
+            any_super_templates = TRUE
+            next_template = SELECT supertemplatelist.listid
+                            WHERE  supertemplate = template_arr[n_row,1]
+                            ORDER  ON order_num
+{**MS1621 HBe 12-5-2003: Inserted extra check on "max_templates_allowed" in line below}
+            WHILE (next_template != EMPTY) AND (n_temps<max_templates_allowed) DO
+               n_temps = n_temps + 1
+               check_for_supertemplates = TRUE
+               template_arr[n_temps,1] = next_template
+               NEXT supertemplatelist
+               next_template = SELECT supertemplatelist.listid
+            ENDWHILE
+         ENDIF
+         n_row = n_row + 1
+   ENDWHILE
+
+   IF   n_temps>=max_templates_allowed
+   THEN WriteToLog("ERROR: Max sample limit:":max_templates_allowed:" reached")
+{**AS1462}
+        wildloop_exit ("TEMPLATES", n_temps, max_templates_allowed)
+{**AE1462}
+        return
+   ENDIF
+
+{  Create the samples }
+   IF   any_super_templates
+   THEN next_link = INCREMENT("SUPERTEMPLATE","LINK_NUMBER")
+   ELSE next_link = 0
+   ENDIF
+
+   n_row = 0
+   n_sch = 0
+   WHILE n_row < n_temps DO
+      n_row = n_row + 1
+      IF   template_arr[n_row,2] = FALSE
+      THEN
+           create_next_sample( template_arr[n_row,1],
+                               template_arr[n_row,3], EMPTY )
+
+      ENDIF
+   ENDWHILE
+
+{  Login Samples according to MLP Schedule List }
+{**M1282 HBe 5-12-00: AND group_id=mps_group_id added below}
+{**M2003R1: MLP version on prod_sched included below.}
+   n_extra = 0
+   sp = SELECT prod_sched.sampling_point
+        WHERE  product_name = mlp_id
+        AND    product_version = mlp_ver
+        AND    test_schedule != "NONE"
+        AND    group_id       = external_group_id
+
+
+   WHILE (sp<>EMPTY) AND (NOT BLANK(sp)) DO
+      sp = STRIP(sp)
+      n = 0
+      sp_found = FALSE
+      WHILE (n<n_sch) AND (NOT sp_found) DO
+         n = n + 1
+         IF   sch_list[n,2] = sp
+         THEN sp_found = TRUE
+         ENDIF
+      ENDWHILE
+      IF NOT sp_found THEN
+{**M1621 HBe 20-6-2005: Including ASSIGNED_SAMPLE_GROUP_ID in array}
+         n_extra = n_extra + 1
+         extra_samples[ n_extra, 1 ] = sp
+         extra_samples[ n_extra, 2 ] = STRIP(SELECT prod_sched.test_schedule)
+         extra_samples[ n_extra, 3 ] = STRIP(SELECT prod_sched.assigned_group)
+      ENDIF
+      NEXT prod_sched
+      sp = SELECT prod_sched.sampling_point
+   ENDWHILE
+
+   IF n_extra > 0 THEN
+      n_sp = 0
+      WHILE n_sp < n_extra DO
+         n_sp = n_sp + 1
+         sp = extra_samples[ n_sp, 1 ]
+         ts = extra_samples[ n_sp, 2 ]
+{**MS1621 assigned group is read. If it was specified in prod_sched table, use this for sample group id.}
+         ag = extra_samples[ n_sp, 3 ]
+            IF (NOT BLANK(ag)) AND (ag <> EMPTY) THEN
+               assigned_sample_group_id = ag
+            ELSE
+               assigned_sample_group_id = sample_group_id
+            ENDIF
+{**AE1621}
+         sp_template = EMPTY
+         sp_template = select sample_point . mps_template
+                       where  identity = sp
+         IF  (sp_template <> EMPTY) AND (NOT(BLANK(sp_template)))
+         THEN super_t = EMPTY
+              super_t = select samp_tmpl_header.supertemplate
+                        WHERE  identity = sp_template
+                        AND    removeflag = FALSE
+              IF   super_t = EMPTY
+              THEN WriteToLog("Warning: The template:":STRIP(sp_template):
+                             " does not exist")
+                   sp_template = EMPTY
+              ELSEIF super_t = TRUE
+              THEN WriteToLog("Warning: Cant use sample point template:":
+                             STRIP(sp_template):" - it is a supertemplate")
+                   sp_template = EMPTY
+              ENDIF
+         ENDIF
+
+         IF  (sp_template <> EMPTY) AND (NOT(BLANK(sp_template)))
+         THEN create_next_sample( sp_template , EMPTY, sp )
+         ELSE create_next_sample( smp_template, EMPTY, sp )
+         ENDIF
+
+      ENDWHILE
+   ENDIF
+
+{  Login Tests for all samples having sampling points in Schedule List }
+   the_sch = 0
+   n_tests = 0
+
+   WHILE (the_sch<n_sch) AND (the_sch<max_templates_allowed) DO
+      the_sch = the_sch + 1
+      IF NOT(sch_list[the_sch,4]) THEN
+         anal_id = SELECT test_sched_entry.analysis_id
+                   WHERE  identity = sch_list[the_sch,3]
+                   AND    std_test = TRUE
+                   ORDER  ON order_num
+         WHILE (anal_id<>EMPTY) AND (NOT BLANK(anal_id)) DO
+            n_sch = n_sch + 1
+            sch_list[n_sch,1] = sch_list[the_sch,1]
+            sch_list[n_sch,3] = SELECT test_sched_entry.analysis_id
+            sch_list[n_sch,4] = SELECT test_sched_entry.is_analysis
+            sch_list[n_sch,5] = sch_list[the_sch,5] *
+                                SELECT test_sched_entry.replicate_count
+{*M1669 HBe 13-12-2005: Added the component list entry to the sch_list array.}
+            sch_list[n_sch,6] = SELECT test_sched_entry.component_list
+
+            IF sch_list[n_sch,4] = EMPTY THEN
+               WriteToLog("Warning: Analysis flag is empty for Sample:":
+                          sch_list[n_sch,1]:" Analysis:":
+                          sch_list[n_sch,3]:". Flag set to TRUE")
+               sch_list[n_sch,4] = TRUE
+            ENDIF
+
+            IF BLANK(sch_list[n_sch,6]) THEN
+               sch_list[n_sch,6] = EMPTY
+            ENDIF
+
+            NEXT test_sched_entry
+            anal_id = SELECT test_sched_entry.analysis_id
+         ENDWHILE
+      ELSE
+         ana_id = SELECT analysis.identity
+                  WHERE  identity = sch_list[the_sch,3]
+                  AND    removeflag = FALSE
+         IF (ana_id<>EMPTY) AND (NOT BLANK(ana_id))
+         THEN
+           local_count = 0
+           WHILE local_count < sch_list[the_sch,5] DO
+            local_count = local_count + 1
+{*M1669 HBe 13-12-2005: Replaced NEWTEST by NEWTEST_COMP_LIST using the component list entry from the sch_list array.}
+            test_no = NEWTEST_COMP_LIST( sch_list[the_sch,1], sch_list[the_sch,3], sch_list[the_sch,6] )
+            IF test_no = ERROR
+            THEN WriteToLog("ERROR: Unable to create test for sample:":
+                     sch_list[the_sch,1]:" Analysis:":sch_list[the_sch,3] )
+            ELSE n_tests = n_tests + 1
+{**AS1462 HBe 12-5-2003: Check for wild loops}
+               IF n_tests > max_tests_allowed THEN
+                  wildloop_exit ("N_TESTS", n_tests, max_tests_allowed)
+               ENDIF
+{{**AE1462}
+            ENDIF
+           ENDWHILE
+         ELSE WriteToLog("WARNING: Analysis:":sch_list[the_sch,3]:
+                        " from schedulelist does not exist")
+         ENDIF
+      ENDIF
+   ENDWHILE
+
+{  NOTICE: No labels are printed .....
+   IF n_samps > 0 THEN
+      print_labels(sp_arr,n_samps,mlp_id,job_id,mlp_code,date_created,EMPTY)
+   ENDIF ........ }
+
+ENDROUTINE
+
+
+ROUTINE  create_next_sample ( VALUE samp_template,
+                              VALUE template_status,
+                              VALUE sampling_point )
+{**AS1621: Including assigned_group}
+   DECLARE  local_sp, assigned_group
+   assigned_group = EMPTY
+
+   samp_created = NEWSAMPLE( the_name, smp_template, " " )
+
+   IF   samp_created = ERROR
+   THEN WriteToLog("ERROR: Not able to log in new sample")
+   ELSE
+        n_samps = n_samps + 1
+
+{**AS1462 HBe 12-5-2003}
+       IF n_samps > max_samples_allowed THEN
+          wildloop_exit ("N_SAMPS", n_samps, max_samples_allowed)
+       ENDIF
+{**AE1462}
+
+{**DS1274 HBe 25-10-00
+        mlp_ver = SELECT MAX mlp_versions.product_version
+                  WHERE  identity = mlp_id
+**DE1274}
+
+{**MS1460 HBe 7-4-2003:Include information on login plant on the sample table}
+        START READ  TRANSACTION mps_trans
+        the_sample = SELECT sample.id_numeric FOR UPDATE
+                     WHERE  id_numeric = samp_created
+        IF   the_sample = LOCKED
+        THEN WriteToLog("ERROR: Sample locked - Could not update")
+        ELSE
+             ASSIGN sample.product         = mlp_id
+             ASSIGN sample.batch_name      = job_id
+             ASSIGN sample.sampled_date    = "" {date_created}
+             ASSIGN sample.product_version = mlp_ver
+             ASSIGN sample.sample_type     = mlp_smp_type
+{**M1621: Assigning assigned_sample_group instead of sample_group}
+             ASSIGN sample.group_id        = assigned_sample_group_id
+             ASSIGN sample.template_id     = samp_template
+             ASSIGN sample.test_schedule   = PAD("","-",255)
+             ASSIGN sample.link_number     = next_link
+             ASSIGN sample.sampling_point  = sampling_point
+{**DS1440 HBe 25-4-03
+             ASSIGN sample.login_plant     = sample_group_id
+}
+             ASSIGN sample.login_plant     = external_group_id
+{**AS1465 HBe 15-5-03}
+             ASSIGN sample.inspection_lot  = insp_lot
+             ASSIGN sample.inspection_type = insp_type
+{**AS1544 HBe 8-3-04}
+             ASSIGN sample.product_before  = smat_code_before
+             ASSIGN sample.batch_before    = batch_before
+{**AE1544}
+{**AE1465}
+{**ME1440}
+{**ME1460}
+{**AS1749 HBe 22-11-2006}
+             ASSIGN sample.description     = mlp_desc
+{**AE1749}
+
+             local_sp  =  sampling_point   { Initiate Sampling Point }
+
+             order_num =  SELECT template_fields.order_number
+                          WHERE  table_name  = "SAMPLE"
+                          AND    template_id = samp_template
+                          AND    default_value <> NULL
+                          AND    field_name    <> NULL
+                          AND    field_name <> "SAMPLED_DATE"
+                          AND    field_name <> "PRODUCT_NAME"
+                          AND    field_name <> "BATCH_NAME"
+                          AND    field_name <> "PRODUCT_VERSION"
+                          AND    field_name <> "SAMPLE_TYPE"
+                          AND    field_name <> "GROUP_ID"
+                          ORDER  ON order_number
+
+             WHILE (order_num <> EMPTY) AND (NOT BLANK(order_num)) DO
+               field_name = STRIP(SELECT template_fields.field_name)
+               def_val = STRIP(SELECT template_fields.default_value)
+               IF (def_val<>EMPTY) AND (NOT BLANK(def_val)) THEN
+
+{                 Check for converting interval to date            }
+                  get_field_details sample.'field_name', "DATA_TYPE", typ
+                  if typ = "Date" then
+                     if date( def_val) = ERROR then
+                        if   is_interval( def_val )
+                        then def_val = interval( def_val ) + today
+                        else def_val = today
+                             WriteToLog("ERROR: Could not transform ":
+                                       STRIP(def_val) :
+                                     " into date for sample field:":field_name)
+                        endif
+                     endif
+                  endif
+
+                  IF (((field_name =  "SAMPLING_POINT") AND
+                       (sampling_point = EMPTY)) OR
+                      (field_name <> "SAMPLING_POINT"))
+                  THEN ASSIGN sample.'field_name' = def_val
+                       IF field_name = "SAMPLING_POINT" THEN
+                          local_sp = def_val
+                       ENDIF
+                  ELSE local_sp = def_val
+                  ENDIF
+               ENDIF
+               NEXT template_fields
+               order_num = SELECT template_fields.order_number
+             ENDWHILE
+{**M1282 HBe 5-12-00: AND group_id=mps_group_id added below}
+             IF local_sp <> EMPTY THEN
+                 test_sch_id = SELECT prod_sched.test_schedule
+                               WHERE  product_name    = mlp_id
+                               AND    product_version = mlp_ver
+                               AND    sampling_point  = local_sp
+                               AND    test_schedule  != "NONE"
+                               AND    group_id        = external_group_id
+{**AS1621 HBe 22-6-2005}
+                 assigned_group = SELECT prod_sched.assigned_group
+                 IF (assigned_group <> EMPTY) AND (NOT BLANK(assigned_group)) THEN
+                    ASSIGN sample.group_id = assigned_group
+                 ENDIF
+{**AE1621}
+
+
+                 IF  (test_sch_id<>EMPTY) AND (NOT BLANK(test_sch_id))
+                 THEN ASSIGN sample.test_schedule = test_sch_id
+                      n_sch = n_sch + 1
+                      sch_list[n_sch,1] = samp_created
+                      sch_list[n_sch,2] = local_sp
+                      sch_list[n_sch,3] = test_sch_id
+                      sch_list[n_sch,4] = FALSE
+                      sch_list[n_sch,5] = 1
+                 ENDIF
+             ENDIF
+
+             update_sample_text_id ( smp_syntax_id )
+
+        ENDIF
+
+        IF   template_status <> EMPTY
+        THEN the_stat = template_status
+        ELSE the_stat = SELECT samp_tmpl_header.sample_status
+                        WHERE  identity = samp_template
+        ENDIF
+
+        CHANGE SAMPLE STATUS TO the_stat, rc
+
+        START WRITE TRANSACTION mps_trans
+        UPDATE sample
+        COMMIT
+
+        IF rc <> EMPTY THEN
+           WriteToLog("ERROR: Could not update ":STRIP(the_sample):": ":rc)
+        ENDIF
+
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  update_job
+{**M1349 HBe 17-9-2001: Update of layered, material before and batch before is included}
+{**M1350 HBe 19-9-2001: Update of delete_flag is included}
+{**M1465 HBe 15-5-2003: Update of inspection type and inspection lot included}
+{**M1531 HBe  5-2-2004: Update of vendor_batch included. Update and message logic for for inspection lot and inspection type changed}
+   insp_lot_update     = FALSE
+   insp_type_update    = FALSE
+   batch_before_update = FALSE
+   mat_before_update   = FALSE
+   declare mlp_context, old_smat_code_before, old_sbatch_before
+   mlp_context          = EMPTY
+   old_smat_code_before = EMPTY
+   old_sbatch_before    = EMPTY
+      update_text = ""
+{**M1465 HBe 19-5-2003: Log only date changes when relevant}
+   IF start_date != date_created THEN
+{      WriteToLog("start_date <> date_created: ":the_name:": ":start_date:" <> ":date_created)}
+      ASSIGN job_header . date_to_start = date_created
+      update_text = update_text : " Old SD: ": STRIP(SUBSTRING(start_date,1,11)) : "."
+   ENDIF
+   IF ((old_pot_qty!= pot_qty) AND (pot_qty != 0)) THEN
+      ASSIGN job_header . potency       = pot_qty
+      update_text = update_text : " OPQ: ": old_pot_qty : "."
+   ENDIF
+   ASSIGN job_header . work_center   = wc_id
+   IF layered <> "U" THEN
+      ASSIGN job_header . layered          = layered
+   ENDIF
+{**MS1544 HBe 4-3-2004}
+   IF (NOT BLANK(mat_before)) AND (mat_before <> old_mat_before) THEN
+      ASSIGN job_header . material_before  = mat_before
+      mat_before_update = TRUE
+      update_text = update_text : " Material Before on job updated"
+   ENDIF
+   IF (NOT BLANK(batch_before)) AND (batch_before <> old_batch_before) THEN
+      ASSIGN job_header . batch_before     = batch_before
+      batch_before_update = TRUE
+      update_text = update_text : " Batch Before on job updated"
+   ENDIF
+{**ME1544}
+
+{**AS1545}
+   IF (NOT BLANK(mlp_smp_type)) AND (old_sample_type <> mlp_smp_type) THEN
+      ASSIGN job_header . sample_type = mlp_smp_type
+      update_text = update_text : "Job SampleType upd."
+   ENDIF
+{**AE1545}
+
+{**AS1549 HBe 10-3-2004}
+   IF (NOT BLANK(production_date)) AND (production_date <> EMPTY) AND (production_date <> old_production_date) THEN
+      ASSIGN job_header . production_date     = production_date
+      ASSIGN job_header . sap_update_date     = NOW
+      update_text = update_text : " Prod-date"
+   ENDIF
+
+   IF (NOT BLANK(shelf_exp_date)) AND (shelf_exp_date <> EMPTY) AND (shelf_exp_date <> old_shelf_exp_date) THEN
+      ASSIGN job_header . shelflife_exp_date     = shelf_exp_date
+      ASSIGN job_header . sap_update_date     = NOW
+      update_text = update_text : " Shelflife"
+   ENDIF
+{**AE1549}
+   IF (NOT BLANK(vendor_batch)) AND (vendor_batch <> EMPTY) AND (vendor_batch <> old_vendor_batch) THEN
+      ASSIGN job_header . vendor_batch     = vendor_batch
+      update_text = update_text : " Old Vendor Batch= ": old_vendor_batch : "."
+   ENDIF
+   IF NOT BLANK(delete_flag) THEN
+      ASSIGN job_header . delete_flag      = delete_flag
+   ENDIF
+   IF (insp_lot <> "            ") AND ( insp_lot <> old_insp_lot) THEN
+      insp_lot_update = TRUE
+      ASSIGN job_header . inspection_lot   = insp_lot
+      update_text = update_text : " Old IL: ": old_insp_lot:"."
+   ENDIF
+   IF (insp_type <> "        ") AND (insp_type <> old_insp_type) THEN
+      insp_type_update = TRUE
+      ASSIGN job_header . inspection_type   = insp_type
+      update_text = update_text : " Old IT: ": old_insp_type:"."
+   ENDIF
+
+   START WRITE TRANSACTION mps_trans
+   UPDATE job_header
+   COMMIT
+   upd_jobs = upd_jobs + 1
+   upd_sams = 0
+   samps    = 0
+
+   START READ TRANSACTION mps_samps
+   samp_id = SELECT sample.id_numeric
+             WHERE  job_name = the_name
+             ORDER  on id_numeric ASCENDING
+   WHILE samp_id <> EMPTY DO
+      context = "update_job"
+      samps = samps + 1
+      PUSH_FILE_DESCRIPTOR("SAMPLE", context)
+      the_date = SELECT sample.sampled_date FOR UPDATE
+             WHERE  id_numeric = samp_id
+      IF     the_date = LOCKED
+      THEN   WriteToLog("One sample for job was locked - NOT updated")
+{**MS1465 HBe 15-5-2003}
+      ELSEIF (the_date=EMPTY) OR (the_date<>date_created) OR (insp_lot_update) OR (insp_type_update) OR (mat_before_update) OR (batch_before_update)
+      THEN
+{          IF (the_date=EMPTY) OR (the_date<>date_created) THEN
+             ASSIGN sample.sampled_date    = "" (altered from date_created)
+          ENDIF}
+
+          IF insp_lot_update THEN
+             ASSIGN sample.inspection_lot  = insp_lot
+          ENDIF
+          IF insp_type_update THEN
+             ASSIGN sample.inspection_type = insp_type
+          ENDIF
+{**ME1465}
+{**AS1544}
+          IF mat_before_update THEN
+
+             old_smat_code_before = STRIP(SELECT sample.product_before)
+
+{**M1679 HBe 11-1-2006: Do update also if the record contains blank or the text "No code found"
+                        Note, that EMPTY does not work for this field. The 40 -'s are not recognized
+                        as empty, therefor we save empty as a blank instead.
+                        Note that we need this IF loop in order not to overwrite any manually entered values.}
+
+             IF (old_smat_code_before = EMPTY) OR (BLANK(old_smat_code_before)) OR (old_smat_code_before = "0")
+                OR (old_smat_code_before = " ") OR (INDEX(old_smat_code_before, "No code found") <> 0)
+             THEN
+                ASSIGN sample.product_before = smat_code_before
+             ELSE
+                update_text = update_text : " " : STRIP(samp_id): " Product Before unchanged for sample."
+             ENDIF
+          ENDIF
+
+          IF batch_before_update THEN
+
+             old_sbatch_before = STRIP(SELECT sample.batch_before)
+             IF (old_sbatch_before = EMPTY) OR (BLANK(old_sbatch_before) OR (old_sbatch_before = "0") OR (old_sbatch_before = " "))
+             THEN
+                ASSIGN sample.batch_before = batch_before
+             ELSE
+                update_text = update_text : " " : STRIP(samp_id): " BB unchanged."
+             ENDIF
+          ENDIF
+{**AE1544}
+             START WRITE TRANSACTION mps_samps
+             UPDATE sample
+             upd_sams = upd_sams + 1
+      ENDIF
+      COMMIT
+      POP_FILE_DESCRIPTOR(context)
+      NEXT sample
+      samp_id = SELECT sample.id_numeric
+   ENDWHILE
+   COMMIT
+{**M1465 HBe 19-5-2003: update text added below}
+   WriteToLog(STRIP(the_name):" updated. ":update_text:
+             " Samples:":STRIP(upd_sams):"/":STRIP(samps))
+ENDROUTINE
+
+
+ROUTINE  cancel_job
+
+   START WRITE TRANSACTION mps_trans
+   CHANGE JOB STATUS TO "X", rc
+   IF   rc = EMPTY
+   THEN WriteToLog("Job has been Cancelled")
+        jobs_canc = jobs_canc + 1
+        UPDATE job_header
+   ELSE WriteToLog("ERROR: Could not cancel Job. Return code:":rc)
+   ENDIF
+
+ENDROUTINE
+
+
+ROUTINE  line_ok ( VALUE i_line, job_id, mlp_id, mlp_ver, stat, date_created,
+                         smp_temp, mlp_desc, mlp_smp_type, mlp_code,
+                         wc_id, pot_qty, line_err,
+                         group_ids, groups, order, ref_order, layered,
+                         mat_before, batch_before, org_template_code,
+                         mps_group_id, job_group_id, sample_group_id,
+                         delete_flag, is_batch, date_ok, insp_lot, insp_type,
+                         vendor_batch, mlp_splogin, smat_code_before, production_date, shelf_exp_date)
+
+{Remark **1346: "job_group_id" and "sample_group_id" are currently identical and
+ furthermore also identical to "mps_group_id" if the job is being logged in. This is in preparation
+ for introduction of jobs being global if the product is global while maintaining the samples being
+ assigned to a specific plant. At the same time it is possible to save the login plant from the
+ "mps_group_id".}
+{Remark **1408: date_OK included above in order to avoid login of very old jobs when error jobs are
+ run on the ERP system.)
+{Remark **1465: insp_lot and insp_type included}
+{**M1531: Reading vendor batch number as variable:vendor_batch}
+
+
+   ARRAY parm_arr
+
+   mps_group_id    = EMPTY
+   mps_job_id      = EMPTY
+   mps_sample_id   = EMPTY
+   job_id          = EMPTY
+   mlp_id          = EMPTY
+   mlp_ver         = EMPTY
+   stat            = EMPTY
+   date_created    = EMPTY
+   smp_temp        = EMPTY
+   mlp_desc        = EMPTY
+   wc_id           = EMPTY
+   pot_qty         = EMPTY
+   order           = EMPTY
+   ref_order       = EMPTY
+   layered         = EMPTY
+   mat_before      = EMPTY
+   batch_before    = EMPTY
+   delete_flag     = EMPTY
+   vendor_batch    = EMPTY
+{**AS1386}
+   is_batch        = TRUE
+{**AE1386}
+   line_err = " "
+{**AS1274 HBe 25-10-00}
+   line_com = " "
+{**AE1274}
+{**AS1408}
+   check_date      = EMPTY
+   date_OK         = TRUE
+   one_month       = INTERVAL("0031 00:00:00.00")
+{**AE1408}
+{*AS1465 HBe 15-5-03}
+   insp_type       = EMPTY
+   insp_lot        = EMPTY
+{**AE1465}
+{**AS1549 HBe 10-3-2004}
+   production_date = EMPTY
+   shelf_exp_date  = EMPTY
+{**AE1549}
+{**AS1544 HBe 8-3-04}
+DECLARE mlp_context
+mlp_context = EMPTY
+{**AE1544}
+
+   IF   LENGTH(i_line) < line_length
+   THEN WriteToLog("ERROR: Line:":i_line:" is to short")
+   ELSE
+
+{**AS1265 HBe 10-8-00}
+      mps_group_id = RIGHTSTRING(STRIP(SUBSTRING(i_line,59,4)),4)
+{**AE1265 HBe 10-8-00}
+{**M1525 HBe 21-1-04: order now 10 characters instead of 7}
+
+      order        = STRIP(SUBSTRING(i_line,3,10))
+
+{**MS 1336 HBe 13-7-01
+      job_id = STRIP(SUBSTRING(i_line,6,7))
+}
+      job_id = STRIP(SUBSTRING(i_line,104,10))
+
+{**ME 1336}
+
+{flash_message(SUBSTRING(i_line,31,8), TRUE)}
+{**AS1408}
+      date_in       = SUBSTRING(i_line,31,8)
+      IF IS_DATE (SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4)) THEN
+      {IF date_handler("TO_DATE","YYYYMMDD", SUBSTRING(i_line,31,8),date_string_1,err_mess) THEN}
+         date_string_1 = DATE(SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4))
+         check_date = DATE( date_string_1 )
+         IF (check_date < (NOW - one_month)) THEN
+            date_OK = FALSE
+         ENDIF
+      ELSE
+         WriteToLog( err_mess )
+      ENDIF
+
+{**AE1408}
+
+{**MS1386
+      IF BLANK(job_id)
+      THEN WriteToLog("ERROR: Job ID can not be empty")
+           return( FALSE )
+      ENDIF
+}
+
+      IF BLANK(job_id)
+      THEN
+           is_batch = FALSE
+
+{**MS1525 HBe 29-1-04}
+           batch_order = order
+           WHILE (LENGTH(batch_order) > 0) AND (SUBSTRING(batch_order, 1, 1) = "0")
+              batch_order = SUBSTRING(batch_order, 2, LENGTH(batch_order) - 1)
+           ENDWHILE
+
+           job_id = "NSM":batch_order
+{**ME1525}
+
+{**Remark: The IF statement below to be removed when France stops using one PO in MPS system
+for multiple batches!}
+           IF mps_group_id = "2020" THEN
+              WriteToLog("ERROR: Batch number can not be empty for plant 2020")
+              return( FALSE )
+           ENDIF
+      ENDIF
+{**ME1386}
+
+
+{**AS 1336 HBe 13-7-01}
+
+{**AS1386}
+        IF NOT is_batch and BLANK(order)
+        THEN
+           WriteToLog("ERROR: Batch ID and order number can not both be empty")
+           return( FALSE )
+        ENDIF
+{**AE1386}
+
+        ref_order       = STRIP(SUBSTRING(i_line,114,12))
+
+        layered         = STRIP(SUBSTRING(i_line,100,1))
+        IF ((strip(layered) = "") OR (layered = NULL))
+           THEN layered = "U"
+        ENDIF
+
+        mat_before      = STRIP(SUBSTRING(i_line,73,8))
+
+        batch_before    = STRIP(SUBSTRING(i_line,81,10))
+{**AS1531}
+        vendor_batch    = STRIP(SUBSTRING(i_line,146,15))
+        IF (vendor_batch = EMPTY) OR (BLANK(vendor_batch)) THEN
+           vendor_batch = "               "
+        ENDIF
+{**AE1531}
+
+{*AS1465 HBe 15-5-03: Handle inspections from SAP}
+       insp_lot       = SUBSTRING(i_line,126,12)
+          IF (BLANK(insp_lot)) OR (insp_lot = NULL) OR (insp_lot = "000000000000") THEN
+             insp_lot = "        "
+          ENDIF
+
+       insp_type        = SUBSTRING(i_line,138,8)
+
+          IF (BLANK(insp_type)) OR (insp_type = NULL) OR (insp_type = "00000000") THEN
+             insp_type = "            "
+          ELSEIF INDEX("01;01P;09", STRIP(insp_type)) > 0 THEN
+            line_err = " Inspection type ":STRIP(insp_type):" not handled"
+            return ( FALSE )
+          ENDIF
+{**AE1465}
+
+
+
+{**AE1336}
+{**MS 2003R1: MLP version selection heavy modified to get details from correct version. Old version changes eliminated}
+
+      mlp_id = RIGHTSTRING(STRIP(SUBSTRING(i_line,13,18)),6)
+
+{**AS1272 HBe 7-9-00}
+      IF length(mlp_id) = 6
+      THEN
+         IF LEFTSTRING(mlp_id,1) = "0"
+         THEN
+            mlp_id = RIGHTSTRING(mlp_id,5)
+         ENDIF
+      ENDIF
+{**AE1272 }
+
+      IF LENGTH(mlp_id) > max_mlp
+      THEN WriteToLog("ERROR: Length of MLP:":mlp_id:
+                     " is to long. Must not be longer than ":max_mlp)
+      ELSE
+
+{Check, if any good MLP exists at all - regardless of version}
+
+        the_id =      SELECT mlp_header.identity
+                      WHERE  identity = mlp_id
+                      AND    removeflag = FALSE
+                      AND    approval_status = "A"
+
+        IF the_id <> EMPTY
+        THEN
+           IF  (mps_group_id <> EMPTY) AND (NOT(BLANK(mps_group_id)))
+           THEN
+              IF(check_group_id(mps_group_id, groups, group_ids))
+              THEN
+
+              ELSE
+                 WriteToLog("Line skipped Plant code ": strip(mps_group_id) :" not accepted in system")
+                 return ( FALSE )
+
+              ENDIF
+           ELSE
+              WriteToLog("ERROR: Empty plant code on MPS record")
+              return ( FALSE )
+
+           ENDIF
+
+
+           mlp_parms_ok = FALSE
+           newest_mlp_ver = SELECT MAX mlp_header.product_version
+                            WHERE identity = mlp_id
+
+           mlp_ver = newest_mlp_ver
+
+           REPEAT
+
+
+
+              IF mlp_analysis_parameters ( "M", "MPS_TMPL", 4, mlp_id, mlp_ver,
+                                           parm_arr, n_sets, err_mess )
+
+              THEN
+
+                 identity = SELECT mlp_header.identity
+                            WHERE identity = mlp_id
+                            AND product_version = mlp_ver
+                            AND removeflag <> TRUE
+                            AND approval_status = "A"
+
+
+                 IF (identity <> EMPTY) AND NOT BLANK(identity) THEN
+                    mlp_parms_ok = TRUE
+                    mlp_desc     = STRIP(SELECT mlp_header.description)
+            mlp_smp_type = SELECT mlp_header.sample_type
+            mlp_code     = SELECT mlp_header.product_code
+            mlp_splogin  = SELECT mlp_header.do_splan_login
+
+
+                    IF (mlp_ver <> newest_mlp_ver) AND (mlp_ver >0)
+                    THEN
+                       line_com = line_com :". Used MLP vers. ": strip(mlp_ver):
+                       ". Newest MLP vers. is:": strip(newest_mlp_ver):"."
+                    ENDIF
+                 ENDIF
+              ENDIF
+
+              IF NOT mlp_parms_ok THEN
+                 mlp_ver = JUSTIFY(PAD(NUMBER_TO_TEXT( mlp_ver - 1 ,"999" ), " ",10)"RIGHT")
+              ENDIF
+
+           UNTIL (mlp_parms_ok) or (mlp_ver < 1)
+
+
+
+           IF mlp_parms_ok
+
+           THEN
+             template_code = strip(SUBSTRING(i_line,40,1))
+
+             org_template_code = template_code
+             IF template_code = "M" THEN
+                template_code = "P"
+             ENDIF
+
+             IF   (BLANK(template_code)) OR (template_code=EMPTY)
+             THEN WriteToLog("ERROR: No template code")
+                  return ( FALSE )
+             ELSE n = 0
+                  found = FALSE
+                  WHILE (n < n_sets) AND (NOT(found)) DO
+                     n = n + 1
+
+{**ME 2003R1}
+{**M1440 HBe 25-4-03: Using mps_group_id to match instead of sample_group_id - not controlled by parm_arr value 4
+                     IF ((parm_arr[n,2] = template_code)
+                     AND ((parm_arr[n,3] = sample_group_id )
+                          OR (BLANK(parm_arr[n,3])) OR (parm_arr[n,3]=EMPTY))) THEN
+                        found = TRUE
+}
+                     IF ((parm_arr[n,2] = template_code)
+                     AND ((parm_arr[n,3] = mps_group_id )
+                          OR (BLANK(parm_arr[n,3])) OR (parm_arr[n,3]=EMPTY))) THEN
+                        found = TRUE
+
+{**ME1440}
+{**ME1265 HBe 11-8-00}
+
+{**AS1440 HBe 25-4-03}
+                        security_group = parm_arr[n,4]
+                        IF BLANK(security_group) OR (security_group = EMPTY) THEN
+                           security_group = parm_arr[n,3]
+                           IF BLANK(security_group) OR (security_group = EMPTY) THEN
+                              security_group = mps_group_id
+                           ENDIF
+                        ENDIF
+                        job_group_id      = security_group
+                        sample_group_id   = security_group
+{**AE1440}
+
+                        smp_temp = strip(parm_arr[n,1])
+                     ENDIF
+                  ENDWHILE
+                  IF (NOT found) THEN
+{**M1440: Using mps_group_id instead of sample_group_id below}
+                     line_err = line_err : "Could not find template code:":template_code:" for plant ":mps_group_id:" in setup. "
+                     return ( FALSE )
+                  ENDIF
+
+           IF (smp_temp<>EMPTY) AND (NOT BLANK(smp_temp))
+           THEN
+              the_id = select samp_tmpl_header.identity
+                       where  removeflag = FALSE
+                       and    identity = strip(smp_temp)
+              IF   the_id = EMPTY
+              THEN WriteToLog("Warning: Sample Template:":smp_temp:
+                             " does not exist")
+              ELSE
+{LPe Start - Ændre to steder mht start af substring }
+                stat = SUBSTRING(i_line,39,1)
+{**AS1350 HBe 19-9-2001}
+                IF stat = "Z" THEN
+                   delete_flag = TRUE
+                ELSE
+                   delete_flag = FALSE
+                ENDIF
+{**AE1350}
+{**MS1350: stat = "Z" included below!}
+                IF   (stat="O") OR (stat="C") OR (stat="X") OR (stat="Z")
+{**ME1350}
+                THEN
+      date_in       = SUBSTRING(i_line,31,8)
+      IF IS_DATE (SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4)) THEN
+      {IF date_handler("TO_DATE","YYYYMMDD", SUBSTRING(i_line,31,8),date_string_1,err_mess) THEN}
+         date_string  = DATE(SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4))
+         date_created = DATE( date_string )
+
+
+{**MS1265 HBe 11-8-00
+                       wc_id   = SUBSTRING(i_line,41,3)
+}
+
+                       wc_id   = STRIP(SUBSTRING(i_line,63,10))
+{**AS1549/MS1550 HBe 10-3-2004}
+
+                       {IF date_handler("TO_DATE","YYYYMMDD", SUBSTRING(i_line,161,8),date_string_2,err_mess) THEN}
+                      date_in       = SUBSTRING(i_line,161,8)
+                      IF IS_DATE (SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4)) THEN
+                         date_string_2 = DATE(SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4))
+
+                          production_date = DATE( date_string_2 )
+                       ELSE
+                          production_date = DATE("")
+                       ENDIF
+
+
+
+                       {IF date_handler("TO_DATE","YYYYMMDD", SUBSTRING(i_line,169,8),date_string_3,err_mess) THEN}
+                      date_in       = SUBSTRING(i_line,169,8)
+                      IF IS_DATE (SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4)) THEN
+                      {IF date_handler("TO_DATE","YYYYMMDD", SUBSTRING(i_line,31,8),date_string_1,err_mess) THEN}
+                          date_string_3 = DATE(SUBSTRING(date_in,7,2):"-":SUBSTRING(date_in,5,2):"-":SUBSTRING(date_in,1,4))
+
+                          shelf_exp_date = DATE( date_string_3 )
+                       ELSE
+                          shelf_exp_date = DATE("")
+                       ENDIF
+{**AE1549/ME1550}
+
+{**AS1544 HBe 8-3-2004}
+                       mlp_context = "VERSION"
+                       push_file_descriptor ("max_active_mlp_ver", mlp_context)
+                       prod_before_ver = SELECT max_active_mlp_ver.max_version
+                                          WHERE identity = mat_before
+                       IF (prod_before_ver = EMPTY) OR (BLANK(prod_before_ver))
+                       THEN
+                          prod_before_ver = "         1"
+                       ENDIF
+                       pop_file_descriptor(mlp_context)
+
+                       mlp_context = "CODE"
+                       push_file_descriptor ("mlp_header", mlp_context)
+                       smat_code_before = SELECT mlp_header.product_code
+                                          WHERE identity = mat_before
+                                          AND product_version = prod_before_ver
+                       pop_file_descriptor(mlp_context)
+
+
+                       IF  ((mat_before = EMPTY) OR (BLANK(mat_before)))
+                       THEN
+                          smat_code_before = " "
+                       ENDIF
+
+{**M1679 HBe 11-1-2006:Find the correct string for an empty record}
+                       DECLARE product_before_size
+                       product_before_size = EMPTY
+                       empty_product_before = EMPTY
+                       GET_FIELD_DETAILS sample.product_before, "FIELD_SIZE", product_before_size
+                       empty_product_before = PAD(empty_product_before, "-", product_before_size)
+
+                       IF ((smat_code_before = EMPTY) OR (BLANK(smat_code_before)) OR (smat_code_before = " ") OR (smat_code_before = empty_product_before))
+                           AND (mat_before <> EMPTY) AND (NOT BLANK(mat_before))
+                       THEN
+                          smat_code_before = "No Name found for " : STRIP(mat_before)
+                       ENDIF
+
+{**AE1544}
+
+{**ME1265 HBe}
+                       pot_qty = SUBSTRING(i_line,51,8)
+                       IF   NUMTEXT(pot_qty)
+                       THEN pot_qty = NUMERIC(pot_qty)
+                            return(TRUE)
+                       ELSE WriteToLog("ERROR: Potency:" : STRIP(pot_qty) :
+                                      " is not numeric" )
+                       ENDIF
+                  ELSE WriteToLog( err_mess )
+                  ENDIF
+                ELSE WriteToLog("ERROR: Wrong status on job:":stat)
+                ENDIF
+              ENDIF
+           ENDIF
+             ENDIF   {  Template Code in input line Check       }
+
+           ELSE line_err = line_err : "Mlp:":mlp_id:" Version:": mlp_ver:" does not have parameter setup. "
+         ENDIF     {  MLP Parameter Setup exists Check   }
+
+
+
+        ELSE    line_err = line_err : "Mlp:":mlp_id:" Removed or not existing. "
+        ENDIF        {  MLP Id in Lims Check  }
+      ENDIF          {  MLP Id Length Check   }
+   ENDIF             {  Line Length Check     }
+
+   return( FALSE )
+
+ENDROUTINE
+
+GLOBAL
+ROUTINE  get_global ( VALUE id, the_value, VALUE log_error )
+
+   the_value = EMPTY
+   the_operator = OPERATOR
+
+   the_value = select config_item.value
+               where  operator = the_operator
+               and    identity = id
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN the_value = select config_header.value
+                    where  identity = id
+   ENDIF
+
+   IF   (the_value = EMPTY) OR BLANK(the_value)
+   THEN IF   log_error
+        THEN WriteToLog("ERROR: Could not find global variable:" : id )
+        ENDIF
+        return ( FALSE )
+   ELSE return ( TRUE  )
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  update_sample_text_id ( VALUE smp_syntax_id )
+
+   DECLARE  l_smp_id, sample_pushed
+
+   syntax_val = GET SYNTAX( smp_syntax_id )
+
+   IF   syntax_val <> EMPTY
+   THEN push_file_descriptor ( "SAMPLE", sample_pushed )
+        l_smp_id = select sample . id_numeric
+                   where  id_text = syntax_val
+        pop_file_descriptor  ( sample_pushed )
+        IF   l_smp_id <> EMPTY
+        THEN WriteToLog("Warning: Syntax:":strip(smp_syntax_id):
+                       " returned existing Id Text")
+             WriteToLog("         on sample:":strip(l_smp_id):": ":syntax_val)
+        ELSE ASSIGN sample.id_text = syntax_val
+        ENDIF
+   ELSE WriteToLog("WARNING: Could not update Sample Id Text")
+   ENDIF
+
+ENDROUTINE
+
+{**AS1265 HBe 10-8-00}
+
+
+ROUTINE Check_Group_Id ( VALUE the_group, VALUE groups, group_ids )
+
+    grp_no = 0
+    group_found = FALSE
+    WHILE (grp_no < groups) AND (NOT group_found) DO
+       grp_no = grp_no+1
+       IF    group_ids[grp_no] = the_group
+       THEN  group_found = TRUE
+       ENDIF
+    ENDWHILE
+    RETURN ( group_found )
+ ENDROUTINE
+
+ROUTINE get_group_ids(group_ids, groups)
+              groups = 0
+              one_group = SELECT group_header.identity
+                 WHERE removeflag <> TRUE
+              WHILE (one_group <> EMPTY) DO
+                 groups = groups+1
+                 group_ids[groups] = one_group
+                 NEXT group_header
+                 one_group = SELECT group_header.identity
+              ENDWHILE
+ENDROUTINE
+
+
+{**AE1265 HBe 10-8-00}
+
+
+{**AS1363 HBe 23-10-2001: Manual file handling}
+
+ROUTINE confirm_manual_file ( use_manual )
+
+DECLARE lk
+
+CREATE OBJECT "STD_FORM", use_manual_file
+
+{setup defaults}
+
+
+use_manual_file. header = "Confirm Manual File 'c:\temp\job_creation_file.txt'"
+use_manual_file. footer = "Click Yes or No. 'Escape' equals 'No'!"
+use_manual_file. row    =  7
+use_manual_file. column =  4
+use_manual_file. width  = 60
+use_manual_file. height =  3
+use_manual_file. return_behaviour = FORM_RETURN_STAY
+
+
+use_manual_file. add_display ("Use manual file 'c:\temp\job_creation_file' instead of file from MPS system?",
+                        8, 2, prompt_rendition_bold )
+
+use_manual_file . start_prompt ()
+use_manual_file . wait_prompt ()
+use_manual_file . end_prompt ()
+
+lk = use_manual_file . get_lastkey ()
+
+IF lk = "EXIT" THEN
+   use_manual = FALSE
+ELSEIF lk = "ENTER" THEN
+   use_manual = TRUE
+ELSEIF lk = "DO" THEN
+   use_manual = TRUE
+ELSE
+   use_manual = FALSE
+   FLASH_MESSAGE("Error! Lastkey not Enter, Do or Exit but = ":strip(lk),TRUE) ENDIF
+
+
+ENDROUTINE
+{**AE1363}
+
+
+{**AF1462 HBe 12-5-2003: Always exit if samples/test count is exceeded, never return, even if file write fails.}
+
+ROUTINE wildloop_exit (VALUE err_var, VALUE err_var_val, VALUE max_val)
+
+   hour = STRIP(SUBSTRING(NOW, 13,2))
+   minute = STRIP(SUBSTRING(NOW, 16,2))
+   crit_file = "smp$logfiles:critical_error":hour:"_":minute:".log"
+   FILE CREATE crit_file, rc
+   FILE WRITE crit_file, STRIP(err_var) : " - " : STRIP(err_var_val) : " > " : STRIP(max_val)
+   EXIT
+
+ENDROUTINE
+
+{**AE1462}
+
+
+{**AS1537 HBe 19-2-2004: Including SamplePlan login to job just logged in}
+
+
+{---------------------------------------------------------------------------------------------------------------------------------}
+
+ROUTINE do_splan_login (VALUE the_name, VALUE job_id, VALUE date_created,
+                        VALUE mlp_ver, VALUE mlp_smp_type, VALUE job_group_id, VALUE external_group_id,
+                        VALUE insp_lot, VALUE insp_type, VALUE line_com, row_idx, VALUE batch_before, VALUE smat_code_before)
+
+WriteToLog(ASCII(10):"the_name           :":the_name:",":
+           ASCII(10):"job_id             :":job_id:",":
+           ASCII(10):"date_created       :":date_created:",":
+           ASCII(10):"mlp_ver            :":mlp_ver:",":
+           ASCII(10):"mlp_smp_type       :":mlp_smp_type:",":
+           ASCII(10):"job_group_id       :":job_group_id:",":
+           ASCII(10):"external_group_id  :":external_group_id:",":
+           ASCII(10):"insp_lot           :":insp_lot:",":
+           ASCII(10):"insp_type          :":insp_type:",":
+           ASCII(10):"line_com           :":line_com:",":
+           ASCII(10):"row_idx            :":row_idx:",":
+           ASCII(10):"batch_before       :":batch_before:",":
+           ASCII(10):"smat_code_before   :":smat_code_before
+           )
+
+   JOIN LIBRARY $SP_LOGIN
+   JOIN STANDARD_LIBRARY STD_BLOCK
+
+   declare field1  {product}
+   declare field2  {batch_name}
+   declare field3  {sampled_date}
+   declare field4  {product_version}
+   declare field5  {sample_type}
+   declare field6  {group_id}
+   declare field7  {test_schedule}
+   declare field8  {login_plant}
+   declare field9  {inspection_lot}
+   declare field10 {inspection_type}
+   declare field11 {date_completed}
+   declare splan_select_array
+
+   batch_login_initialise ( )
+
+
+   CREATE OBJECT "BATCH_LOGIN" , batch_login_object
+
+   batch_login_object . login_table           = "job_header"
+   batch_login_object . login_identity        = the_name
+   batch_login_object . job                   = the_name
+   batch_login_object . rule_only_based_count = GLOBAL ( "SP_RULES_MODE" )
+   batch_login_object . trigger_max_one_rule  = GLOBAL ( "SP_RULES_MODE" )
+   batch_login_object . output_to_literal     = global("MODE") = "INTERACTIVE"
+   batch_login_object . check_rules           = TRUE
+   batch_login_object . pre_login_edit        = FALSE
+
+   batch_login_object . login ( )
+
+
+   sample_for_update = SELECT SAMPLE.id_numeric
+                          WHERE job_name = the_name
+                          AND product_version = "0"
+
+
+   IF (sample_for_update <> EMPTY) AND (NOT BLANK(sample_for_update)) THEN
+      {Updating the sample header for samples logged in by sample plan}
+
+      field1        = "PRODUCT"
+      field2        = "BATCH_NAME"
+      field3        = "SAMPLED_DATE"
+      field4        = "PRODUCT_VERSION"
+      field5        = "SAMPLE_TYPE"
+      field6            = "GROUP_ID"
+      field7            = "TEST_SCHEDULE"
+      field8            = "LOGIN_PLANT"
+      field9            = "INSPECTION_LOT"
+      field10           = "INSPECTION_TYPE"
+      field11           = "DATE_COMPLETED"
+      field12           = "BATCH_BEFORE"
+      field13           = "PRODUCT_BEFORE"
+      name_of_table     = "SAMPLE"
+      name_block    = "SAMPLEPLAN_BLOCK"
+
+
+      ARRAY splan_select_array
+
+         splan_select_array[1,1] = ARRAY_SELECT_EQ
+         splan_select_array[1,2] = "JOB_NAME"
+         splan_select_array[1,3] = the_name
+         splan_select_array[2,1] = ARRAY_SELECT_AND
+         splan_select_array[2,2] = ""
+         splan_select_array[2,3] = ""
+         splan_select_array[3,1] = ARRAY_SELECT_EQ
+         splan_select_array[3,2] = "PRODUCT_VERSION"
+         splan_select_array[3,3] = "0"
+
+      block_row_initialise ( name_block , name_of_table)
+      check_ok = block_row_select ( name_block, splan_select_array, TRUE)
+
+      IF check_ok <> TRUE THEN
+     line_com = line_com : " Unable to update sample header for samples logged in using SamplePlan"
+     RETURN
+      ENDIF
+
+
+      size_block = block_row_size (name_block)
+      block_row_first (name_block)
+
+
+      WHILE  row_idx < size_block
+
+         row_idx = row_idx + 1
+
+         block_row_field_assign (name_block , field1    , mlp_id )
+         block_row_field_assign (name_block , field2    , job_id )
+         block_row_field_assign (name_block , field3    , "" )  {date_created}
+         block_row_field_assign (name_block , field4    , mlp_ver )
+         block_row_field_assign (name_block , field5    , mlp_smp_type )
+         block_row_field_assign (name_block , field6    , job_group_id )
+         block_row_field_assign (name_block , field7    , PAD("","-",255))
+         block_row_field_assign (name_block , field8    , external_group_id )
+         block_row_field_assign (name_block , field9    , insp_lot )
+         block_row_field_assign (name_block , field10   , insp_type )
+         block_row_field_assign (name_block , field11   , DATE(""))
+{**AS1544 HBe 8-3-2004}
+         block_row_field_assign (name_block , field12   , batch_before )
+         block_row_field_assign (name_block , field13   , smat_code_before )
+{**AE1544}
+         block_row_next (name_block)
+
+      ENDWHILE
+
+      START WRITE TRANSACTION "save_translation"
+
+      BLOCK_ROW_UPDATE  (name_block)
+
+      COMMIT
+
+      BLOCK_ROW_RELEASE (name_block)
+
+   ENDIF
+ENDROUTINE {do_splan_login}
+
+{**AE1537}
+
+{---------------------------------------------------------------------------------------------------------------------------------}
+
+{**AS1618 HBe 18-04-2005}
+
+ROUTINE  handle_oracle_jobs ( VALUE syntax_id )
+
+   SET NOTPROTECTED
+   DECLARE orajob_array, arr_count, arr_size
+   ARRAY   orajob_array
+
+   DECLARE batch_no_pos, batch_status_pos, is_product_pos, layered_pos, login_group_pos, mlp_id_pos
+   DECLARE production_date_pos, template_code_pos, work_center_pos
+
+
+   arr_size  = 0
+   arr_count = 0
+
+   old_lock_parm = GLOBAL("LOCK_SCREEN")
+   SET GLOBAL "LOCK_SCREEN" TO "FALSE"
+
+   ARRAY group_ids
+   get_group_ids(group_ids, groups)
+
+   mlp_id      = EMPTY
+   mlp_ver     = EMPTY
+   mlp_splogin = FALSE
+
+
+   WriteToLog("Starting handling of Oracle based login")
+
+   batch_no_pos        = 1
+   batch_status_pos    = 2
+   is_product_pos      = 3
+   layered_pos         = 4
+   login_group_pos     = 5
+   mlp_id_pos          = 6
+   production_date_pos = 7
+   template_code_pos   = 8
+   work_center_pos     = 9
+
+
+   get_job_array(orajob_array, arr_size)   {Building an array with the information needed - Direct select row by row gave problems...}
+
+
+   WHILE (arr_count < arr_size) DO
+      lines_read = lines_read + 1
+      arr_count = arr_count + 1
+      IF   oracle_record_ok( job_id, mlp_id, mlp_ver, stat, date_created,
+                    mlp_template, mlp_desc, mlp_smp_type, mlp_code,
+                    wc_id, pot_qty, line_err, group_ids,
+                    groups, order, ref_order, layered,
+                    mat_before, batch_before, org_template_code,
+                    ora_group_id, job_group_id, sample_group_id,
+                    delete_flag, is_batch, date_OK, insp_lot, insp_type,
+                    vendor_batch, mlp_splogin, smat_code_before, production_date, shelf_exp_date, arr_count, orajob_array )
+      THEN
+         i_line = STRIP(orajob_array[arr_count, batch_no_pos]) : STRIP(orajob_array[arr_count, batch_status_pos]) : STRIP(orajob_array[arr_count, is_product_pos]) : STRIP(orajob_array[arr_count, layered_pos]) : STRIP(orajob_array[arr_count, login_group_pos]) : STRIP(orajob_array[arr_count, mlp_id_pos]) : STRIP(SUBSTRING(orajob_array[arr_count, production_date_pos],1,11)) : STRIP(orajob_array[arr_count, template_code_pos]) : STRIP(orajob_array[arr_count, work_center_pos]:"$")
+
+         START READ TRANSACTION ora_trans
+         IF is_batch THEN
+            the_name = mlp_id:"/":job_id
+         ELSE
+         job_order = order
+         WHILE (LENGTH(job_order) > 0) AND (SUBSTRING(job_order, 1, 1) = "0")
+            job_order = SUBSTRING(job_order, 2, LENGTH(job_order) - 1)
+         ENDWHILE
+            the_name = mlp_id:"/":job_order
+         ENDIF
+         job_stat = SELECT job_header.job_status FOR UPDATE
+                    WHERE  job_name = the_name
+         start_date  = SELECT job_header.date_to_start
+         old_pot_qty = select job_header.potency
+         old_wc      = select job_header.work_center
+         old_layered      = select job_header.layered
+         old_batch_before = select job_header.batch_before
+         old_mat_before   = select job_header.material_before
+         old_vendor_batch = select job_header.vendor_batch
+         old_delete_flag  = select job_header.delete_flag
+         old_insp_lot     = select job_header.inspection_lot
+         old_insp_type    = select job_header.inspection_type
+         old_production_date = SELECT job_header.production_date
+         old_shelf_exp_date  = SELECT job_header.shelflife_exp_date
+         old_sample_type     = SELECT job_header.sample_type
+         IF     (NOT date_OK) and (job_stat = EMPTY) AND ((stat = "O") OR (stat = "C") OR (stat = "Z"))
+         THEN   WriteToLog("Production date more than one month old, creating nothing")
+         ELSEIF  date_OK and (job_stat = EMPTY) AND ((stat = "O") OR (stat = "C") OR (stat = "Z"))
+         THEN create_job(syntax_id,the_name, ora_group_id)
+         ELSEIF (job_stat= LOCKED)
+         THEN    WriteToLog("Job Locked by other user")
+         ELSEIF (job_stat != "X")  AND (stat != "X") AND
+                ((start_date != date_created)
+                 OR ((old_pot_qty!= pot_qty) AND (pot_qty != 0))
+                 OR (old_wc      != wc_id)
+                 OR ((old_layered <> layered) AND (layered <> "U"))
+                 OR ((old_batch_before <> batch_before) AND NOT BLANK(batch_before))
+                 OR ((old_vendor_batch <> vendor_batch) AND NOT BLANK(vendor_batch))
+                 OR ((old_mat_before  <> mat_before)  AND NOT BLANK(mat_before))
+                 OR ((old_delete_flag <> delete_flag) AND NOT BLANK(delete_flag))
+                 OR ((old_insp_lot <> insp_lot) AND (insp_lot <> "            " ))
+                 OR ((old_insp_type <> insp_type) AND (insp_type <> "        "))
+                 OR ((old_production_date <> production_date) AND NOT BLANK(production_date) AND (production_date <> EMPTY))
+                 OR ((old_shelf_exp_date <> shelf_exp_date)  AND NOT BLANK(shelf_exp_date) AND (shelf_exp_date <> EMPTY))
+                 OR ((old_sample_type <> mlp_smp_type)  AND NOT BLANK(mlp_smp_type)))
+            THEN    update_job()
+         ELSEIF (job_stat!="X") AND (job_stat!="A") AND (job_stat!="R") AND
+                (job_stat!=EMPTY) AND (stat = "X")
+            THEN    cancel_job()
+         ELSE    WriteToLog("Have done nothing")
+         ENDIF  { Job Stat }
+
+         COMMIT
+
+      ELSE
+         i_line = STRIP(orajob_array[arr_count, batch_no_pos]) : STRIP(orajob_array[arr_count, batch_status_pos]) : STRIP(orajob_array[arr_count, is_product_pos]) : STRIP(orajob_array[arr_count, layered_pos]) : STRIP(orajob_array[arr_count, login_group_pos]) : STRIP(orajob_array[arr_count, mlp_id_pos]) : STRIP(SUBSTRING(orajob_array[arr_count, production_date_pos],1,11)) : STRIP(orajob_array[arr_count, template_code_pos]) : STRIP(orajob_array[arr_count, work_center_pos]:"$")
+         WriteToLog("Oracle record skipped":line_err)
+      ENDIF { Line Ok }
+
+      i_line = EMPTY
+
+   ENDWHILE
+
+
+
+   SET GLOBAL "LOCK_SCREEN" TO old_lock_parm
+
+ENDROUTINE {handle_oracle_jobs}
+
+{---------------------------------------------------------------------------------------------------------------------------------}
+
+ROUTINE  oracle_record_ok ( job_id, mlp_id, mlp_ver, stat, date_created,
+                            smp_temp, mlp_desc, mlp_smp_type, mlp_code,
+                            wc_id, pot_qty, line_err,
+                            group_ids, groups, order, ref_order, layered,
+                            mat_before, batch_before, org_template_code,
+                            ora_group_id, job_group_id, sample_group_id,
+                            delete_flag, is_batch, date_ok, insp_lot, insp_type,
+                            vendor_batch, mlp_splogin, smat_code_before, production_date, shelf_exp_date,
+                            arr_count, orajob_array)
+
+   DECLARE mlp_context, parm_arr
+   ARRAY parm_arr
+   ora_group_id    = EMPTY
+   ora_job_id      = EMPTY
+   ora_sample_id   = EMPTY
+   job_id          = EMPTY
+   mlp_id          = EMPTY
+   mlp_ver         = EMPTY
+   stat            = EMPTY
+   date_created    = EMPTY
+   smp_temp        = EMPTY
+   mlp_desc        = EMPTY
+   wc_id           = EMPTY
+   pot_qty         = EMPTY
+   order           = EMPTY
+   ref_order       = EMPTY
+   layered         = EMPTY
+   mat_before      = EMPTY
+   batch_before    = EMPTY
+   delete_flag     = EMPTY
+   vendor_batch    = EMPTY
+   is_batch        = TRUE
+   line_err        = " "
+   line_com        = " "
+   check_date      = EMPTY
+   date_OK         = TRUE
+   one_month       = INTERVAL("0031 00:00:00.00")
+   insp_type       = EMPTY
+   insp_lot        = EMPTY
+   production_date = EMPTY
+   shelf_exp_date  = EMPTY
+   mlp_context     = EMPTY
+   ora_group_id    = orajob_array[arr_count , login_group_pos]
+   order           = ""
+
+      job_id     = orajob_array[arr_count , batch_no_pos]
+      is_product = orajob_array[arr_count , is_product_pos]
+      check_date = orajob_array[arr_count , production_date_pos]
+      IF (check_date < (NOW - one_month)) AND (is_product) THEN
+         date_OK = FALSE
+      ENDIF
+
+
+        IF NOT is_batch and BLANK(order)
+        THEN
+           WriteToLog("ERROR: Batch ID and order number can not both be empty")
+           return( FALSE )
+        ENDIF
+
+        ref_order       = ""
+
+        layered         = orajob_array[arr_count , layered_pos]
+        IF ((strip(layered) = "") OR (layered = NULL))
+           THEN layered = "U"
+        ENDIF
+
+        mat_before      = "         "
+        batch_before    = "         "
+        vendor_batch = "               "
+
+
+        insp_lot       = "        "
+
+        insp_type      = "            "
+
+      mlp_id = orajob_array[arr_count , mlp_id_pos]
+
+      IF length(mlp_id) = 6
+      THEN
+         IF LEFTSTRING(mlp_id,1) = "0"
+         THEN
+            mlp_id = RIGHTSTRING(mlp_id,5)
+         ENDIF
+      ENDIF
+
+      IF LENGTH(mlp_id) > max_mlp
+      THEN WriteToLog("ERROR: Length of MLP:":mlp_id:
+                     " is to long. Must not be longer than ":max_mlp)
+      ELSE
+
+{Check, if any good MLP exists at all - regardless of version}
+
+        the_id =      SELECT mlp_header.identity
+                      WHERE  identity = mlp_id
+                      AND    removeflag = FALSE
+                      AND    approval_status = "A"
+
+        IF the_id <> EMPTY
+        THEN
+           IF  (ora_group_id <> EMPTY) AND (NOT(BLANK(ora_group_id)))
+           THEN
+              IF(check_group_id(ora_group_id, groups, group_ids))
+              THEN
+
+              ELSE
+                 WriteToLog("Line skipped Plant code ": strip(ora_group_id) :" not accepted in system")
+                 return ( FALSE )
+
+              ENDIF
+           ELSE
+              WriteToLog("ERROR: Empty plant code on MPS record")
+              return ( FALSE )
+
+           ENDIF
+
+
+           mlp_parms_ok = FALSE
+           newest_mlp_ver = SELECT MAX mlp_header.product_version
+                            WHERE identity = mlp_id
+
+           mlp_ver = newest_mlp_ver
+
+           REPEAT
+
+
+
+              IF mlp_analysis_parameters ( "M", "MPS_TMPL", 4, mlp_id, mlp_ver,
+                                           parm_arr, n_sets, err_mess )
+
+              THEN
+
+                 identity = SELECT mlp_header.identity
+                            WHERE identity = mlp_id
+                            AND product_version = mlp_ver
+                            AND removeflag <> TRUE
+                            AND approval_status = "A"
+
+
+                 IF (identity <> EMPTY) AND NOT BLANK(identity) THEN
+                    mlp_parms_ok = TRUE
+                    mlp_desc     = STRIP(SELECT mlp_header.description)
+            mlp_smp_type = SELECT mlp_header.sample_type
+            mlp_code     = SELECT mlp_header.product_code
+            mlp_splogin  = SELECT mlp_header.do_splan_login
+
+
+                    IF (mlp_ver <> newest_mlp_ver) AND (mlp_ver >0)
+                    THEN
+                       line_com = line_com :". Used MLP vers. ": strip(mlp_ver):
+                       ". Newest MLP vers. is:": strip(newest_mlp_ver):"."
+                    ENDIF
+                 ENDIF
+              ENDIF
+
+              IF NOT mlp_parms_ok THEN
+                 mlp_ver = JUSTIFY(PAD(NUMBER_TO_TEXT( mlp_ver - 1 ,"999" ), " ",10)"RIGHT")
+              ENDIF
+
+           UNTIL (mlp_parms_ok) or (mlp_ver < 1)
+
+
+
+           IF mlp_parms_ok
+
+           THEN
+             template_code = orajob_array[arr_count , template_code_pos]
+
+             org_template_code = template_code
+             IF template_code = "M" THEN
+                template_code = "P"
+             ENDIF
+
+             IF   (BLANK(template_code)) OR (template_code=EMPTY)
+             THEN WriteToLog("ERROR: No template code")
+                  return ( FALSE )
+             ELSE n = 0
+                  found = FALSE
+                  WHILE (n < n_sets) AND (NOT(found)) DO
+                     n = n + 1
+
+                     IF ((parm_arr[n,2] = template_code)
+                     AND ((parm_arr[n,3] = ora_group_id )
+                          OR (BLANK(parm_arr[n,3])) OR (parm_arr[n,3]=EMPTY))) THEN
+                        found = TRUE
+
+                        security_group = parm_arr[n,4]
+                        IF BLANK(security_group) OR (security_group = EMPTY) THEN
+                           security_group = parm_arr[n,3]
+                           IF BLANK(security_group) OR (security_group = EMPTY) THEN
+                              security_group = ora_group_id
+                           ENDIF
+                        ENDIF
+                        job_group_id      = security_group
+                        sample_group_id   = security_group
+
+                        smp_temp = strip(parm_arr[n,1])
+                     ENDIF
+                  ENDWHILE
+                  IF (NOT found) THEN
+                     line_err = line_err : "Could not find template code:":template_code:" for plant ":ora_group_id:" in setup. "
+                     return ( FALSE )
+                  ENDIF
+
+           IF (smp_temp<>EMPTY) AND (NOT BLANK(smp_temp))
+           THEN
+              the_id = select samp_tmpl_header.identity
+                       where  removeflag = FALSE
+                       and    identity = strip(smp_temp)
+              IF   the_id = EMPTY
+              THEN WriteToLog("Warning: Sample Template:":smp_temp:
+                             " does not exist")
+              ELSE
+                stat = orajob_array[arr_count , batch_status_pos]
+                IF stat = "Z" THEN
+                   delete_flag = TRUE
+                ELSE
+                   delete_flag = FALSE
+                ENDIF
+                IF   (stat="O") OR (stat="C") OR (stat="X") OR (stat="Z")
+                THEN
+{**MS1650 HBe 28-9-2005: The date to start shold be the time of login - needed for label print!
+                       date_created = DATE("")}
+                       date_created = DATE(NOW)
+{**ME1650}
+                       wc_id   = orajob_array[arr_count , work_center_pos]
+
+                       production_date = orajob_array[arr_count , production_date_pos]
+                       IF production_date = EMPTY THEN
+                          production_date = DATE("")
+                       ENDIF
+
+
+
+                       shelf_exp_date = DATE("")
+                       mlp_context = "VERSION"
+                       push_file_descriptor ("max_active_mlp_ver", mlp_context)
+                       prod_before_ver = SELECT max_active_mlp_ver.max_version
+                                          WHERE identity = mat_before
+                       IF (prod_before_ver = EMPTY) OR (BLANK(prod_before_ver))
+                       THEN
+                          prod_before_ver = "         1"
+                       ENDIF
+                       pop_file_descriptor(mlp_context)
+
+                       mlp_context = "CODE"
+                       push_file_descriptor ("mlp_header", mlp_context)
+                       smat_code_before = SELECT mlp_header.product_code
+                                          WHERE identity = mat_before
+                                          AND product_version = prod_before_ver
+                       IF ((smat_code_before = EMPTY) OR (BLANK(smat_code_before)))
+                       THEN
+                          smat_code_before = "No product before description found"
+                       ENDIF
+                       pop_file_descriptor(mlp_context)
+
+                       pot_qty = 0
+                       IF   NUMTEXT(pot_qty)
+                       THEN pot_qty = NUMERIC(pot_qty)
+                            return(TRUE)
+                       ELSE WriteToLog("ERROR: Potency:" : STRIP(pot_qty) :
+                                      " is not numeric" )
+                       ENDIF
+                ELSE WriteToLog("ERROR: Wrong status on job:":stat)
+                ENDIF
+              ENDIF
+           ENDIF
+             ENDIF   {  Template Code in input line Check       }
+
+           ELSE line_err = line_err : "Mlp:":mlp_id:" Version:": mlp_ver:" does not have parameter setup. "
+         ENDIF     {  MLP Parameter Setup exists Check   }
+
+
+
+        ELSE    line_err = line_err : "Mlp:":mlp_id:" Removed or not existing. "
+        ENDIF        {  MLP Id in Lims Check  }
+      ENDIF          {  MLP Id Length Check   }
+
+   return( FALSE )
+
+ENDROUTINE {oracle_record_ok}
+
+{---------------------------------------------------------------------------------------------------------------------------------}
+
+ROUTINE get_job_array(orajob_array, arr_size)
+
+
+START READ TRANSACTION "Oracle login info"
+
+   three_months    = INTERVAL("0061 00:00:00.00")
+
+   batch_no = SELECT oracle_jobs . batch_no
+              WHERE  ((production_date >= NOW - three_months) OR (is_product = FALSE))
+              AND    (batch_status = "C")
+              ORDER ON batch_status
+
+   WHILE batch_no <> EMPTY
+      arr_size = arr_size + 1
+      orajob_array[arr_size, batch_no_pos]        = batch_no
+      orajob_array[arr_size, batch_status_pos]    = STRIP(SELECT oracle_jobs . batch_status)
+      orajob_array[arr_size, is_product_pos]      = STRIP(SELECT oracle_jobs . is_product)
+      orajob_array[arr_size, layered_pos]         = STRIP(SELECT oracle_jobs . layered)
+      orajob_array[arr_size, login_group_pos]     = STRIP(SELECT oracle_jobs . login_group)
+      orajob_array[arr_size, mlp_id_pos]          = STRIP(SELECT oracle_jobs . mlp_id)
+      orajob_array[arr_size, production_date_pos] = STRIP(SELECT oracle_jobs . production_date)
+      orajob_array[arr_size, template_code_pos]   = STRIP(SELECT oracle_jobs . template_code)
+      orajob_array[arr_size, work_center_pos]     = STRIP(SELECT oracle_jobs . work_center)
+      WriteToLog(      orajob_array[arr_size, batch_no_pos]
+                 :"; ":orajob_array[arr_size, batch_status_pos]
+                 :"; ":orajob_array[arr_size, is_product_pos]
+                 :"; ":orajob_array[arr_size, layered_pos]
+                 :"; ":orajob_array[arr_size, login_group_pos]
+                 :"; ":orajob_array[arr_size, mlp_id_pos]
+                 :"; ":orajob_array[arr_size, production_date_pos]
+                 :"; ":orajob_array[arr_size, template_code_pos]
+                 :"; ":orajob_array[arr_size, work_center_pos])
+
+      NEXT oracle_jobs
+      batch_no = SELECT oracle_jobs . batch_no
+   ENDWHILE
+
+ENDROUTINE
+
+{**AE1618 HBe 18-04-2005}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

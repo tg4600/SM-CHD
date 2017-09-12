@@ -1,0 +1,301 @@
+SET COMPILE_OPTION DECLARE
+SET NAME "defer/"
+
+JOIN STANDARD_LIBRARY STD_DATABASE
+{***************************************************************
+ ***                   Section for testing                   ***
+ ***************************************************************}
+
+DECLARE test_no, confirmation_test, is_analysis, ana_arr
+
+ARRAY ana_arr
+test_no =    5033930 {   5007381}
+confirmation_test = "NB-MSL-05 (T)"
+
+IF INDEX(confirmation_test,"(A)") > 0 THEN
+    is_analysis = TRUE
+ELSE
+    is_analysis = FALSE
+ENDIF
+
+confirmation_test = STRIP(LEFTSTRING(confirmation_test, INDEX(confirmation_test, "(") - 1 ))
+
+GetAnalysis (confirmation_test, is_analysis, ana_arr)
+AddTest(test_no, ana_arr)
+
+EXIT
+
+{***************************************************************
+ ***                End - Section for testing                ***
+ ***************************************************************}
+
+ROUTINE NEWANALYSE
+  {Not Used ???}
+ENDROUTINE
+
+ROUTINE CREATE_ANALYSIS (stand_smpid, stand_testno, stand_compname , lev_id)
+
+    {WriteToLog("CREATE_ANALYSIS (":stand_smpid:", ":stand_testno:", ":stand_compname:", ":lev_id:")") }
+
+    IF GLOBAL("OPERATOR") = "INSTRUMENT" THEN
+        CALL_ROUTINE "DEZ_CREATE_ANALYSIS"
+        IN LIBRARY GLOBAL ( "CURRENT_LIBRARY" )
+        USING stand_smpid, stand_testno, stand_compname , lev_id
+    ELSE
+        CALL_ROUTINE "DEZ_CREATE_ANALYSIS"
+        IN LIBRARY GLOBAL ( "CURRENT_LIBRARY" )
+        NEW TRANSACTION
+        USING stand_smpid, stand_testno, stand_compname , lev_id
+    ENDIF
+
+    {WriteToLog("CREATE_ANALYSIS, completed") }
+
+ENDROUTINE
+
+ROUTINE DEZ_CREATE_ANALYSIS (stand_smpid, stand_testno, stand_compname , lev_id)
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY TOOLBOX
+JOIN STANDARD_LIBRARY STD_ARRAY
+
+DECLARE parm_arr, res_arr, p, comp_flag, parm_flag, parms, new_anal_id, new_test_no, n_res, comp_row, cur_test_count
+DECLARE ana_arr, test_no, cur_anal, cur_ana_ver, confirmation_test
+
+ARRAY parm_arr
+ARRAY res_arr
+ARRAY ana_arr
+
+test_no           = stand_testno
+cur_anal          = SELECT test.analysis WHERE test_number = test_no
+cur_ana_ver       = SELECT test.analysis_version
+confirmation_test = SELECT versioned_analysis.confirmation
+                    WHERE identity = cur_anal
+                      AND analysis_version = cur_ana_ver
+
+
+IF INDEX(confirmation_test,"(A)") > 0 THEN
+    is_analysis = TRUE
+ELSE
+    is_analysis = FALSE
+ENDIF
+
+confirmation_test = STRIP(LEFTSTRING(confirmation_test, INDEX(confirmation_test, "(") - 1 ))
+
+IF STRIP(confirmation_test) <> "" THEN
+    GetAnalysis (confirmation_test, is_analysis, ana_arr)
+    AddTest(test_no, ana_arr)
+    RETURN
+ENDIF
+
+
+{***************************************************************}
+
+
+IF   get_parameters( "A", "NEW_ANAL", 2, stand_testno, parm_arr, parms )
+THEN
+
+  find_results ( stand_testno, res_arr, n_res )
+  IF   NOT get_component_row ( stand_compname, res_arr, n_res, comp_row )
+  THEN flash_message("Error: Could not find component:":stand_compname,TRUE)
+       return ( FALSE )
+  ENDIF
+
+  comp_flag = res_arr[comp_row,result_cont_pos]
+
+  p = 0
+  WHILE p < parms DO
+     p = p+1
+     parm_flag = parm_arr[p,2]
+     IF ((BLANK(comp_flag)) AND (BLANK(parm_flag))) OR
+        ((NOT BLANK(comp_flag)) AND (NOT BLANK(parm_flag)) AND
+         (comp_flag = parm_flag))
+     THEN
+        new_anal_id = select analysis . identity
+                      where  identity = parm_arr[p,1]
+        IF   new_anal_id = EMPTY
+        THEN flash_message("ERROR: The analysis to create:":parm_arr[p,1]:
+                        " does not exist",TRUE)
+             return ( FALSE )
+        ENDIF
+        IF   ( select analysis . removeflag )
+        THEN flash_message("ERROR: The analysis to create:":new_anal_id:
+                           " has been removed",TRUE)
+             return ( FALSE )
+        ENDIF
+
+        cur_anal= select test . analysis
+                  where  test_number = stand_testno
+
+        IF   cur_anal = new_anal_id
+        THEN cur_test_count = select test . test_count
+        ELSE cur_test_count = 0
+        ENDIF
+
+        test_no = select test . test_number
+                  where  sample = stand_smpid
+                  and    analysis = new_anal_id
+                  and    test_count > cur_test_count
+
+        IF test_no <> EMPTY THEN
+           flash_message("Warning: New test on analysis:":strip(new_anal_id):
+                         " has NOT been created. It is already there on test:":
+                         strip(test_no),TRUE)
+        ELSE
+           SET NOTPROTECTED
+           WriteToLog("lock_state('SAMPLE': ":lock_state("SAMPLE"))
+           WriteToLog("NEWTEST( ":strip(stand_smpid):", ":strip(new_anal_id))
+           new_test_no = NEWTEST( strip(stand_smpid), strip(new_anal_id) )
+           IF   new_test_no = ERROR
+           THEN flash_message("New test NOT created due to error",TRUE)
+                return( FALSE )
+           ELSE flash_message("Created new test number:":strip(new_test_no):
+                              " on analysis:":new_anal_id, TRUE)
+           ENDIF
+        ENDIF
+     ENDIF
+  ENDWHILE
+
+  return ( TRUE )
+
+ELSE flash_message("ERROR: Could not create new analysis. ":
+                   "NEW_ANAL setup is missing on current analysis",TRUE)
+     return ( FALSE )
+ENDIF
+
+ENDROUTINE
+
+ROUTINE GetAnalysis (confirmation, is_analysis, ana_arr)
+{****************************************************************
+    Purpuse: Identify analysis to be added to current sample
+    Input:   Confirmation = sample.confirmation_test
+             is_analysis  = TRUE/FALSE
+    Return:  ana_arr [analysis_id, TRUE]
+
+    If "confirmation_test" is a Test Schedule retrieve analysis from
+    the test schedule, else return analysis id
+
+    If analysis does not exist or has been removed, inform the user,
+    and remove the slice from array.
+
+    If test schedule contains another test_schedule, the routine
+    is called again to retreive analysis from next test schedule level
+ ****************************************************************}
+DECLARE analysis, a
+
+IF is_analysis THEN
+    ana_arr[SIZE_OF_ARRAY(ana_arr) + 1, 1] = confirmation
+    ana_arr[SIZE_OF_ARRAY(ana_arr)    , 2] = TRUE
+ELSE
+    analysis = SELECT test_sched_entry.analysis_id WHERE identity = confirmation
+    WHILE analysis <> EMPTY DO
+        ana_arr[SIZE_OF_ARRAY(ana_arr) + 1, 1] = analysis
+    NEXT test_sched_entry
+        analysis = SELECT test_sched_entry.analysis_id
+    ENDWHILE
+
+    a = 1
+    WHILE a <= SIZE_OF_ARRAY(ana_arr) DO
+        is_analysis = SELECT test_sched_entry.is_analysis
+                      WHERE identity = confirmation
+                      AND analysis_id = ana_arr[a, 1]
+        IF is_analysis <> EMPTY THEN
+            ana_arr[a, 2] = is_analysis
+        ENDIF
+        a = a + 1
+    ENDWHILE
+ENDIF
+
+a = 1
+WHILE a <= SIZE_OF_ARRAY(ana_arr) DO
+    IF ana_arr[a, 2] = FALSE THEN
+        confirmation = ana_arr[a, 1]
+        array_remove_slice(ana_arr, 1, a)
+        GetAnalysis (confirmation, is_analysis, ana_arr)
+    ENDIF
+    a = a + 1
+ENDWHILE
+
+ENDROUTINE
+
+
+ROUTINE AddTest(test_no, ana_arr)
+{****************************************************************
+    Purpuse: Add test(s) to sample
+    Input:   test_number,array of analysis to add
+
+    If analysis was added earlier no addtional test should be added.
+    Inform user of test(s) added or not added.
+
+ ****************************************************************}
+DECLARE a, ana_ver, sample, cur_ana, test_c
+
+a = 1
+WHILE a <= SIZE_OF_ARRAY(ana_arr) DO
+    ana_ver = SELECT max_active_anal_ver.max_version WHERE identity = ana_arr[a, 1]
+    IF ana_ver = EMPTY THEN
+        fm("The analysis '":STRIP(ana_arr[a, 1]):"' has been removed,":ASCII(10):
+           "Cannot be added to the sample")
+        array_remove_slice(ana_arr, 1, a)
+    ELSE
+        ana_arr[a, 2] = ana_ver
+    ENDIF
+    a = a + 1
+ENDWHILE
+
+sample  = SELECT test.sample WHERE test_number = test_no
+cur_ana = SELECT test.analysis
+test_c  = SELECT test.test_count
+
+a = 1
+WHILE a <= SIZE_OF_ARRAY(ana_arr) DO
+    IF (ana_arr[a, 1] = cur_ana) THEN
+        test_no = SELECT test.test_number
+                   WHERE sample = sample
+                     AND analysis = cur_ana
+                     AND test_count > test_c
+    ELSE
+        test_no = SELECT test.test_number
+                   WHERE sample = sample
+                     AND analysis = ana_arr[a, 1]
+                     AND test_count > test_c
+    ENDIF
+    IF test_no <> EMPTY THEN
+        fm("'":STRIP(ana_arr[a, 1]):"' has already been added to the sample.":ASCII(10):
+           "New test has NOT been created.")
+        array_remove_slice(ana_arr, 1, a)
+        a = a - 1
+    ELSE
+        {AddTest to Sample}
+         SET NOTPROTECTED
+         ana_arr[a, 2] = NEWTEST( STRIP(sample), STRIP(ana_arr[a, 1]) )
+         IF ana_arr[a, 2] = ERROR THEN
+            WriteToLog("Add new test ":ana_arr[a, 1]:" to sample: ":STRIP(sample):", failed.")
+            fm("'":STRIP(ana_arr[a, 1]):"' ":ASCII(10):
+           "has NOT been created, due to an error.")
+            array_remove_slice(ana_arr, 1, a)
+            a = a - 1
+         ELSE
+            WriteToLog("Add new test ":ana_arr[a, 1]:" to sample: ":STRIP(sample))
+         ENDIF
+    ENDIF
+    a = a + 1
+ENDWHILE
+
+IF SIZE_OF_ARRAY(ana_arr) > 0 THEN
+    fm("Added new test(s) to sample: ":STRIP(sample):":":ASCII(10):
+        GetArray(ana_arr))
+ENDIF
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE WriteToLog(VALUE Msg)
+
+    WriteLog(Msg, global("current_library"))
+
+ENDROUTINE

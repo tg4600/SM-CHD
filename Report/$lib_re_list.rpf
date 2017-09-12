@@ -1,0 +1,3050 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_LIST.RPF
+*
+* Purpose       : Modify result lists for a sample.
+*
+* Document Ref. :
+*
+* Specification :
+*
+* Portability   : VGSM 3.1
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET COMPILE_OPTION DECLARE
+SET NOTPROTECTED
+SET NAME "DEFER/"
+
+JOIN STANDARD_LIBRARY STD_ARRAY
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_DATABASE
+JOIN STANDARD_LIBRARY STD_GENERAL
+JOIN STANDARD_LIBRARY STD_MESSAGE
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_STRUCTURE
+
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $LIB_FILTR
+JOIN LIBRARY $LIB_GRID
+JOIN LIBRARY $LIB_RE_RESULT
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $RESL_USER
+
+lib_re_list_sample ( 1 )
+
+{****************************************************************************}
+{ Local Contants }
+
+CONSTANT RESULT_LIST_TEST_CLASS       = "STD_LIB_RE_LIST_TEST"
+CONSTANT RESULT_LIST_ANALYSIS_CLASS   = "STD_LIB_RE_LIST_ANALYSIS"
+CONSTANT RESULT_LIST_RESULT_CLASS     = "STD_LIB_RE_LIST_RESULT"
+CONSTANT RESULT_LIST_COMPONENT_CLASS  = "STD_LIB_RE_LIST_COMPONENT"
+CONSTANT RESULT_LIST_GRID_CLASS       = "STD_LIB_RE_LIST_GRID"
+CONSTANT RESULT_LIST_COMP_LIST_CLASS  = "STD_LIB_RE_LIST_COMP_LIST"
+
+{ GLOBAL CONSTANTS }
+
+GLOBAL CONSTANT RESULT_LIST_CREATE_HEADER =  "STD_LIB_RE_LIST_CREATE_HEADER" 
+GLOBAL CONSTANT RESULT_LIST_CREATE_ENTRY  =  "STD_LIB_RE_LIST_CREATE_ENTRY" 
+
+
+{****************************************************************************}
+{ GLOBAL VARIABLES }
+
+DECLARE analysis_collection             ,
+    lib_re_list_component_database  ,
+    lib_re_list_places_browse_array ,
+    lib_re_list_result_status_array
+
+
+{***************************************************************************}
+
+ROUTINE lib_re_list_declare_class
+
+    DEFINE CLASS RESULT_LIST_CREATE_HEADER
+
+    PROPERTIES "ENTRIES"               ,
+           "TEST_NUMBER"           ,
+           "ANALYSIS"              ,
+           "ANALYSIS_VERSION"      ,
+           "ADD_REPLICATE_NUMBER"  ,
+           "IGNORE_ERROR"          ,
+           "USER_LIBRARY"          ,
+           "USER_ROUTINE"          ,
+           "TEMP"                  ,
+           "USER_INFO"              
+
+    ACTIONS    "READ_COMPONENT_LIST"
+            ROUTINE "COMP_LIST_RESULT_LIST_READ" 
+            IN LIBRARY "$COMP_LIST" ,
+
+           "RESET_COMPONENT_LIST" , 
+           "COPY_CATEGORY_TEST"   ,
+           "COPY_CATEGORY"        ,
+           "RESULTS_TO_CREATE"    ,         
+           "REMOVE_CREATED"       ,     
+           "ADD_RESULT"           ,
+           "ADD_RESULT_END"       ,
+           "CREATE"     
+
+    INITIALISATION
+
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_CREATE_ENTRY
+
+    INHERIT "STD_COLLECTED"
+
+    PROPERTIES "COMPONENT_NAME"  ,
+           "RESULT_NAME"     ,
+           "DEFAULT_VALUE"   ,
+           "ORDER_NUMBER"    ,
+           "REPLICATES"      ,      
+           "CREATE"          ,
+           "COMP_LIST_ENTRY" ,          
+           "USER_INFO"          
+
+    INITIALISATION
+
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_TEST_CLASS
+
+    INHERIT "STD_COLLECTED"
+
+    PROPERTIES
+
+        "TEST_NUMBER"      ,
+        "ANALYSIS"         ,
+        "ANALYSIS_VERSION" ,
+        "STATUS"
+
+    TABLES TEST
+
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_ANALYSIS_CLASS
+
+    INHERIT "STD_COLLECTED"
+
+    PROPERTIES 
+    
+        "ANALYSIS_NAME" ,
+        "COMPONENTS"    
+        
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_RESULT_CLASS
+
+    PROPERTIES
+
+        "TEST"                   ,
+        "ANALYSIS"               ,
+        "RESULT_NAME"            ,
+        "NAME"                   ,
+        "REPLICATE"              ,
+        "EXISTS"                 ,
+        "IN_DATABASE"
+
+    ACTIONS "FIELD_PROMPT"
+
+    TABLES RESULT
+
+    INITIALISATION
+
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_COMPONENT_CLASS
+
+    INHERIT "STD_COLLECTED"
+
+    PROPERTIES "NAME"
+
+    TABLES versioned_component
+
+    END CLASS
+
+
+    DEFINE CLASS RESULT_LIST_GRID_CLASS
+
+    INHERIT PROMPT_CLASS_GRID
+
+    PROPERTIES "PROMPT_DETAILS"        ,
+           "RESULTS"               
+
+    ACTIONS    "CHANGE_ALL_REPLICATES" 
+          
+
+    END CLASS
+
+    DEFINE CLASS RESULT_LIST_COMP_LIST_CLASS
+
+    TABLES versioned_c_l_entry
+
+    END CLASS
+
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE std_lib_re_list_result_class_initialisation ( self )
+
+    self . analysis    = " "
+    self . exists      = FALSE
+    self . in_database = FALSE
+
+ENDROUTINE
+
+{****************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_initialise
+
+    lib_comp_initialise ()
+    lib_re_list_declare_class ()
+
+    CREATE OBJECT "STD_COLLECTION" , analysis_collection
+    analysis_collection . add_index ( "ANALYSIS_NAME" )
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+
+ROUTINE lib_re_list_create_component_database ( component_database )
+
+    CREATE OBJECT "STD_COLLECTION" , component_database
+    component_database . add_index ( "NAME" )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_get_component ( VALUE analysis_name    ,
+                    VALUE analysis_version ,
+                    VALUE component_name   ,
+                      component_object )
+
+    DECLARE component
+
+    component = SELECT versioned_component . name
+            WHERE ( analysis         = analysis_name    ) AND
+              ( analysis_version = analysis_version ) AND
+              ( name             = component_name   )
+
+    IF component <> EMPTY THEN
+
+        CREATE OBJECT RESULT_LIST_COMPONENT_CLASS , component_object
+
+        component_object . name = analysis_name    : 
+                                  analysis_version : 
+                                  component_name
+
+        object_copy_current_table ( component_object      ,
+                        "VERSIONED_COMPONENT" )
+
+
+    ENDIF
+
+    RETURN ( component <> EMPTY )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_find_in_database (       component_database ,
+                       VALUE analysis_name      ,
+                       VALUE analysis_version   ,
+                       VALUE component_name     ,
+                         component_object   )
+
+    DECLARE found_it
+
+    found_it = TRUE
+
+    component_object = component_database . 
+                                 get_by_index ( "NAME"            ,
+                                                 analysis_name    :
+                                                 analysis_version :
+                                                 component_name   )
+
+    IF component_object = EMPTY THEN
+
+        IF lib_re_list_get_component ( analysis_name    ,
+                           analysis_version ,
+                           component_name   ,
+                           component_object ) THEN
+
+        
+            component_database . add ( component_object )
+
+        ELSE
+
+            found_it = FALSE
+
+        ENDIF
+
+    ENDIF
+
+    RETURN ( found_it )
+
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_copy_component_fields ( component_object )
+
+    DECLARE common_fields, count
+    lib_re_result_get_common_fields ( common_fields )
+
+    count = 1
+
+    WHILE common_fields [ count ] <> EMPTY DO
+
+    ASSIGN result . 'common_fields [ count ]' =
+              SELECT versioned_component . 'common_fields [ count ]'
+                     IN OBJECT component_object
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF global ( "RESULT_USER_ASSIGN_ENABLE" ) THEN
+
+        object_set_current_table ( component_object      ,
+                                 "VERSIONED_COMPONENT" )    
+        
+        result_user_create ()
+
+        object_copy_current_table ( component_object      ,
+                                    "VERSIONED_COMPONENT" ) 
+
+     ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_status_change( result )
+
+    object_set_current_table ( result , "RESULT" )
+    object_set_current_table ( result . test , "TEST" )
+
+    CHANGE RESULT STATUS TO "U" USING result , test
+        PROPAGATE NONE
+
+    IF NOT blank ( SELECT result . text ) THEN
+
+        CHANGE RESULT STATUS TO "E" USING result
+
+    ENDIF           
+            
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_reserve_result ( VALUE test_number      ,
+                     VALUE result_name      ,
+                     VALUE default_value    ,
+                         VALUE order_number     ,
+                     VALUE ignore_error     ,   
+                         VALUE user_routine     ,
+                     VALUE user_library     ,
+                       user_information ,
+                           component_object ,
+                       result_unentered ,
+                     VALUE do_status_change )
+
+    DECLARE result_key0      ,
+        status           
+
+    result_key0 = test_number : result_name 
+
+    IF ignore_error THEN
+
+        RESERVE ENTRY result , result_key0 , status
+
+    ELSE
+
+        RESERVE ENTRY NO_CHECK result , result_key0 , status
+
+    ENDIF
+
+    IF status = EMPTY THEN
+
+        lib_re_list_copy_component_fields ( component_object )
+
+        IF ( order_number = EMPTY ) OR
+                   ( order_number = 0     ) THEN
+
+            order_number =  SELECT versioned_component . order_number
+                        IN OBJECT component_object
+
+
+        ENDIF
+
+        ASSIGN result . order_number = order_number 
+        ASSIGN result . entered_by   = "DEFAULT"
+        ASSIGN result . entered_on   = now
+
+        { The following call makes Auditing  }
+        { ignore this result record creation }
+
+        
+        IF ( do_status_change )
+        
+            IF SELECT test . test_number = test_number THEN
+
+                CHANGE RESULT STATUS TO "U" USING result , test
+                    PROPAGATE NONE
+
+            ELSE
+
+                CHANGE RESULT STATUS TO "U" USING result
+                    PROPAGATE NONE
+
+            ENDIF
+        
+        ENDIF
+
+        IF NOT blank ( default_value ) THEN
+
+            ASSIGN result . text  = default_value
+
+            IF numtext ( default_value ) THEN
+    
+                ASSIGN result . value = default_value
+
+            ENDIF
+
+            IF ( do_status_change )
+    
+                CHANGE RESULT STATUS TO "E" USING result
+            
+            ENDIF
+
+            ENDIF
+            
+            
+
+        IF user_library <> EMPTY THEN
+
+            CALL_ROUTINE user_routine 
+            USING        user_information
+            IN LIBRARY   user_library
+
+        ENDIF
+
+        result_unentered = ( SELECT result . status = "U" )
+
+    ELSEIF NOT ignore_error THEN
+
+        fatal_error ( status )
+
+    ELSE
+
+        result_unentered = FALSE
+
+    ENDIF
+
+    RETURN ( status = EMPTY )
+    
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+
+GLOBAL ROUTINE lib_re_list_new_result (  VALUE test_number        ,
+                         VALUE analysis_name      ,
+                         VALUE analysis_version   ,
+                         VALUE result_name        ,
+                             VALUE component_name     ,
+                     VALUE default_value      ,
+                     VALUE order_number       ,
+                     VALUE ignore_error       ,
+                     VALUE user_routine       ,
+                     VALUE user_library       ,
+                           user_information   )
+
+{
+*   Create a result in the database - this routine must be called within
+*   a write transaction.
+*
+******************************************************************************}
+
+
+    DECLARE component_object  ,
+        has_default_value
+
+    IF NOT variable_is_assigned ( lib_re_list_component_database ) THEN
+    
+        lib_re_list_create_component_database ( lib_re_list_component_database )        
+
+    ENDIF
+
+    IF component_name <> EMPTY THEN
+
+        lib_re_list_find_in_database ( lib_re_list_component_database ,
+                           analysis_name                  ,
+                           analysis_version               ,
+                           component_name                 ,
+                           component_object               )
+                        
+    ELSE
+
+        component_object = EMPTY 
+
+    ENDIF
+
+    IF component_object <> EMPTY THEN
+                                                          
+        IF lib_re_list_reserve_result ( test_number       ,
+                            result_name       ,
+                        default_value     ,
+                        order_number      ,
+                        ignore_error      ,
+                        user_routine      ,
+                            user_library      , 
+                        user_information  , 
+                            component_object  ,
+                        has_default_value ,
+                        TRUE              ) THEN
+
+                UPDATE result
+
+        ENDIF
+
+    ELSE
+
+        has_default_value = FALSE
+
+    ENDIF
+
+    RETURN ( has_default_value )                    
+
+ENDROUTINE          
+
+{*****************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_new_result_object (  VALUE test_number      ,
+                                                VALUE analysis_name    ,
+                                                VALUE analysis_version ,
+                                                VALUE result_name      ,
+                                                VALUE component_name   ,
+                                                VALUE default_value    ,
+                                                VALUE order_number     ,
+                                                VALUE ignore_error     ,
+                                                      result_object    )
+
+{
+*
+*   Places the new result into the object - This object must have
+*   a result row in its definition - The result is not updated.
+*
+*******************************************************************************}
+
+    DECLARE component_object  ,
+        has_default_value ,
+        user_information
+
+    IF NOT variable_is_assigned ( lib_re_list_component_database ) THEN
+
+        lib_re_list_create_component_database ( lib_re_list_component_database )
+
+    ENDIF
+
+    IF component_name <> EMPTY THEN
+
+        lib_re_list_find_in_database ( lib_re_list_component_database ,
+                                       analysis_name                  ,
+                                       analysis_version               ,
+                                       component_name                 ,
+                                       component_object               )
+
+    ELSE
+
+        component_object = EMPTY
+
+    ENDIF
+
+    IF component_object <> EMPTY THEN
+
+        IF lib_re_list_reserve_result ( test_number             ,
+                                        result_name             ,
+                                        default_value           ,
+                                        order_number            ,
+                                        ignore_error            ,
+                                        EMPTY                   ,
+                                        EMPTY                   ,
+                                        user_information        ,
+                                        component_object        ,
+                                        has_default_value       ,
+                                        TRANSACTION_IS_WRITE ( )) THEN
+
+            object_copy_current_table ( result_object ,
+                                        "RESULT"      )
+
+        ENDIF
+
+    ELSE
+
+        has_default_value = FALSE
+
+    ENDIF
+
+    RETURN ( has_default_value )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_class_initialisation ( self )
+
+{
+*   Initialise the result_list_create_header object
+*
+******************************************************************************}
+
+    CREATE OBJECT "STD_COLLECTION" , self . entries
+    self . entries . add_index ( "RESULT_NAME" )
+
+    self . analysis             = EMPTY
+    self . analysis_version     = EMPTY
+    self . test_number          = EMPTY
+    self . add_replicate_number = TRUE
+    self . ignore_error         = FALSE
+
+    self . user_library = EMPTY
+    self . user_routine = EMPTY
+    self . user_info    = EMPTY
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_entry_class_initialisation ( self )
+
+{
+*   Initialise the result_list_create_entry object
+*
+******************************************************************************}
+
+    self . component_name = EMPTY
+    self . result_name    = EMPTY
+    self . default_value  = ""
+    self . order_number   = EMPTY
+    self . user_info      = EMPTY
+    self . replicates     = 1 
+    self . create          = TRUE
+    self . comp_list_entry = EMPTY
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_add_result (       self          ,
+                                    result_object ,
+                              VALUE replicate     )
+                                  
+
+{
+*   Add a result object to the current header.
+*
+******************************************************************************}
+
+    DECLARE temp      ,
+        add
+
+    add   = TRUE
+
+    temp = self . entries . get_by_index ( "RESULT_NAME"                ,
+                        result_object . result_name )
+
+
+    IF temp <> EMPTY THEN
+
+        temp . create = TRUE
+                
+        IF replicate THEN
+
+            temp . replicate = temp . replicate + 1
+
+        ENDIF
+
+        add   = FALSE
+
+    ENDIF
+
+    RETURN ( add )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_add_result_end ( self          ,
+                                  result_object )
+                            
+
+{
+*   Add a result object to the current header at the end.
+*
+******************************************************************************}
+
+    self . entries . add ( result_object )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_user_callback ( self )
+                                
+
+{
+*   The create callback.
+*
+******************************************************************************}
+
+    IF self . temp . comp_list_entry <> EMPTY THEN
+
+        CALL_ROUTINE "COMPONENT_LIST_USER_CREATE"
+        USING        self . temp . comp_list_entry 
+            IN LIBRARY   "$SAMP_USER"
+
+    ENDIF
+
+    IF self . user_library <> EMPTY THEN
+
+        CALL_ROUTINE self . user_routine
+        USING        self . temp . user_info  
+            IN LIBRARY   self . user_library  
+
+    ENDIF
+        
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_reset_component_list (       self                ,
+                                    VALUE look_at_create_flag ) 
+
+{
+*   Reset the result list for reuse
+*
+******************************************************************************}
+
+
+    DECLARE entry 
+
+    self . entries . set_first ()
+        
+    WHILE self . entries . current <> EMPTY DO
+
+        entry = self . entries . current 
+
+        IF entry . comp_list_entry = EMPTY THEN
+
+            entry . create = FALSE
+
+        ELSEIF look_at_create_flag THEN
+
+            entry . create = SELECT versioned_c_l_entry  . create_always
+                        IN OBJECT entry . comp_list_entry
+
+        ELSE
+
+            entry . create = FALSE
+
+        ENDIF
+
+        self . entries . set_next ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_copy_category_test (       self        ,
+                                  VALUE test_number ,
+                                  VALUE category    )
+
+{
+*   Add all the results of the given category to the list
+*
+******************************************************************************}
+
+    DECLARE name        ,
+        like_clause ,
+        entry
+
+    IF category <> EMPTY THEN
+
+        like_clause = lib_comp_category_like_clause ( category  ,
+                                  "%"      )
+        name = SELECT result . name
+               WHERE (  test_number =    test_number ) AND
+                 (  name        LIKE like_clause ) AND
+                 (( status      <> "X"           ) AND
+                  ( status      <> "R"           ) AND
+                  ( status      <> "A"           ))
+        
+    ELSE
+
+        name = SELECT result . name
+               WHERE ( test_number = test_number     ) AND
+                 (( status      <> "X"           ) AND
+                  ( status      <> "R"           ) AND
+                  ( status      <> "A"           ))
+
+    ENDIF
+
+    WHILE name <> EMPTY DO
+
+        name = lib_comp_get_name ( name )
+
+        entry = self . entries . get_by_index ( "RESULT_NAME" ,
+                             name         )
+
+        IF entry <> EMPTY THEN
+
+            entry . create = TRUE
+
+        ENDIF
+
+        NEXT result
+        
+        name = SELECT result . name
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_copy_category (       self            ,
+                                 VALUE copied_category ,
+                                     VALUE new_category    )
+
+{
+*   Create results matching the given copied category.
+*
+******************************************************************************}
+
+    DECLARE entry            ,
+        list_entry       ,
+        temp             ,
+        like_clause      ,
+        component_object
+
+    IF NOT variable_is_assigned ( lib_re_list_component_database ) THEN
+    
+        lib_re_list_create_component_database ( lib_re_list_component_database )        
+
+    ENDIF
+
+
+    like_clause = lib_comp_category_like_clause ( copied_category  ,
+                                                      "*"              )
+
+    self . entries . set_first ()
+
+    WHILE self . entries . current <> EMPTY DO
+
+        entry = self . entries . current
+
+        IF ( match_wildcard ( like_clause , entry . result_name )) AND
+           ( entry . create                                      ) THEN
+
+            temp = lib_comp_get_base ( entry . result_name ) 
+            temp = lib_comp_add_category ( temp         ,
+                               new_category ,   
+                               EMPTY        )       
+
+            IF lib_re_list_find_in_database ( lib_re_list_component_database ,
+                              self . analysis                ,
+                                      self . analysis_version        ,
+                                  temp                           ,
+                                  component_object               ) THEN
+    
+                            CREATE OBJECT RESULT_LIST_CREATE_ENTRY, list_entry 
+                
+                            list_entry . component_name = temp
+                            list_entry . result_name    = temp
+                
+                             IF self . add_result ( list_entry ,
+                                                    FALSE      ) THEN
+                    
+                    entry . create = SELECT versioned_c_l_entry  . create_always
+                            IN OBJECT entry . comp_list_entry
+
+                ENDIF 
+
+            ELSEIF entry . comp_list_entry <> EMPTY THEN
+
+                entry . create = SELECT versioned_c_l_entry  . create_always
+                        IN OBJECT entry . comp_list_entry
+                                            
+
+            ELSE
+
+                entry . create = FALSE 
+
+            ENDIF
+
+        ENDIF
+        
+        self . entries . set_next ()
+
+    ENDWHILE
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_results_to_create ( self )
+
+{
+*   Check to see if any results need creating
+*
+******************************************************************************}
+
+
+    self . entries . set_first ()
+        
+    WHILE self . entries . current <> EMPTY DO
+
+        IF self . entries . current . create THEN
+
+            RETURN ( TRUE )
+
+        ENDIF 
+
+        self . entries . set_next ()
+
+    ENDWHILE
+
+    RETURN ( FALSE )
+
+ENDROUTINE
+                
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_remove_created ( self )
+
+{
+*   Remove any results that have already been created.
+*
+******************************************************************************}
+
+    DECLARE name  ,
+        entry
+
+    name = SELECT result . name
+           WHERE  test_number = self . test_number
+
+    
+    WHILE name <> EMPTY DO
+
+        name = lib_comp_get_name ( name )
+
+        entry = self . entries . get_by_index ( "RESULT_NAME" ,
+                             name         )
+
+
+        IF entry <> EMPTY THEN
+
+            entry . create = FALSE
+
+        ENDIF
+
+        NEXT result
+
+        name = SELECT result . name
+
+    ENDWHILE
+
+ENDROUTINE
+                
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_create_header_action_create ( self )
+                                
+
+{
+*   Create the results in the header.
+*
+******************************************************************************}
+
+    DECLARE result         ,
+        name           ,
+        replicate      ,
+        test_available 
+
+    test_available = FALSE  
+
+    self . entries . set_first ()
+        
+    WHILE self . entries . current <> EMPTY DO
+
+        result    = self . entries . current 
+        replicate = 1
+
+        WHILE ( replicate <= result . replicates ) AND
+              ( result . create                  ) DO   
+
+            IF self . add_replicate_number THEN
+    
+                name = lib_comp_add_replicate ( result . result_name ,
+                                replicate          )
+
+            ELSE
+
+                name = result . result_name
+
+            ENDIF               
+
+            self . temp = result 
+
+            IF lib_re_list_new_result ( self   . test_number      ,
+                            self   . analysis         , 
+                            self   . analysis_version , 
+                            name                      ,
+                            result . component_name   ,
+                            result . default_value    , 
+                            result . order_number     ,
+                            self   . ignore_error    ,  
+                           "STD_LIB_RE_LIST_USER_CALLBACK"    ,
+                            global ( "current_library"     )  ,
+                            self                     ) THEN  
+
+                test_available = TRUE
+
+            ENDIF
+
+            self . temp = EMPTY
+
+            replicate = replicate + 1
+
+        ENDWHILE
+    
+        self . entries . set_next ()
+
+    ENDWHILE
+
+    RETURN ( test_available )
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+ROUTINE lib_re_list_screen_initialise
+
+{
+*
+*
+******************************************************************************}
+
+
+    lib_grid_initialise ()
+
+    lib_re_list_initialise ()
+
+    IF NOT variable_is_assigned ( lib_re_list_component_database ) THEN
+    
+        lib_re_list_create_component_database ( lib_re_list_component_database )        
+
+    ENDIF
+
+    unit_prompt_initialise ()
+
+    ARRAY lib_re_list_places_browse_array ARRAY_SIZE ( 11 , 2 )
+
+    lib_re_list_places_browse_array [ 1 , 1 ] = "X"
+    lib_re_list_places_browse_array [ 1 , 2 ] = "X"
+
+    lib_re_list_places_browse_array [ 2 , 1 ] = "0"
+    lib_re_list_places_browse_array [ 2 , 2 ] = "0"
+
+    lib_re_list_places_browse_array [ 3 , 1 ] = "1"
+    lib_re_list_places_browse_array [ 3 , 2 ] = "1"
+
+    lib_re_list_places_browse_array [ 4 , 1 ] = "2"
+    lib_re_list_places_browse_array [ 4 , 2 ] = "2"
+
+    lib_re_list_places_browse_array [ 5 , 1 ] = "3"
+    lib_re_list_places_browse_array [ 5 , 2 ] = "3"
+
+    lib_re_list_places_browse_array [ 6 , 1 ] = "4"
+    lib_re_list_places_browse_array [ 6 , 2 ] = "4"
+
+    lib_re_list_places_browse_array [ 7 , 1 ] = "5"
+    lib_re_list_places_browse_array [ 7 , 2 ] = "5"
+
+    lib_re_list_places_browse_array [ 8 , 1 ] = "6"
+    lib_re_list_places_browse_array [ 8 , 2 ] = "6"
+
+    lib_re_list_places_browse_array [ 9 , 1 ] = "7"
+    lib_re_list_places_browse_array [ 9 , 2 ] = "7"
+
+    lib_re_list_places_browse_array [ 10 , 1 ] = "8"
+    lib_re_list_places_browse_array [ 10 , 2 ] = "8"
+
+    lib_re_list_places_browse_array [ 11 , 1 ] = "9"
+    lib_re_list_places_browse_array [ 11 , 2 ] = "9"
+
+ENDROUTINE
+
+{*****************************************************************************}
+{*****************************************************************************}
+
+
+ROUTINE std_lib_re_list_grid_action_change_all_replicates (       self       ,
+                                    VALUE row        ,
+                                VALUE column     ,
+                                    VALUE field_name ) 
+
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE name        ,
+        test        ,
+        field_value ,
+        result      ,
+        go_on       ,
+        count 
+
+
+    result      = self . results [ row ] 
+    name        = result . name
+    test        = result . test
+    field_value = SELECT result . 'field_name' IN OBJECT result
+
+     
+    count = row - 1
+    go_on = count > 0
+
+    WHILE go_on DO
+
+        result = self . results [ count ]
+
+        IF ( result . name = name ) AND
+           ( result . test = test ) THEN
+
+            IF SELECT result . name IN OBJECT result <> EMPTY  THEN
+ 
+                ASSIGN result . 'field_name' IN OBJECT result = field_value
+                self . redisplay_cell ( column ,
+                            count  )
+
+            ENDIF
+
+            count = count - 1
+
+            go_on = count > 0
+
+        ELSE
+
+            go_on = FALSE
+
+        ENDIF
+
+    ENDWHILE
+    
+    count = row + 1
+    go_on = count <= size_of_array ( self . results )
+
+    WHILE go_on DO
+
+        result = self . results [ count ]
+
+        IF ( result . name = name ) AND
+           ( result . test = test ) THEN
+
+            IF SELECT result . name IN OBJECT result <> EMPTY  THEN
+ 
+                ASSIGN result . 'field_name' IN OBJECT result = field_value
+                self . redisplay_cell ( column ,
+                            count  )
+
+            ENDIF
+
+            count = count + 1
+
+            go_on = count <= size_of_array ( self . results )
+
+        ELSE
+
+            go_on = FALSE
+
+        ENDIF
+
+    ENDWHILE                
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE std_lib_re_list_result_action_field_prompt (       self          ,
+                                           grid          ,
+                                         VALUE cell_column   ,
+                                         VALUE cell_row      ,
+                                         VALUE column        ,
+                                         VALUE row           ,
+                                         VALUE cell_width    ,
+                                           window        ,
+                                         VALUE is_display    ,
+                                     VALUE field_name    ,
+                                       prompt_object )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DECLARE field_value ,
+        exists
+
+    exists = self . exists
+
+    IF exists THEN
+
+        field_value = SELECT result . 'field_name' IN OBJECT self
+
+    ELSE
+
+        field_value = ""
+
+    ENDIF
+
+    IF is_display THEN
+
+        DISPLAY field_value 
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window
+
+    ELSE
+
+        IF prompt_object <> EMPTY THEN
+
+            prompt_object . row          = row
+            prompt_object . column       = column
+            prompt_object . width        = cell_width
+            prompt_object . window       = window
+            prompt_object . display_only = NOT exists
+            prompt_object . value        = field_value
+
+            prompt_object . start_prompt ()
+            prompt_object . wait_prompt  ()
+            prompt_object . end_prompt   ()
+
+            prompt_object . set_globals ()
+
+            field_value = prompt_object . value
+
+
+        ELSE
+
+            PROMPT FOR       field_value 
+                   ON LINE   row
+                   FROM      column
+                       TO        column + cell_width - 1
+                       IN WINDOW window
+                       WITH ( display_only = NOT exists )
+
+        ENDIF
+
+        ASSIGN result . 'field_name' IN OBJECT self = field_value
+
+        grid . change_all_replicates ( cell_row     ,
+                           cell_column  ,
+                           field_name   ) 
+
+
+    ENDIF
+
+ENDROUTINE
+
+
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_read_analysis ( VALUE analysis_name    ,
+                    VALUE analysis_version ,
+                          analysis_details )
+
+{
+*
+*   Check the object database for the given analysis,  if it is not
+*   present then create the object and read the analysis and the
+*   components.
+*
+*******************************************************************************}
+
+    DECLARE count ,
+        name
+
+    analysis_details = analysis_collection . get_by_index ( "ANALYSIS_NAME",
+                                                            analysis_name :
+                                                        analysis_version )
+
+    IF analysis_details = EMPTY THEN
+
+        CREATE OBJECT RESULT_LIST_ANALYSIS_CLASS, analysis_details
+
+        analysis_details . analysis_name = analysis_name :
+                                           analysis_version
+        ARRAY analysis_details . components ARRAY_SIZE ( 0 )
+
+        count = 1
+
+        name = SELECT versioned_component . name
+               WHERE ( analysis         = analysis_name    ) AND
+                     ( analysis_version = analysis_version )
+               ORDER ON order_number
+
+        WHILE name <> EMPTY DO
+
+            analysis_details . components [ count ] = name
+
+            NEXT versioned_component
+            name = SELECT versioned_component . name
+
+            count = count + 1
+
+        ENDWHILE        
+
+        analysis_collection . add ( analysis_details ) 
+    ENDIF
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_add_test
+
+    DECLARE test_object
+
+    CREATE OBJECT RESULT_LIST_TEST_CLASS , test_object
+
+    test_object . test_number      = SELECT test . test_number
+    test_object . analysis         = SELECT test . analysis
+    test_object . analysis_version = SELECT test . analysis_version
+    test_object . status           = SELECT test . status
+
+    object_copy_current_table ( test_object , "TEST" )
+
+    RETURN ( test_object ) 
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_add_analysis (       test_object      ,
+                         analysis_details ,
+                         result_details   ,
+                         start_position   )
+{
+* Add the details of an analysis into a result list screen data structure.
+*
+*
+*****************************************************************************}
+
+
+    DECLARE count         ,
+        result        ,
+        next_position
+
+        start_position = size_of_array ( result_details ) + 1
+    next_position  = start_position
+
+    count = 1
+
+    WHILE count <= size_of_array ( analysis_details . components ) DO
+
+        CREATE OBJECT RESULT_LIST_RESULT_CLASS , result
+
+        result . test           = test_object 
+        result . name           = analysis_details . components [ count ] 
+        result . replicate      = 1
+        result . result_name    = lib_comp_add_replicate ( result . name ,
+                                   1             )
+        result_details [ next_position ] = result
+
+        next_position = next_position + 1       
+        count = count + 1
+
+    ENDWHILE
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_find_result ( VALUE result_name     ,
+                    result_details  ,
+                  VALUE hint_position   ,
+                  VALUE start_position  )
+
+{
+*  Find a result in the result screen data structure. The hint position
+*  is the last found result position.
+*
+*
+*****************************************************************************}
+
+    DECLARE count     ,
+        result    ,
+        name      ,
+        replicate ,
+        insert_it ,
+        position  ,
+        found     
+
+    replicate = lib_comp_get_replicate ( result_name )
+    name      = lib_comp_get_name      ( result_name )
+
+    found     = FALSE
+
+    count     = hint_position
+
+    WHILE count <= size_of_array ( result_details ) DO
+
+        result = result_details [ count ]
+
+        IF result . name  = name THEN
+
+            position = count
+            found    = TRUE
+            count    = size_of_array ( result_details  )
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    IF NOT found THEN
+
+        count = start_position
+
+        WHILE count < hint_position DO
+
+            result = result_details [ count ]
+
+            IF result . name  = name THEN
+
+                position = count
+                found    = TRUE
+                count    = size_of_array ( result_details )
+
+            ENDIF
+
+            count = count + 1
+
+        ENDWHILE
+
+    ENDIF
+
+    IF found THEN
+
+        IF replicate > 1 THEN
+
+            count = position + 1
+            found = count > size_of_array ( result_details  )
+
+            WHILE NOT found DO
+
+                result = result_details [ count ]
+
+                IF result . name <> name THEN
+
+                    found = TRUE
+
+                ELSE
+
+                    count = count + 1
+
+                    found = count > size_of_array ( result_details  )
+
+                ENDIF
+
+            ENDWHILE
+
+            insert_it = TRUE
+            position  = count
+
+        ELSE
+
+            insert_it = FALSE
+
+        ENDIF
+
+    ELSE
+
+        insert_it = TRUE
+        position  = size_of_array ( result_details  ) + 1
+
+
+    ENDIF
+
+    IF insert_it THEN
+
+
+        array_insert_slice ( result_details  ,
+                         1               ,
+                         position        )
+
+        CREATE OBJECT RESULT_LIST_RESULT_CLASS , result
+        result . name            = name 
+        result . replicate       = replicate
+        result . result_name     = result_name 
+
+        result_details [ position ] = result
+
+    ENDIF
+
+    RETURN ( position )
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_setup_result  (       result_details ,
+                          test_object    ,
+                    VALUE position       )  
+
+    DECLARE result
+
+
+    result = result_details [ position ]
+    result . exists      = SELECT result . status <> "X"
+    result . test        = test_object
+    result . in_database = TRUE
+
+    object_copy_current_table ( result , "RESULT" )
+         
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_read_results ( VALUE test_number      ,      
+                     test_object      ,
+                   VALUE start_position   ,
+                     analysis_details ,
+                         result_details   )
+
+{
+*  Read all the results for a test into the result modify data structure.
+*
+*
+******************************************************************************}
+
+    DECLARE name          ,
+        hint_position ,
+        position      
+
+
+    hint_position = start_position
+                                                         
+    name = SELECT result . name
+           FOR UPDATE
+           WHERE  ( test_number = test_number )
+           ORDER ON order_number ,
+            name
+
+    WHILE name <> EMPTY DO
+
+        position = lib_re_list_find_result ( name           ,
+                                 result_details ,
+                                 hint_position  ,
+                                     start_position )
+
+        hint_position = position
+        lib_re_list_setup_result  ( result_details ,
+                        test_object    ,
+                            position       )    
+
+        NEXT result 
+        name = SELECT result . name
+    
+    ENDWHILE        
+
+
+ENDROUTINE
+
+{****************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_read_test ( VALUE test_number    ,
+                             result_details )
+
+{
+*
+*   Read a test into the result list database.
+*
+****************************************************************************}
+
+    DECLARE analysis_details  ,
+        start_position    ,
+        analysis_name     ,
+        test_object 
+
+    test_object = lib_re_list_add_test ( )
+
+    lib_re_list_read_analysis ( SELECT test . analysis         IN OBJECT test_object ,
+                        SELECT test . analysis_version IN OBJECT test_object ,
+                    analysis_details                                     )
+
+    lib_re_list_add_analysis ( test_object      ,
+                   analysis_details ,
+                   result_details   ,
+                   start_position   )
+
+    SET FORMAT "999"
+
+    analysis_name = STRIP ( SELECT test . analysis IN OBJECT test_object   ) : "/" :
+            STRIP ( SELECT test . test_count IN OBJECT test_object )
+
+    IF start_position <= size_of_array ( result_details ) THEN
+
+        result_details [ start_position ] . analysis = analysis_name
+
+    ENDIF
+
+    lib_re_list_read_results ( test_number      ,
+                   test_object      ,
+                   start_position   ,   
+                   analysis_details ,
+                   result_details   )           
+
+ENDROUTINE
+
+{****************************************************************************}
+        
+ROUTINE lib_re_list_screen_create (       result           , 
+                    VALUE do_status_change )
+
+{
+*
+*
+******************************************************************************}
+
+    DECLARE test_object       ,
+        comp_list         ,
+        collected         ,
+            component_object  ,
+        has_default_value ,
+        user_information  ,
+        default_value
+
+    test_object = result . test 
+
+    lib_re_list_find_in_database ( lib_re_list_component_database ,
+                       test_object . analysis         ,
+                       test_object . analysis_version ,
+                       result . name                  ,
+                       component_object               )
+                        
+    comp_list = SELECT test . component_list IN OBJECT test_object
+
+    comp_list = SELECT versioned_c_l_entry . analysis
+            WHERE  ( analysis         = test_object . analysis         ) AND
+               ( analysis_version = test_object . analysis_version ) AND
+               ( comp_list        = comp_list                      ) AND
+               ( name             = result . name                  )
+
+
+    IF comp_list <> EMPTY THEN
+
+        CREATE OBJECT RESULT_LIST_COMP_LIST_CLASS , collected
+
+        default_value   = SELECT versioned_c_l_entry . default_value
+
+        object_copy_current_table ( collected , "VERSIONED_C_L_ENTRY" )
+
+    ELSE
+
+        default_value = ""
+
+    ENDIF
+
+    IF component_object <> EMPTY THEN
+
+        lib_re_list_reserve_result ( test_object . test_number  ,
+                         result . result_name       ,
+                         default_value              ,
+                         EMPTY                      ,
+                             FALSE                      ,
+                             EMPTY                      ,
+                                 EMPTY                      ,   
+                             user_information           ,   
+                             component_object           ,
+                             has_default_value          ,
+                             do_status_change           ) 
+
+    ELSE
+
+        RESERVE ENTRY NO_CHECK result , test_object . test_number :
+                        result . result_name 
+
+        ASSIGN result . status      = "U"
+        ASSIGN result . result_type = SELECT result . result_type IN OBJECT result 
+
+
+    ENDIF
+
+    IF comp_list <> EMPTY THEN
+
+        CALL_ROUTINE "component_list_user_create" 
+             USING    collected 
+             IN LIBRARY "$SAMP_USER"
+
+    ENDIF
+
+    object_copy_current_table ( result   ,
+                    "RESULT" )
+
+
+ENDROUTINE
+
+{****************************************************************************}
+        
+ROUTINE lib_re_result_set_exists (       result      ,
+                             self        ,
+                   VALUE cell_row    ,
+                       VALUE exists      )      
+{
+*
+*
+*
+******************************************************************************}
+
+
+    IF exists <> result . exists THEN
+
+        IF ( exists                                        )  AND
+           ( SELECT result . name IN OBJECT result = EMPTY ) THEN
+
+            lib_re_list_screen_create ( result , FALSE )
+
+        ENDIF
+                
+        result . exists = exists 
+
+        self   . redisplay_row ( cell_row ) 
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_analysis_prompt (       self        ,
+                            grid        ,
+                          VALUE cell_column ,
+                          VALUE cell_row    ,
+                          VALUE column      ,
+                          VALUE row         ,
+                          VALUE cell_width  ,
+                            window      ,
+                          VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+
+    IF is_display THEN
+
+        DISPLAY self . analysis 
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window
+
+    ELSE
+
+        PROMPT FOR self . analysis 
+               ON LINE   row
+               FROM      column
+               TO        column + cell_width - 1
+               IN WINDOW window
+               WITH ( display_only = TRUE ) 
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_name_prompt (       self        ,
+                        grid        ,
+                      VALUE cell_column ,
+                      VALUE cell_row    ,
+                      VALUE column      ,
+                      VALUE row         ,
+                      VALUE cell_width  ,
+                        window      ,
+                      VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+
+    IF is_display THEN
+
+        DISPLAY self . result_name 
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window
+
+    ELSE
+
+        PROMPT FOR self . result_name 
+               ON LINE   row
+               FROM      column
+               TO        column + cell_width - 1
+               IN WINDOW window
+               WITH ( display_only = TRUE ) 
+
+    ENDIF
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_toggled_exist ( self )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DECLARE exists  ,
+        grid    ,
+        result
+
+    exists = self . value
+    grid   = self . user_info
+    result = grid . results [ grid . current_row ]
+    
+    lib_re_list_result_status_array [ grid . current_row ]  = exists
+
+    lib_re_result_set_exists ( result             ,
+                           grid               ,
+                       grid . current_row ,
+                   exists             )     
+
+    grid . redisplay_cell ( grid . current_column ,
+                grid . current_row    )
+
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_assigned_prompt (       self        ,
+                            grid        ,
+                          VALUE cell_column ,
+                          VALUE cell_row    ,
+                          VALUE column      ,
+                          VALUE row         ,
+                          VALUE cell_width  ,
+                            window      ,
+                          VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DECLARE exists
+
+    IF is_display THEN
+
+        DISPLAY self . exists 
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window
+            FORMAT    boolean
+            WITH    ( is_check = TRUE )
+
+    ELSE
+
+        exists = self . exists 
+        
+        { Add rows here }
+        
+
+        PROMPT FOR exists 
+               ON LINE   row
+               FROM      column
+               TO        column + cell_width - 1
+               IN WINDOW window
+               BROWSE ON boolean
+               WITH    ( is_check        = TRUE                        ,
+                 user_info       = grid                        ,
+                 toggled_routine = "lib_re_list_toggled_exist" ,
+                 vgl_library     = global ( "current_library" ))
+
+    ENDIF
+    
+    
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_validate_dp_prompt ( self )
+
+{
+*   Validates the prompt for significant figures etc.
+*
+*******************************************************************************}
+
+    DECLARE return_value                                                   
+
+    return_value = FALSE
+
+    IF STRIP ( self . text ) <> "X" THEN
+                                                                        
+        IF NUMERIC ( self . text ) <> ERROR THEN
+            IF NUMERIC ( self . text ) >= 0 THEN
+                return_value = TRUE
+            ENDIF                      
+        ENDIF                                                
+                                              
+    ELSE
+
+        return_value = TRUE
+
+    ENDIF
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+                                                        
+{******************************************************************************}
+                                                 
+ROUTINE lib_re_list_format_prompt (       self        ,
+                              grid        ,
+                        VALUE cell_column ,
+                        VALUE cell_row    ,     
+                        VALUE column      ,
+                        VALUE row         ,
+                        VALUE cell_width  ,
+                              screen      ,
+                        VALUE is_display  ,
+                    VALUE field       )                         
+                                                              
+{                                                                 
+*                                                                              
+*
+*******************************************************************************}
+
+
+    DECLARE result_type ,                                           
+            dec_places     ,
+        original_value ,
+        the_val
+                                                   
+    result_type = SELECT result . result_type IN OBJECT self     
+    dec_places  = SELECT result . 'field'     IN OBJECT self
+
+    IF is_display THEN
+        
+        IF ( result_type = "N" ) OR
+           ( result_type = "K" ) THEN
+                                                              
+            display_dp ( dec_places ,                 
+                     screen     ,
+                     column     ,
+                     row        )
+
+        ELSE                                    
+                                                 
+            CLEAR LINE      row
+                  FROM      column
+                  TO        column + cell_width - 1
+                  IN WINDOW screen
+                                      
+        ENDIF
+
+    ELSEIF ( result_type = "N" ) OR
+           ( result_type = "K" ) THEN
+
+        original_value = dec_places
+                                                              
+        IF dec_places = -1 THEN                           
+
+            the_val = "X"                                          
+
+        ELSE
+
+            the_val = STRIP ( number_to_text ( dec_places , "9"))
+                                                                        
+        ENDIF
+
+        PROMPT FOR       the_val
+               ON LINE   row               
+                   FROM      column                              
+                   IN WINDOW screen
+                   CHOOSE OUTOF lib_re_list_places_browse_array
+                   WITH ( always_validate = TRUE                                ,
+                      validation_routine = "lib_re_list_validate_dp_prompt" ,
+                      is_spin = TRUE                                        )
+
+        IF the_val = "X" THEN
+
+            dec_places = -1
+
+        ELSE
+                                                        
+            dec_places = NUMERIC ( the_val )
+
+        ENDIF
+
+        IF ( lastkey <> "EXIT"            ) AND
+           ( original_value <> dec_places ) THEN
+
+            ASSIGN result . 'field' IN OBJECT self = dec_places
+
+            grid . change_all_replicates ( cell_row     ,
+                               cell_column  ,
+                               field        ) 
+            
+      
+        ENDIF
+
+    ELSE
+
+        PROMPT
+            ON LINE   row                                          
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW screen         
+            WITH ( display_only = TRUE )
+                                                                        
+    ENDIF   
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_places_prompt (       self        ,
+                              grid        ,
+                        VALUE cell_column ,
+                        VALUE cell_row    ,     
+                        VALUE column      ,
+                        VALUE row         ,
+                        VALUE cell_width  ,
+                              screen      ,
+                        VALUE is_display  )                     
+                                                              
+{                                                                 
+*
+*
+*******************************************************************************}
+                                  
+    lib_re_list_format_prompt ( self        ,
+                        grid        ,
+                        cell_column ,
+                        cell_row    ,       
+                        column      ,
+                        row         ,
+                        cell_width  ,
+                        screen      ,
+                        is_display  ,
+                    "PLACES"      )                     
+
+ENDROUTINE                                                                                      
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_sig_figs_prompt (       self        ,
+                                grid        ,
+                          VALUE cell_column ,
+                          VALUE cell_row    ,       
+                          VALUE column      ,
+                          VALUE row         ,
+                          VALUE cell_width  ,
+                                screen      ,
+                          VALUE is_display  )                       
+                                                              
+{                                                                 
+*
+*
+*******************************************************************************}
+                                                 
+    lib_re_list_format_prompt ( self              ,
+                        grid              ,
+                        cell_column       ,
+                        cell_row          ,     
+                        column            ,
+                        row               ,
+                        cell_width        ,
+                        screen            ,
+                        is_display        ,
+                   "SIG_FIGS_NUMBER"    )                       
+
+ENDROUTINE                                                                                      
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_rounding_prompt (       self        ,                
+                                grid        ,
+                          VALUE cell_column ,
+                          VALUE cell_row    ,       
+                          VALUE column      ,
+                          VALUE row         ,
+                          VALUE cell_width  ,
+                                screen      ,
+                          VALUE is_display  )                       
+                                                              
+{                                                                 
+*
+*
+*******************************************************************************}
+
+
+    lib_re_list_format_prompt ( self                ,
+                        grid                ,
+                        cell_column         ,
+                        cell_row            ,       
+                        column              ,
+                        row                 ,
+                        cell_width          ,
+                        screen              ,
+                        is_display          ,
+                   "SIG_FIGS_ROUNDING" )
+
+ENDROUTINE                                                                                      
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_min_pql_prompt (       self        ,                
+                               grid        ,
+                         VALUE cell_column ,
+                         VALUE cell_row    ,        
+                         VALUE column      ,
+                         VALUE row         ,
+                         VALUE cell_width  ,
+                               screen      ,
+                         VALUE is_display  )                        
+                                                              
+{                                                                 
+*
+*
+*******************************************************************************}
+
+
+    DECLARE min_pql
+
+    min_pql = SELECT result . minimum_pql IN OBJECT self
+                                                            
+    IF is_display THEN
+                                                            
+        DISPLAY min_pql
+            ON LINE row
+            FROM    column
+            IN WINDOW screen
+
+    ELSE
+
+        PROMPT FOR min_pql
+            ON LINE row
+            FROM    column
+            IN WINDOW screen
+                FORMAT versioned_component . minimum_pql
+
+
+        ASSIGN result . minimum_pql IN OBJECT self = min_pql
+
+    ENDIF                  
+    
+                                        
+ENDROUTINE
+
+
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_units_prompt (       self        ,
+                         grid        ,
+                       VALUE cell_column ,
+                       VALUE cell_row    ,
+                       VALUE column      ,
+                       VALUE row         ,
+                       VALUE cell_width  ,
+                         window      ,
+                       VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+
+    DECLARE prompt_object
+
+        PROMPT OBJECT prompt_object
+                  CLASS UNIT_PROMPT_CLASS
+
+    self . field_prompt ( grid          ,
+                  cell_column   ,
+                  cell_row      ,
+                  column        ,
+                  row           ,
+                  cell_width    ,
+                      window        ,
+                  is_display    ,
+                     "UNITS"       ,
+                  prompt_object )
+ 
+ENDROUTINE
+
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_filter_prompt (       self        ,
+                          grid        ,
+                        VALUE cell_column ,
+                        VALUE cell_row    ,
+                        VALUE column      ,
+                        VALUE row         ,
+                        VALUE cell_width  ,
+                          window      ,
+                        VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+    
+    DECLARE prompt_object
+
+    PROMPT OBJECT prompt_object
+           BROWSE ON SIG_FIGS
+
+    self . field_prompt ( grid               ,
+                  cell_column        ,
+                  cell_row           ,
+                  column             ,
+                  row                ,
+                  cell_width         ,
+                      window             ,
+                  is_display         ,
+                 "SIG_FIGS_FILTER"   ,
+                  prompt_object      )
+
+ENDROUTINE
+
+{*****************************************************************************}
+
+ROUTINE lib_re_list_pql_calculation_prompt (       self        ,
+                                   grid        ,
+                                 VALUE cell_column ,
+                                 VALUE cell_row    ,
+                                 VALUE column      ,
+                                 VALUE row         ,
+                                 VALUE cell_width  ,
+                                   window      ,
+                                 VALUE is_display  )
+
+
+{
+*
+*
+*
+******************************************************************************}
+    
+    DECLARE prompt_object
+
+    PROMPT OBJECT prompt_object
+           BROWSE ON LIMIT_CALCULATION
+
+    self . field_prompt ( grid               ,
+                  cell_column        ,
+                  cell_row           ,
+                  column             ,
+                  row                ,
+                  cell_width         ,
+                      window             ,
+                  is_display         ,
+                 "PQL_CALCULATION"   ,
+                  prompt_object      )
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_display (       self        ,
+                  VALUE cell_column ,
+                  VALUE cell_row    ,
+                    window      ,
+                  VALUE column      ,
+                  VALUE row         ,
+                  VALUE cell_width  ,
+                  VALUE cell_height )
+
+{
+*   Display routine for result list modify grid.
+*
+*
+******************************************************************************}
+
+    DECLARE result
+
+    result = self . results [ cell_row ]
+
+    IF ( NOT result . exists ) AND
+       ( cell_column > 3     ) THEN
+
+        DISPLAY ""
+            ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window    
+
+
+    ELSE
+
+        lib_grid_display_array ( self                         ,
+                         cell_column                  ,
+                     cell_row                     ,
+                     window                       ,
+                         column                       ,
+                     row                          ,
+                     cell_width                   ,
+                     result                       ,
+                     self . prompt_details        ,
+                    "RESULT"                      ,
+                     FALSE                        ,
+                     PROMPT_DETAILS_310           )
+
+    ENDIF
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_prompt (       self        ,
+                 VALUE cell_column ,
+                 VALUE cell_row    ,
+                   window      ,
+                 VALUE column      ,
+                 VALUE row         ,
+                 VALUE cell_width  ,
+                 VALUE cell_height )
+
+{
+*   Prompt routine for result list modify grid.
+*
+*
+******************************************************************************}
+
+
+    DECLARE result
+
+    result = self . results [ cell_row ]
+
+    IF INDEX ( "AR" , SELECT result . status IN OBJECT RESULT ) <> 0 THEN
+
+        SET DISPLAY TRUE
+
+    ENDIF
+
+    IF ( NOT result . exists ) AND
+       ( cell_column > 3     ) THEN
+
+        PROMPT  ON LINE   row
+            FROM      column
+            TO        column + cell_width - 1
+            IN WINDOW window    
+
+
+    ELSE
+
+        lib_grid_prompt_array ( self                         ,
+                        cell_column                  ,
+                    cell_row                     ,
+                    window                       ,
+                            column                       ,
+                    row                          ,
+                    cell_width                   ,
+                    result                       ,
+                    self . prompt_details        ,  
+                       "RESULT"                      ,
+                    FALSE                        ,
+                    PROMPT_DETAILS_310           )
+
+
+    ENDIF
+
+    SET DISPLAY FALSE
+
+ENDROUTINE                        
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_insert ( self )
+
+{
+*   Pressing insert places the current result into the list.
+*
+*
+*****************************************************************************}
+
+    DECLARE result
+
+    IF self . current_row <> 0 THEN
+
+        result = self . results [ self . current_row ]
+
+        lib_re_result_set_exists ( result              ,
+                       self                ,
+                           self . current_row  ,
+                               TRUE                )        
+
+    ENDIF
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_remove ( self )
+
+{
+*
+*   Pressing remove takes the result out of the list.
+*
+*****************************************************************************}
+
+    DECLARE result
+
+    IF self . current_row <> 0 THEN
+
+        result = self . results [ self . current_row ]
+
+        lib_re_result_set_exists ( result              ,
+                           self                ,
+                       self . current_row  ,
+                               FALSE               )        
+    ENDIF
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_screen_replicate ( self )
+
+{
+*
+*   Take the current result and replicate it.
+*
+*****************************************************************************}
+
+    DECLARE cell_row         ,
+        name             ,
+        result           ,
+        go_on            ,
+        replicate        ,
+        replicate_result ,
+        grid             ,
+        test
+    
+    
+    IF NOT ( transaction_is_write () ) THEN
+
+        START WRITE TRANSACTION get_user_message ( "LIB_RE_LIST_TRANSACTION",1)
+
+    ENDIF
+
+    grid = self . parent_prompt . prompt_objects [ 1 ]
+
+    cell_row  = grid . current_row
+    result    = grid . results [ cell_row ]
+    replicate = result . replicate
+
+    name     = result . name
+    test     = result . test
+
+    cell_row = cell_row + 1
+    go_on    = cell_row <= grid . cell_rows
+
+    WHILE go_on DO
+
+        IF ( grid . results [ cell_row ] . name <> name ) OR
+           ( grid . results [ cell_row ] . test <> test ) THEN
+
+            go_on = FALSE
+
+        ELSE
+    
+            replicate = grid . results [ cell_row ] . replicate
+
+            cell_row = cell_row + 1
+            go_on    = cell_row <= grid . cell_rows
+    
+        ENDIF
+
+    ENDWHILE
+
+    replicate = replicate + 1
+
+    CREATE OBJECT RESULT_LIST_RESULT_CLASS , replicate_result
+    
+    replicate_result . name            = name 
+    replicate_result . replicate       = replicate
+    replicate_result . result_name     = lib_comp_add_replicate ( name , replicate )
+    replicate_result . test            = result . test 
+    replicate_result . exists          = TRUE   
+
+    lib_re_list_screen_create ( replicate_result , TRUE )
+
+    IF SELECT result . name IN OBJECT result <> EMPTY THEN
+
+        result_user_mrl_copy_replicate ( replicate_result ,
+                         result           )
+
+    ENDIF
+
+    array_insert_slice ( grid .  results ,
+                 1               ,
+                 cell_row        )
+
+    grid . results [ cell_row ] = replicate_result
+
+    grid . insert_row ( cell_row             ,
+                    1                    ,
+                GRID_SEPARATOR_NONE  )
+
+
+
+ENDROUTINE
+
+{****************************************************************************}
+
+ROUTINE lib_re_list_create_form (  form           ,
+                   result_details )
+
+
+    DECLARE grid           ,
+        button_list    ,
+        message        ,
+        header_mess    ,
+        prompt_details ,
+        next_button
+
+    ARRAY prompt_details ARRAY_SIZE ( 0 , 6 )
+
+    prompt_details [ 1 , 2 ] = "ROUTINE"
+    prompt_details [ 1 , 3 ] =  global ( "Current_Library" )
+    prompt_details [ 1 , 4 ] = "lib_re_list_analysis_prompt"
+    prompt_details [ 1 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_ANALYSIS" ,1)
+    prompt_details [ 1 , 6 ] =  15
+
+    prompt_details [ 2 , 2 ] = "ROUTINE"
+    prompt_details [ 2 , 3 ] =  global ( "Current_Library" )
+    prompt_details [ 2 , 4 ] = "lib_re_list_name_prompt"
+    prompt_details [ 2 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_COMPONENT" ,1)
+    prompt_details [ 2 , 6 ] =  25
+
+    prompt_details [ 3 , 2 ] = "ROUTINE"
+    prompt_details [ 3 , 3 ] =  global ( "Current_Library" )
+    prompt_details [ 3 , 4 ] = "lib_re_list_assigned_prompt"
+    prompt_details [ 3 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_ASSIGNED" ,1)
+    prompt_details [ 3 , 6 ] =  8
+
+    prompt_details [ 4 , 2 ] = "DISPLAY"
+    prompt_details [ 4 , 3 ] = "RESULT"
+    prompt_details [ 4 , 4 ] = "TEXT"
+    prompt_details [ 4 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_VALUE" ,1)
+    prompt_details [ 4 , 6 ] =  15
+                                                  
+    prompt_details [ 5 , 2 ] = "ROUTINE"
+    prompt_details [ 5 , 3 ] =  global ( "current_library" )
+    prompt_details [ 5 , 4 ] = "lib_re_list_units_prompt"
+    prompt_details [ 5 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_UNITS" ,1)
+    prompt_details [ 5 , 6 ] = 10
+
+    prompt_details [ 6 , 2 ] = "ROUTINE"
+    prompt_details [ 6 , 3 ] =  global ( "current_library" )
+    prompt_details [ 6 , 4 ] = "lib_re_list_places_prompt"
+    prompt_details [ 6 , 5 ] =  GET_USER_MESSAGE("LIB_RE_LIST_DP" ,1)
+    prompt_details [ 6 , 6 ] =  6
+
+    prompt_details [ 7 , 2 ] = "ROUTINE"
+    prompt_details [ 7 , 3 ] = global ( "current_library" )
+    prompt_details [ 7 , 4 ] = "lib_re_list_sig_figs_prompt"
+    prompt_details [ 7 , 5 ] = GET_USER_MESSAGE("LIB_RE_LIST_SF" ,1)
+    prompt_details [ 7 , 6 ] = 6
+                                                   
+    prompt_details [ 8 , 2 ] = "ROUTINE"
+    prompt_details [ 8 , 3 ] = global ( "current_library" )
+    prompt_details [ 8 , 4 ] = "lib_re_list_rounding_prompt"
+    prompt_details [ 8 , 5 ] = GET_USER_MESSAGE("LIB_RE_LIST_ROUND" ,1)
+    prompt_details [ 8 , 6 ] = 5
+
+    prompt_details [ 9 , 2 ] = "ROUTINE"
+    prompt_details [ 9 , 3 ] = global ( "current_library" )
+    prompt_details [ 9 , 4 ] = "lib_re_list_filter_prompt"
+    prompt_details [ 9 , 5 ] = GET_USER_MESSAGE("LIB_RE_LIST_FILTER" ,1)
+    prompt_details [ 9 , 6 ] = 10
+
+    prompt_details [ 10 , 2 ] = "ROUTINE"
+    prompt_details [ 10 , 3 ] = global ( "current_library" )
+    prompt_details [ 10 , 4 ] = "lib_re_list_pql_calculation_prompt"
+    prompt_details [ 10 , 5 ] = GET_USER_MESSAGE("LIB_RE_LIST_PQL_CALC" ,1)
+    prompt_details [ 10 , 6 ] = 10
+
+    result_user_mrl ( prompt_details )
+
+
+    CREATE OBJECT RESULT_LIST_GRID_CLASS , grid
+
+    grid . height             = GLOBAL ( "SCREEN_HEIGHT" )
+        grid . cell_rows          = size_of_array ( result_details )
+    grid . cell_columns       = size_of_array ( prompt_details )
+    grid . fixed_columns_left = 3
+
+    grid . results      = result_details 
+
+    grid . display_cell_routine = "LIB_RE_LIST_DISPLAY"
+    grid . prompt_cell_routine  = "LIB_RE_LIST_PROMPT"
+
+    grid . insert_routine  = "LIB_RE_LIST_INSERT"
+    grid . remove_routine  = "LIB_RE_LIST_REMOVE"
+
+    grid . title_size_top      = 1
+    grid . title_rendition_top = PROMPT_RENDITION_BOLD
+    grid . title_separator_top = GRID_SEPARATOR_BOTH
+
+
+    lib_grid_setup_columns (  prompt_details ,
+                  grid           ,
+                 "RESULT"        )
+        
+            
+
+    message_fetch ("LIB_RE_LIST_HEADER" , message)
+
+    IF GLOBAL ( "SAMP_BROWSE" ) = "T" THEN
+
+        message_add_parameter ( message , strip ( SELECT sample . id_text ))
+
+    ELSE
+
+        message_add_parameter ( message , strip ( SELECT sample . id_numeric ))
+
+    ENDIF
+
+    header_mess = message_get_text ( message,1) 
+                     
+    lib_grid_create_form ( grid                                         ,
+                   form                                         ,
+                   FALSE                                        ,
+                   0                                            ,
+                   header_mess                                  ,
+                   get_user_message ( "LIB_RE_LIST_FOOTER" ,1 ) ,
+                   button_list                                  )   
+
+    ARRAY button_list
+
+    next_button = 1
+
+    lib_grid_lastkey_button ( button_list ,
+                  next_button ,
+                     "DO"         ,
+                  EMPTY       )
+
+        IF global ( "RESULT_REPLICATES_ENABLED" ) THEN
+
+        lib_grid_action_button ( button_list                    ,
+                     next_button                    ,
+                    "Replicate"                     ,
+                    "LIB_RE_LIST_SCREEN_REPLICATE"  ,
+                     global ( "CURRENT_LIBRARY" )   ,
+                     next_button                    )
+
+    ENDIF
+
+    lib_grid_lastkey_button ( button_list ,
+                  next_button ,
+                     "EXIT"       ,
+                  EMPTY       )
+
+
+    lib_form_add_vertical_buttons ( form        ,
+                    button_list ) 
+
+    grid . prompt_details = prompt_details
+
+ENDROUTINE
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_screen ( result_details )
+
+    DECLARE form       ,
+        update_data
+
+    lib_re_list_create_form ( form           ,
+                  result_details )
+
+    form . start_prompt ()
+
+    IF form . prompt_objects [ 1 ] . cell_rows > 0 THEN
+
+        form . prompt_objects [ 1 ] . set_position ( 3 , 1 )
+
+    ENDIF
+
+    form . wait_prompt  ()
+    update_data = form . get_lastkey () = "DO"
+    form . end_prompt   ()  
+    
+        RETURN ( update_data )
+    
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_update_test (       test_object           ,
+                  VALUE results_unentered     ,
+                                  VALUE results_entered       ,
+                  VALUE create_as_result_list ) 
+
+    DECLARE new_status     ,
+        current_status ,
+        update_test
+
+    update_test = FALSE
+    new_status  = EMPTY
+
+    current_status = SELECT test . status IN OBJECT test_object 
+
+    IF create_as_result_list THEN
+
+        ASSIGN test . has_result_list IN OBJECT test_object = TRUE
+        update_test                                         = TRUE
+
+    ENDIF
+
+    IF results_unentered THEN
+
+        IF results_entered THEN
+
+            IF test_object . status <> "P" THEN
+                new_status = "P"
+            ENDIF
+
+        ELSE
+
+            IF test_object . status <> "V" THEN
+                new_status = "V"
+            ENDIF
+
+        ENDIF
+
+    ELSE
+
+        IF results_entered THEN
+
+            IF SELECT test . has_result_list IN OBJECT test_object THEN
+
+                IF ( test_object . status = "P" ) OR
+                   ( test_object . status = "V" ) THEN
+
+                    new_status = "C"
+
+                ENDIF 
+
+            ENDIF 
+
+        ELSEIF SELECT test . has_result_list IN OBJECT test_object THEN
+
+            IF BLANK ( SELECT test . component_list IN OBJECT test_object ) THEN
+                ASSIGN test . has_result_list IN OBJECT test_object = FALSE
+                update_test = TRUE
+            ELSE
+                new_status = "C"
+            ENDIF
+
+        ENDIF
+
+    ENDIF 
+
+    IF new_status <> EMPTY THEN
+
+
+            IF current_status <> "U" THEN
+
+            IF new_status <> current_status THEN
+
+                CHANGE TEST STATUS TO new_status USING test IN OBJECT test_object       
+                        update_test = TRUE
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+    IF update_test THEN
+
+        UPDATE test IN OBJECT test_object
+
+    ENDIF
+
+ENDROUTINE
+
+
+
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_update ( result_details )
+
+{
+*
+*   Put all the changes to a  result list back into the database.
+*
+*******************************************************************************}
+
+    DECLARE count                     ,
+        result                    ,
+        results_unentered         ,
+            results_entered           ,
+        last_test                 ,
+        create_as_result_list     ,
+        old_status                ,
+        current_status            ,
+        result_count              ,
+        needs_status_change
+
+    count                     = 1
+    last_test                 = result_details [ 1 ] . test
+    results_unentered         = FALSE
+    results_entered           = FALSE
+    create_as_result_list     = FALSE
+    result_count              = 1
+
+    IF NOT ( transaction_is_write () ) THEN
+    
+        START WRITE TRANSACTION get_user_message ( "LIB_RE_LIST_TRANSACTION",1)
+    
+    ENDIF
+    
+    WHILE result_count <= size_of_array( lib_re_list_result_status_array ) DO
+    
+        result = result_details [ result_count ]
+        needs_status_change = lib_re_list_result_status_array [ result_count ]
+        
+        
+        IF ( needs_status_change ) THEN
+        
+            lib_re_list_status_change ( result )
+        
+        ENDIF
+        
+                result_count = result_count + 1
+
+    ENDWHILE
+
+
+    WHILE count <= size_of_array ( result_details ) DO
+
+        result = result_details [ count ]
+
+        IF result . test <> last_test THEN
+            
+            lib_re_list_update_test ( last_test             ,
+                          results_unentered ,
+                          results_entered       ,
+                          create_as_result_list )
+
+                        results_unentered         = FALSE
+            results_entered           = FALSE
+            last_test                 = result . test 
+            create_as_result_list     = FALSE
+
+        ENDIF
+
+        current_status = SELECT result . status IN OBJECT result
+
+        IF result . exists THEN
+
+            IF current_status = "X" THEN
+
+                old_status = SELECT result . old_status IN OBJECT result
+
+                CHANGE RESULT STATUS TO old_status USING result IN OBJECT result
+                    PROPAGATE NONE              
+
+
+            ENDIF                       
+
+            IF SELECT result . status IN OBJECT result = "U" THEN
+
+                create_as_result_list = TRUE
+                results_unentered     = TRUE
+
+            ELSE
+
+                results_entered = TRUE
+
+            ENDIF
+
+            UPDATE result IN OBJECT result
+
+        ELSEIF result . in_database THEN
+
+            create_as_result_list = TRUE
+
+            IF ( current_status = "U"   ) THEN
+
+                DELETE result IN OBJECT result
+    
+            ELSEIF ( current_status <> "X"   ) THEN
+                
+                CHANGE RESULT STATUS TO "X" USING result IN OBJECT result
+                    PROPAGATE NONE              
+
+                UPDATE result IN OBJECT result
+
+            ENDIF
+
+        ENDIF
+
+        count = count + 1
+
+    ENDWHILE
+
+    lib_re_list_update_test ( last_test             ,
+                  results_unentered ,
+                              results_entered       ,
+                  create_as_result_list )
+
+    COMMIT 
+
+ENDROUTINE
+
+{******************************************************************************}
+{******************************************************************************}
+
+GLOBAL ROUTINE lib_re_list_sample ( VALUE option )
+
+    DECLARE result_details  ,
+        sample_id       ,
+        test_number
+
+    lib_re_list_screen_initialise ()
+
+
+    SET SAMPLE_STATUS "VUCHW"
+                              
+    IF prompt_in_window ( "SAMPLE"              ,
+                  get_user_message ( "LIB_RE_LIST_ENTER_SAMPLE",1), 
+                  get_user_message ( "LIB_RE_LIST_ENTER_HEADER",1), 
+                  EMPTY                 ,
+                  sample_id             ) THEN          
+
+
+        ARRAY result_details     
+    
+        test_number = SELECT test . test_number
+                  FOR UPDATE
+                  WHERE ( sample = sample_id ) AND
+                        ( status <> "X"      ) AND
+                    ( status <> "I"      ) AND
+                    ( status <> "R"      ) AND
+                    ( status <> "A"      )
+                  ORDER ON order_num
+
+        WHILE test_number <> EMPTY DO
+
+            lib_re_list_read_test ( test_number    ,
+                        result_details )
+
+            NEXT test
+
+            test_number = SELECT test . test_number
+
+        ENDWHILE        
+        
+        lib_re_list_initialize_status_array ( result_details )
+        
+        IF lib_re_list_screen ( result_details ) THEN
+
+            IF size_of_array ( result_details ) > 0 THEN
+
+                lib_re_list_update ( result_details )
+
+            ENDIF
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_list_initialize_status_array ( result_details )
+
+{
+*
+*   Initialize status array
+*
+*******************************************************************************}
+
+
+    DECLARE result_count
+    
+    result_count = 1
+    ARRAY lib_re_list_result_status_array ARRAYSIZE (0)
+        
+    WHILE result_count <= size_of_array( result_details ) DO        
+        
+        lib_re_list_result_status_array [result_count] = FALSE
+        result_count = result_count + 1
+    
+    ENDWHILE
+    
+    
+ENDROUTINE

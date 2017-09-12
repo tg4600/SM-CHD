@@ -1,0 +1,427 @@
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_ARRAY_SELECT
+JOIN STANDARD_LIBRARY STD_BLOCK
+
+JOIN LIBRARY $LIB_UTILS
+
+ARRAY sel_arr
+ARRAY tst_arr
+ARRAY test_list
+ARRAY sched_arr
+ARRAY smp_arr
+
+DECLARE sched_count, unique_samples
+
+tst_arr[1,1] = ARRAY_SELECT_EQ
+tst_arr[1,2] = "worksheet"
+
+START WRITE TRANSACTION "Delete Ws"
+
+block_name = "WORKSHEET"
+rc = block_row_initialise ( block_name, "worksheet" )
+IF rc <> EMPTY THEN
+   flash_message("ERROR: Could not initialise. Rc:":rc,TRUE)
+   return
+ENDIF
+
+{  Only handle Analysis and Schedule Worksheets  }
+sel_arr[1,1] = ARRAY_SELECT_EQ
+sel_arr[1,2] = "worksheet_type"
+sel_arr[1,3] = "TESTWKS"
+sel_arr[2,1] = ARRAY_SELECT_OR
+sel_arr[3,1] = ARRAY_SELECT_EQ
+sel_arr[3,2] = "worksheet_type"
+sel_arr[3,3] = "SCHEDWKS"
+sel_arr[4,1] = ARRAY_SELECT_ORDER
+sel_arr[4,2] = "identity"
+
+rc = block_row_select ( block_name, sel_arr, TRUE )
+rows = block_row_size ( block_name )
+IF rows <= 0 THEN
+   return
+ENDIF
+
+rc = block_row_first  ( block_name )
+
+nc = 0
+m  = 0
+
+row = 0
+WHILE row < rows DO
+   row = row + 1
+   rc = block_row_find_number ( block_name, row )
+
+   get_tests ( block_name, tests, test_list, do_complete )
+
+   ws_id = block_row_field_select ( block_name, "identity" )
+   ws_tp = block_row_field_select ( block_name, "worksheet_type" )
+
+   file_name = "smp$worksheets:" : strip(ws_id) : "."
+   IF   ws_tp = "TESTWKS"
+   THEN file_name = file_name : "WSA"
+   ELSE file_name = file_name : "SCW"
+   ENDIF
+
+   len = length( ws_id )
+   suf_pos = 0
+   p = len
+   WHILE (p > 0) AND (suf_pos=0) DO
+      p = p-1
+      IF substring(ws_id,p,1) = "_" THEN
+         suf_pos = p
+      ENDIF
+   ENDWHILE
+   IF suf_pos = 0 THEN
+      flash_message("Could not find suffix separator in:":ws_id,TRUE)
+      return
+   ENDIF
+
+   the_id = pad(substring( ws_id, 1, suf_pos-1 )," ",10)
+
+   IF   do_complete
+   THEN nc = nc + 1
+        IF FILE EXISTS ( file_name ) THEN
+           {command_string = "delete " : file_name : ";*"
+           SPAWN command_string, rc QUIETLY}
+           FILE DELETE filename, rc
+           IF rc <> EMPTY THEN
+              flash_message("Could not delete worksheet file with command:":
+                             command_string:". Error:":rc,TRUE)
+              return
+           ENDIF
+        ENDIF
+        block_row_delete( block_name )
+        rows = rows - 1
+        row  = row  - 1
+   ELSE
+
+    IF file_mismatch ( ws_id, file_name, block_name, tests, test_list ) THEN
+
+      m = m + 1
+
+      FILE CREATE file_name, rc
+      IF rc <> EMPTY THEN
+         flash_message("Could not create file ":file_name:". ":rc,TRUE)
+         return
+      ENDIF
+
+      IF   ws_tp = "TESTWKS"
+      THEN FILE WRITE file_name, "$ANALYSIS"
+      ELSE FILE WRITE file_name, "$SCHEDULE"
+      ENDIF
+
+      FILE WRITE file_name, the_id, rc
+
+      db_ws_date = block_row_field_select(block_name,"date_generated")
+      db_ws_date = substring( db_ws_date, 1, 11 )
+      db_ws_oper = block_row_field_select(block_name,"assigned_operator")
+
+      IF (db_ws_oper = EMPTY) OR (BLANK(db_ws_oper)) OR
+         (length(db_ws_oper) > 10) THEN
+          db_ws_oper = block_row_field_select(block_name,"generator_operator")
+      ENDIF
+
+      IF   ws_tp = "TESTWKS"
+      THEN FILE WRITE file_name, db_ws_date, rc
+           FILE WRITE file_name, db_ws_oper, rc
+      ELSE FILE WRITE file_name, db_ws_oper, rc
+           FILE WRITE file_name, db_ws_date, rc
+      ENDIF
+
+      IF ws_tp = "TESTWKS"
+      THEN
+         t = 0
+         WHILE t < tests DO
+            t = t + 1
+            test_no = test_list [ t, 1 ]
+            smp_id  = test_list [ t, 2 ]
+            is_std = select all_sample.standard
+                     where  id_numeric = smp_id
+            l = length ( test_no )
+            IF   is_std
+            THEN test_no = pad(""," ", 8-l) : test_no
+            ELSE test_no = pad(""," ",10-l) : test_no
+            ENDIF
+            FILE WRITE file_name, test_no, rc
+         ENDWHILE
+      ELSE
+         FILE WRITE file_name, "*A", rc
+
+         IF sched_count<0 THEN
+            load_ts ( the_id )
+         ENDIF
+
+         n = 0
+         WHILE n<sched_count DO
+            n = n+1
+            FILE WRITE file_name, sched_arr[n], rc
+         ENDWHILE
+         FILE WRITE file_name, "*S", rc
+
+         IF unique_samples < 0 THEN
+            find_unique_samples()
+         ENDIF
+
+         s = 0
+         WHILE s < unique_samples DO
+            s = s + 1
+            smp_id  = smp_arr[s]
+            l = length ( smp_id )
+            smp_id = pad(""," ",10-l) : smp_id
+            FILE WRITE file_name, smp_id, rc
+         ENDWHILE
+
+      ENDIF
+
+      FILE CLOSE file_name, rc
+{....
+      link_no = block_row_field_select ( block_name, "link_number" )
+
+      tst_arr[1,3] = link_no
+
+      tst_block_name = "TEST"
+      rc = block_row_initialise ( tst_block_name, "test" )
+      IF rc <> EMPTY THEN
+         flash_message("ERROR: Could not initialise. Rc:":rc,TRUE)
+         return
+      ENDIF
+
+      rc = block_row_select ( tst_block_name, tst_arr, TRUE )
+      wks_tests = block_row_size ( tst_block_name )
+
+      IF wks_tests > 0 THEN
+         rc = block_row_first( tst_block_name )
+         tst = 0
+         WHILE tst < wks_tests DO
+            tst = tst + 1
+            rc = block_row_find_number  ( tst_block_name, tst )
+            rc = block_row_field_assign ( tst_block_name, "worksheet", 0 )
+            rc = block_row_field_assign ( tst_block_name, "worksheet_position", 0)
+         ENDWHILE
+
+         rc = block_row_update  ( tst_block_name )
+         rc = block_row_release ( tst_block_name )
+
+         IF ( GLOBAL ("MODE") = "INTERACTIVE" ) THEN
+            flash_message("WARNING: Worksheet:" : STRIP(ws_id) :
+                  " completed although there where " :
+                  strip(wks_tests):" tests on it",TRUE)
+         ENDIF
+      ENDIF
+
+      n = n +1
+      block_row_delete( block_name )
+      rows = rows - 1
+      row  = row  - 1
+
+....}
+    ENDIF
+   ENDIF
+
+ENDWHILE
+
+rc = block_row_update  ( block_name )
+rc = block_row_release ( block_name )
+
+COMMIT
+
+IF ( GLOBAL ("MODE") = "INTERACTIVE" ) THEN
+   flash_message("Number of worksheets completed:":strip(nc):
+                 ". Number of mismatch files repared:":strip(m),TRUE)
+ENDIF
+
+ROUTINE  file_mismatch ( VALUE ws_id, VALUE file_name, ws_block,
+                         VALUE tests, test_list )
+
+   ARRAY file_lines
+
+   delete_file    = FALSE
+   sched_count    = -1
+   unique_samples = -1
+
+   IF   NOT (FILE EXISTS ( file_name ))
+   THEN return ( TRUE )
+   ELSE FILE OPEN file_name, rc
+        IF rc <> EMPTY THEN
+           return ( FALSE )
+        ENDIF
+
+        lines = 0
+        FILE READ file_name, line_read, rc
+        WHILE rc = EMPTY DO
+           lines = lines + 1
+           file_lines[ lines ] = strip( line_read )
+           FILE READ file_name, line_read, rc
+        ENDWHILE
+
+        FILE CLOSE file_name, rc
+
+        IF   lines < 4
+        THEN delete_file = TRUE
+        ELSE
+
+          db_ws_oper = block_row_field_select(ws_block,"assigned_operator")
+          IF (db_ws_oper = EMPTY) OR (BLANK(db_ws_oper)) OR
+             (length(db_ws_oper) > 10 ) THEN
+             db_ws_oper = block_row_field_select(ws_block,"generator_operator")
+          ENDIF
+
+          IF   ws_tp = "TESTWKS"
+          THEN file_oper = strip(file_lines[ 4 ])
+          ELSE file_oper = strip(file_lines[ 3 ])
+          ENDIF
+
+          IF strip(db_ws_oper) <> file_oper THEN
+             delete_file = TRUE
+          ELSE
+
+            IF ws_tp = "TESTWKS"
+            THEN
+             IF   tests <> (lines-4)
+             THEN delete_file = TRUE
+             ELSE
+               tst = 0
+               WHILE (tst < tests) AND (NOT delete_file) DO
+                 tst = tst + 1
+                 test_no = test_list[ tst, 1 ]
+                 l = 4
+                 not_found = TRUE
+                 WHILE (l<lines) AND (not_found) DO
+                   l = l + 1
+                   IF file_lines[l] = test_no THEN
+                      not_found = FALSE
+                   ENDIF
+                 ENDWHILE
+                 IF not_found THEN
+                    delete_file = TRUE
+                 ENDIF
+               ENDWHILE
+             ENDIF
+            ELSE
+
+{           Handle Schedule Worksheet }
+             l = 4
+             sched_start = 0
+             sched_end   = 0
+             WHILE (l < lines) AND (sched_end = 0) DO
+                l = l+1
+                IF     (sched_start > 0) AND (sched_end = 0) AND
+                       (file_lines[l] = "*S")
+                THEN   sched_end   = l-1
+                ELSEIF (sched_start = 0) AND
+                       (file_lines[l] = "*A")
+                THEN   sched_start = l+1
+                ENDIF
+             ENDWHILE
+
+             IF     sched_end = 0
+             THEN
+                    load_ts ( the_id )
+                    return ( TRUE )
+             ELSE   n = sched_start
+                    WHILE (n <= sched_end) DO
+                       sched_arr[n-sched_start+1] = file_lines[n]
+                       n = n+1
+                    ENDWHILE
+             ENDIF
+
+             sched_count = sched_end - sched_start + 1
+
+             find_unique_samples()
+
+             IF    (unique_samples<>lines-6-sched_count)
+             THEN   delete_file = TRUE
+             ENDIF
+
+             smp = 0
+             WHILE (smp < unique_samples) AND (NOT delete_file) DO
+                smp = smp + 1
+                l = sched_end+1
+                not_found = TRUE
+                WHILE (l<lines) AND (not_found) DO
+                   l = l + 1
+                   IF file_lines[l] = smp_arr[smp] THEN
+                      not_found = FALSE
+                   ENDIF
+                ENDWHILE
+                IF not_found THEN
+                   delete_file = TRUE
+                ENDIF
+             ENDWHILE
+
+            ENDIF
+
+          ENDIF
+
+        ENDIF
+
+   ENDIF
+
+   IF   delete_file
+   THEN return ( TRUE  )
+   ELSE return ( FALSE )
+   ENDIF
+
+ENDROUTINE
+
+ROUTINE  find_unique_samples
+
+             unique_samples = 0
+             tst = 0
+             WHILE tst < tests DO
+                tst = tst+1
+                found = FALSE
+                s = 0
+                WHILE (s<unique_samples) AND (NOT found) DO
+                   s = s+1
+                   IF smp_arr[s] = test_list[tst,2] THEN
+                      found = TRUE
+                   ENDIF
+                ENDWHILE
+                IF (NOT found) THEN
+                   unique_samples = unique_samples+1
+                   smp_arr[unique_samples] = test_list[tst,2]
+                ENDIF
+             ENDWHILE
+ENDROUTINE
+
+ROUTINE  load_ts ( VALUE ts_id )
+
+                    anal_id = select test_sched_entry . analysis_id
+                              where  identity = strip(ts_id)
+                              order  on order_num
+                    sched_count = 0
+                    WHILE anal_id <> EMPTY DO
+                       sched_count = sched_count+1
+                       sched_arr[sched_count] = anal_id
+                       NEXT test_sched_entry
+                       anal_id = select test_sched_entry . analysis_id
+                    ENDWHILE
+ENDROUTINE
+
+ROUTINE  get_tests ( ws_block, tests, test_list, do_complete )
+
+      do_complete = TRUE
+      tests = 0
+      link_no = block_row_field_select ( ws_block, "link_number" )
+      test_no = select test.test_number
+                where  worksheet = link_no
+                order  on worksheet_position
+      WHILE test_no <> EMPTY DO
+         smp_id = select test.sample
+         stat   = select test.status
+         IF (do_complete) AND (INDEX("AXCS",stat) = 0) THEN
+            do_complete = FALSE
+         ENDIF
+         test_no = strip(test_no)
+         tests = tests + 1
+         test_list[ tests, 1 ] = test_no
+         test_list[ tests, 2 ] = smp_id
+         next test
+         test_no = select test.test_number
+      ENDWHILE
+
+ENDROUTINE
+
