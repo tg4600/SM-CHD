@@ -1,0 +1,747 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_RE_TREE
+*
+* Purpose       : Result Entry Tree code
+*
+* Document Ref. : CH000199
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+SET NOTPROTECTED
+SET COMPILE_OPTION DECLARE
+SET NAME "DEFER/"
+ENABLE WINDOWS
+
+JOIN STANDARD_LIBRARY STD_CLASS
+JOIN STANDARD_LIBRARY STD_PROMPT
+
+JOIN LIBRARY $EXPLORER_LIB
+JOIN LIBRARY $EXPLORER_RMB
+JOIN LIBRARY $EXPLORER_UTILS
+JOIN LIBRARY $LIB_POPUP_MENU
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LOT_REVIEW
+JOIN LIBRARY $PROMPT_TREE
+JOIN LIBRARY $TOOLBOX
+
+JOIN LIBRARY $LIB_RE_GLOBALS
+
+{*******************************************************************************
+*                           C O N S T A N T S
+*******************************************************************************}
+
+GLOBAL CONSTANT LIB_RE_TREE_CLASS   = "LIBRETREE"
+
+CONSTANT LIB_RE_TREE_FORM_CLASS     = "LIBRETREEFORM"
+CONSTANT LIB_RE_TREE_USER_INFO      = "LIBRETREEUSERINFO"
+
+CONSTANT LIB_RE_TREE_OT_SAMPLE      = "SAMPLE"
+CONSTANT LIB_RE_TREE_OT_TEST        = "TEST"
+
+CONSTANT SAMPLE_ICON                = 73
+
+CONSTANT MESS_POSITION              = 1
+CONSTANT TYPE_POSITION              = 2
+CONSTANT TABLE_POSITION             = 3
+CONSTANT FIELD_POSITION             = 4
+CONSTANT WIDTH_POSITION             = 6
+
+{*******************************************************************************
+*                       G L O B A L   R O U T I N E S
+*******************************************************************************}
+
+GLOBAL
+
+ROUTINE lib_re_tree_initialise
+
+{ 
+*   Define the Result Entry Tree Class
+*
+*******************************************************************************}
+
+    define_lot_review_class     ( )
+
+    {**********************************************************************}
+    {* LIB_RE_TREE Class                                                  *}
+    {**********************************************************************}
+
+    DEFINE CLASS LIB_RE_TREE_CLASS
+
+        INHERIT "STD_PROMPT_TREE" 
+        INITIALISATION
+
+        ACTIONS
+
+            "get_icon"           , { Determine the correct Icon.   }
+            "get_icons"          , { Determine the correct Icons.  }
+            "add_sample"         , { Add a Sample Into the Tree    }
+            "add_test"           , { Add a Test Into the Tree      }
+            "add_result"         , { Add a Result Into the Tree    }
+            "leave_prompt"       , { Leave prompt override         }
+            "reset"              , { Reset all the tree Icons      }
+            "enter_prompt"         { Enter prompt override         }
+
+    END CLASS
+
+    DEFINE CLASS LIB_RE_TREE_FORM_CLASS
+
+        INHERIT PROMPT_CLASS_FORM
+        INITIALISATION
+
+        PROPERTIES
+            "selected_samp" ,
+            "rmb_samp"      ,
+            "selected_test" ,
+            "rmb_test"      ,
+            "library"
+
+
+        ACTIONS
+
+            "ADD_SAMPLE"    ,
+            "ADD_TEST"      ,
+            "SET_CALLBACKS" ,
+            "EXPAND"        ,
+            "EXPAND_ALL"    ,
+            "RESET"         ,
+            "REMOVE_ALL"
+
+    END CLASS
+
+    DEFINE CLASS LIB_RE_TREE_USER_INFO
+
+        PROPERTIES
+            "object_type"  ,
+            "object_value" ,
+            "cell_row"
+
+    END CLASS
+
+ENDROUTINE { lib_re_tree_initialise }
+
+{*******************************************************************************
+*                    L I B R E T R E E    C L A S S 
+*******************************************************************************}
+
+ROUTINE lib_re_tree_class_initialisation ( self )
+
+{ 
+*   Class Initialisation
+*
+*******************************************************************************}
+
+    self . use_images ( EMPTY, 0 )
+
+    self . right_mouse_routine  = "general_right_mouse_routine" 
+    self . selected_routine     = "general_selected_routine"
+
+    self . vgl_library          = GLOBAL ( "CURRENT_LIBRARY" )
+
+ENDROUTINE { lib_re_tree_class_initialisation }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_enter_prompt ( self )
+
+{ 
+*   Tree Leave Prompt Routine
+*
+*******************************************************************************}
+
+    IF ( self . parent_prompt . user_info . re_mode = RE_MODIFY ) THEN
+        self . parent_prompt . user_info . toolbox . disable_buttons(
+            self . parent_prompt . user_info . toolbox_or_buttons )
+    ENDIF
+
+    object_invoke_class ( self              ,
+                          "STD_PROMPT_TREE" ,
+                          "ENTER_PROMPT"    )
+
+ENDROUTINE
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_leave_prompt ( self )
+
+{ 
+*   Tree Leave Prompt Routine
+*
+*******************************************************************************}
+
+    DECLARE form ,
+            empty_var,
+            zero
+
+    form      = self . parent_prompt
+    empty_var = EMPTY
+    zero      = 0
+
+    IF form . selected_test <> EMPTY THEN
+
+        CALL_ROUTINE form . selected_test
+                     USING form . user_info ,
+                           empty_var        ,
+                           zero
+                     IN LIBRARY form . library
+
+    ENDIF
+
+    IF form . selected_samp <> EMPTY THEN
+
+        CALL_ROUTINE form . selected_samp
+                     USING form . user_info ,
+                           empty_var        ,
+                           zero
+                     IN LIBRARY form . library
+
+    ENDIF
+    
+    object_invoke_class ( self              ,
+                          "STD_PROMPT_TREE" ,
+                          "LEAVE_PROMPT"    )
+
+ENDROUTINE { lib_re_tree_action_leave_prompt }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_add_sample (       self     ,
+                                        VALUE root     ,
+                                              sample   ,
+                                              cell_row )
+
+{ 
+*   Load a Sample into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE pos, icon1, icon2, id, user_info
+
+    { Create a user_info record for the tree }
+
+    CREATE OBJECT LIB_RE_TREE_USER_INFO, user_info
+    
+    user_info . object_type  = LIB_RE_TREE_OT_SAMPLE
+    user_info . object_value = sample
+    user_info . cell_row     = cell_row
+
+    self . get_icons ( "SAMPLE", SAMPLE_ICON, icon1, icon2, sample )
+
+    { Get the correct sample id field }
+
+    IF global ( "SAMP_BROWSE" ) = "T" THEN
+        id = STRIP ( SELECT sample . id_text    IN OBJECT sample ) : " (" :
+             STRIP ( SELECT sample . id_numeric IN OBJECT sample ) : ")"
+    ELSE    
+        id = STRIP ( SELECT sample . id_numeric IN OBJECT sample ) : " (" :
+             STRIP ( SELECT sample . id_text    IN OBJECT sample ) : ")"
+    ENDIF
+
+    { For test worksheets with QAQC elements }
+
+    IF id = UNKNOWN_SAMPLE THEN
+        id = GET_USER_MESSAGE ( "RESULT_ENTRY_UNSPECIFIED", 1 )
+
+    ELSEIF id = WASH THEN
+        id = GET_USER_MESSAGE ( "RESULT_ENTRY_WASH", 1 )
+
+    ENDIF
+
+    pos  = self . insert_item ( id, root, TREE_INSERT_LAST,
+                                icon1, icon2, user_info )
+
+    return ( pos )
+
+ENDROUTINE { lib_re_tree_action_add_sample }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_add_test (       self     ,
+                                      VALUE root     ,
+                                            test     ,
+                                            cell_row )
+
+{ 
+*   Load a Sample into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE pos, icon1, icon2, id, user_info
+
+    { Create a user_info record for the tree }
+
+    CREATE OBJECT LIB_RE_TREE_USER_INFO, user_info
+    
+    user_info . object_type  = LIB_RE_TREE_OT_TEST
+    user_info . object_value = test
+    user_info . cell_row     = cell_row
+
+    self . get_icons ( "TEST", TREE_TEST, icon1, icon2, test )
+
+    id = STRIP ( SELECT test . analysis   IN OBJECT test ) : "/" :
+         STRIP ( SELECT test . test_count IN OBJECT test )
+
+    pos  = self . insert_item ( id, root, TREE_INSERT_LAST,
+                                icon1, icon2, user_info )
+
+    return ( pos )
+
+ENDROUTINE { lib_re_tree_action_add_test }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_add_result (       self   ,
+                                        VALUE root   ,
+                                        VALUE result )
+
+{ 
+*   Load a Result into the Tree at the Specified Position
+*
+*******************************************************************************}
+
+    DECLARE pos, icon1, icon2, id
+
+    self . get_icons ( "RESULT", TREE_RESULT, icon1, icon2, result )
+
+    id = STRIP ( SELECT result . name IN OBJECT result )
+
+    pos = self . insert_item ( id, root, TREE_INSERT_LAST,
+                               icon1, icon2, result )
+
+    return ( pos )
+
+ENDROUTINE { lib_re_tree_action_add_result }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_get_icon (       self        ,
+                                      VALUE table       ,
+                                            data_object ,
+                                      VALUE selected    )
+
+{ 
+*   Determine the correct icon to use.
+*
+*******************************************************************************}
+
+    DECLARE icon_no, icon, has_attachment
+
+    icon    = "INT_" : STRIP(table):"_":STRIP(SELECT 'table'.status IN OBJECT data_object)
+    has_attachment = STRIP(SELECT 'table'.has_attachments IN OBJECT data_object)
+
+    IF has_attachment THEN
+        icon = icon:"_A"
+    ENDIF
+
+    icon_no = explorer_utils_get_icon ( icon )
+
+    IF icon_no = ICON_BLANK THEN
+        icon_no = EMPTY
+    ENDIF
+
+    RETURN ( icon_no )
+
+ENDROUTINE { lib_re_tree_action_get_icon }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_get_icons (       self        ,
+                                       VALUE table       ,
+                                       VALUE default     ,
+                                             icon1       ,
+                                             icon2       ,
+                                             data_object )
+
+{ 
+*   Determine the correct icons to use.
+*
+*******************************************************************************}
+
+    icon1 = self . get_icon ( table, data_object, FALSE )
+    icon2 = self . get_icon ( table, data_object, TRUE  )
+
+    IF icon1 = EMPTY THEN
+
+        icon1 = default
+        icon2 = default
+
+    ELSEIF icon2 = EMPTY THEN
+
+        icon2 = icon1
+
+    ENDIF
+
+ENDROUTINE { lib_re_tree_action_get_icons }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_action_reset ( self )
+
+{ 
+*   Reset the tree
+*
+*******************************************************************************}
+
+    DECLARE num_items     ,
+            i             ,
+            user_info     ,
+            icon1         ,
+            icon2         ,
+            current_icon1 ,
+            current_icon2
+
+    num_items = self . get_count ( )
+    i         = 1
+
+    WHILE i <= num_items DO
+
+        user_info = self . get_userinfo ( i )
+
+        self . get_icons ( user_info . object_type  ,
+                           EMPTY                    ,
+                           icon1                    ,
+                           icon2                    ,
+                           user_info . object_value )
+
+        IF ( icon1 <> EMPTY ) AND ( icon2 <> EMPTY ) THEN
+
+            self . get_image ( i             ,
+                               current_icon1 ,
+                               current_icon2 )
+
+            IF ( current_icon1 <> icon1 ) OR
+               ( current_icon2 <> icon2 ) THEN
+
+                self . set_image ( i     ,
+                                   icon1 ,
+                                   icon2 )
+
+            ENDIF
+
+        ENDIF
+
+        i = i + 1
+
+    ENDWHILE
+
+ENDROUTINE { lib_re_tree_action_reset }
+
+{*******************************************************************************
+*                 L I B R E T R E E F O R M    C L A S S 
+*******************************************************************************}
+
+ROUTINE lib_re_tree_form_class_initialisation ( self )
+
+{ 
+*   Class Initialisation
+*
+*******************************************************************************}
+
+    self . selected_samp = EMPTY
+    self . rmb_samp      = EMPTY
+    self . selected_test = EMPTY
+    self . rmb_test      = EMPTY
+    self . library       = EMPTY
+
+ENDROUTINE { lib_re_tree_form_class_initialisation }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_add_sample (       self     ,
+                                             VALUE pos      ,
+                                                   sample   ,
+                                             VALUE cell_row )
+
+{ 
+*   Add a sample to the tree display
+*
+*******************************************************************************}
+
+    DECLARE tree, tree_pos
+
+    tree_pos = sample . get_tree_pos ( )
+
+    IF tree_pos = EMPTY THEN
+
+        tree = self . prompt_objects [ 1 ]
+
+        tree_pos = tree . add_sample ( pos, sample, cell_row )
+
+        sample . set_tree_pos ( tree_pos )
+
+    ENDIF
+
+    RETURN ( tree_pos )
+
+ENDROUTINE { lib_re_tree_form_action_add_sample }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_add_test (       self     ,
+                                           VALUE pos      ,
+                                                 test     ,
+                                           VALUE cell_row )
+
+{ 
+*   Add a test to the tree display
+*
+*******************************************************************************}
+
+    DECLARE tree, tree_pos
+
+    tree_pos = test . get_tree_pos ( )
+
+    IF ( tree_pos = EMPTY ) AND ( NOT test . is_null_test ( ))THEN
+
+        tree = self . prompt_objects [ 1 ]
+
+        tree_pos = tree . add_test ( pos, test, cell_row )
+
+        test . set_tree_pos ( tree_pos )
+
+    ENDIF
+
+    RETURN ( tree_pos )
+
+ENDROUTINE { lib_re_tree_form_action_add_sample }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_set_callbacks (       self          ,
+                                                VALUE selected_samp ,
+                                                VALUE rmb_samp      ,
+                                                VALUE selected_test ,
+                                                VALUE rmb_test      ,
+                                                VALUE library       ,
+                                                      user_info     )
+
+{ 
+*   Set the callback routines for the tree
+*
+*******************************************************************************}
+
+    self . selected_samp = selected_samp
+    self . rmb_samp      = rmb_samp
+    self . selected_test = selected_test
+    self . rmb_test      = rmb_test
+    self . library       = library
+
+    object_assign_uncounted ( self . user_info, user_info )
+
+ENDROUTINE { lib_re_tree_form_action_set_callbacks }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_expand (       self ,
+                                         VALUE pos  )
+
+{ 
+*   Expand a tree node
+*
+*******************************************************************************}
+
+    self . prompt_objects [ 1 ] . expand ( pos, TREE_EXPAND )
+
+ENDROUTINE { lib_re_tree_form_action_expand }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_expand_all ( self )
+
+{ 
+*   Expand all tree nodes
+*
+*******************************************************************************}
+
+    self . prompt_objects [ 1 ] . expand_all ( )
+
+ENDROUTINE { lib_re_tree_form_action_expand_all }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_reset ( self )
+
+{ 
+*   Reset the tree
+*
+*******************************************************************************}
+
+    self . prompt_objects [ 1 ] . reset ( )
+
+ENDROUTINE { lib_re_tree_form_action_reset }
+
+{******************************************************************************}
+
+ROUTINE lib_re_tree_form_action_remove_all ( self )
+
+{ 
+*   Remove all items the tree
+*
+*******************************************************************************}
+
+    self . prompt_objects [ 1 ] . remove_all ( )
+
+ENDROUTINE { lib_re_tree_form_action_reset }
+
+
+{******************************************************************************}
+{*                     G E N E R A L    R O U T I N E S                       *}
+{******************************************************************************}
+
+ROUTINE general_selected_routine ( self     ,
+                                   selected )
+
+
+{ 
+*   Double Click Routine
+*
+*******************************************************************************}
+
+    DECLARE info ,
+            form
+
+    
+    IF self . selected <> 0 THEN
+
+        info = self . get_user_info ( selected )
+
+        form = self . parent_prompt
+        
+
+        IF info . object_type = LIB_RE_TREE_OT_TEST THEN
+
+            IF form . selected_test <> EMPTY THEN
+
+                CALL_ROUTINE form . selected_test
+                             USING form . user_info ,
+                                   info . object_value ,
+                                   info . cell_row
+                             IN LIBRARY form . library
+
+            ENDIF
+
+        ELSEIF info . object_type = LIB_RE_TREE_OT_SAMPLE THEN
+
+            IF form . selected_samp <> EMPTY THEN
+
+                CALL_ROUTINE form . selected_samp
+                             USING form . user_info ,
+                                   info . object_value ,
+                                   info . cell_row
+                             IN LIBRARY form . library
+
+            ENDIF
+
+        ELSE
+
+            FLASH_MESSAGE ( "Unknown Object Type " :
+                                info . object_type ,
+                            TRUE                   )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { general_selected_routine }
+
+{******************************************************************************}
+
+ROUTINE general_right_mouse_routine ( self )
+
+{ 
+*   Right Mouse Routine
+*
+*******************************************************************************}
+
+    DECLARE info ,
+            form
+
+    IF self . selected <> 0 THEN
+
+        info = self . get_user_info ( self . selected )
+
+        form = self . parent_prompt
+
+        IF info . object_type = LIB_RE_TREE_OT_TEST THEN
+
+            IF form . rmb_test <> EMPTY THEN
+
+                CALL_ROUTINE form . rmb_test
+                             USING form . user_info ,
+                                   info . object_value ,
+                                   info . cell_row
+                             IN LIBRARY form . library
+
+            ENDIF
+
+        ELSEIF info . object_type = LIB_RE_TREE_OT_SAMPLE THEN
+
+            IF form . rmb_samp <> EMPTY THEN
+
+                CALL_ROUTINE form . rmb_samp
+                             USING form . user_info ,
+                                   info . object_value ,
+                                   info . cell_row
+                             IN LIBRARY form . library
+
+            ENDIF
+
+        ELSE
+
+            FLASH_MESSAGE ( "Unknown Object Type " :
+                                info . object_type ,
+                            TRUE                   )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE { general_right_mouse_routine }
+
+{******************************************************************************}
+{*                      R E T R E E     R O U T I N E S                       *}
+{******************************************************************************}
+
+    GLOBAL
+
+    ROUTINE lib_re_tree_create_re_tree_form ( result_context )
+
+{
+*   Routine to set up the tree form for gui display on a splitter
+*
+*******************************************************************************}
+
+    DECLARE tree
+
+    { Create the form }
+
+    CREATE OBJECT LIB_RE_TREE_FORM_CLASS , result_context . re_tree_form
+
+    result_context . re_tree_form . height = 1
+    result_context . re_tree_form . width  = 1
+    result_context . re_tree_form . row    = 1
+    result_context . re_tree_form . column = 1
+
+    result_context . re_tree_form . proportional = TRUE
+    result_context . re_tree_form . button_style = FORM_BUTTON_NONE
+
+    { Create the tree control }
+
+    CREATE OBJECT LIB_RE_TREE_CLASS, tree
+
+    tree . full_screen = TRUE
+
+    result_context . re_tree_form . add_prompt ( tree )
+
+ENDROUTINE { lib_re_tree_create_re_tree_form }
+
+
+{******************************************************************************}
+{******************************************************************************}
+{******************************************************************************}
