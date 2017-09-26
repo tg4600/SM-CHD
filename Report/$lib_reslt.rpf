@@ -1,0 +1,866 @@
+{******************************************************************************
+*
+* Module Name   : $LIB_RESLT
+*
+* Purpose       : SMP library contining routines to add ad-hoc results and
+*                 to get sample types
+*
+* Document Ref. : SE/T/TVGL-WORK-REPORTS/1/3
+*
+* Specification :
+*
+* Portability   : Not Checked
+*
+* Re-entrant    :
+*
+*******************************************************************************}
+
+
+ENABLE WINDOWS
+SET NAME "DEFER/"
+SET NOTPROTECTED
+SET COMPILEOPTION DECLARE
+
+JOIN LIBRARY $LIB_UTILS
+JOIN LIBRARY $LIB_UNIT
+JOIN LIBRARY $LIB_COMP
+JOIN LIBRARY $RESL_USER
+
+JOIN STANDARD_LIBRARY STD_WINDOW
+JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_BROWSE
+JOIN STANDARD_LIBRARY STD_DATABASE
+
+CONSTANT BOOLEAN_TRUE  = 3
+CONSTANT BOOLEAN_FALSE = 4
+CONSTANT CHARACTER     = 5
+CONSTANT CALCULATION   = 6
+CONSTANT CALC_UNITS    = 7
+CONSTANT NUMERICAL     = 8
+CONSTANT OPTION        = 9
+CONSTANT LIST_RESULT   = 10
+CONSTANT LIST_UNITS    = 11
+CONSTANT ENTITY_NAME   = 12
+
+CONSTANT BOOLEAN = "B"
+CONSTANT CHAR    = "C"
+CONSTANT CALC    = "K"
+CONSTANT NUM     = "N"
+CONSTANT OPT     = "O"
+CONSTANT LISTRES = "L"
+CONSTANT ENTITY  = "E"
+
+ad_hoc_result ( " ", " " )   { Used for testing Only }
+
+{******************************************************************************}
+{                                                                              }
+{ Routine Name     :  ad_hoc_result                                            }
+{                                                                              }
+{ Description      :  Emulates the Pascal code to create an ad-hoc result.     }
+{                     Prompts for the standard fields as before.               }
+{                     Also calls a routine to assign other fields to the       }
+{                     result, as defined by on-site requirements.              }
+{                                                                              }
+{ Parameters       :  None                                                     }
+{                                                                              }
+{ Return Value     :  If the result was modified ok,                           }
+{                         return TRUE.                                         }
+{                     If the result was NOT modified ok, or EXIT pressed,      }
+{                         return FALSE.                                        }
+{                                                                              }
+{ Globals Modified :  None.                                                    }
+{                                                                              }
+{******************************************************************************}
+
+{------------------------------------------------------------------------------}
+
+GLOBAL ROUTINE ad_hoc_result ( VALUE res_name, VALUE res_type )
+
+DECLARE return_value    ,
+    test_no         ,
+    param_one       ,
+    param_two       ,
+    file_descriptor ,
+    analysis_name   ,
+    analysis_version
+
+    lib_comp_initialise ()
+
+    push_file_descriptor ( "TEST" , file_descriptor )
+
+    analysis_name = SELECT test . analysis
+                    WHERE  ( test_number = SELECT result . test_number )
+    analysis_version = SELECT test . analysis_version
+
+    return_value = create_window ( res_type         ,
+                                   res_name         ,
+                                   test_no          ,
+                                   param_one        ,
+                                   param_two        ,
+                       analysis_name    ,
+                       analysis_version )       
+
+    IF ( return_value ) AND
+       ( lib_comp_valid_analysis_version_component ( res_name        ,
+                                                     analysis_name   ,
+                                                     analysis_version)) THEN
+
+        return_value = create_standard_result ( res_name ,
+                            test_no  )
+
+    ELSEIF return_value THEN
+
+        return_value = assign_standard_fields ( res_type  ,
+                                                res_name  ,
+                                                test_no   ,
+                                                param_one ,
+                                                param_two )
+
+        IF return_value THEN
+
+            assign_extra_fields ( )
+
+        ENDIF
+
+    ENDIF
+
+    pop_file_descriptor ( file_descriptor )
+
+    RETURN ( return_value )
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE init_messages
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE create_window (       res_type         ,
+                              res_name         ,
+                              test_no          ,
+                              param_one        ,
+                              param_two        , 
+            VALUE analysis_name    ,
+            VALUE analysis_version )    
+
+    DECLARE param_ok, prompts, prompt_width, prompt_col,
+            display_obj, main_form, valid_tables, res_phr
+
+    unit_prompt_initialise ( )
+
+    IF GLOBAL ( "TERMTYPE" ) = "GUI" THEN
+
+        prompt_col = 2
+    ELSE
+        prompt_col = 1
+    ENDIF
+
+    test_no = SELECT result . test_number
+
+    IF test_no = EMPTY THEN
+
+        RETURN (FALSE)
+
+    ENDIF
+
+    IF NOT global ( "RESULT_REPLICATES_ENABLED" ) THEN
+
+        res_name = " "
+        res_type = BOOLEAN
+
+    ELSE
+
+        res_name = lib_comp_get_name ( res_name )
+
+    ENDIF
+
+    CREATE OBJECT PROMPT_CLASS_FORM , main_form
+
+    main_form . height = 4
+    main_form . width = 56
+    main_form . border = TRUE
+    main_form . header = GET MESSAGE ( 2430, 1 )
+    main_form . footer = GET MESSAGE ( 2565, 1 )
+    main_form . help_context = "$LIB_RESLT_MAIN"
+    main_form . row = 16
+    main_form . column = 4
+    main_form . proportional = TRUE
+    main_form . prompt_id = "LIB_RESLT_MAIN"
+    main_form . return_behaviour = FORM_RETURN_STAY
+
+    prompt_width = 20
+
+    PROMPT OBJECT display_obj
+                  ON LINE 1
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2431, 1 ) ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 2
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2432, 1 ) ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    main_form . add_frame ( "" , 1 , 1 , 4 , main_form . width )
+
+    PROMPT OBJECT main_form . prompt_objects [1]
+                  ON LINE 1
+                  FROM prompt_width
+                  TO main_form . width - 1
+                  FORMAT TEXT40
+                  WITH ( value = res_name ,
+                         always_validate      = TRUE                       ,
+                 browse_routine       = "result_name_browse"       ,    
+                 leave_prompt_routine = "result_name_leave_prompt"  ,   
+                         validation_routine   = "result_name_validate"     )
+
+    PROMPT OBJECT main_form . prompt_objects [2]
+                  ON LINE 2
+                  FROM prompt_width
+                  TO main_form . width - 3
+              BROWSE ON valid_phrase_id . res_type
+                  WITH ( zap_on_first = TRUE ,
+                         value = res_type    ,
+                         leave_prompt_routine = "result_type_leave_prompt" )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2436, 1 )  ,
+                         visible = ( res_type = BOOLEAN ) ,
+                 bold  = TRUE                     ,
+                 raised = TRUE            )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [BOOLEAN_TRUE]
+                  ON LINE 3
+                  FROM prompt_width
+                  FORMAT TEXT10
+                  WITH ( value = SELECT result . true_word ,
+                         visible = ( res_type = BOOLEAN )  )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 4
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2437, 1 )  ,
+                         visible = ( res_type = BOOLEAN ) ,
+                 bold  = TRUE                     ,
+                 raised = TRUE            )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [BOOLEAN_FALSE]
+                  ON LINE 4
+                  FROM prompt_width
+                  FORMAT TEXT10
+                  WITH ( value = SELECT result . false_word ,
+                         visible = ( res_type = BOOLEAN ) )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2438, 1 ) ,
+                 visible = ( res_type = CHAR )   ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [CHARACTER]
+                  ON LINE 3
+                  FROM prompt_width
+                  FORMAT TEXT26
+                  WITH ( visible = ( res_type = CHAR ) )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2434, 1 ) ,
+                         visible = ( res_type = CALC )   ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [CALCULATION]
+                  ON LINE 3
+                  FROM prompt_width
+                  BROWSE ON calculation
+                  WITH ( value = SELECT result . calculation ,
+                         visible = ( res_type = CALC ) )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 4
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2433, 1 ) ,
+                         visible = ( res_type = CALC )   ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [CALC_UNITS]
+                  ON LINE 4
+                  FROM prompt_width
+              CLASS UNIT_PROMPT_CLASS
+                  WITH ( value = SELECT result . units ,
+                         visible = ( res_type = CALC ) )
+
+        PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2433, 1 ) ,
+                         visible = ( res_type = NUM )    ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [NUMERICAL]
+                  ON LINE 3
+                  FROM prompt_width
+                  CLASS UNIT_PROMPT_CLASS
+                  WITH ( value = SELECT result . units ,
+                         visible = ( res_type = NUM ) )
+
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2435, 1 ) ,
+                         visible = ( res_type = OPT )    ,
+                 bold  = TRUE                    ,
+                 raised = TRUE           )
+
+    main_form . add_display ( display_obj )
+
+{**************************************************************************************************************
+    PROMPT OBJECT main_form . prompt_objects [OPTION]
+                  ON LINE 3
+                  FROM prompt_width
+                  BROWSE ON phrase_header.identity
+                  WITH ( value = SELECT result . calculation ,
+                         visible = ( res_type = OPT ) )
+***************************************************************************************************************}
+
+    res_phr = SELECT result . calculation
+    PROMPT OBJECT main_form . prompt_objects [OPTION]
+                  ON LINE 3
+                  FROM prompt_width
+                  BROWSE ON VALID_PHRASE_ID.'res_phr'
+                  WITH ( visible = ( res_type = OPT ) )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2882, 1 )  ,
+                         visible = ( res_type = LISTRES ) ,
+                 bold  = TRUE                     ,
+                 raised = TRUE            )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [LIST_RESULT]
+                  ON LINE 3
+                  FROM prompt_width
+              BROWSE ON list_result_format
+                  WITH ( value = SELECT list_result_format . identity ,
+                         visible = ( res_type = LISTRES )  )
+
+    PROMPT OBJECT display_obj
+                  ON LINE 4
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value  = GET MESSAGE ( 2883, 1 )   ,
+                         visible = ( res_type = LISTRES ) ,
+                 bold  = TRUE                     ,
+                 raised = TRUE            )
+
+    main_form . add_display ( display_obj )
+
+    PROMPT OBJECT main_form . prompt_objects [LIST_UNITS]
+                  ON LINE 4
+                  FROM prompt_width
+              CLASS UNIT_PROMPT_CLASS
+                  WITH ( value = SELECT result . units ,
+                         visible = ( res_type = LISTRES ) )
+
+
+    PROMPT OBJECT display_obj
+                  ON LINE 3
+                  FROM prompt_col TO prompt_width - prompt_col
+                  FORMAT TEXT
+                  WITH ( value = GET MESSAGE ( 2885, 1 )  ,
+                         visible = ( res_type = ENTITY ) ,
+                 bold  = TRUE                     ,
+                 raised = TRUE            )
+
+    main_form . add_display ( display_obj )
+    
+    valid_tables = lib_comp_setup_valid_tables ( )
+
+    PROMPT OBJECT main_form . prompt_objects [ENTITY_NAME]
+                  ON LINE 3
+                  FROM prompt_width
+              CHOOSE OUTOF valid_tables
+                  WITH ( visible = ( res_type = ENTITY ))
+
+
+    main_form . start_prompt ()
+
+    display_types ( main_form , res_type )
+
+    REPEAT
+
+        main_form . wait_prompt ()
+
+        prompts = main_form . prompt_objects
+        param_one = ""
+        param_two = ""
+        param_ok = TRUE
+
+        IF main_form . get_lastkey () <> "EXIT" THEN
+
+            res_name = main_form . prompt_objects [1] . value
+            res_type = STRIP ( main_form .
+                               prompt_objects [2] . value )
+
+            IF ( lib_comp_valid_analysis_version_component ( res_name        ,
+                                                                     analysis_name   ,
+                                                                     analysis_version)) THEN
+
+                param_ok = TRUE
+
+
+            ELSEIF res_type = BOOLEAN THEN
+
+                param_one = prompts [BOOLEAN_TRUE] . value
+                param_two = prompts [BOOLEAN_FALSE] . value
+
+                IF STRIP ( TOUPPER ( param_one ) ) =
+                   STRIP ( TOUPPER ( param_two ) ) THEN
+
+                    flash_message( GET MESSAGE( 2442, 1), TRUE)
+                    param_ok = FALSE
+
+                ENDIF
+
+            ELSEIF res_type = CHAR THEN
+
+                param_one = prompts [CHARACTER] . value
+
+            ELSEIF res_type = CALC THEN
+
+                param_one = prompts [CALCULATION] . value
+                param_two = prompts [CALC_UNITS] . value
+
+                IF BLANK ( param_one ) THEN
+
+                    flash_message( GET MESSAGE( 2443, 1), TRUE)
+                    param_ok = FALSE
+
+                ENDIF
+
+            ELSEIF res_type = NUM THEN
+
+                param_one = prompts [NUMERICAL] . value
+
+            ELSEIF res_type = LISTRES THEN
+
+                param_one = prompts [LIST_RESULT] . value
+                                param_two = prompts [LIST_UNITS] . value
+
+            ELSEIF res_type = ENTITY THEN
+
+                param_one = prompts [ENTITY_NAME] . value
+
+            ELSEIF res_type = OPT THEN
+
+                param_one = prompts [OPTION] . value
+
+                IF BLANK ( param_one ) THEN
+
+                    flash_message( GET MESSAGE( 2444, 1), TRUE)
+                    param_ok = FALSE
+
+                ENDIF
+
+            ENDIF
+
+        ENDIF
+
+    UNTIL param_ok
+
+    main_form . end_prompt ()
+
+    IF main_form . get_lastkey () <> "EXIT" THEN
+
+        RETURN ( TRUE )
+
+    ELSE
+
+        RETURN ( FALSE )
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE assign_extra_fields
+
+DECLARE sig_figs_no, sig_figs_rounding, sig_figs_filter
+
+{ Any fields the user wishes to initialise should be ASSIGNed here }
+
+    ASSIGN result . places = -1
+
+    IF GLOBAL( "SIG_FIGS_SET_UP") THEN
+
+        sig_figs_no       = "sig_figs_number"
+        sig_figs_rounding = "sig_figs_rounding"
+        sig_figs_filter   = "sig_figs_filter"
+        ASSIGN result . 'sig_figs_no'   = -1
+        ASSIGN result . 'sig_figs_rounding' = -1
+        ASSIGN result . 'sig_figs_filter'   = "          "
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE result_name_browse ( prompt_id )
+
+    DECLARE analysis_name   ,
+        components      ,
+        analysis_version
+
+    analysis_name    = SELECT test . analysis
+    analysis_version = SELECT test . analysis_version
+
+    IF ( SELECT test . has_result_list )         OR
+       ( global ( "RESULT_REPLICATES_ENABLED" )) THEN
+
+        IF lib_comp_get_adhoc_result_browse
+                        ( analysis_name             ,
+                          analysis_version          ,
+                          SELECT test . test_number ,
+                          components                ) THEN
+
+            IF browse_on_array ( 40               ,
+                         prompt_id . text ,
+                             components       ) THEN
+
+                prompt_id . text = PAD ( prompt_id . text   ,
+                                 " "                ,
+                             prompt_id . length )
+
+                prompt_id . stop_prompt ( )
+                prompt_id . set_lastkey ( "RETURN" )
+
+            ENDIF
+
+            prompt_id . repaste ()
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE result_name_validate ( prompt_id )
+
+
+    IF BLANK ( prompt_id . text ) AND
+       ( prompt_id . get_lastkey () <> "EXIT" ) THEN
+
+        RETURN ( FALSE )
+
+    ELSEIF NOT ( lib_comp_validate_name ( prompt_id . text ,
+                          TRUE             )) THEN
+
+        RETURN ( FALSE )
+
+    ELSE    
+
+        RETURN ( TRUE )
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE result_name_leave_prompt ( prompt_id )
+
+    DECLARE analysis_name   ,
+        is_on_analysis  ,
+        analysis_version
+
+    analysis_name    = SELECT test . analysis
+    analysis_version = SELECT test . analysis_version
+
+    IF SELECT test . has_result_list THEN
+
+        is_on_analysis = lib_comp_valid_analysis_version_component
+                                                ( prompt_id . value ,
+                                                  analysis_name     ,
+                                                  analysis_version  )
+
+        prompt_id . parent_prompt . prompt_objects [ 2 ] .
+                        set_enabled ( NOT is_on_analysis )
+
+        IF is_on_analysis THEN
+
+            display_types ( prompt_id . parent_prompt , " " )
+
+        ENDIF
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE result_type_leave_prompt ( prompt_id )
+
+    DECLARE res_type
+
+    res_type = STRIP ( prompt_id . value )
+    display_types ( prompt_id . parent_prompt , res_type )
+
+ENDROUTINE
+
+
+ROUTINE display_types ( form, VALUE res_type )
+
+    form . prompt_objects [BOOLEAN_TRUE]  . set_visible ( FALSE )
+    form . prompt_objects [BOOLEAN_FALSE] . set_visible ( FALSE )
+    form . prompt_objects [CHARACTER] . set_visible ( FALSE )
+    form . prompt_objects [CALCULATION] . set_visible ( FALSE )
+    form . prompt_objects [CALC_UNITS] . set_visible ( FALSE )
+    form . prompt_objects [OPTION] . set_visible ( FALSE )
+    form . prompt_objects [NUMERICAL] . set_visible ( FALSE )
+    form . prompt_objects [LIST_RESULT] . set_visible ( FALSE )
+        form . prompt_objects [LIST_UNITS] . set_visible ( FALSE )
+        form . prompt_objects [ENTITY_NAME] . set_visible ( FALSE )
+
+    form . display_objects [BOOLEAN_TRUE]  . set_visible ( FALSE )
+    form . display_objects [BOOLEAN_FALSE] . set_visible ( FALSE )
+    form . display_objects [CHARACTER] . set_visible ( FALSE )
+    form . display_objects [CALCULATION] . set_visible ( FALSE )
+    form . display_objects [CALC_UNITS] . set_visible ( FALSE )
+    form . display_objects [OPTION] . set_visible ( FALSE )
+    form . display_objects [NUMERICAL] . set_visible ( FALSE )
+    form . display_objects [LIST_RESULT] . set_visible ( FALSE )
+        form . display_objects [LIST_UNITS] . set_visible ( FALSE )
+        form . display_objects [ENTITY_NAME] . set_visible ( FALSE )
+
+    
+    IF res_type = BOOLEAN THEN
+
+        form . prompt_objects [BOOLEAN_TRUE]  . set_visible ( TRUE )
+        form . prompt_objects [BOOLEAN_FALSE] . set_visible ( TRUE )
+        form . display_objects [BOOLEAN_TRUE]  . set_visible ( TRUE )
+        form . display_objects [BOOLEAN_FALSE] . set_visible ( TRUE )
+
+    ELSEIF res_type = CALC THEN
+
+        form . prompt_objects [CALCULATION] . set_visible ( TRUE )
+        form . prompt_objects [CALC_UNITS] . set_visible ( TRUE )
+        form . display_objects [CALCULATION] . set_visible ( TRUE )
+        form . display_objects [CALC_UNITS] . set_visible ( TRUE )
+
+    ELSEIF res_type = CHAR THEN
+
+        form . prompt_objects [CHARACTER] . set_visible ( TRUE )
+        form . display_objects [CHARACTER] . set_visible ( TRUE )
+
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 4
+            IN WINDOW form . window
+
+    ELSEIF res_type = LISTRES THEN
+
+        form . prompt_objects [LIST_RESULT] . set_visible ( TRUE )
+        form . display_objects [LIST_RESULT] . set_visible ( TRUE )
+                form . prompt_objects [LIST_UNITS] . set_visible ( TRUE )
+        form . display_objects [LIST_UNITS] . set_visible ( TRUE )
+
+    ELSEIF res_type = OPT THEN
+
+        form . prompt_objects [OPTION] . set_visible ( TRUE )
+        form . display_objects [OPTION] . set_visible ( TRUE )
+
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 4
+            IN WINDOW form . window
+
+    ELSEIF res_type = ENTITY THEN
+
+        form . prompt_objects [ENTITY_NAME] . set_visible ( TRUE )
+        form . display_objects [ENTITY_NAME] . set_visible ( TRUE )
+
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 4
+            IN WINDOW form . window
+
+    ELSEIF res_type = NUM THEN
+
+        form . prompt_objects [NUMERICAL] . set_visible ( TRUE )
+        form . display_objects [NUMERICAL] . set_visible ( TRUE )
+
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 4
+            IN WINDOW form . window
+    ELSE
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 3
+            IN WINDOW form . window
+
+        DISPLAY "" FROM 1 TO form . width - 1 ON LINE 4
+            IN WINDOW form . window
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE assign_standard_fields ( res_type  ,
+                                 res_name  ,
+                                 test_no   ,
+                                 param_one ,
+                                 param_two )
+
+
+DECLARE status
+
+    {ASSIGN result.component_name = res_name}
+
+    RESERVE ENTRY result, testno : res_name, status
+
+    IF status = EMPTY THEN
+
+        ASSIGN result.result_type = res_type
+
+        IF res_type = BOOLEAN THEN
+
+            ASSIGN result. true_word = param_one
+            ASSIGN result. false_word  = param_two
+
+        ELSEIF res_type = CALC THEN
+
+            ASSIGN result. calculation_id = param_one
+            ASSIGN result. units = param_two
+
+        ELSEIF res_type = NUM THEN
+
+            ASSIGN result. units = param_one
+
+        ELSEIF res_type = OPT THEN
+
+            ASSIGN result. calculation_id = param_one
+
+        ELSEIF res_type = CHAR THEN
+
+            ASSIGN result. allowed_characters = param_one
+
+        ELSEIF res_type = LISTRES THEN
+
+            ASSIGN result. calculation_id = param_one
+                        ASSIGN result . units = param_two
+
+        ELSEIF res_type = ENTITY THEN
+
+            ASSIGN result . calculation_id = param_one
+
+        ENDIF
+
+        { Types D, F, I, T have no extra fields }
+
+        RETURN (TRUE)
+
+    ELSE
+
+        flash_message( GET MESSAGE( 2439, 1), TRUE)
+        RETURN (FALSE)
+
+    ENDIF
+
+ENDROUTINE
+
+{------------------------------------------------------------------------------}
+
+ROUTINE create_standard_result ( res_name  ,
+                                 test_no   )
+
+
+    DECLARE status    ,
+        replicate
+
+    replicate = lib_comp_get_max_replicate ( test_no   ,
+                                 res_name  )    
+            
+    res_name = lib_comp_add_replicate ( res_name      ,
+                            replicate + 1 )
+
+    RESERVE ENTRY result, testno : res_name, status
+
+    IF status = EMPTY THEN
+
+        ASSIGN result . order_number       = SELECT versioned_component . order_number
+        ASSIGN result . result_type        = SELECT versioned_component . result_type
+        ASSIGN result . units              = SELECT versioned_component . units
+        ASSIGN result . minimum            = SELECT versioned_component . minimum
+        ASSIGN result . maximum            = SELECT versioned_component . maximum
+        ASSIGN result . true_word          = SELECT versioned_component . true_word
+        ASSIGN result . false_word         = SELECT versioned_component . false_word
+        ASSIGN result . allowed_characters = SELECT versioned_component . allowed_characters
+        ASSIGN result . calculation        = SELECT versioned_component . calculation
+        ASSIGN result . places             = SELECT versioned_component . places
+        ASSIGN result . sig_figs_number    = SELECT versioned_component . sig_figs_number
+        ASSIGN result . sig_figs_rounding  = SELECT versioned_component . sig_figs_rounding
+            ASSIGN result . sig_figs_filter    = SELECT versioned_component . sig_figs_filter
+            ASSIGN result . rep_control        = SELECT versioned_component . rep_control
+        ASSIGN result . minimum_pql        = SELECT versioned_component . minimum_pql     
+        ASSIGN result . maximum_pql        = SELECT versioned_component . maximum_pql     
+        ASSIGN result . pql_calculation    = SELECT versioned_component . pql_calculation 
+        ASSIGN result . formula            = SELECT versioned_component . formula       
+
+        IF global ( "RESULT_USER_ASSIGN_ENABLE" ) THEN
+        
+            result_user_create ()
+
+
+        ENDIF
+
+        RETURN (TRUE)
+
+    ELSE
+
+        flash_message( GET MESSAGE( 2439, 1), TRUE)
+        RETURN (FALSE)
+
+    ENDIF
+
+ENDROUTINE
+
