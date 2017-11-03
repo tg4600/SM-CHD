@@ -104,6 +104,12 @@ ENDROUTINE
 GLOBAL ROUTINE export_data ( rmb_object, object , collection )
 {*************************************************************************
 * Purpose       : Explorer RMB callback routine for exporting data
+                  To be used for single-table entities, like sample_point...
+                  For entities using more tables, i.e. job and sample templates
+                  the code must be adjusted for:
+                => ROUTINE ExportChildTable AND
+                => ROUTINE ImportChildTable 
+                
 * Parameters    : rmb_object, object , collection
 * Return Value  : None
     rmb_object  EXPLORER_RMB        - E:\Program Files (x86)\Thermo\SampleManager\11.1\Report\$explorer_rmb.rpf
@@ -163,19 +169,6 @@ ARRAY list_of_fields
         collection.set_next()
     ENDWHILE
 
-    IF mod_field <> EMPTY THEN
-        i = 1
-        WHILE i <= size_of_array(records)
-            id = SELECT 'table'.'key1' FOR UPDATE WHERE 'key1' = records[i, 1]
-            IF id = records[i, 1]
-                start write transaction "Export ":table
-                ASSIGN 'table'.'mod_field' = NOW
-                UPDATE 'table'
-                COMMIT
-            ENDIF
-            i = i + 1
-        ENDWHILE
-    ENDIF
     default_path = STRIP(SELECT destination_cpu.system_path WHERE identity = GLOBAL("AUTO_COMMIT_DEFAULT_DEST")):"\CSV"
 
     r = 1
@@ -215,6 +208,20 @@ ARRAY list_of_fields
 
     ExportChildTable(table, select_array, file_name)
     
+    IF mod_field <> EMPTY THEN
+        i = 1
+        WHILE i <= size_of_array(records)
+            id = SELECT 'table'.'key1' FOR UPDATE WHERE 'key1' = records[i, 1]
+            IF id = records[i, 1]
+                start write transaction "Export ":table
+                ASSIGN 'table'.'mod_field' = NOW
+                UPDATE 'table'
+                COMMIT
+            ENDIF
+            i = i + 1
+        ENDWHILE
+    ENDIF
+
     msg =  (ASCII(10):
             "Exported '":TOUPPER(table):"'":ASCII(10):
             GetArray(records):ASCII(10):ASCII(10):
@@ -262,6 +269,18 @@ ROUTINE ExportChildTable (VALUE table, select_array, VALUE file_name)
     ELSEIF table = "TEST_SCHED_HEADER" THEN
         table = "TEST_SCHED_ENTRY"
         get_field_names_without_aliases ( table, list_of_fields )
+        spawn "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+    ELSEIF table = "PHRASE_HEADER" THEN
+        table = "PHRASE"
+        get_field_names_without_aliases ( table, list_of_fields )
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "IDENTITY" THEN
+                select_array[r, 2] = "PHRASE_ID"
+            ENDIF
+            r = r + 1
+        ENDWHILE
         spawn "md ":default_path:"\":table, status QUIETLY
         output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
     ENDIF
@@ -390,6 +409,10 @@ DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transac
         table = "TEST_SCHED_ENTRY"
         key   = "IDENTITY"
         field = "ANALYSIS_ID"
+    ELSEIF table = "PHRASE_HEADER" THEN
+        table = "PHRASE"
+        key   = "IDENTITY"
+        field = "PHRASE_ID"
     ELSE 
         RETURN
     ENDIF
