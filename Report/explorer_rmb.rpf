@@ -29,7 +29,7 @@ GLOBAL ROUTINE prod_sched_label_rmb ( rmb_object, object , collection )
 
 *************************************************************************}
 DECLARE records, table, ArrKey0, Key1, Key2, Key3, Key4, Key5, i, key, status
-DECLARE prompt_title, msg_array, display_text, prompt_type, fld_name, do_browse, select_array, prompt_val, last_key_used
+DECLARE prompt_title, msg_array, display_text, prompt_type, fld_name, do_browse, select_array, prompt_val, key_last_used
 
 ARRAY msg_array
 ARRAY select_array
@@ -71,7 +71,7 @@ ARRAY ArrKey0
 
         key = prompt_user_msg (prompt_title, msg_array, display_text,
                          prompt_type , fld_name, do_browse, 
-                         select_array, prompt_val, last_key_used)
+                         select_array, prompt_val, key_last_used)
 
         IF key AND NUMTEXT(prompt_val) THEN
             i = 1
@@ -116,8 +116,8 @@ GLOBAL ROUTINE export_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE table, ArrKey0, mod_field, Key1, Key2, Key3, Key4, Key5, i, records, default_path, file_name, msg,
-        r, select_array, list_of_fields, flash_status, return_message, id, status
+DECLARE table, ArrKey0, mod_field, Key1, Key2, Key3, Key4, Key5, key_first, key_keep, key_last, i, records, default_path, file_name, msg,
+        r, select_array, list_of_fields, flash_status, return_message, {id, } status
 
 ARRAY records 
 ARRAY ArrKey0
@@ -162,12 +162,38 @@ ARRAY list_of_fields
         ENDIF    
         IF size_of_array(ArrKey0) >= 4 THEN
             records[i, 4] = SELECT 'table'.'Key4' IN OBJECT collection.current
-        ENDIF    
+       ENDIF    
         IF size_of_array(ArrKey0) >= 5 THEN
             records[i, 5] = SELECT 'table'.'Key5' IN OBJECT collection.current
         ENDIF    
         collection.set_next()
     ENDWHILE
+    
+    key_first = ""
+    i = 1
+    WHILE i <= size_of_array(ArrKey0)
+        key_first = key_first:" ":STRIP(records[1, i])
+        i = i + 1
+    ENDWHILE
+    
+    key_last  = ""
+    i = 1
+    WHILE i <= size_of_array(ArrKey0)
+        key_last  = key_last :" ":STRIP(records[size_of_array(records), i])
+        i = i + 1
+    ENDWHILE
+
+    IF key_first <> key_last THEN
+        WHILE SUBSTRING(key_first, 1, 1) = SUBSTRING(key_last, 1, 1)
+            IF SUBSTRING(key_first, 1, 1) = " " THEN
+                key_keep = STRIP(key_first)
+            ENDIF
+            key_first = (SUBSTRING(key_first, 2, LENGTH(key_first)))
+            key_last  = (SUBSTRING(key_last,  2, LENGTH(key_last )))
+        ENDWHILE
+    ENDIF    
+    key_first = key_keep
+    key_last  = STRIP(key_last)
 
     default_path = STRIP(SELECT destination_cpu.system_path WHERE identity = GLOBAL("AUTO_COMMIT_DEFAULT_DEST")):"\CSV"
 
@@ -198,7 +224,12 @@ ARRAY list_of_fields
     ENDWHILE
 
     SET DATE FORMAT "YYYY-MM-DZ H24.MI"
-        file_name = NOW:" ":STRIP(OPERATOR):".csv"
+        IF size_of_array(records) = 1 THEN
+            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):"].csv"
+        ELSEIF size_of_array(records) > 1 THEN
+            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):" - ":
+                                                     SUBSTITUTE(STRIP(key_last) , "\/:*?<>|":ASCII(34), ""):"].csv"
+        ENDIF
     RESTORE DATE FORMAT
    
     get_field_names_without_aliases ( table, list_of_fields )
@@ -207,7 +238,7 @@ ARRAY list_of_fields
     output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
 
     ExportChildTable(table, select_array, file_name)
-    
+{    
     IF mod_field <> EMPTY THEN
         i = 1
         WHILE i <= size_of_array(records)
@@ -221,7 +252,7 @@ ARRAY list_of_fields
             i = i + 1
         ENDWHILE
     ENDIF
-
+ }
     msg =  (ASCII(10):
             "Exported '":TOUPPER(table):"'":ASCII(10):
             GetArray(records):ASCII(10):ASCII(10):
@@ -277,12 +308,38 @@ ROUTINE ExportChildTable (VALUE table, select_array, VALUE file_name)
         r = 1
         WHILE r <= size_of_array(select_array)
             IF select_array[r, 2] = "IDENTITY" THEN
-                select_array[r, 2] = "PHRASE_ID"
+                select_array[r, 2] = "PHRASE_TYPE"
             ENDIF
             r = r + 1
         ENDWHILE
         spawn "md ":default_path:"\":table, status QUIETLY
         output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+    ELSEIF table = "CRITERIA_SAVED" THEN
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "IDENTITY" THEN
+                select_array[r, 2] = "CRITERIA_SAVED"
+            ENDIF
+            r = r + 1
+        ENDWHILE
+
+        table = "CRITERIA_VARIABLE"
+        get_field_names_without_aliases ( table, list_of_fields )
+        spawn "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+
+        ARRAY list_of_fields
+        table = "CRITERIA_CONDITION"
+        get_field_names_without_aliases ( table, list_of_fields )
+        spawn "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+
+        ARRAY list_of_fields
+        table = "CRITERIA_ORDER"
+        get_field_names_without_aliases ( table, list_of_fields )
+        spawn "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+        
     ENDIF
     
 ENDROUTINE
@@ -298,7 +355,7 @@ GLOBAL ROUTINE import_data ( rmb_object, object , collection )
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
     DECLARE table, overwrite_mode, allowed_to_prompt, transaction_size, flash_status,
-            start, id, identities, ArrKey0, id_field
+            start, id, k, i, identities, ArrKey0, id_field
             
     ARRAY identities        
     ARRAY ArrKey0
@@ -354,13 +411,19 @@ GLOBAL ROUTINE import_data ( rmb_object, object , collection )
         
 
         GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
-        id_field = ArrKey0[1]
-        id = SELECT 'table'.'id_field' WHERE modified_on >= start AND modified_by = OPERATOR ORDER ON 'id_field'
-        WHILE id <> EMPTY
-            identities[size_of_array(identities) + 1] = id
-        NEXT 'table'
-            id = SELECT 'table'.'id_field'
-        ENDWHILE
+        k = 1
+        WHILE k <= size_of_array(ArrKey0)
+            id_field = ArrKey0[k]
+            i = 1
+            id = SELECT 'table'.'id_field' WHERE modified_on >= start AND modified_by = OPERATOR ORDER ON 'id_field'
+            WHILE id <> EMPTY
+                identities[i, k] = id
+            NEXT 'table'
+                i = i + 1
+                id = SELECT 'table'.'id_field'
+            ENDWHILE
+            k = k + 1
+        ENDWHILE    
         
         IF size_of_array(identities) > 0 THEN
             ImportChildTable(identities, csv_file, table)
@@ -386,7 +449,7 @@ ROUTINE ImportChildTable (identities, VALUE csv_file, VALUE table)
 * Return Value  : None
 *************************************************************************}
 
-DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transaction_size, flash_status , key, field, id, i, status
+DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transaction_size, flash_status , key, field
 
     IF size_of_array(identities) = 0 THEN
         RETURN
@@ -402,58 +465,110 @@ DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transac
     
     IF (parent_table = "SAMP_TMPL_HEADER") OR
         (parent_table = "JOB_TEMPLATE") THEN
+
         table = "TEMPLATE_FIELDS"
         key   = "TEMPLATE_ID"
         field = "FIELD_NAME"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+
     ELSEIF parent_table = "TEST_SCHED_HEADER" THEN
+
         table = "TEST_SCHED_ENTRY"
         key   = "IDENTITY"
         field = "ANALYSIS_ID"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+
     ELSEIF table = "PHRASE_HEADER" THEN
+
         table = "PHRASE"
-        key   = "IDENTITY"
+        key   = "PHRASE_TYPE"
         field = "PHRASE_ID"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+
+    ELSEIF table = "CRITERIA_SAVED" THEN
+    
+        table = "CRITERIA_VARIABLE"
+        key   = "CRITERIA_SAVED"
+        field = "NAME"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+        
+        table = "CRITERIA_CONDITION"
+        key   = "CRITERIA_SAVED"
+        field = "CRITERIA_FIELD"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+
+        table = "CRITERIA_ORDER"
+        key   = "CRITERIA_SAVED"
+        field = "FIELD_NAME"
+        DeleteChildRecords(table, key, field, identities, parent_table, csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        FILE DELETE file_directory:table:"\":csv_file
+
     ELSE 
         RETURN
     ENDIF
 
+    
+ENDROUTINE
+
+{*************************************************************************}
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE DeleteChildRecords(VALUE table, VALUE key, VALUE field, identities, VALUE parent_table, VALUE csv_file)
+
+DECLARE id, i, status
+
     i = 1
     WHILE i <= size_of_array(identities)
         IF parent_table = "JOB_TEMPLATE" THEN
-            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i] AND table_name = "JOB_HEADER"
+            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND table_name = "JOB_HEADER"
         ELSEIF parent_table = "SAMP_TMPL_HEADER" THEN
-            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i] AND table_name = "SAMPLE"
+            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND table_name = "SAMPLE"
         ELSE
-            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i]
+            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1]
         ENDIF
         
         IF id <> EMPTY THEN
-            START WRITE TRANSACTION "Delete '":table:"' for ":identities[i]
+            START WRITE TRANSACTION "Delete '":table:"' for ":identities[i, 1]
+            SET GLOBAL "AUDITPROMPTSUPPRESS" TO TRUE
             WHILE id <> EMPTY
                 DELETE 'table', status
                 IF status <> EMPTY THEN
                     ROLLBACK
-                    fm("Error during deletion of '":table:"' for ":identities[i]:ASCII(10):
+                    fm("Error during deletion of '":table:"' for ":identities[i, 1]:ASCII(10):
                        "Retry the import of ":csv_file:ASCII(10):ASCII(10):
                        "Error code: ":status)
                     EXIT
                 ENDIF
             NEXT 'table'
                 IF parent_table = "SAMP_TMPL_HEADER" THEN
-                    id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i] AND table_name = "SAMPLE"
+                    id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND table_name = "SAMPLE"
                 ELSE
-                    id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i]
+                    id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1]
                 ENDIF
             ENDWHILE
             COMMIT
+            SET GLOBAL "AUDITPROMPTSUPPRESS" TO FALSE
         ENDIF
 
         i = i + 1
     ENDWHILE
 
-    input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
-    FILE DELETE file_directory:table:"\":csv_file
-    
 ENDROUTINE
 
 {*************************************************************************}
