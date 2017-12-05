@@ -117,10 +117,15 @@ GLOBAL ROUTINE backup_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE default_path
+DECLARE default_path, table, records, file_name, select_array
+ARRAY records
+ARRAY select_array
 
     default_path = LOGICAL("smp$install"):"\CSV_BACKUP"
-    export_entity ( rmb_object, object , collection, default_path)
+    table = rmb_object.table
+    get_records(collection, table, records, file_name)
+    create_select_array(table, records, select_array)
+    fm(export_entity(table, records, default_path, file_name, select_array))
     
 ENDROUTINE
 
@@ -140,40 +145,82 @@ GLOBAL ROUTINE export_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE default_path
+DECLARE default_path, table, records, file_name, select_array
+ARRAY records
+ARRAY select_array
 
     default_path = STRIP(SELECT destination_cpu.system_path WHERE identity = GLOBAL("AUTO_COMMIT_DEFAULT_DEST")):"\CSV"
-    export_entity ( rmb_object, object , collection, default_path)
+    table = rmb_object.table
+    get_records(collection, table, records, file_name)
+    create_select_array(table, records, select_array)
+    fm(export_entity(table, records, default_path, file_name, select_array))
     
 ENDROUTINE
 
-ROUTINE export_entity ( rmb_object, object , collection, default_path)
+ROUTINE  create_select_array(table, records, select_array)
 {*************************************************************************
-* Purpose       : Explorer RMB callback routine for exporting data
-                  To be used for single-table entities, like sample_point...
-                  For entities using more tables, i.e. job and sample templates
-                  the code must be adjusted for:
-                  => ROUTINE ExportChildTable AND
-                  => ROUTINE ImportChildTable 
-                  in the sections  *** include child records ***
+* Purpose       : Extract selected records from collection
+                  and generate filename for export-set
                 
-* Parameters    : rmb_object, object , collection
-* Return Value  : None
-    rmb_object  EXPLORER_RMB        - E:\Program Files (x86)\Thermo\SampleManager\11.1\Report\$explorer_rmb.rpf
-    object      STD_OBJECT_RECORD   - Programmers_Guide.chm
-    collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
+* Parameters    : collection
+* Return Value  : records       - array of selected items from collection
+                  file_name     - generated filename from first/last record,
+                                  user id and time stamp
+                  select_array  - 
+* collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE table, ArrKey0, mod_field, Key1, Key2, Key3, Key4, Key5, key_first, keep_first, keep_last, key_last, i, records, file_name, msg,
-        r, select_array, list_of_fields, flash_status, return_message, {id, } status
+DECLARE ArrKey0, i, r
 
-ARRAY records 
 ARRAY ArrKey0
-ARRAY select_array
-ARRAY list_of_fields
 
-    table = rmb_object.table
     GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
-    GET_TABLE_DETAILS 'table', "MODIFIED_ON_FIELD", mod_field
+
+    { *** Define select_array to be used by table_saver for main table *** }
+    r = 1
+    WHILE r <= size_of_array(records)
+            IF r = 1 THEN
+                array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
+            ELSEIF r > 1 THEN
+                array_select_add(select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
+            ENDIF
+            i = 1
+            WHILE i <= size_of_array(ArrKey0)
+                IF i = 1 THEN
+                    array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
+                ELSEIF i > 1 THEN
+                    array_select_add(select_array, ARRAY_SELECT_AND, EMPTY, EMPTY)
+                ENDIF
+                    array_select_add(select_array, ARRAY_SELECT_EQ, ArrKey0[i], records[r,i])
+                IF i = size_of_array(ArrKey0) THEN
+                    array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
+                ENDIF
+                i = i + 1
+            ENDWHILE    
+            IF r = size_of_array(records) THEN
+                array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
+            ENDIF
+        r = r + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE get_records(collection, table, records, file_name)
+{*************************************************************************
+* Purpose       : Extract selected records from collection
+                  and generate filename for export-set
+                
+* Parameters    : collection
+* Return Value  : records       - array of selected items from collection
+                  file_name     - generated filename from first/last record,
+                                  user id and time stamp
+                  select_array  - 
+* collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
+*************************************************************************}
+DECLARE ArrKey0, Key1, Key2, Key3, Key4, Key5, key_first, keep_first, keep_last, key_last, i
+
+ARRAY ArrKey0
+
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
 
     Key1 = EMPTY
     Key2 = EMPTY
@@ -216,6 +263,7 @@ ARRAY list_of_fields
         collection.set_next()
     ENDWHILE
     
+    { *** Define filename from first/last record to be exported from main table *** }
     key_first = ""
     i = 1
     WHILE i <= size_of_array(ArrKey0)
@@ -248,6 +296,16 @@ ARRAY list_of_fields
     key_first = keep_first
     key_last  = STRIP(keep_last)
 
+    SET DATE FORMAT "YYYY-MM-DZ H24.MI"
+        IF size_of_array(records) = 1 THEN
+            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):"].csv"
+        ELSEIF size_of_array(records) > 1 THEN
+            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):" - ":
+                                                     SUBSTITUTE(STRIP(key_last) , "\/:*?<>|":ASCII(34), ""):"].csv"
+        ENDIF
+    RESTORE DATE FORMAT
+   
+    { *** Define select_array to be used by table_saver for main table *** 
     r = 1
     WHILE r <= size_of_array(records)
             IF r = 1 THEN
@@ -272,43 +330,41 @@ ARRAY list_of_fields
                 array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
             ENDIF
         r = r + 1
-    ENDWHILE
+    ENDWHILE}
 
-    SET DATE FORMAT "YYYY-MM-DZ H24.MI"
-        IF size_of_array(records) = 1 THEN
-            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):"].csv"
-        ELSEIF size_of_array(records) > 1 THEN
-            file_name = NOW:" ":STRIP(OPERATOR):" [":SUBSTITUTE(STRIP(key_first), "\/:*?<>|":ASCII(34), ""):" - ":
-                                                     SUBSTITUTE(STRIP(key_last) , "\/:*?<>|":ASCII(34), ""):"].csv"
-        ENDIF
-    RESTORE DATE FORMAT
-   
+ENDROUTINE
+
+ROUTINE export_entity(VALUE table, records, VALUE default_path, VALUE file_name, select_array)
+{*************************************************************************
+* Purpose       : Explorer RMB callback routine for exporting data
+                  To be used for single-table entities, like sample_point...
+                  For entities using more tables, i.e. job and sample templates
+                  the code must be adjusted for:
+                  => ROUTINE ExportChildTable AND
+                  => ROUTINE ImportChildTable 
+                  in the sections  *** include child records ***
+                
+* Parameters    : rmb_object, object , collection
+* Return Value  : None
+    rmb_object  EXPLORER_RMB        - E:\Program Files (x86)\Thermo\SampleManager\11.1\Report\$explorer_rmb.rpf
+    object      STD_OBJECT_RECORD   - Programmers_Guide.chm
+    collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
+*************************************************************************}
+DECLARE msg, list_of_fields, flash_status, return_message, status
+
+ARRAY list_of_fields
+
     get_field_names_without_aliases ( table, list_of_fields )
     flash_status    = FALSE
     SPAWN "md ":default_path:"\":table, status QUIETLY
     output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
 
     ExportChildTable(default_path, table, select_array, file_name)
-{    
-    IF mod_field <> EMPTY THEN
-        i = 1
-        WHILE i <= size_of_array(records)
-            id = SELECT 'table'.'key1' FOR UPDATE WHERE 'key1' = records[i, 1]
-            IF id = records[i, 1]
-                start write transaction "Export ":table
-                ASSIGN 'table'.'mod_field' = NOW
-                UPDATE 'table'
-                COMMIT
-            ENDIF
-            i = i + 1
-        ENDWHILE
-    ENDIF
- }
     msg =  (ASCII(10):
             "Exported '":TOUPPER(table):"'":ASCII(10):ASCII(10):
             GetArray(records):ASCII(10):ASCII(10):
             "to ":file_name)
-    fm(msg)
+    RETURN(msg)
  
 ENDROUTINE
 
@@ -441,6 +497,87 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
             r = r + 1
         ENDWHILE
         output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+    ELSEIF table = "LIMIT_PHRASE_HEADER" THEN
+        table = "LIMIT_PHRASE_ENTRY"
+        ARRAY list_of_fields
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "IDENTITY" THEN
+                select_array[r, 2] = "LIMIT_PHRASE"
+            ENDIF
+            r = r + 1
+        ENDWHILE
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+    ELSEIF table = "EXPLORER_CABINET" THEN
+        DECLARE parent_table, criteria, criteria_array, expl_rmb, expl_rmb_array, folder_name
+        table = "EXPLORER_CABINET_ROLE"
+        ARRAY list_of_fields
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "IDENTITY" THEN
+                select_array[r, 2] = "CABINET"
+            ENDIF
+            r = r + 1
+        ENDWHILE
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+
+        table = "EXPLORER_FOLDER"
+        parent_table = table
+        ARRAY list_of_fields
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+
+            table = "CRITERIA_SAVED"
+            ARRAY criteria
+            ARRAY criteria_array
+            ARRAY expl_rmb
+            ARRAY expl_rmb_array
+            
+            r = 1
+            WHILE r <= size_of_array(select_array)
+                IF select_array[r, 2] = "CABINET" THEN
+                    folder_name = SELECT explorer_folder.name WHERE cabinet = select_array[r, 3]
+                    WHILE folder_name <> EMPTY
+                        criteria[size_of_array(criteria) + 1, 1] = SELECT explorer_folder.table_name              
+                        criteria[size_of_array(criteria)    , 2] = SELECT explorer_folder.criteria_saved_identity 
+                    NEXT explorer_folder
+                        folder_name = SELECT explorer_folder.name 
+                    ENDWHILE
+                ENDIF
+                r = r + 1
+            ENDWHILE
+            
+            create_select_array(table, criteria, criteria_array)
+            export_entity(table, criteria, default_path:"\":parent_table, file_name, criteria_array)
+        
+        table = "EXPLORER_RMB"
+
+            r = 1
+            WHILE r <= size_of_array(select_array)
+                IF select_array[r, 2] = "CABINET" THEN
+                    folder_name = SELECT explorer_rmb.folder_number WHERE cabinet = select_array[r, 3]
+                    WHILE folder_name <> EMPTY
+                        expl_rmb[size_of_array(expl_rmb) + 1, 1] = select_array[r, 3]
+                        expl_rmb[size_of_array(expl_rmb)    , 2] = SELECT explorer_rmb.folder_number 
+                        expl_rmb[size_of_array(expl_rmb)    , 3] = SELECT explorer_rmb.rmb_number
+                    NEXT explorer_rmb
+                        folder_name = SELECT explorer_rmb.folder_number 
+                    ENDWHILE
+                ENDIF
+                r = r + 1
+            ENDWHILE
+            
+        ARRAY list_of_fields
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        create_select_array(table, expl_rmb, expl_rmb_array)
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, expl_rmb_array, flash_status, return_message )
+
     ENDIF
     
 ENDROUTINE
@@ -455,10 +592,12 @@ GLOBAL ROUTINE import_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-    DECLARE default_path
+    DECLARE default_path, csv_file, table
 
+    table = rmb_object.table
     default_path = LOGICAL("smp$install"):"\CSV"
-    import_entity ( rmb_object, object , collection , default_path)
+    select_csv_file (default_path, table, csv_file)
+    fm(import_entity (default_path, csv_file, table))
     
 ENDROUTINE
 
@@ -471,14 +610,16 @@ GLOBAL ROUTINE restore_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-    DECLARE default_path
+    DECLARE default_path, csv_file, table
 
+    table = rmb_object.table
     default_path = LOGICAL("smp$install"):"\CSV_BACKUP"
-    import_entity ( rmb_object, object , collection , default_path)
+    select_csv_file (default_path, table, csv_file)
+    fm(import_entity (default_path, csv_file, table))
     
 ENDROUTINE
 
-ROUTINE import_entity ( rmb_object, object , collection, default_path)
+ROUTINE select_csv_file (VALUE default_path, VALUE table, csv_file)
 {*************************************************************************
 * Purpose       : Explorer RMB callback routine for exporting data
 * Parameters    : rmb_object, object , collection
@@ -487,14 +628,8 @@ ROUTINE import_entity ( rmb_object, object , collection, default_path)
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-    DECLARE table, overwrite_mode, allowed_to_prompt, transaction_size, flash_status,
-            start, id, k, i, identities, ArrKey0, id_field, form, file_prompt, csv_file, status
+    DECLARE form, file_prompt, status
             
-    ARRAY identities        
-    ARRAY ArrKey0
-    
-    table = rmb_object.table
-    
     csv_file = ""
     
 
@@ -526,6 +661,23 @@ ROUTINE import_entity ( rmb_object, object , collection, default_path)
 
     csv_file = file_prompt.value
     
+ENDROUTINE
+
+ROUTINE import_entity (VALUE default_path, VALUE csv_file, VALUE table)
+{*************************************************************************
+* Purpose       : Explorer RMB callback routine for exporting data
+* Parameters    : rmb_object, object , collection
+* Return Value  : None
+    rmb_object  EXPLORER_RMB        - E:\Program Files (x86)\Thermo\SampleManager\11.1\Report\$explorer_rmb.rpf
+    object      STD_OBJECT_RECORD   - Programmers_Guide.chm
+    collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
+*************************************************************************}
+    DECLARE overwrite_mode, allowed_to_prompt, transaction_size, flash_status,
+            start, id, k, i, identities, ArrKey0, id_field, status, msg
+            
+    ARRAY identities        
+    ARRAY ArrKey0
+    
     IF NOT(BLANK(csv_file)) THEN
         start               = NOW
         overwrite_mode      = OVERWRITE_TABLE
@@ -535,7 +687,6 @@ ROUTINE import_entity ( rmb_object, object , collection, default_path)
         WriteImport("Import: ":csv_file)
         input_csv_file(csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
         
-
         GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
         k = 1
         WHILE k <= size_of_array(ArrKey0)
@@ -543,7 +694,7 @@ ROUTINE import_entity ( rmb_object, object , collection, default_path)
             i = 1
             id = SELECT 'table'.'id_field' WHERE modified_on >= start AND modified_by = OPERATOR ORDER ON 'id_field'
             WHILE id <> EMPTY
-                identities[i, k] = id
+                identities[i, k] = STRIP(id)
             NEXT 'table'
                 i = i + 1
                 id = SELECT 'table'.'id_field'
@@ -553,21 +704,23 @@ ROUTINE import_entity ( rmb_object, object , collection, default_path)
         
         IF size_of_array(identities) > 0 THEN
             ImportChildTable(identities, csv_file, table, default_path)
-            fm("Imported to ":table:ASCII(10):ASCII(10):
-                        GetArray(identities):ASCII(10):ASCII(10):
-               "from: ":ASCII(10):
-               SUBSTITUTE(SUBSTRING(csv_file, 3, LENGTH(csv_file)), "\", ASCII(10)))
+            msg = "Imported to ":table:ASCII(10):ASCII(10):
+                  GetArray(identities):ASCII(10):ASCII(10):
+                  "from: ":ASCII(10):
+                   SUBSTITUTE(SUBSTRING(csv_file, 3, LENGTH(csv_file)), "\", ASCII(10))
             WriteImport("Updated:":ASCII(10):
                         GetArray(identities):ASCII(10))   
         ELSE
-            fm("No updates from":ASCII(10):ASCII(10):
-               csv_file)
+            msg = "No updates from":ASCII(10):ASCII(10):
+                  csv_file
             WriteImport("No updates.":ASCII(10))   
         ENDIF
         SPAWN "del ":ASCII(34):csv_file:ASCII(34):" /S", status QUIETLY
     ENDIF             
                       
     SPAWN "SUBST I: /D", status QUIETLY
+
+    RETURN(msg)
 
 ENDROUTINE
 
@@ -581,7 +734,8 @@ ROUTINE ImportChildTable (identities, VALUE csv_file, VALUE table, VALUE default
 * Return Value  : None
 *************************************************************************}
 
-DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transaction_size, flash_status , key, field
+DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transaction_size, 
+        flash_status, child_identities, ArrKey0, c, i, k, child, status
 
     IF size_of_array(identities) = 0 THEN
         RETURN
@@ -605,110 +759,287 @@ DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transac
         (parent_table = "JOB_TEMPLATE") THEN
 
         table = "TEMPLATE_FIELDS"
-        key   = "TEMPLATE_ID"
-        field = "FIELD_NAME"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF parent_table = "TEST_SCHED_HEADER" THEN
 
         table = "TEST_SCHED_ENTRY"
-        key   = "IDENTITY"
-        field = "ANALYSIS_ID"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF table = "PHRASE_HEADER" THEN
 
         table = "PHRASE"
-        key   = "PHRASE_TYPE"
-        field = "PHRASE_ID"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF table = "CRITERIA_SAVED" THEN
     
         table = "CRITERIA_VARIABLE"
-        key   = "CRITERIA_SAVED"
-        field = "NAME"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
         table = "CRITERIA_CONDITION"
-        key   = "CRITERIA_SAVED"
-        field = "CRITERIA_FIELD"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
         table = "CRITERIA_ORDER"
-        key   = "CRITERIA_SAVED"
-        field = "FIELD_NAME"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF table = "MASTER_MENU" THEN
 
         table = "ROLE_ENTRY"
-        key   = "PROCEDURE_NUM"
-        field = "ROLE_ID"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF table = "PERSONNEL" THEN
     
         table = "PASSWORD"
-        key   = "IDENTITY"
-        field = "IDENTITY"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
         table = "GROUPLINK"
-        key   = "OPERATOR_ID"
-        field = "GROUP_ID"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
         table = "ROLE_ASSIGNMENT"
-        key   = "OPERATOR_ID"
-        field = "ROLE_ID"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
     ELSEIF table = "ROLE_HEADER" THEN
     
         table = "ROLE_ENTRY"
-        key   = "ROLE_ID"
-        field = "PROCEDURE_NUM"
         WriteImport(file_directory:table:"\":csv_file)
-        DeleteChildRecords(table, key, field, identities, parent_table, csv_file, default_path)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
         input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
+    ELSEIF table = "LIMIT_PHRASE_HEADER" THEN
+    
+        table = "LIMIT_PHRASE_ENTRY"
+        WriteImport(file_directory:table:"\":csv_file)
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+    ELSEIF table = "EXPLORER_CABINET" THEN
+        ARRAY child_identities
+        ARRAY ArrKey0
+    
+        table = "EXPLORER_CABINET_ROLE"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        
+        DeleteChildRecords2(table, identities, parent_table, csv_file, default_path)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "EXPLORER_FOLDER"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        
+        c = 0
+        i = 1
+        WHILE i <= size_of_array(identities)
+            child = SELECT 'table'.'ArrKey0[2]' WHERE 'ArrKey0[1]' = identities[i, 1]
+            WHILE child <> EMPTY
+                c = c + 1
+                k = 1
+                WHILE k <= size_of_array(ArrKey0)
+                    child_identities[c, k] = SELECT 'table'.'ArrKey0[k]'
+                    k = k + 1
+                ENDWHILE
+            NEXT 'table'
+                child = SELECT 'table'.'ArrKey0[2]'
+            ENDWHILE
+            i = i + 1
+        ENDWHILE
+        
+        DeleteChildRecords2(table, child_identities, parent_table, csv_file, default_path)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "EXPLORER_RMB"
+        DeleteChildRecords2(table, child_identities, parent_table, csv_file, default_path)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "CRITERIA_SAVED"
+        default_path = default_path:"\EXPLORER_CABINET\EXPLORER_FOLDER"
+
+        SPAWN "SUBST I: /D", status QUIETLY
+        SPAWN "SUBST I: ":default_path, status QUIETLY
+        WHILE status <> EMPTY
+            SLEEP FOR INTERVAL("   0 00:00:01")
+            SPAWN "SUBST I: ":default_path, status QUIETLY
+        ENDWHILE
+
+        csv_file = "I:\":table:"\":csv_file
+        import_entity ("I:", csv_file, table)
+        
     ELSE 
         RETURN
     ENDIF
 
+ENDROUTINE
+
+{*************************************************************************}
+
+{*************************************************************************
+* Purpose      : DELETE 'table' WHERE 'key' IN identities[]
+*                after selecting by 'field'
+* Parameters   : table
+                 key
+                 field
+                 identities
+                 parent_table
+                 csv_file
+                 default_path
+* Return Value : N/A
+**************************************************************************}
+ROUTINE DeleteChildRecords2(VALUE table, identities, VALUE parent_table, VALUE csv_file, VALUE default_path)
+DECLARE child_identities, ArrKey0, c, i, k, child, id, status, field
+ARRAY ArrKey0
+ARRAY child_identities
+
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+    c = 1
+    k = 1
+    WHILE k <= size_of_array(ArrKey0)
+        child_identities[c, k] = STRIP(ArrKey0[k])
+        k = k + 1
+    ENDWHILE    
+        
+    i = 1
+    WHILE i <= size_of_array(identities)
+        IF table = "TEMPLATE_FIELDS" THEN
+            field = ArrKey0[2]
+            IF parent_table = "SAMP_TMPL_HEADER" THEN
+                {WriteImport("SELECT ":field:" FROM ":table:" WHERE ":ArrKey0[2]:" = '":identities[i, 1]:"' AND table_name = 'SAMPLE'") }
+                child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1]
+                                                      AND table_name = "SAMPLE"
+            ELSEIF parent_table = "JOB_TEMPLATE" THEN
+                {WriteImport("SELECT ":field:" FROM ":table:" WHERE ":ArrKey0[2]:" = '":identities[i, 1]:"' AND table_name = 'JOB_HEADER'") }
+                child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1]
+                                                      AND table_name = "JOB_HEADER"
+            ELSE
+                fm("Import of '":table:"' for '":parent_table:"'":ASCII(10):
+                   "not configured...")
+                EXIT   
+            ENDIF
+        ELSEIF size_of_array(ArrKey0) = 1
+            field = ArrKey0[1]
+            {WriteImport("SELECT ":field:" FROM ":table:" WHERE ":ArrKey0[1]:" = '":identities[i, 1]:"'") }
+            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
+        ELSEIF size_of_array(ArrKey0) = 2
+            field = ArrKey0[2]
+            {WriteImport("SELECT ":field:" FROM ":table:" WHERE ":ArrKey0[1]:" = '":identities[i, 1]:"'") }
+            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
+        ELSEIF size_of_array(ArrKey0) = 3
+            field = ArrKey0[3]
+            {WriteImport("SELECT ":field:" FROM ":table:" WHERE ":ArrKey0[1]:" = '":identities[i, 1]:"' AND ":ArrKey0[2]:" = '":identities[i, 2]:"'") }
+            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
+                                             AND 'ArrKey0[2]' = identities[i, 2]
+        ELSE
+            fm("Import of '":table:"' for '":parent_table:"'":ASCII(10):
+               "not configured...")
+            EXIT   
+        ENDIF
+        WHILE child <> EMPTY
+            c = c + 1
+            k = 1
+            WHILE k <= size_of_array(ArrKey0)
+                child_identities[c, k] = SELECT 'table'.'ArrKey0[k]'
+                k = k + 1
+            ENDWHILE
+        NEXT 'table'
+            child = SELECT 'table'.'field'
+        ENDWHILE
+        i = i + 1
+    ENDWHILE
+
+    WriteImport(ASCII(10):
+                "Delete ":table:":":ASCII(10):
+                GetArray(child_identities):ASCII(10))
+    
+    i = 2
+    WHILE i <= size_of_array(child_identities)
+        IF size_of_array(ArrKey0) = 1 THEN
+            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
+        ELSEIF size_of_array(ArrKey0) = 2 THEN
+            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
+                   AND 'ArrKey0[2]' = child_identities[i, 2]
+        ELSEIF size_of_array(ArrKey0) = 3 THEN
+            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
+                   AND 'ArrKey0[2]' = child_identities[i, 2]
+                   AND 'ArrKey0[3]' = child_identities[i, 3]
+        ELSEIF size_of_array(ArrKey0) > 3 THEN
+            fm("Table '":table:"' has mor than 3 key-fields.":ASCII(10):
+               "Additional validation is required.")
+            EXIT
+        ENDIF
+        
+        IF id <> EMPTY THEN
+            START WRITE TRANSACTION "Delete '":table:"' for ":child_identities[i, size_of_array(ArrKey0) - 1]
+            WHILE id <> EMPTY
+                SET GLOBAL "AUDITPROMPTSUPPRESS" TO TRUE
+                DELETE 'table', status
+                IF status <> EMPTY THEN
+                    ROLLBACK
+                    fm("Error during deletion of '":table:"' for ":identities[i, 1]:ASCII(10):
+                       "Retry the import of ":csv_file:ASCII(10):ASCII(10):
+                       "Error code: ":status)
+                    EXIT
+                ENDIF
+            NEXT 'table'
+                IF size_of_array(ArrKey0) = 1 THEN
+                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
+                ELSEIF size_of_array(ArrKey0) = 2 THEN
+                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
+                           AND 'ArrKey0[2]' = child_identities[i, 2]
+                ELSEIF size_of_array(ArrKey0) = 3 THEN
+                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
+                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
+                           AND 'ArrKey0[2]' = child_identities[i, 2]
+                           AND 'ArrKey0[3]' = child_identities[i, 3]
+                ENDIF
+            ENDWHILE
+            COMMIT
+            SET GLOBAL "AUDITPROMPTSUPPRESS" TO FALSE
+        ENDIF
+
+        i = i + 1
+    ENDWHILE
     
 ENDROUTINE
 
 {*************************************************************************}
 
 {*************************************************************************
-* Purpose      : Writes to predefined log,
-*                using WriteLog in $lib_utils
-* Parameters   : Msg - what to write in log
+* Purpose      : DELETE 'table' WHERE 'key' IN identities[]
+*                after selecting by 'field'
+* Parameters   : table
+                 key
+                 field
+                 identities
+                 parent_table
+                 csv_file
+                 default_path
 * Return Value : N/A
 **************************************************************************}
 ROUTINE DeleteChildRecords(VALUE table, VALUE key, VALUE field, identities, VALUE parent_table, VALUE csv_file, VALUE default_path)
+
+    RETURN
 
 DECLARE id, i, status
 
@@ -720,6 +1051,8 @@ DECLARE id, i, status
             id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND table_name = "SAMPLE"
         ELSEIF parent_table = "CRITERIA_SAVED" THEN
             id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 2] AND table_name =  identities[i, 1]
+        ELSEIF parent_table = "EXPLORER_CABINET" THEN
+            id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND folder_number =  identities[i, 2]
         ELSE
             id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1]
         ENDIF
@@ -743,6 +1076,8 @@ DECLARE id, i, status
                     id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND table_name = "JOB_HEADER"
                 ELSEIF parent_table = "CRITERIA_SAVED" THEN
                     id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 2] AND table_name =  identities[i, 1]
+                ELSEIF parent_table = "EXPLORER_CABINET" THEN
+                    id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1] AND folder_number =  identities[i, 2]
                 ELSE
                     id = SELECT 'table'.'field' FOR UPDATE WHERE 'key' = identities[i, 1]
                 ENDIF
