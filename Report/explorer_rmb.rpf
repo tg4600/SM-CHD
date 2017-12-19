@@ -11,6 +11,7 @@ ENABLE WINDOWS
 JOIN STANDARD_LIBRARY STD_ARRAY
 JOIN STANDARD_LIBRARY STD_ARRAY_SELECT 
 JOIN STANDARD_LIBRARY STD_PROMPT
+JOIN STANDARD_LIBRARY STD_DATABASE
 
 JOIN LIBRARY $LIB_UTILS
 JOIN LIBRARY TOOLBOX
@@ -767,14 +768,14 @@ GLOBAL ROUTINE restore_data ( rmb_object, object , collection )
 
     table = rmb_object.table
     default_path = LOGICAL("smp$install"):"\CSV_BACKUP"
-    select_csv_file (default_path, table, csv_file)
+    select_csv_file(default_path, table, csv_file)
     IF NOT(BLANK(csv_file)) THEN
         fm(IMPORT_ENTITY (default_path, csv_file, table))
     ENDIF
 
 ENDROUTINE
 
-ROUTINE select_csv_file (VALUE default_path, VALUE table, csv_file)
+ROUTINE select_csv_file (VALUE default_path, table, csv_file)
 {*************************************************************************
 * Purpose       : Explorer RMB callback routine for exporting data
 * Parameters    : rmb_object, object , collection
@@ -787,6 +788,9 @@ ROUTINE select_csv_file (VALUE default_path, VALUE table, csv_file)
             
     csv_file = ""
     
+    IF table = "ANALYSIS_VIEW" THEN
+        table = "VERSIONED_ANALYSIS"
+    ENDIF
 
     SPAWN "SUBST I: ":default_path, status QUIETLY
     WHILE status <> EMPTY
@@ -828,7 +832,7 @@ ROUTINE IMPORT_ENTITY (VALUE default_path, VALUE csv_file, VALUE table)
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
     DECLARE configured_tables, overwrite_mode, allowed_to_prompt, transaction_size, flash_status,
-            i, k, col, identities, ArrKey0, status, msg, names
+            i, k, col, identities, ArrKey0, status, msg, names, version_field
 
 configured_tables = "SAMPLE_POINT":   ";":"SAMP_TMPL_HEADER"
 configured_tables = configured_tables:";":"JOB_TEMPLATE"
@@ -842,7 +846,7 @@ configured_tables = configured_tables:";":"MASTER_MENU"
 configured_tables = configured_tables:";":"CRITERIA_SAVED"
 configured_tables = configured_tables:";":"EXPLORER_FOLDER"
 configured_tables = configured_tables:";":"EXPLORER_CABINET"
-{
+configured_tables = configured_tables:";":"VERSIONED_ANALYSIS"{
 configured_tables = configured_tables:";":""
 }
 
@@ -891,15 +895,14 @@ ENDIF
             k = k + 1
         ENDWHILE
 
-
         FILE READ csv_file, line, status
         FILE READ csv_file, line, status
         FILE READ csv_file, line, status
         i = size_of_array(identities) + 1
         WHILE status = EMPTY
             col = 1
-            WHILE INDEX(line, ",") > 0
-                field = LEFTSTRING(line, INDEX(line, ",") - 1)
+            WHILE INDEX(line, ASCII(34):",":ASCII(34)) > 0
+                field = LEFTSTRING(line, INDEX(line, ASCII(34):",":ASCII(34)))
                 k = 1
                 WHILE k <= size_of_array(ArrKey0)
                     IF col = identities[1, k] THEN
@@ -932,6 +935,13 @@ ENDIF
         
         FILE CLOSE csv_file
 
+        { ***  VERSION_FIELD  *** }
+        GET_TABLE_DETAILS 'table', "VERSION_FIELD", version_field
+        IF NOT(BLANK(version_field)) THEN
+            SetVersionToZero(csv_file)
+            DeleteVersionZero(table, identities, ArrKey0)
+        ENDIF
+        
         overwrite_mode      = OVERWRITE_TABLE
         allowed_to_prompt   = FALSE
         transaction_size    = 0
@@ -1287,6 +1297,188 @@ ARRAY child_identities
         i = i + 1
     ENDWHILE
     
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Writes to predefined log,
+*                using WriteLog in $lib_utils
+* Parameters   : Msg - what to write in log
+* Return Value : N/A
+**************************************************************************}
+ROUTINE SetVersionToZero(csv_file)
+
+DECLARE table, version_field, approval_field, csv_array, line, field, status, col, row, cols,
+        tmp_file
+
+    ARRAY csv_array
+
+    tmp_file = SUBSTRING(csv_file, 1, LENGTH(csv_file) - 4):".tmp"
+    
+    IF FILE EXISTS (tmp_file) THEN
+        FILE DELETE tmp_file, status
+        IF status <> EMPTY
+            fm("Error deleting temporary file from previous import:":ASCII(10):
+               tmp_file:ASCII(10):ASCII(10):
+               status)
+            EXIT   
+        ENDIF
+    ENDIF
+    
+    FILE CREATE tmp_file, status
+    IF status <> EMPTY THEN
+        fm("Creating file: '":tmp_file:"' failed.":ASCII(10):
+           status)
+        EXIT   
+    ENDIF
+
+    FILE EXTEND tmp_file, status
+    IF status <> EMPTY THEN
+        fm("Opening file: '":tmp_file:"' for writing failed.":ASCII(10):
+           status)
+        EXIT   
+    ENDIF
+
+        FILE OPEN csv_file
+        FILE READ csv_file, line, status
+
+            table = line
+            GET_TABLE_DETAILS 'table', "VERSION_FIELD", version_field
+            approval_field = "APPROVAL_STATUS"
+
+            col = 1
+            row = 1
+            cols = 0
+            WHILE row <= 4
+                FILE WRITE tmp_file, line, status
+                WHILE INDEX(line, ",") > 0
+                    field = LEFTSTRING(line, INDEX(line, ",") - 1)
+                    csv_array[row, col] = field
+                    line = STRIP(SUBSTRING(line, INDEX(line, ",") + 1, LENGTH(line)))
+                    col = col + 1
+                ENDWHILE
+                csv_array[row, col] = line
+                FILE READ csv_file, line, status
+                row = row + 1
+                IF col > cols THEN
+                    cols = col
+                ENDIF
+                col = 1
+            ENDWHILE
+
+            WHILE status = EMPTY
+                col = 1
+                WHILE INDEX(line, ",,") > 0
+                    line = LEFTSTRING(line, INDEX(line, ",,")):ASCII(34):ASCII(34):STRIP(SUBSTRING(line, INDEX(line, ",,") + 1, LENGTH(line)))
+                ENDWHILE
+                
+                IF RIGHTSTRING(line, 1) = "," THEN
+                    line = line:ASCII(34):ASCII(34)
+                ENDIF
+
+                WHILE INDEX(line, ASCII(34):",":ASCII(34)) > 0
+                    field = LEFTSTRING(line, INDEX(line, ASCII(34):",":ASCII(34)))
+                    csv_array[row, col] = field { SUBSTITUTE(field, ASCII(34), "") }
+                    line = STRIP(SUBSTRING(line, INDEX(line, ",") + 1, LENGTH(line)))
+                    col = col + 1
+                ENDWHILE
+                csv_array[row, col] = line
+                FILE READ csv_file, line, status
+                row = row + 1
+                IF col > cols THEN
+                    cols = col
+                ENDIF
+            ENDWHILE    
+
+        FILE CLOSE csv_file
+
+        col = 1
+        row = 2
+        WHILE col <= cols
+            IF csv_array[row, col] = version_field THEN
+                row = 5
+                WHILE row <= size_of_array(csv_array)
+                    csv_array[row, col] = ASCII(34):"         0":ASCII(34)
+                    row = row + 1
+                ENDWHILE
+                row = 2
+            ENDIF
+            IF csv_array[row, col] = approval_field THEN
+                row = 5
+                WHILE row <= size_of_array(csv_array)
+                    csv_array[row, col] = ASCII(34):"V":ASCII(34)
+                    row = row + 1
+                ENDWHILE
+                row = 2
+            ENDIF
+            col = col + 1
+        ENDWHILE
+
+    row = 5
+    WHILE row <= size_of_array(csv_array)
+        col = 1
+        line = ""
+        WHILE col <= cols
+            IF NOT (csv_array[row, col] = EMPTY)
+                line = line:csv_array[row, col]:"," 
+            ENDIF
+            col = col + 1
+        ENDWHILE
+        line = SUBSTRING(line, 1, LENGTH(line) - 1)
+        FILE WRITE tmp_file, line, status
+        row = row + 1
+    ENDWHILE
+
+    FILE CLOSE tmp_file, status
+    IF status <> EMPTY THEN
+        fm("Closing file: '":tmp_file:"' failed.":ASCII(10):
+           status)
+        EXIT   
+    ENDIF
+
+    FILE DELETE csv_file, status
+    FILE COPY   tmp_file, csv_file, status
+    FILE DELETE tmp_file, status
+
+ENDROUTINE
+
+{*************************************************************************
+* Purpose      : Delete identites from table where Version = 0
+* Parameters   : table 
+*                identities (array)
+* Return Value : N/A
+**************************************************************************}
+ROUTINE DeleteVersionZero(table, identities, ArrKey0)
+
+DECLARE i, status
+
+    IF (table = "VERSIONED_ANALYSIS") OR
+       (table = "VERSIONED_COMPONENT") THEN
+        i = 1
+        WHILE i <= size_of_array(identities)
+            status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
+                     WHERE 'ArrKey0[1]' = identities[i, 1]
+                       AND 'ArrKey0[2]' = 0
+            WHILE status = identities[i, 1]
+                IF NOT transaction_is_write() THEN
+                    START WRITE TRANSACTION "Delete version zero in '":table:"' for ":identities[i, 1]
+                ENDIF
+                DELETE 'table', status
+                IF status = EMPTY THEN
+                    COMMIT
+                    status = identities[i, 1]
+                ELSE
+                    ROLLBACK
+                ENDIF
+            NEXT 'table'
+                status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
+                         WHERE 'ArrKey0[1]' = identities[i, 1]
+                           AND 'ArrKey0[2]' = 0
+            ENDWHILE
+            i = i + 1
+        ENDWHILE
+    ENDIF
+        
+
 ENDROUTINE
 
 {*************************************************************************
