@@ -405,8 +405,6 @@ ARRAY names
  
 ENDROUTINE
 
-
-
 ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE file_name, ArrKey0) 
 {*************************************************************************
 * Purpose       : Exporting child records for table
@@ -648,9 +646,6 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
 
     ELSEIF table = "VERSIONED_ANALYSIS" THEN
         
-        table = "VERSIONED_COMPONENT"
-        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
-
         r = 1
         WHILE r <= size_of_array(select_array)
             IF select_array[r, 2] = "IDENTITY" THEN
@@ -659,11 +654,31 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
             r = r + 1
         ENDWHILE
 
+       
         ARRAY list_of_fields
+        ARRAY ArrKey0
+        table = "VERSIONED_C_L_HEADER"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
         get_field_names_without_aliases ( table, list_of_fields )
         SPAWN "md ":default_path:"\":table, status QUIETLY
         output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
         
+        ARRAY list_of_fields
+        ARRAY ArrKey0
+        table = "VERSIONED_C_L_ENTRY"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+        
+        ARRAY list_of_fields
+        ARRAY ArrKey0
+        table = "VERSIONED_COMPONENT"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+
         DECLARE phrase_list, phrase, phrases, i, in_array
         ARRAY phrases
         ARRAY criteria
@@ -706,7 +721,7 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
                    NOT(in_array)
                 i = 0
                 WHILE i <= size_of_array(phrases) 
-                    IF phrase = phrases[i] THEN
+                    IF phrase = phrases[i, 1] THEN
                         in_array = TRUE
                     ENDIF
                     i = i + 1
@@ -949,6 +964,10 @@ ENDIF
         WriteImport(csv_file)
         input_csv_file(csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
 
+        IF NOT(BLANK(version_field)) THEN
+            SetNewVersion(table, identities, ArrKey0)
+        ENDIF
+
         IF size_of_array(identities) > 0 THEN
             ImportChildTable(identities, csv_file, table, default_path)
             msg = "Imported to ":table:ASCII(10):ASCII(10):
@@ -977,6 +996,66 @@ ENDIF
     
     RETURN(msg)
 
+ENDROUTINE
+
+ROUTINE SetNewVersion(table, identities, ArrKey0)
+{*************************************************************************
+* Purpose       : Exporting child records for table
+* Parameters    : identities       - identities updated in parent table
+                  VALUE csv_file    - used to import datat for table
+                  VALUE table       - parent table
+* Return Value  : None
+*************************************************************************}
+
+DECLARE i, ver, apr, status, SQL
+
+    IF (table = "VERSIONED_ANALYSIS") THEN
+        i = 1
+        ver = SELECT 'table'.'ArrKey0[2]'
+              WHERE 'ArrKey0[1]' = identities[i, 1]
+              ORDER ON 'ArrKey0[2]' DESCENDING
+        apr = SELECT 'table'.approval_status
+        WHILE i <= size_of_array(identities)
+            status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
+                     WHERE 'ArrKey0[1]' = identities[i, 1]
+                       AND 'ArrKey0[2]' = 0
+            WHILE status = identities[i, 1]
+                IF NOT transaction_is_write() THEN
+                    START WRITE TRANSACTION "Set new version in '":table:"' for ":identities[i, 1]
+                ENDIF
+                ASSIGN 'table'.active       = FALSE
+                ASSIGN 'table'.active_from  = NULL
+                ASSIGN 'table'.active_to    = NULL
+                UPDATE 'table', status
+                IF status = EMPTY THEN
+                    COMMIT
+                    IF (apr = "A") THEN
+                        SQL = "UPDATE ":table:" SET ":ArrKey0[2]:" = '":(ver + 1):"'":
+                              " WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'":
+                              " AND ":ArrKey0[2]:" = 0"
+                        execute_sql(SQL)
+                        IF NOT transaction_is_write() THEN
+                            execute_sql("COMMIT")
+                        ENDIF
+                    ENDIF
+                    status = identities[i, 1]
+                ELSE
+                    ROLLBACK
+                    fm(" ***  ERROR  *** ":ASCII(10):ASCII(10):
+                       "Set new version in '":table:"'":ASCII(10):
+                       "for ":identities[i, 1]:", failed.":ASCII(10):ASCII(10):
+                       status)
+                    EXIT   
+                ENDIF
+            NEXT 'table'
+                status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
+                         WHERE 'ArrKey0[1]' = identities[i, 1]
+                           AND 'ArrKey0[2]' = 0
+            ENDWHILE
+            i = i + 1
+        ENDWHILE
+    ENDIF
+        
 ENDROUTINE
 
 
