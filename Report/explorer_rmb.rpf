@@ -111,15 +111,18 @@ GLOBAL ROUTINE backup_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE default_path, table, records, file_name, select_array
+DECLARE ArrKey0, default_path, table, records, file_name, select_array
+
+ARRAY ArrKey0
 ARRAY records
 ARRAY select_array
 
-    default_path = LOGICAL("smp$install"):"\CSV_BACKUP"
     table = rmb_object.table
-    get_records(collection, table, records, file_name)
-    create_select_array(table, records, select_array)
-    fm(EXPORT_ENTITY(table, records, default_path, file_name, select_array))
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+    default_path = LOGICAL("smp$install"):"\CSV_BACKUP"
+    get_records(collection, table, records, file_name, ArrKey0)
+    create_select_array(table, records, select_array, ArrKey0)
+    fm(EXPORT_ENTITY(table, records, default_path, file_name, select_array, ArrKey0))
     
 ENDROUTINE
 
@@ -133,19 +136,22 @@ GLOBAL ROUTINE export_data ( rmb_object, object , collection )
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE default_path, table, records, file_name, select_array
+DECLARE ArrKey0, default_path, table, records, file_name, select_array
+
+ARRAY ArrKey0
 ARRAY records
 ARRAY select_array
 
-    default_path = STRIP(SELECT destination_cpu.system_path WHERE identity = GLOBAL("AUTO_COMMIT_DEFAULT_DEST")):"\CSV"
     table = rmb_object.table
-    get_records(collection, table, records, file_name)
-    create_select_array(table, records, select_array)
-    fm(EXPORT_ENTITY(table, records, default_path, file_name, select_array))
+    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+    default_path = STRIP(SELECT destination_cpu.system_path WHERE identity = GLOBAL("AUTO_COMMIT_DEFAULT_DEST")):"\CSV"
+    get_records(collection, table, records, file_name, ArrKey0)
+    create_select_array(table, records, select_array, ArrKey0)
+    fm(EXPORT_ENTITY(table, records, default_path, file_name, select_array, ArrKey0))
     
 ENDROUTINE
 
-ROUTINE  create_select_array(table, records, select_array)
+ROUTINE get_records(collection, table, records, file_name, ArrKey0)
 {*************************************************************************
 * Purpose       : Extract selected records from collection
                   and generate filename for export-set
@@ -157,63 +163,13 @@ ROUTINE  create_select_array(table, records, select_array)
                   select_array  - 
 * collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE ArrKey0, i, r
+DECLARE i, k, list_of_fields, names, key_first, keep_first, keep_last, key_last
 
-ARRAY ArrKey0
-
-    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
-
-    { *** Define select_array to be used by table_saver for main table *** }
-    r = 1
-    WHILE r <= size_of_array(records)
-            IF r = 1 THEN
-                array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
-            ELSEIF r > 1 THEN
-                array_select_add(select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
-            ENDIF
-            i = 1
-            WHILE i <= size_of_array(ArrKey0)
-                IF i = 1 THEN
-                    array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
-                ELSEIF i > 1 THEN
-                    array_select_add(select_array, ARRAY_SELECT_AND, EMPTY, EMPTY)
-                ENDIF
-                    array_select_add(select_array, ARRAY_SELECT_EQ, ArrKey0[i], records[r,i])
-                IF i = size_of_array(ArrKey0) THEN
-                    array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
-                ENDIF
-                i = i + 1
-            ENDWHILE    
-            IF r = size_of_array(records) THEN
-                array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
-            ENDIF
-        r = r + 1
-    ENDWHILE
-
-ENDROUTINE
-
-ROUTINE get_records(collection, table, records, file_name)
-{*************************************************************************
-* Purpose       : Extract selected records from collection
-                  and generate filename for export-set
-                
-* Parameters    : collection
-* Return Value  : records       - array of selected items from collection
-                  file_name     - generated filename from first/last record,
-                                  user id and time stamp
-                  select_array  - 
-* collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
-*************************************************************************}
-DECLARE ArrKey0, i, k, list_of_fields, names, key_first, keep_first, keep_last, key_last
-
-ARRAY ArrKey0
 ARRAY list_of_fields
 ARRAY names
     
     key_first = ""
     key_last  = ""
-
-    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
 
     collection.set_first()
     WHILE collection.current <> EMPTY DO
@@ -226,7 +182,11 @@ ARRAY names
         collection.set_next()
     ENDWHILE
 
-    IF use_names(table, records, names) THEN
+    IF table = "ANALYSIS_VIEW" THEN
+        table = "VERSIONED_ANALYSIS"
+    ENDIF
+    
+    IF use_names(table, records, names, ArrKey0) THEN
         key_first = STRIP(names[1, 1])
         key_last  = STRIP(names[size_of_array(names), 1])
     ELSE
@@ -242,6 +202,7 @@ ARRAY names
             i = i + 1
         ENDWHILE
     ENDIF    
+
     { *** Define filename from first/last record to be exported from main table *** }
     keep_first = STRIP(key_first)
     keep_last  = STRIP(key_last)
@@ -272,7 +233,50 @@ ARRAY names
    
 ENDROUTINE
 
-ROUTINE use_names(VALUE table, records, names)
+ROUTINE  create_select_array(table, records, select_array, ArrKey0)
+{*************************************************************************
+* Purpose       : Extract selected records from collection
+                  and generate filename for export-set
+                
+* Parameters    : collection
+* Return Value  : records       - array of selected items from collection
+                  file_name     - generated filename from first/last record,
+                                  user id and time stamp
+                  select_array  - 
+* collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
+*************************************************************************}
+DECLARE i, r
+
+    { *** Define select_array to be used by table_saver for main table *** }
+    r = 1
+    WHILE r <= size_of_array(records)
+            IF r = 1 THEN
+                array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
+            ELSEIF r > 1 THEN
+                array_select_add(select_array, ARRAY_SELECT_OR, EMPTY, EMPTY)
+            ENDIF
+            i = 1
+            WHILE i <= size_of_array(ArrKey0)
+                IF i = 1 THEN
+                    array_select_add(select_array, ARRAY_SELECT_PUSH, EMPTY, EMPTY)
+                ELSEIF i > 1 THEN
+                    array_select_add(select_array, ARRAY_SELECT_AND, EMPTY, EMPTY)
+                ENDIF
+                    array_select_add(select_array, ARRAY_SELECT_EQ, ArrKey0[i], records[r,i])
+                IF i = size_of_array(ArrKey0) THEN
+                    array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
+                ENDIF
+                i = i + 1
+            ENDWHILE    
+            IF r = size_of_array(records) THEN
+                array_select_add(select_array, ARRAY_SELECT_POP,  EMPTY, EMPTY)
+            ENDIF
+        r = r + 1
+    ENDWHILE
+
+ENDROUTINE
+
+ROUTINE use_names(VALUE table, records, names, ArrKey0)
 {*************************************************************************
 * Purpose       : Explorer RMB callback routine for exporting data
 * Parameters    : rmb_object, object , collection
@@ -281,14 +285,12 @@ ROUTINE use_names(VALUE table, records, names)
     object      STD_OBJECT_RECORD   - Programmers_Guide.chm
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
-DECLARE i, id, list_of_fields, ArrKey0, use_name
+DECLARE i, id, list_of_fields, use_name
 
     ARRAY list_of_fields
-    ARRAY ArrKey0
     use_name = FALSE
 
     get_field_names_without_aliases ( table, list_of_fields )
-    GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0    
     
     i = 1
     WHILE i <= size_of_array(list_of_fields)
@@ -332,7 +334,7 @@ DECLARE i, id, list_of_fields, ArrKey0, use_name
 
 ENDROUTINE
 
-ROUTINE EXPORT_ENTITY(VALUE table, records, VALUE default_path, VALUE file_name, select_array)
+ROUTINE EXPORT_ENTITY(VALUE table, records, VALUE default_path, VALUE file_name, select_array, ArrKey0)
 {*************************************************************************
 * Purpose       : Explorer RMB callback routine for exporting data
                   To be used for single-table entities, like sample_point...
@@ -362,6 +364,7 @@ configured_tables = configured_tables:";":"MASTER_MENU"
 configured_tables = configured_tables:";":"CRITERIA_SAVED"
 configured_tables = configured_tables:";":"EXPLORER_FOLDER"
 configured_tables = configured_tables:";":"EXPLORER_CABINET"
+configured_tables = configured_tables:";":"VERSIONED_ANALYSIS"
 {
 configured_tables = configured_tables:";":""
 }
@@ -379,12 +382,12 @@ ARRAY names
     SPAWN "md ":default_path:"\":table, status QUIETLY
     output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
 
-    msg = ExportChildTable(default_path:"\":table, table, select_array, file_name)
+    msg = ExportChildTable(default_path:"\":table, table, select_array, file_name, ArrKey0)
     msg = msg:ASCII(10):
           "Exported ":STRIP(size_of_array(records)):" records from '":TOUPPER(table):"' to:":ASCII(10):
           file_name:ASCII(10):ASCII(10)
     
-    use_names(table, records, names)
+    use_names(table, records, names, ArrKey0)
     
     IF size_of_array(names) > 50 THEN
         WHILE size_of_array(names) > 50
@@ -403,7 +406,7 @@ ENDROUTINE
 
 
 
-ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE file_name) 
+ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE file_name, ArrKey0) 
 {*************************************************************************
 * Purpose       : Exporting child records for table
 * Parameters    : VALUE table       - parent table
@@ -603,8 +606,8 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
             r = r + 1
         ENDWHILE
 
-        create_select_array(table, criteria, criteria_array)
-        EXPORT_ENTITY(table, criteria, default_path, file_name, criteria_array)
+        create_select_array(table, criteria, criteria_array, ArrKey0)
+        EXPORT_ENTITY(table, criteria, default_path, file_name, criteria_array, ArrKey0)
 
     ELSEIF table = "EXPLORER_CABINET" THEN
         
@@ -639,8 +642,88 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
                 r = r + 1
             ENDWHILE
 
-            create_select_array(table, criteria, criteria_array)
-            EXPORT_ENTITY(table, criteria, default_path, file_name, criteria_array)
+            create_select_array(table, criteria, criteria_array, ArrKey0)
+            EXPORT_ENTITY(table, criteria, default_path, file_name, criteria_array, ArrKey0)
+
+    ELSEIF table = "VERSIONED_ANALYSIS" THEN
+        
+        table = "VERSIONED_COMPONENT"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "IDENTITY" THEN
+                select_array[r, 2] = "ANALYSIS"
+            ENDIF
+            r = r + 1
+        ENDWHILE
+
+        ARRAY list_of_fields
+        get_field_names_without_aliases ( table, list_of_fields )
+        SPAWN "md ":default_path:"\":table, status QUIETLY
+        output_csv_file ( default_path:"\":table:"\":file_name, table, list_of_fields, select_array, flash_status, return_message )
+        
+        DECLARE phrase_list, phrase, phrases, i, in_array
+        ARRAY phrases
+        ARRAY criteria
+        ARRAY criteria_array
+        
+        r = 1
+        WHILE r <= size_of_array(select_array)
+            IF select_array[r, 2] = "ANALYSIS" THEN
+                criteria[size_of_array(criteria) + 1, 1] = select_array[r, 3]
+            ELSEIF select_array[r, 2] = "ANALYSIS_VERSION" THEN    
+                criteria[size_of_array(criteria)    , 2] = select_array[r, 3]
+                select_array[r, 2] = "ANALYSIS"
+            ENDIF
+            r = r + 1
+        ENDWHILE
+        
+        in_array = FALSE
+        phrase_list = "ANAL_TYPE,INST_TYPE,COA_GROUP,CONDI_01,MEDIA_01,QAM_DATE,Q_INSTRUCT,APPR_STAT,STAT_TYPE"
+
+        WHILE LENGTH(phrase_list) > 0 DO
+            i = INDEX(phrase_list, ",")
+            IF i > 0 THEN
+                phrase = LEFTSTRING(phrase_list, i - 1)
+                phrase_list = STRIP(SUBSTRING(phrase_list, i + 1, LENGTH(phrase_list)))
+            ELSE
+                phrase = phrase_list
+                phrase_list = ""
+            ENDIF
+            phrases[size_of_array(phrases) + 1, 1] = phrase
+        ENDWHILE
+
+        r = 1
+        WHILE r <= size_of_array(criteria)
+            phrase = SELECT 'table'.calculation 
+                     WHERE 'ArrKey0[1]' = criteria[r, 1]
+                       AND 'ArrKey0[2]' = criteria[r, 2] 
+                       AND result_type = "O"
+                       AND calculation <> ""
+            WHILE (phrase <> EMPTY) AND
+                   NOT(in_array)
+                i = 0
+                WHILE i <= size_of_array(phrases) 
+                    IF phrase = phrases[i] THEN
+                        in_array = TRUE
+                    ENDIF
+                    i = i + 1
+                ENDWHILE
+                IF NOT(in_array) THEN
+                    phrases[size_of_array(phrases) + 1, 1] = STRIP(phrase)
+                ENDIF
+            NEXT 'table'
+                phrase = SELECT 'table'.calculation 
+            ENDWHILE    
+            r = r + 1
+        ENDWHILE
+        
+        table = "PHRASE_HEADER"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        create_select_array(table, phrases, criteria_array, ArrKey0)
+        EXPORT_ENTITY(table, phrases, default_path, file_name, criteria_array, ArrKey0)
+
 
     ELSE
         RETURN("No childrecords exported for table '":table:"' !!!":ASCII(10))
@@ -840,7 +923,7 @@ ENDIF
         ENDWHILE    
 
         array_remove_slice (identities, 1, 1)
-        use_names(table, identities, names)
+        use_names(table, identities, names, ArrKey0)
         IF operator = "DKTBGADMIN" THEN
             fm("Info for ":operator:ASCII(10):ASCII(10):
                "Import to ":table:ASCII(10):
