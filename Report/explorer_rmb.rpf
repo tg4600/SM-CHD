@@ -740,7 +740,6 @@ ROUTINE ExportChildTable (VALUE default_path, VALUE table, select_array, VALUE f
         create_select_array(table, phrases, criteria_array, ArrKey0)
         EXPORT_ENTITY(table, phrases, default_path, file_name, criteria_array, ArrKey0)
 
-
     ELSE
         RETURN("No childrecords exported for table '":table:"' !!!":ASCII(10))
     ENDIF
@@ -847,7 +846,7 @@ ROUTINE IMPORT_ENTITY (VALUE default_path, VALUE csv_file, VALUE table)
     collection  STD_OBJECT_DATABASE - Programmers_Guide.chm
 *************************************************************************}
     DECLARE configured_tables, overwrite_mode, allowed_to_prompt, transaction_size, flash_status,
-            i, k, col, identities, ArrKey0, status, msg, names, version_field
+            i, k, col, identities, ArrKey0, status, msg, names, version_field, imported
 
 configured_tables = "SAMPLE_POINT":   ";":"SAMP_TMPL_HEADER"
 configured_tables = configured_tables:";":"JOB_TEMPLATE"
@@ -861,7 +860,8 @@ configured_tables = configured_tables:";":"MASTER_MENU"
 configured_tables = configured_tables:";":"CRITERIA_SAVED"
 configured_tables = configured_tables:";":"EXPLORER_FOLDER"
 configured_tables = configured_tables:";":"EXPLORER_CABINET"
-configured_tables = configured_tables:";":"VERSIONED_ANALYSIS"{
+configured_tables = configured_tables:";":"VERSIONED_ANALYSIS"
+{
 configured_tables = configured_tables:";":""
 }
 
@@ -872,7 +872,11 @@ ENDIF
 
     msg = ""
 
-    IF NOT(BLANK(csv_file)) THEN
+    IF NOT(FILE EXISTS(csv_file)) THEN
+        fm("Expected file not found:":ASCII(10):
+            csv_file)
+        RETURN        
+    ELSE
         GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
         ARRAY identities
         ARRAY names
@@ -915,6 +919,13 @@ ENDIF
         FILE READ csv_file, line, status
         i = size_of_array(identities) + 1
         WHILE status = EMPTY
+            WHILE INDEX(line, ",,") > 0
+                line = LEFTSTRING(line, INDEX(line, ",,")):ASCII(34):ASCII(34):STRIP(SUBSTRING(line, INDEX(line, ",,") + 1, LENGTH(line)))
+            ENDWHILE
+            IF RIGHTSTRING(line, 1) = "," THEN
+                line = line:ASCII(34):ASCII(34)
+            ENDIF
+
             col = 1
             WHILE INDEX(line, ASCII(34):",":ASCII(34)) > 0
                 field = LEFTSTRING(line, INDEX(line, ASCII(34):",":ASCII(34)))
@@ -952,7 +963,7 @@ ENDIF
 
         { ***  VERSION_FIELD  *** }
         GET_TABLE_DETAILS 'table', "VERSION_FIELD", version_field
-        IF NOT(BLANK(version_field)) THEN
+        IF NOT(version_field = EMPTY) THEN
             SetVersionToZero(csv_file)
             DeleteVersionZero(table, identities, ArrKey0)
         ENDIF
@@ -962,10 +973,10 @@ ENDIF
         transaction_size    = 0
         flash_status        = FALSE
         WriteImport(csv_file)
-        input_csv_file(csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
-
-        IF NOT(BLANK(version_field)) THEN
-            SetNewVersion(table, identities, ArrKey0)
+        imported = input_csv_file(csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+        IF NOT(BLANK(imported)) AND (INDEX(imported, "no errors") = 0) THEN
+            fm(table:ASCII(10):imported)
+            EXIT
         ENDIF
 
         IF size_of_array(identities) > 0 THEN
@@ -982,14 +993,19 @@ ENDIF
             WriteImport("No updates.":ASCII(10))   
         ENDIF
     
+        IF NOT(BLANK(version_field)) THEN
+            SetNewVersion(table, identities, ArrKey0)
+        ENDIF
+
         SPAWN "SUBST I: /D", status QUIETLY
         SPAWN "SUBST I: ":default_path, status QUIETLY
         WHILE status <> EMPTY
             SLEEP FOR INTERVAL("   0 00:00:01")
             SPAWN "SUBST I: ":default_path, status QUIETLY
         ENDWHILE
-        SPAWN "del ":ASCII(34):csv_file:ASCII(34):" /S", status QUIETLY
-
+        IF INDEX(csv_file, table) > 0 THEN
+            SPAWN "del ":ASCII(34):csv_file:ASCII(34):" /S", status QUIETLY
+        ENDIF
     ENDIF             
                       
     SPAWN "SUBST I: /D", status QUIETLY
@@ -1007,21 +1023,76 @@ ROUTINE SetNewVersion(table, identities, ArrKey0)
 * Return Value  : None
 *************************************************************************}
 
-DECLARE i, ver, apr, status, SQL
+DECLARE i, ver, apr, msg, status, SQL, tables, t, entity
 
-    IF (table = "VERSIONED_ANALYSIS") THEN
-        i = 1
+ARRAY tables
+
+    IF table = "VERSIONED_ANALYSIS" THEN
+        tables[1] = "VERSIONED_ANALYSIS"
+        tables[2] = "VERSIONED_COMPONENT"
+        tables[3] = "VERSIONED_C_L_HEADER"
+        tables[4] = "VERSIONED_C_L_ENTRY"
+        entity = "Analysis"
+    ELSE
+        RETURN
+    ENDIF
+
+    GET_TABLE_DETAILS 'table', "VERSION_FIELD", status
+    IF (status = EMPTY) THEN
+        RETURN
+    ENDIF
+
+    i = 1
+    WHILE i <= size_of_array(identities)
         ver = SELECT 'table'.'ArrKey0[2]'
               WHERE 'ArrKey0[1]' = identities[i, 1]
               ORDER ON 'ArrKey0[2]' DESCENDING
         apr = SELECT 'table'.approval_status
-        WHILE i <= size_of_array(identities)
+              WHERE 'ArrKey0[1]' = identities[i, 1]
+                AND removeflag = FALSE
+              ORDER ON 'ArrKey0[2]' DESCENDING
+        msg = entity:": ":identities[i, 1]:" version ":STRIP(ver):ASCII(10):
+              "has not been approved, current status is '":apr:"'":ASCII(10):ASCII(10):
+              "Abort import of ":identities[i, 1]:"?":ASCII(10):ASCII(10):
+              "Yes: 'Abort'  -  No: 'Overwrite'"
+        
+        IF (apr <> "A") THEN
+            IF confirm_with_text(msg) THEN
+                identities[i, 2] = JUSTIFY(PAD(0, " ", 10), "RIGHT")
+            ELSE
+                identities[i, 2] = JUSTIFY(PAD(STRIP(ver), " ", 10), "RIGHT")
+
+
+                t = 1
+                WHILE t <= size_of_array(tables)
+                    GET_TABLE_DETAILS 'tables[t]', "KEY0_FIELD", ArrKey0
+                    SQL = "DELETE ":tables[t]:
+                          " WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'":
+                          " AND ":ArrKey0[2]:" = ":identities[i, 2]
+                    execute_sql(SQL)
+                    execute_sql("COMMIT")
+                    t = t + 1
+                ENDWHILE
+
+                
+            ENDIF
+        ELSE
+            identities[i, 2] = JUSTIFY(PAD(STRIP(ver + 1), " ", 10), "RIGHT")
+        ENDIF
+        
+        i = i + 1
+    ENDWHILE    
+
+    i = 1
+    WHILE i <= size_of_array(identities)
+        IF (table = "VERSIONED_ANALYSIS") THEN
+            GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
             status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
                      WHERE 'ArrKey0[1]' = identities[i, 1]
                        AND 'ArrKey0[2]' = 0
-            WHILE status = identities[i, 1]
+            IF status = identities[i, 1] THEN
                 IF NOT transaction_is_write() THEN
-                    START WRITE TRANSACTION "Set new version in '":table:"' for ":identities[i, 1]
+                    START WRITE TRANSACTION "Set default values in '":table:"' for ":identities[i, 1]
                 ENDIF
                 ASSIGN 'table'.active       = FALSE
                 ASSIGN 'table'.active_from  = NULL
@@ -1029,33 +1100,39 @@ DECLARE i, ver, apr, status, SQL
                 UPDATE 'table', status
                 IF status = EMPTY THEN
                     COMMIT
-                    IF (apr = "A") THEN
-                        SQL = "UPDATE ":table:" SET ":ArrKey0[2]:" = '":(ver + 1):"'":
-                              " WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'":
-                              " AND ":ArrKey0[2]:" = 0"
-                        execute_sql(SQL)
-                        IF NOT transaction_is_write() THEN
-                            execute_sql("COMMIT")
-                        ENDIF
-                    ENDIF
-                    status = identities[i, 1]
                 ELSE
                     ROLLBACK
                     fm(" ***  ERROR  *** ":ASCII(10):ASCII(10):
-                       "Set new version in '":table:"'":ASCII(10):
+                       "Set default values in '":table:"'":ASCII(10):
                        "for ":identities[i, 1]:", failed.":ASCII(10):ASCII(10):
                        status)
                     EXIT   
                 ENDIF
-            NEXT 'table'
-                status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
-                         WHERE 'ArrKey0[1]' = identities[i, 1]
-                           AND 'ArrKey0[2]' = 0
-            ENDWHILE
-            i = i + 1
+            ENDIF    
+        ENDIF
+
+        t = 1
+        WHILE t <= size_of_array(tables)
+            GET_TABLE_DETAILS 'tables[t]', "KEY0_FIELD", ArrKey0
+            IF identities[i, 2] = 0 THEN
+                SQL = "DELETE ":tables[t]:
+                      " WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'":
+                      " AND ":ArrKey0[2]:" = 0"
+            ELSE
+                SQL = "UPDATE ":tables[t]:" SET ":ArrKey0[2]:" = '":identities[i, 2]:"'":
+                      " WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'":
+                      " AND ":ArrKey0[2]:" = 0"
+            ENDIF
+            execute_sql(SQL)
+            execute_sql("COMMIT")
+            t = t + 1
         ENDWHILE
-    ENDIF
         
+        i = i + 1
+    ENDWHILE
+
+
+
 ENDROUTINE
 
 
@@ -1082,6 +1159,7 @@ DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transac
         fm("File not found: '":file_directory:csv_file:"'" )
         EXIT
     ENDIF
+
     overwrite_mode      = OVERWRITE_TABLE
     allowed_to_prompt   = FALSE
     transaction_size    = 0
@@ -1205,6 +1283,37 @@ DECLARE parent_table, file_directory, overwrite_mode, allowed_to_prompt, transac
         csv_file = default_path:"\":table:"\":csv_file
         IMPORT_ENTITY (default_path, csv_file, table)
         
+    ELSEIF table = "VERSIONED_ANALYSIS" THEN
+
+        ARRAY child_identities
+        ARRAY ArrKey0
+    
+        table = "VERSIONED_COMPONENT"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        SetVersionToZero(file_directory:table:"\":csv_file)
+        DeleteVersionZero(table, identities, ArrKey0)
+        WriteImport(file_directory:table:"\":csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "VERSIONED_C_L_HEADER"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        SetVersionToZero(file_directory:table:"\":csv_file)
+        DeleteVersionZero(table, identities, ArrKey0)
+        WriteImport(file_directory:table:"\":csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "VERSIONED_C_L_ENTRY"
+        GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
+        SetVersionToZero(file_directory:table:"\":csv_file)
+        DeleteVersionZero(table, identities, ArrKey0)
+        WriteImport(file_directory:table:"\":csv_file)
+        input_csv_file(file_directory:table:"\":csv_file, overwrite_mode, allowed_to_prompt, transaction_size, flash_status)
+
+        table = "PHRASE_HEADER"
+        default_path = default_path:"\VERSIONED_ANALYSIS"
+        csv_file = default_path:"\":table:"\":csv_file
+        IMPORT_ENTITY (default_path, csv_file, table)
+
     ELSE 
 
         RETURN
@@ -1226,28 +1335,31 @@ ENDROUTINE
 * Return Value : N/A
 **************************************************************************}
 ROUTINE DeleteChildRecords(VALUE table, identities, VALUE parent_table, VALUE csv_file)
-DECLARE child_identities, ArrKey0, c, i, k, child, id, status, field
+DECLARE ArrKey0, i, SQL
+
+{DECLARE child_identities, c, k, child, id, status, field}
+
 ARRAY ArrKey0
-ARRAY child_identities
+{ARRAY child_identities }
 
     GET_TABLE_DETAILS 'table', "KEY0_FIELD", ArrKey0
-    c = 1
+{    c = 1
     k = 1
     WHILE k <= size_of_array(ArrKey0)
         child_identities[c, k] = STRIP(ArrKey0[k])
         k = k + 1
     ENDWHILE    
-        
+ }        
     i = 1
     WHILE i <= size_of_array(identities)
         IF (table = "TEMPLATE_FIELDS") THEN
-            field = ArrKey0[2]
+            {field = ArrKey0[2] }
             IF parent_table = "SAMP_TMPL_HEADER" THEN
-                child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1]
-                                                      AND table_name = "SAMPLE"
+                {child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1] AND table_name = "SAMPLE" }
+                SQL = "DELETE ":table:" WHERE [":ArrKey0[2]:"] = '":identities[i, 1]:"' AND table_name = 'SAMPLE'"
             ELSEIF parent_table = "JOB_TEMPLATE" THEN
-                child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1]
-                                                      AND table_name = "JOB_HEADER"
+                {child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1] AND table_name = "JOB_HEADER" }
+                SQL = "DELETE ":table:" WHERE [":ArrKey0[2]:"] = '":identities[i, 1]:"' AND table_name = 'JOB_HEADER'"
             ELSE
                 fm("Deleting records in '":table:"'":ASCII(10):
                    "related to '":parent_table:"'":ASCII(10):
@@ -1259,8 +1371,10 @@ ARRAY child_identities
             OR (table = "")
             OR (table = "")
 
-            field = ArrKey0[1]
-            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
+            {field = ArrKey0[1] }
+            {child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1] }
+            SQL = "DELETE ":table:" WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'"
+            {SQL = "DELETE "::" WHERE [":ArrKey0[]:"] = '":identities[i, ]:"'" }
 
         ELSEIF (table = "TEST_SCHED_ENTRY")
             OR (table = "PHRASE")
@@ -1271,16 +1385,19 @@ ARRAY child_identities
             OR (table = "")
             OR (table = "")
 
-            field = ArrKey0[2]
-            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
+            {field = ArrKey0[2] }
+            {child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1] }
+            SQL = "DELETE ":table:" WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"'"
 
         ELSEIF (table = "")
             OR (table = "ROLE_ENTRY")
             OR (table = "")
             OR (table = "")
 
-            field = ArrKey0[2]
-            child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1]
+            {field = ArrKey0[2] }
+            {child = SELECT 'table'.'field' WHERE 'ArrKey0[2]' = identities[i, 1] }
+            SQL = "DELETE ":table:" WHERE [":ArrKey0[2]:"] = '":identities[i, 1]:"'"
+            
 
         ELSEIF (table = "CRITERIA_VARIABLE")
             OR (table = "CRITERIA_CONDITION")
@@ -1291,10 +1408,9 @@ ARRAY child_identities
             OR (table = "")
             OR (table = "")
 
-            field = ArrKey0[3]
-            child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1]
-                                             AND 'ArrKey0[2]' = identities[i, 2]
-
+            {field = ArrKey0[3] }
+            {child = SELECT 'table'.'field' WHERE 'ArrKey0[1]' = identities[i, 1] AND 'ArrKey0[2]' = identities[i, 2] }
+            SQL = "DELETE ":table:" WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"' AND [":ArrKey0[2]:"]  = '":identities[i, 2]:"'"
         ELSE
 
             fm("Deleting records in '":table:"'":ASCII(10):
@@ -1305,7 +1421,10 @@ ARRAY child_identities
 
         ENDIF
 
-        WHILE child <> EMPTY
+        execute_sql(SQL)
+        execute_sql("COMMIT")
+        
+      { WHILE child <> EMPTY
             c = c + 1
             k = 1
             WHILE k <= size_of_array(ArrKey0)
@@ -1314,68 +1433,10 @@ ARRAY child_identities
             ENDWHILE
         NEXT 'table'
             child = SELECT 'table'.'field'
-        ENDWHILE
+        ENDWHILE }
         i = i + 1
     ENDWHILE
 
-    WriteImport(ASCII(10):
-                "Delete ":table:":":ASCII(10):
-                GetArray(child_identities):ASCII(10))
-    
-    i = 2
-    WHILE i <= size_of_array(child_identities)
-        IF size_of_array(ArrKey0) = 1 THEN
-            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
-        ELSEIF size_of_array(ArrKey0) = 2 THEN
-            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
-                   AND 'ArrKey0[2]' = child_identities[i, 2]
-        ELSEIF size_of_array(ArrKey0) = 3 THEN
-            id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                 WHERE 'ArrKey0[1]' = child_identities[i, 1]
-                   AND 'ArrKey0[2]' = child_identities[i, 2]
-                   AND 'ArrKey0[3]' = child_identities[i, 3]
-        ELSEIF size_of_array(ArrKey0) > 3 THEN
-            fm("Table '":table:"' has mor than 3 key-fields.":ASCII(10):
-               "Additional validation is required.")
-            EXIT
-        ENDIF
-        
-        IF id <> EMPTY THEN
-            START WRITE TRANSACTION "Delete '":table:"' for ":child_identities[i, size_of_array(ArrKey0) - 1]
-            WHILE id <> EMPTY
-                SET GLOBAL "AUDITPROMPTSUPPRESS" TO TRUE
-                DELETE 'table', status
-                IF status <> EMPTY THEN
-                    ROLLBACK
-                    fm("Error during deletion of '":table:"' for ":identities[i, 1]:ASCII(10):
-                       "Retry the import of ":csv_file:ASCII(10):ASCII(10):
-                       "Error code: ":status)
-                    EXIT
-                ENDIF
-            NEXT 'table'
-                IF size_of_array(ArrKey0) = 1 THEN
-                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
-                ELSEIF size_of_array(ArrKey0) = 2 THEN
-                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
-                           AND 'ArrKey0[2]' = child_identities[i, 2]
-                ELSEIF size_of_array(ArrKey0) = 3 THEN
-                    id = SELECT 'table'.'ArrKey0[1]' FOR UPDATE 
-                         WHERE 'ArrKey0[1]' = child_identities[i, 1]
-                           AND 'ArrKey0[2]' = child_identities[i, 2]
-                           AND 'ArrKey0[3]' = child_identities[i, 3]
-                ENDIF
-            ENDWHILE
-            COMMIT
-            SET GLOBAL "AUDITPROMPTSUPPRESS" TO FALSE
-        ENDIF
-
-        i = i + 1
-    ENDWHILE
-    
 ENDROUTINE
 
 {*************************************************************************
@@ -1384,7 +1445,7 @@ ENDROUTINE
 * Parameters   : Msg - what to write in log
 * Return Value : N/A
 **************************************************************************}
-ROUTINE SetVersionToZero(csv_file)
+ROUTINE SetVersionToZero(VALUE csv_file)
 
 DECLARE table, version_field, approval_field, csv_array, line, field, status, col, row, cols,
         tmp_file
@@ -1445,19 +1506,18 @@ DECLARE table, version_field, approval_field, csv_array, line, field, status, co
             ENDWHILE
 
             WHILE status = EMPTY
-                col = 1
                 WHILE INDEX(line, ",,") > 0
                     line = LEFTSTRING(line, INDEX(line, ",,")):ASCII(34):ASCII(34):STRIP(SUBSTRING(line, INDEX(line, ",,") + 1, LENGTH(line)))
                 ENDWHILE
-                
                 IF RIGHTSTRING(line, 1) = "," THEN
                     line = line:ASCII(34):ASCII(34)
                 ENDIF
 
+                col = 1
                 WHILE INDEX(line, ASCII(34):",":ASCII(34)) > 0
                     field = LEFTSTRING(line, INDEX(line, ASCII(34):",":ASCII(34)))
                     csv_array[row, col] = field { SUBSTITUTE(field, ASCII(34), "") }
-                    line = STRIP(SUBSTRING(line, INDEX(line, ",") + 1, LENGTH(line)))
+                    line = STRIP(SUBSTRING(line, INDEX(line, ASCII(34):",":ASCII(34)) + 2, LENGTH(line)))
                     col = col + 1
                 ENDWHILE
                 csv_array[row, col] = line
@@ -1473,7 +1533,9 @@ DECLARE table, version_field, approval_field, csv_array, line, field, status, co
         col = 1
         row = 2
         WHILE col <= cols
-            IF csv_array[row, col] = version_field THEN
+            IF (csv_array[row, col] = version_field) OR
+               (csv_array[row, col] = "ANALYSIS_VERSION") OR
+               (csv_array[row, col] = "PRODUCT_VERSION") THEN
                 row = 5
                 WHILE row <= size_of_array(csv_array)
                     csv_array[row, col] = ASCII(34):"         0":ASCII(34)
@@ -1528,35 +1590,20 @@ ENDROUTINE
 **************************************************************************}
 ROUTINE DeleteVersionZero(table, identities, ArrKey0)
 
-DECLARE i, status
+DECLARE i, SQL
 
     IF (table = "VERSIONED_ANALYSIS") OR
-       (table = "VERSIONED_COMPONENT") THEN
+       (table = "VERSIONED_COMPONENT") OR
+       (table = "VERSIONED_C_L_HEADER") OR
+       (table = "VERSIONED_C_L_ENTRY") THEN
         i = 1
         WHILE i <= size_of_array(identities)
-            status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
-                     WHERE 'ArrKey0[1]' = identities[i, 1]
-                       AND 'ArrKey0[2]' = 0
-            WHILE status = identities[i, 1]
-                IF NOT transaction_is_write() THEN
-                    START WRITE TRANSACTION "Delete version zero in '":table:"' for ":identities[i, 1]
-                ENDIF
-                DELETE 'table', status
-                IF status = EMPTY THEN
-                    COMMIT
-                    status = identities[i, 1]
-                ELSE
-                    ROLLBACK
-                ENDIF
-            NEXT 'table'
-                status = SELECT 'table'.'ArrKey0[1]' FOR UPDATE
-                         WHERE 'ArrKey0[1]' = identities[i, 1]
-                           AND 'ArrKey0[2]' = 0
-            ENDWHILE
+            SQL = "DELETE ":table:" WHERE [":ArrKey0[1]:"] = '":identities[i, 1]:"' AND [":ArrKey0[2]:"] = 0"
+            execute_sql(SQL)
+            execute_sql("COMMIT")
             i = i + 1
         ENDWHILE
     ENDIF
-        
 
 ENDROUTINE
 
